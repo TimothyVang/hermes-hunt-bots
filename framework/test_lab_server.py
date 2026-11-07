@@ -83,6 +83,15 @@ class ServerCase(unittest.TestCase):
             connection.close()
         return response.status, (json.loads(body) if body else None)
 
+    def page(self, path):
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=10)
+        try:
+            connection.request('GET', path)
+            response = connection.getresponse()
+            return response.status, response.getheader('Content-Type'), response.read().decode()
+        finally:
+            connection.close()
+
 
 class EndpointTests(ServerCase):
     def test_search_is_case_scoped_flat_and_pages_with_search_after(self):
@@ -247,6 +256,66 @@ class EndpointTests(ServerCase):
         self.assertEqual(self.request('/es/search'), (503, {'error': 'backend_not_ready', 'partial_results': False}))
         self.arkime.side_effect = lab_server.BackendQueryError('invalid_expression')
         self.assertEqual(self.request('/arkime/sessions?expression=bogus'), (400, {'error': 'invalid_expression'}))
+
+    def test_console_field_query_matches_es_search(self):
+        self.elastic.response = es_hits([
+            {'@timestamp': '2026-03-02T01:00:00.000Z', 'event': {'id': 'evt-000101'}, 'host': {'name': 'web-01'},
+             'process': {'name': 'cmd.exe', 'parent': {'name': 'w3wp.exe'}}},
+            {'@timestamp': '2026-03-02T01:00:05.000Z', 'event': {'id': 'evt-000102'}, 'host': {'name': 'web-01'},
+             'process': {'name': 'powershell.exe', 'parent': {'name': 'w3wp.exe'}}},
+        ], total=8)
+        _, api = self.request('/es/search?q=process.parent.name:w3wp.exe')
+        status, kind, body = self.page('/view?q=process.parent.name%3Aw3wp.exe')
+        self.assertEqual((status, kind), (200, 'text/html; charset=utf-8'))
+        search, console = (call['body'] for call in self.elastic.calls)
+        self.assertEqual(console['query'], search['query'])
+        self.assertEqual(console['sort'], search['sort'])
+        self.assertEqual(console['query']['bool']['filter'][1]['query_string']['query'], 'process.parent.name:w3wp.exe')
+        self.assertEqual((api['total'], api['returned']), (8, 2))
+        self.assertIn('<strong>2 of 8 events</strong>', body)
+        for hit in api['hits']:
+            self.assertIn(hit['event.id'], body)
+        self.assertIn('<label for="q">Search</label><input id="q" name="q"', body)
+        self.assertIn('value="process.parent.name:w3wp.exe"', body)
+
+    def test_console_shows_only_the_fixed_code_for_a_refused_query(self):
+        status, kind, body = self.page('/view?q=process.parent.name:*w3wp')
+        self.assertEqual((status, kind), (400, 'text/html; charset=utf-8'))
+        self.assertIn('Query refused: leading_wildcard_not_supported', body)
+        self.assertEqual(self.elastic.calls, [])
+        status, _, body = self.page('/view?q=' + 'a' * 301)
+        self.assertEqual(status, 400)
+        self.assertIn('Query refused: invalid_query', body)
+        self.assertNotIn('too long', body)
+        self.elastic.error = lab_server.BackendQueryError('invalid_query')
+        status, _, body = self.page('/?q=a:(b')
+        self.assertEqual(status, 400)
+        self.assertIn('Query refused: invalid_query', body)
+        self.assertIn('<label for="q">Search</label>', body)
+
+    def test_console_escapes_records_and_echoed_search(self):
+        self.elastic.response = es_hits([{'@timestamp': '<i>t</i>', 'event': {'id': 'evt-000001'},
+                                          'message': '<script>alert(1)</script>'}])
+        status, _, body = self.page('/view?q=%22%3E%3Cb%3Ex&host=%3Cimg%3E')
+        self.assertEqual(status, 200)
+        for raw in ('<script>', '<i>t</i>', '"><b>x', '<img>'):
+            self.assertNotIn(raw, body)
+        for escaped in ('&lt;script&gt;alert(1)&lt;/script&gt;', '&lt;i&gt;t&lt;/i&gt;',
+                        'value="&quot;&gt;&lt;b&gt;x"', 'value="&lt;img&gt;"'):
+            self.assertIn(escaped, body)
+
+    def test_events_route_keeps_plain_word_search_with_the_es_search_builder(self):
+        self.elastic.response = es_hits([{'event': {'id': 'evt-000001'}, 'dns': {'question': {'name': 'a.example'}}}])
+        status, value = self.request('/events?q=dns%20example&host=ws-01')
+        self.assertEqual(status, 200)
+        self.assertEqual(value['records'], [{'event': {'id': 'evt-000001'}, 'dns': {'question': {'name': 'a.example'}}}])
+        filters = self.elastic.calls[0]['body']['query']['bool']['filter']
+        clause = filters[1]['query_string']
+        self.assertEqual((clause['query'], clause['default_operator']), ('dns example', 'AND'))
+        # The fields the earlier simple_query_string searched are all still searched by unqualified words.
+        self.assertLessEqual({'message', 'host.name', 'process.name', 'dns.question.name', 'event.id'}, set(clause['fields']))
+        self.assertIn({'term': {'host.name': 'ws-01'}}, filters)
+        self.assertEqual(self.request('/events?q=*evil'), (400, {'error': 'leading_wildcard_not_supported'}))
 
     def test_activity_records_tool_calls_with_display_profile(self):
         self.request('/es/search?q=alice', profile='framework-researcher')
