@@ -56,6 +56,9 @@ def session_check(process_ids=(), sessions=0):
     return response
 
 
+# The executor kit is separately supplied and intentionally not bundled (see benchmarks/README.md).
+KIT_WORKER = Path(__file__).resolve().parent.parent / 'hunt-range' / 'benchmark' / windows.WORKER
+
 class WindowsConfigurationTests(unittest.TestCase):
     def test_only_fixed_actions_are_selected(self):
         value = manifest()
@@ -327,8 +330,9 @@ class WindowsReceiptTests(unittest.TestCase):
         self.assertEqual(result['execution_outcome'], 'succeeded')
         self.assertEqual(len(result['raw_exports'][0]['records']), 2)
 
+    @unittest.skipUnless(KIT_WORKER.is_file(), 'separate range kit is intentionally not bundled')
     def test_worker_emits_six_digit_utc_and_driver_parses_it(self):
-        script = (Path(__file__).resolve().parent.parent / 'hunt-range' / 'benchmark' / windows.WORKER).read_text(encoding='utf-8')
+        script = KIT_WORKER.read_text(encoding='utf-8')
         self.assertIn("yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'", script)
         self.assertNotIn("ToString('o')", script)
         # The old 7-digit worker form and the 6-digit form denote the same microsecond.
@@ -396,8 +400,9 @@ class WindowsReceiptTests(unittest.TestCase):
         result, _ = self.dispatch_fixture(manifest(), leftovers_elsewhere)
         self.assertEqual(result['execution_outcome'], 'unknown')
 
+    @unittest.skipUnless(KIT_WORKER.is_file(), 'separate range kit is intentionally not bundled')
     def test_worker_session_check_is_read_only(self):
-        script = (Path(__file__).resolve().parent.parent / 'hunt-range' / 'benchmark' / windows.WORKER).read_text(encoding='utf-8')
+        script = KIT_WORKER.read_text(encoding='utf-8')
         start = script.index("'session_check' {")
         block = script[start:script.index("'windows-discovery-v1' {", start)]
         for forbidden in ('Stop-Process', 'Terminate', 'Remove-', 'Invoke-CimMethod', 'logoff', 'Start-Process'):
