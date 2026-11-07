@@ -1,0 +1,19 @@
+author: Invented Sample Author
+id: 00000000-0000-4000-8000-000000000001
+date: '2026-01-01'
+description: INVENTED sample for test_benchmark_import_attackdata.py only. Every host,
+  user, address and record is fictitious.
+environment: invented_range
+directory: invented_linux_sample
+mitre_technique:
+- T1003.008
+- T1033
+datasets:
+-   name: invented_auditd_raw
+    path: /datasets/attack_techniques/T1003.008/invented_linux_sample/attackdata_sample_auditd.log
+    sourcetype: auditd
+    source: auditd
+-   name: invented_auditd_interpreted
+    path: /datasets/attack_techniques/T1003.008/invented_linux_sample/attackdata_sample_auditd_interpreted.log
+    sourcetype: 'auditd'
+    source: auditd

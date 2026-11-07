@@ -1,0 +1,5 @@
+name: framework-researcher
+version: "1.0.0"
+description: "Analyzes supplied, approved evidence to develop traceable threat hypotheses."
+distribution_owned:
+  - SOUL.md

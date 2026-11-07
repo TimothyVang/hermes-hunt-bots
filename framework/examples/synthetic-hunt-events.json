@@ -1,0 +1,61 @@
+{
+  "title": "Invented offline threat-hunt events",
+  "notice": "All records are invented for offline human analysis. This is not operational telemetry or a scored evaluation; no hidden truth is provided.",
+  "time_range_utc": {
+    "start_inclusive": "2025-04-15T09:00:00Z",
+    "end_exclusive": "2025-04-15T10:00:00Z"
+  },
+  "coverage": [
+    {
+      "source": "synthetic-auth",
+      "description": "Invented authentication summaries for the stated hour; limited to the events below, not a complete account of activity."
+    },
+    {
+      "source": "synthetic-change-calendar",
+      "description": "Invented change-calendar excerpt for the stated hour; only the entry below is supplied."
+    }
+  ],
+  "telemetry_gaps": [
+    {
+      "id": "GAP-001",
+      "description": "No endpoint process, session activity, or network-flow telemetry is supplied, including for the period after the successful sign-in. The fixture cannot establish what happened within a session."
+    }
+  ],
+  "events": [
+    {
+      "id": "EVT-001",
+      "timestamp_utc": "2025-04-15T09:12:00Z",
+      "source": "synthetic-auth",
+      "type": "sign-in-failure-summary",
+      "subject": "operator-a@example.test",
+      "source_address": "192.0.2.10",
+      "detail": "Three unsuccessful sign-in attempts were recorded within one minute."
+    },
+    {
+      "id": "EVT-002",
+      "timestamp_utc": "2025-04-15T09:14:00Z",
+      "source": "synthetic-auth",
+      "type": "sign-in-success",
+      "subject": "operator-a@example.test",
+      "source_address": "192.0.2.10",
+      "detail": "A successful sign-in was recorded after the failures; this record does not establish who initiated it."
+    },
+    {
+      "id": "EVT-003",
+      "timestamp_utc": "2025-04-15T09:15:00Z",
+      "source": "synthetic-change-calendar",
+      "type": "planned-access",
+      "subject": "operator-a@example.test",
+      "detail": "A planned access window for a credential migration was recorded from 09:00 to 09:30 UTC; the entry does not confirm who signed in or explain every failure."
+    },
+    {
+      "id": "EVT-004",
+      "timestamp_utc": "2025-04-15T09:40:00Z",
+      "source": "synthetic-auth",
+      "type": "sign-in-success",
+      "subject": "operator-b@example.test",
+      "source_address": "198.51.100.20",
+      "detail": "A separate successful sign-in was recorded without preceding failures in the supplied records; this is a benign comparison, not proof about other sessions."
+    }
+  ]
+}

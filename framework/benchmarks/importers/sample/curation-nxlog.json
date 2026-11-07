@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "8b7e66748b2502d71c0c6db8fecee11792dba56541045ad4343a0ed6f84d9ae3",
+  "metadata_sha256": "06c2d62de6e11c369c96ec4ce1c67940c2ccbf856fcf8c260c9e8a429ee4f290",
+  "curated_by": "invented-sample-curator",
+  "curated_utc": "2026-01-02T00:00:00Z",
+  "note": "INVENTED curation for the invented NXLog-shaped importer sample. Not a real dataset; never use for model evaluation.",
+  "revision": 1,
+  "truth_revision": 1,
+  "attack_release": "v18",
+  "coverage": {
+    "os": [
+      "windows-client"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "flat-lan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "ad-single-domain"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "internal-authoritative"
+    ],
+    "telemetry": [
+      "windows-security",
+      "sysmon"
+    ]
+  },
+  "assets": [
+    {
+      "hostname": "LABHOST03.lab.example.test",
+      "os_family": "windows-client",
+      "os_version": "Windows 10, invented sample",
+      "architecture": "x86_64",
+      "vendor": "Invented sample"
+    },
+    {
+      "hostname": "LABHOST04.lab.example.test",
+      "os_family": "windows-client",
+      "os_version": "Windows 10, invented sample",
+      "architecture": "x86_64",
+      "vendor": "Invented sample"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "technique_id": "T1033",
+      "asset": {
+        "hostname": "LABHOST03.lab.example.test"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T08:00:02Z",
+        "end_exclusive": "2026-01-01T08:00:03Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          {
+            "record_id": "5002",
+            "channel": "Microsoft-Windows-Sysmon/Operational",
+            "hostname": "LABHOST03.lab.example.test"
+          }
+        ],
+        [
+          {
+            "record_id": "7001",
+            "channel": "security",
+            "hostname": "LABHOST03.lab.example.test"
+          }
+        ]
+      ],
+      "boundary_id": "boundary-host",
+      "phase": "initial"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-1",
+      "asset": {
+        "hostname": "LABHOST04.lab.example.test"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T08:00:01Z",
+        "end_exclusive": "2026-01-01T08:00:07Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "lookalike_event_ids": [
+    [
+      {
+        "record_id": "7001",
+        "channel": "Security",
+        "hostname": "LABHOST04.lab.example.test"
+      },
+      {
+        "line": 9
+      }
+    ]
+  ],
+  "sophistication": {
+    "band": "S1",
+    "boundaries": [
+      {
+        "boundary_id": "boundary-host",
+        "kind": "host"
+      }
+    ],
+    "preconditions": [
+      "Invented interactive domain user session on LABHOST03."
+    ],
+    "emulation_limitations": [
+      "All records are invented; they prove importer behaviour only, never model quality or live coverage."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "source_references": [
+    "https://example.test/otrf-sample/sample_nxlog_discovery.zip"
+  ]
+}

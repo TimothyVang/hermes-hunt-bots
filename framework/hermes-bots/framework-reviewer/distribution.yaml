@@ -1,0 +1,5 @@
+name: framework-reviewer
+version: "1.0.0"
+description: "Independently reviews supplied evidence and detection proposals without live emulation."
+distribution_owned:
+  - SOUL.md

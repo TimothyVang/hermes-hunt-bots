@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "experiment_id": "example-graduated-1729",
+  "scenario_refs": [
+    {
+      "scenario": "fixtures/case-8b42/scenario.json",
+      "evidence": "fixtures/case-8b42/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-5c21/scenario.json",
+      "evidence": "fixtures/case-5c21/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-7d33/scenario.json",
+      "evidence": "fixtures/case-7d33/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-9e44/scenario.json",
+      "evidence": "fixtures/case-9e44/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-af55/scenario.json",
+      "evidence": "fixtures/case-af55/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-b060/scenario.json",
+      "evidence": "fixtures/case-b060/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-c070/scenario.json",
+      "evidence": "fixtures/case-c070/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-d080/scenario.json",
+      "evidence": "fixtures/case-d080/public/evidence.json"
+    },
+    {
+      "scenario": "fixtures/case-e090/scenario.json",
+      "evidence": "fixtures/case-e090/public/evidence.json"
+    }
+  ],
+  "teams": [
+    {
+      "team_id": "team-local-example",
+      "deployment": "local",
+      "roles": {
+        "framework-coordinator": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        },
+        "framework-researcher": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        },
+        "framework-builder": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        },
+        "framework-reviewer": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        },
+        "framework-librarian": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        },
+        "framework-network-analyst": {
+          "adapter": "langchain",
+          "provider": "openai",
+          "model_requested": "operator-must-configure-versioned-local-model",
+          "base_url": "http://127.0.0.1:9/v1",
+          "credential_env": null,
+          "parameters": {
+            "temperature": null,
+            "seed": null
+          },
+          "timeout_seconds": 30,
+          "max_output_tokens": 2048,
+          "expected_model_ids": [
+            "operator-must-configure-versioned-local-model"
+          ]
+        }
+      },
+      "runtime_facts": {
+        "server": null,
+        "server_version": null,
+        "model_weight_sha256": null,
+        "quantization": null,
+        "context_configuration": null,
+        "cpu": null,
+        "gpu": null,
+        "ram_bytes": null,
+        "concurrency": null
+      }
+    }
+  ],
+  "repetitions": 5,
+  "schedule_seed": 1729,
+  "budgets": {
+    "max_calls_per_trial": 16,
+    "max_active_seconds_per_trial": 480,
+    "max_prompt_bytes": 1048576,
+    "max_response_bytes": 65536,
+    "max_attempts_per_stage": 2
+  },
+  "workflow_sha256": "4d9fa30816f1b73d3fbd89547683d0a83c18886b450662cbac5aa59f332fc9da",
+  "prompt_contract_sha256": "8876f01e55c5973d5424a3e534b22c18424e411be37a12df854a534bc872d23a",
+  "coverage_sha256": "15f6dadd70eb86bfbbfdbdc0f9abd4f5136a099e77119a0947227ede16d05614",
+  "rubric_version": "hunt-rubric-1",
+  "pricing_snapshot": {
+    "as_of_utc": "2026-01-01T00:00:00+00:00",
+    "currency": "USD",
+    "rates": []
+  }
+}

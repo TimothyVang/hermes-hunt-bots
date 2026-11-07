@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-b060",
+  "family_id": "family-17af",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-client"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "isolated-airgap",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "sysmon"
+    ]
+  },
+  "difficulty": {
+    "band": "D1",
+    "control": true,
+    "factors": {
+      "noise": {
+        "score": 0,
+        "rationale": "8 benign / 2 relevant events; ratio 4."
+      },
+      "joins": {
+        "score": 0,
+        "rationale": "1 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 0,
+        "rationale": "130 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 0,
+        "rationale": "0 unresolvable questions; missing records False; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 0,
+        "rationale": "0 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S0",
+    "steps": [],
+    "edges": [],
+    "boundaries": [],
+    "preconditions": [
+      "Matched zero-positive control for the same family, with the same window, assets and source layout: the same service starts on both hosts with no child process, and interactive users open ordinary desktop applications."
+    ],
+    "emulation_limitations": [
+      "Both assets are scoped controls. No attack graph or adversary capability is asserted.",
+      "Difficulty is inherited from the matched attack family, not recomputed as an infinite noise ratio.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [],
+  "evidence_manifest_sha256": "7b82074264975662dace1b173e37747484aad5d6f4b2a9583b725e6b9a4a99d4"
+}

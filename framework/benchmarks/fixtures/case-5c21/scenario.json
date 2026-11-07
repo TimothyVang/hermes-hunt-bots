@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-5c21",
+  "family_id": "family-22bf",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "linux"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "isolated-airgap",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "linux-audit"
+    ]
+  },
+  "difficulty": {
+    "band": "D2",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 0,
+        "rationale": "14 benign / 2 relevant events; ratio 7."
+      },
+      "joins": {
+        "score": 0,
+        "rationale": "1 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 1,
+        "rationale": "600 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 0,
+        "rationale": "0 unresolvable questions; missing records False; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 1,
+        "rationale": "1 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S2",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-f544d4ca8fc5",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-b",
+        "asset_id": "asset-f544d4ca8fc5",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      }
+    ],
+    "edges": [
+      [
+        "step-a",
+        "step-b"
+      ]
+    ],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "host"
+      }
+    ],
+    "preconditions": [
+      "An invented web worker runs as its local service account; its shell stays alive until the child process starts ten minutes later.",
+      "A recurring inventory schedule on the second host starts the same shell/id pair as part of its normal collection, a competing explanation distinguished by parent, account, schedule and elapsed time."
+    ],
+    "emulation_limitations": [
+      "Process ancestry proves the child depends on the shell, not an identity or privilege crossing. No persistence or host compromise is demonstrated.",
+      "The second host source declares a +3 s clock offset; timestamp_utc is the original time minus that offset.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1033/",
+    "https://attack.mitre.org/techniques/T1059/004/"
+  ],
+  "evidence_manifest_sha256": "16d6759db8c7b614317c7e38286bc29e10d5d1d5d3d7214e60dd5efb1a8e5966"
+}

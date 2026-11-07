@@ -1,0 +1,5 @@
+Project: neighborhood reading group
+Meeting date: 2026-10-05
+Decision: Meet on the first Saturday of each month at the library.
+Action: Maya will ask the library about room availability by October 15.
+Open question: Should the group provide books or ask participants to bring their own?

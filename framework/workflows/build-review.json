@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "build-review",
+  "description": "Approved requirements, bounded implementation, independent review, and a human-reviewed release handoff; no automatic deployment or publication.",
+  "tasks": [
+    {
+      "key": "requirements",
+      "title": "Establish the approved change requirements",
+      "role": "researcher",
+      "scope": "Inspect only the approved supplied request, project material, and sources to establish the requested change, existing conventions, affected area, and constraints. Separate original source facts from AI-generated notes or proposals. Do not browse, download, open restricted archives, modify code, or broaden the request. Stop for a human decision if authority, requirements, or source access is missing.",
+      "acceptance": "Hand off a bounded requirement statement, explicit non-goals, affected files or interfaces, observable acceptance criteria, and a proposed local verification plan with source references. Identify ambiguities, source limitations, and any checks or actions requiring separate authorization. Request human approval of the agreed change before implementation.",
+      "depends_on": []
+    },
+    {
+      "key": "build",
+      "title": "Implement only the agreed change",
+      "role": "builder",
+      "scope": "Implement only the human-approved requirements in the operator-approved project area, following existing conventions. Preserve unrelated work and update affected callers, tests, and existing documentation where needed. Do not install dependencies, contact services, change profiles or credentials, deploy, trade, or expand scope. Execute only the agreed authorized checks; stop and request a decision for unavailable prerequisites or a required scope change.",
+      "acceptance": "Provide the actual change and a bounded handoff listing changed files, how each criterion is addressed, checks actually executed with their results, checks not executed and why, evidence or artifact paths, and remaining risks. Do not fabricate test outcomes or claim completion from implementation alone. Submit for independent review and explicit human approval.",
+      "depends_on": ["requirements"]
+    },
+    {
+      "key": "review",
+      "title": "Independently review the implementation",
+      "role": "reviewer",
+      "scope": "Independently inspect the approved requirement and builder handoffs plus the actual authorized changes and evidence. Compare behavior, scope, maintainability, data handling, and affected tests or documentation against the agreed criteria. Use a reviewer distinct from the builder where possible and disclose any limitation. Perform only authorized checks; do not silently repair the change or expand access.",
+      "acceptance": "Report evidence for each criterion, actual checks and outcomes, concrete issues with file or source locations, regressions or safety concerns, and unverified claims. State when no issue was found within the review actually performed. Recommend acceptance or specific revisions for a human decision; reviewer submission itself is not approval.",
+      "depends_on": ["requirements", "build"]
+    },
+    {
+      "key": "handoff",
+      "title": "Prepare the release decision handoff",
+      "role": "coordinator",
+      "scope": "Reconcile the approved requirements, builder handoff, and independent review without assuming unresolved findings were fixed. Prepare a release recommendation only within the operator's scope. If corrections or evidence are missing, request a human decision rather than fabricating closure. Do not merge, publish, deploy, send messages, schedule tasks, or change external systems.",
+      "acceptance": "Provide a traceable summary of the requested change, delivered artifacts, actual verification and its limits, reviewer findings and disposition, remaining blockers, and explicit human decisions needed. Distinguish a proposed release from an executed release. Submit this final handoff for normal human approval; ledger completion does not authorize deployment or publication.",
+      "depends_on": ["requirements", "build", "review"]
+    }
+  ]
+}

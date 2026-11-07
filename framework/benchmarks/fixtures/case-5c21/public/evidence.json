@@ -1,0 +1,418 @@
+{
+  "schema_version": 1,
+  "case_id": "case-5c21",
+  "window_utc": {
+    "start_inclusive": "2026-02-01T00:00:00+00:00",
+    "end_exclusive": "2026-02-01T00:30:00+00:00"
+  },
+  "assets": [
+    {
+      "asset_id": "asset-be56f87185eb",
+      "os_family": "linux",
+      "os_version": "Debian 12, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-f544d4ca8fc5",
+      "os_family": "linux",
+      "os_version": "Debian 12, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "source-9f1806eb97ea",
+      "asset_ids": [
+        "asset-f544d4ca8fc5"
+      ],
+      "telemetry": "linux-audit",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3"
+    },
+    {
+      "source_id": "source-a3b9be56d12b",
+      "asset_ids": [
+        "asset-be56f87185eb"
+      ],
+      "telemetry": "linux-audit",
+      "clock_offset_seconds": 3,
+      "clock_uncertainty_seconds": 0.5,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-28b417821506",
+      "timestamp_utc": "2026-02-01T00:01:00+00:00",
+      "source_id": "source-9f1806eb97ea",
+      "asset_id": "asset-f544d4ca8fc5",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:01:00+00:00",
+        "parent_basename": "web-worker",
+        "parent_process_id": 300,
+        "process_basename": "sh",
+        "process_id": 4100,
+        "user": "svc-web",
+        "result": "success",
+        "session_id": "session-b971de2671d0",
+        "working_directory": "/srv/web"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "1"
+      }
+    },
+    {
+      "event_id": "event-2a8e687fcb4d",
+      "timestamp_utc": "2026-02-01T00:02:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:02:03+01:00",
+        "parent_basename": "inventory-agent",
+        "parent_process_id": 500,
+        "process_basename": "sh",
+        "process_id": 5100,
+        "user": "svc-inventory",
+        "result": "success",
+        "session_id": "session-b3f4f64d94d9",
+        "schedule_id": "schedule-8e736c28c220"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "2"
+      }
+    },
+    {
+      "event_id": "event-42180f592830",
+      "timestamp_utc": "2026-02-01T00:02:01+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:02:04+01:00",
+        "parent_basename": "sh",
+        "parent_process_id": 5100,
+        "process_basename": "id",
+        "process_id": 5101,
+        "user": "svc-inventory",
+        "result": "success",
+        "session_id": "session-b3f4f64d94d9",
+        "schedule_id": "schedule-8e736c28c220",
+        "parent_start_original": "2026-02-01T01:02:03+01:00"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "3"
+      }
+    },
+    {
+      "event_id": "event-f08f08eff52b",
+      "timestamp_utc": "2026-02-01T00:03:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:03:03+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-0.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "4"
+      }
+    },
+    {
+      "event_id": "event-9aa437c282a4",
+      "timestamp_utc": "2026-02-01T00:04:30+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:04:33+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-1.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "5"
+      }
+    },
+    {
+      "event_id": "event-bc473c76f9b2",
+      "timestamp_utc": "2026-02-01T00:05:00+00:00",
+      "source_id": "source-9f1806eb97ea",
+      "asset_id": "asset-f544d4ca8fc5",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:05:00+00:00",
+        "operation": "read",
+        "path": "/srv/web/config.yaml",
+        "process_basename": "web-worker",
+        "result": "success",
+        "user": "svc-web"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "6"
+      }
+    },
+    {
+      "event_id": "event-bed2b629bf91",
+      "timestamp_utc": "2026-02-01T00:06:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:06:03+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-2.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "7"
+      }
+    },
+    {
+      "event_id": "event-acb2016ef3b4",
+      "timestamp_utc": "2026-02-01T00:07:30+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:07:33+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-3.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "8"
+      }
+    },
+    {
+      "event_id": "event-7ca9672b2e2d",
+      "timestamp_utc": "2026-02-01T00:09:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:09:03+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-4.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "9"
+      }
+    },
+    {
+      "event_id": "event-f44508d609a5",
+      "timestamp_utc": "2026-02-01T00:10:30+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:10:33+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-5.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "10"
+      }
+    },
+    {
+      "event_id": "event-d2d9ecef9e43",
+      "timestamp_utc": "2026-02-01T00:11:00+00:00",
+      "source_id": "source-9f1806eb97ea",
+      "asset_id": "asset-f544d4ca8fc5",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:11:00+00:00",
+        "parent_basename": "sh",
+        "parent_process_id": 4100,
+        "process_basename": "id",
+        "process_id": 4101,
+        "user": "svc-web",
+        "result": "success",
+        "session_id": "session-b971de2671d0",
+        "working_directory": "/srv/web",
+        "parent_start_original": "2026-02-01T00:01:00+00:00"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "11"
+      }
+    },
+    {
+      "event_id": "event-4e2332a81d6f",
+      "timestamp_utc": "2026-02-01T00:12:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:12:03+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-6.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "12"
+      }
+    },
+    {
+      "event_id": "event-1942f922bb98",
+      "timestamp_utc": "2026-02-01T00:13:30+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:13:33+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-7.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "13"
+      }
+    },
+    {
+      "event_id": "event-ecb4308f33c5",
+      "timestamp_utc": "2026-02-01T00:15:00+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:15:03+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-8.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "14"
+      }
+    },
+    {
+      "event_id": "event-02058c5e124f",
+      "timestamp_utc": "2026-02-01T00:16:30+00:00",
+      "source_id": "source-a3b9be56d12b",
+      "asset_id": "asset-be56f87185eb",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T01:16:33+01:00",
+        "operation": "read",
+        "path": "/var/lib/inventory/status-9.json",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8e736c28c220",
+        "user": "svc-inventory"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "15"
+      }
+    },
+    {
+      "event_id": "event-d7cb1858aabd",
+      "timestamp_utc": "2026-02-01T00:20:00+00:00",
+      "source_id": "source-9f1806eb97ea",
+      "asset_id": "asset-f544d4ca8fc5",
+      "event_type": "file_access",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:20:00+00:00",
+        "operation": "read",
+        "path": "/srv/web/templates/index.html",
+        "process_basename": "web-worker",
+        "result": "success",
+        "user": "svc-web"
+      },
+      "locator": {
+        "file_sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3",
+        "record_id": "16"
+      }
+    }
+  ],
+  "known_gaps": [],
+  "files": [
+    {
+      "path": "records.jsonl",
+      "byte_count": 6648,
+      "sha256": "158195b3ec0b57d3f4abb69c425b321d9000f702380335ea72951b912e0929d3"
+    }
+  ],
+  "assessment_questions": [
+    {
+      "question_id": "question-9b668acf6715",
+      "asset_id": "asset-be56f87185eb",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-f5f6d91967d3",
+      "asset_id": "asset-f544d4ca8fc5",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "case_id": "case-b060",
+  "evidence_manifest_sha256": "7b82074264975662dace1b173e37747484aad5d6f4b2a9583b725e6b9a4a99d4",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-a",
+      "asset_id": "asset-530dd9a26d88",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "expected_disposition": "benign"
+    },
+    {
+      "control_id": "control-b",
+      "asset_id": "asset-a1dc3554d2d9",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-306a0c5d72f4": 0,
+    "question-40bca106ae5e": 0
+  },
+  "lookalike_event_ids": []
+}

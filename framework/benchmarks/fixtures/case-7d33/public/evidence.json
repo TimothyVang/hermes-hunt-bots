@@ -1,0 +1,887 @@
+{
+  "schema_version": 1,
+  "case_id": "case-7d33",
+  "window_utc": {
+    "start_inclusive": "2026-02-01T00:00:00+00:00",
+    "end_exclusive": "2026-02-01T00:30:00+00:00"
+  },
+  "assets": [
+    {
+      "asset_id": "asset-1aac67a05416",
+      "os_family": "windows-client",
+      "os_version": "Windows 11, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-356ccc5146d8",
+      "os_family": "windows-client",
+      "os_version": "Windows 11, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-e6775df4cd83",
+      "os_family": "windows-server",
+      "os_version": "Windows Server 2022, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-f19db0d629fb",
+      "os_family": "windows-server",
+      "os_version": "Windows Server 2022, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "source-3c0cd5bf8d05",
+      "asset_ids": [
+        "asset-f19db0d629fb"
+      ],
+      "telemetry": "identity-audit",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    },
+    {
+      "source_id": "source-69e23c793f3a",
+      "asset_ids": [
+        "asset-e6775df4cd83"
+      ],
+      "telemetry": "windows-security",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    },
+    {
+      "source_id": "source-6c6fd2c6334f",
+      "asset_ids": [
+        "asset-f19db0d629fb"
+      ],
+      "telemetry": "dns",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    },
+    {
+      "source_id": "source-7f137a6dc672",
+      "asset_ids": [
+        "asset-356ccc5146d8"
+      ],
+      "telemetry": "windows-security",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    },
+    {
+      "source_id": "source-ae1c57c1db6e",
+      "asset_ids": [
+        "asset-1aac67a05416"
+      ],
+      "telemetry": "identity-audit",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    },
+    {
+      "source_id": "source-bb6d8d6e6c52",
+      "asset_ids": [
+        "asset-356ccc5146d8"
+      ],
+      "telemetry": "identity-audit",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-f38edff01cfb",
+      "timestamp_utc": "2026-02-01T00:00:40+00:00",
+      "source_id": "source-7f137a6dc672",
+      "asset_id": "asset-356ccc5146d8",
+      "event_type": "logon",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:00:40+00:00",
+        "account": "kim.lee@cedar.test",
+        "logon_type": "interactive",
+        "logon_id": "logon-0e6f4ca4f03a",
+        "result": "success"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "1"
+      }
+    },
+    {
+      "event_id": "event-48b981e7bf76",
+      "timestamp_utc": "2026-02-01T00:01:00+00:00",
+      "source_id": "source-bb6d8d6e6c52",
+      "asset_id": "asset-356ccc5146d8",
+      "event_type": "directory_request",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:01:00+00:00",
+        "account": "svc-web@cedar.test",
+        "client_ip": "192.0.2.10",
+        "domain": "cedar.test",
+        "object_class": "computer",
+        "parent_basename": "web-worker",
+        "process_basename": "directory-client",
+        "process_id": 6200,
+        "request_id": "request-a050eedf13b7",
+        "requested_attributes": [
+          "name",
+          "address"
+        ],
+        "server_ip": "192.0.2.20"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "2"
+      }
+    },
+    {
+      "event_id": "event-42b8be3dbf7a",
+      "timestamp_utc": "2026-02-01T00:01:01+00:00",
+      "source_id": "source-3c0cd5bf8d05",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "directory_response",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:01:01+00:00",
+        "account": "svc-web@cedar.test",
+        "client_ip": "192.0.2.10",
+        "domain": "cedar.test",
+        "request_id": "request-a050eedf13b7",
+        "result": "success",
+        "returned_address": "192.0.2.30",
+        "returned_name": "node-c.cedar.test",
+        "returned_object_id": "object-25d84cb73d3f"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "3"
+      }
+    },
+    {
+      "event_id": "event-f4f0c3080cb5",
+      "timestamp_utc": "2026-02-01T00:02:58+00:00",
+      "source_id": "source-6c6fd2c6334f",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:02:58+00:00",
+        "client_ip": "192.0.2.40",
+        "query_name": "files.cedar.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.50"
+        ],
+        "rcode": "NOERROR",
+        "authoritative": true,
+        "zone": "cedar.test"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "4"
+      }
+    },
+    {
+      "event_id": "event-5dfde1933c71",
+      "timestamp_utc": "2026-02-01T00:02:59+00:00",
+      "source_id": "source-6c6fd2c6334f",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:02:59+00:00",
+        "client_ip": "192.0.2.40",
+        "query_name": "node-c.cedar.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.30"
+        ],
+        "rcode": "NOERROR",
+        "authoritative": true,
+        "zone": "cedar.test"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "5"
+      }
+    },
+    {
+      "event_id": "event-ccc903f2bab7",
+      "timestamp_utc": "2026-02-01T00:03:00+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "scheduled_session_request",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:03:00+00:00",
+        "account": "svc-inventory@cedar.test",
+        "client_ip": "192.0.2.40",
+        "client_port": 49160,
+        "parent_basename": "inventory-agent",
+        "process_id": 7200,
+        "protocol": "winrm",
+        "schedule_id": "schedule-8c842dbb2544",
+        "server_ip": "192.0.2.30",
+        "server_port": 5985
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "6"
+      }
+    },
+    {
+      "event_id": "event-5496aa59397f",
+      "timestamp_utc": "2026-02-01T00:03:01+00:00",
+      "source_id": "source-69e23c793f3a",
+      "asset_id": "asset-e6775df4cd83",
+      "event_type": "remote_session_open",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:03:01+00:00",
+        "account": "svc-inventory@cedar.test",
+        "authentication": "Kerberos",
+        "client_ip": "192.0.2.40",
+        "client_port": 49160,
+        "local_group": "Remote Management Users",
+        "logon_id": "logon-801903189f7c",
+        "protocol": "winrm",
+        "result": "success",
+        "server_ip": "192.0.2.30",
+        "server_port": 5985
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "7"
+      }
+    },
+    {
+      "event_id": "event-d280eb16ca50",
+      "timestamp_utc": "2026-02-01T00:03:20+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:03:20+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-96215c88808f",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "8"
+      }
+    },
+    {
+      "event_id": "event-8b03ee4c2d10",
+      "timestamp_utc": "2026-02-01T00:04:10+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:04:10+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-89234539a4d7",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "9"
+      }
+    },
+    {
+      "event_id": "event-9d33e462162e",
+      "timestamp_utc": "2026-02-01T00:05:00+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:05:00+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-185b841f27ba",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "10"
+      }
+    },
+    {
+      "event_id": "event-9fe3668d10ed",
+      "timestamp_utc": "2026-02-01T00:05:50+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:05:50+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-b83772b22248",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "11"
+      }
+    },
+    {
+      "event_id": "event-a9b93808bf92",
+      "timestamp_utc": "2026-02-01T00:06:40+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:06:40+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-6c0755ecafd5",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "12"
+      }
+    },
+    {
+      "event_id": "event-a5de3d9733c7",
+      "timestamp_utc": "2026-02-01T00:07:30+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:07:30+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-d37c6e272d32",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "13"
+      }
+    },
+    {
+      "event_id": "event-f394bd795f6f",
+      "timestamp_utc": "2026-02-01T00:08:20+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:08:20+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-625d6b00b11c",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "14"
+      }
+    },
+    {
+      "event_id": "event-45dbc8743cae",
+      "timestamp_utc": "2026-02-01T00:09:10+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:09:10+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-0c486e16663e",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "15"
+      }
+    },
+    {
+      "event_id": "event-596ca58229c5",
+      "timestamp_utc": "2026-02-01T00:09:30+00:00",
+      "source_id": "source-6c6fd2c6334f",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:09:30+00:00",
+        "client_ip": "192.0.2.10",
+        "query_name": "intranet.cedar.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.60"
+        ],
+        "rcode": "NOERROR",
+        "authoritative": true,
+        "zone": "cedar.test"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "16"
+      }
+    },
+    {
+      "event_id": "event-36cd0b8177eb",
+      "timestamp_utc": "2026-02-01T00:10:00+00:00",
+      "source_id": "source-7f137a6dc672",
+      "asset_id": "asset-356ccc5146d8",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:10:00+00:00",
+        "account": "kim.lee@cedar.test",
+        "logon_id": "logon-0e6f4ca4f03a",
+        "parent_basename": "explorer.exe",
+        "process_basename": "msedge.exe",
+        "process_id": 8120
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "17"
+      }
+    },
+    {
+      "event_id": "event-d6b625005413",
+      "timestamp_utc": "2026-02-01T00:10:00+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:10:00+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-7f2b1fbc439c",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "18"
+      }
+    },
+    {
+      "event_id": "event-70033c900c32",
+      "timestamp_utc": "2026-02-01T00:10:50+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:10:50+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-eac8470f388e",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "19"
+      }
+    },
+    {
+      "event_id": "event-0fd2bf1827c7",
+      "timestamp_utc": "2026-02-01T00:11:40+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:11:40+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-5b1638e5e22d",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "20"
+      }
+    },
+    {
+      "event_id": "event-2685ed57d5cc",
+      "timestamp_utc": "2026-02-01T00:12:30+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:12:30+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-0e944b3576a3",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "21"
+      }
+    },
+    {
+      "event_id": "event-62e8aea42320",
+      "timestamp_utc": "2026-02-01T00:13:20+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:13:20+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-ad3d99093885",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "22"
+      }
+    },
+    {
+      "event_id": "event-edaa45c269c4",
+      "timestamp_utc": "2026-02-01T00:14:10+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:14:10+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-223f31d90ce1",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "23"
+      }
+    },
+    {
+      "event_id": "event-50c4123f2fbe",
+      "timestamp_utc": "2026-02-01T00:15:00+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:15:00+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-38456d66bc38",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "24"
+      }
+    },
+    {
+      "event_id": "event-68d3bf6e47ec",
+      "timestamp_utc": "2026-02-01T00:15:00+00:00",
+      "source_id": "source-6c6fd2c6334f",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:15:00+00:00",
+        "client_ip": "192.0.2.30",
+        "query_name": "update.cedar.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.70"
+        ],
+        "rcode": "NOERROR",
+        "authoritative": true,
+        "zone": "cedar.test"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "25"
+      }
+    },
+    {
+      "event_id": "event-05237edf62d5",
+      "timestamp_utc": "2026-02-01T00:15:50+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:15:50+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-e042a669eb87",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "26"
+      }
+    },
+    {
+      "event_id": "event-9cfb62d11fa7",
+      "timestamp_utc": "2026-02-01T00:16:40+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:16:40+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-aaa32f0ded99",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "27"
+      }
+    },
+    {
+      "event_id": "event-0ee2dd4a8789",
+      "timestamp_utc": "2026-02-01T00:17:30+00:00",
+      "source_id": "source-ae1c57c1db6e",
+      "asset_id": "asset-1aac67a05416",
+      "event_type": "inventory_read",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:17:30+00:00",
+        "account": "svc-inventory@cedar.test",
+        "object_id": "object-92d60cc3da6f",
+        "process_basename": "inventory-agent",
+        "result": "success",
+        "schedule_id": "schedule-8c842dbb2544"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "28"
+      }
+    },
+    {
+      "event_id": "event-d1e981e8e9a7",
+      "timestamp_utc": "2026-02-01T00:20:57+00:00",
+      "source_id": "source-6c6fd2c6334f",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:20:57+00:00",
+        "client_ip": "192.0.2.10",
+        "query_name": "node-c.cedar.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.30"
+        ],
+        "rcode": "NOERROR",
+        "authoritative": true,
+        "zone": "cedar.test"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "29"
+      }
+    },
+    {
+      "event_id": "event-0ea8e46a5a3f",
+      "timestamp_utc": "2026-02-01T00:20:58+00:00",
+      "source_id": "source-3c0cd5bf8d05",
+      "asset_id": "asset-f19db0d629fb",
+      "event_type": "kerberos_service_ticket",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:20:58+00:00",
+        "account": "ops-admin@cedar.test",
+        "client_ip": "192.0.2.10",
+        "service": "HTTP/node-c.cedar.test",
+        "result": "success"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "30"
+      }
+    },
+    {
+      "event_id": "event-c0ad5d265390",
+      "timestamp_utc": "2026-02-01T00:20:58+00:00",
+      "source_id": "source-7f137a6dc672",
+      "asset_id": "asset-356ccc5146d8",
+      "event_type": "explicit_credential_use",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:20:58+00:00",
+        "subject_account": "svc-web@cedar.test",
+        "target_account": "ops-admin@cedar.test",
+        "process_basename": "directory-client",
+        "process_id": 6200,
+        "target_server": "node-c.cedar.test",
+        "result": "success"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "31"
+      }
+    },
+    {
+      "event_id": "event-fb6c2e4b7ef5",
+      "timestamp_utc": "2026-02-01T00:20:59+00:00",
+      "source_id": "source-bb6d8d6e6c52",
+      "asset_id": "asset-356ccc5146d8",
+      "event_type": "remote_session_request",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:20:59+00:00",
+        "account": "ops-admin@cedar.test",
+        "client_ip": "192.0.2.10",
+        "client_port": 49152,
+        "connection_id": "connection-1bf8bee55d91",
+        "directory_request_id": "request-a050eedf13b7",
+        "process_id": 6200,
+        "protocol": "winrm",
+        "server_ip": "192.0.2.30",
+        "server_port": 5985,
+        "target_object_id": "object-25d84cb73d3f"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "32"
+      }
+    },
+    {
+      "event_id": "event-132b46a1149b",
+      "timestamp_utc": "2026-02-01T00:21:00+00:00",
+      "source_id": "source-69e23c793f3a",
+      "asset_id": "asset-e6775df4cd83",
+      "event_type": "remote_session_open",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:21:00+00:00",
+        "account": "ops-admin@cedar.test",
+        "authentication": "Kerberos",
+        "client_ip": "192.0.2.10",
+        "client_port": 49152,
+        "local_group": "Administrators",
+        "logon_id": "logon-cff5fd127a3d",
+        "protocol": "winrm",
+        "result": "success",
+        "server_ip": "192.0.2.30",
+        "server_port": 5985
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "33"
+      }
+    },
+    {
+      "event_id": "event-c4a84ae05b26",
+      "timestamp_utc": "2026-02-01T00:21:05+00:00",
+      "source_id": "source-69e23c793f3a",
+      "asset_id": "asset-e6775df4cd83",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:21:05+00:00",
+        "account": "ops-admin@cedar.test",
+        "integrity_level": "High",
+        "logon_id": "logon-cff5fd127a3d",
+        "parent_basename": "wsmprovhost.exe",
+        "process_basename": "whoami.exe",
+        "process_id": 5512,
+        "token_elevation": "full"
+      },
+      "locator": {
+        "file_sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020",
+        "record_id": "34"
+      }
+    }
+  ],
+  "known_gaps": [],
+  "files": [
+    {
+      "path": "records.jsonl",
+      "byte_count": 14076,
+      "sha256": "689d5e140a31e5956147d88f39515cec5dcc6e6ddeaab9fdbab0b015fdc17020"
+    }
+  ],
+  "assessment_questions": [
+    {
+      "question_id": "question-0056e1e43903",
+      "asset_id": "asset-356ccc5146d8",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-11774afc52dd",
+      "asset_id": "asset-1aac67a05416",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-304abfd94d7f",
+      "asset_id": "asset-f19db0d629fb",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-d25e3991be86",
+      "asset_id": "asset-e6775df4cd83",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    }
+  ]
+}

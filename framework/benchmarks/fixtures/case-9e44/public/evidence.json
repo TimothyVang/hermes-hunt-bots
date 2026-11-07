@@ -1,0 +1,2889 @@
+{
+  "schema_version": 1,
+  "case_id": "case-9e44",
+  "window_utc": {
+    "start_inclusive": "2026-01-15T00:00:00Z",
+    "end_exclusive": "2026-01-15T03:00:00Z"
+  },
+  "assets": [
+    {
+      "asset_id": "asset-0a7314fb3c47",
+      "os_family": "windows-server",
+      "os_version": "Windows Server 2022, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-153448b32466",
+      "os_family": "windows-server",
+      "os_version": "Windows Server 2022, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-e095649de879",
+      "os_family": "windows-server",
+      "os_version": "Windows Server 2022, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "source-0d460d506dd4",
+      "asset_ids": [
+        "asset-0a7314fb3c47",
+        "asset-153448b32466"
+      ],
+      "telemetry": "sysmon",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0.25,
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "sensor_version": "invented-1",
+      "config_version": "invented-fields-1",
+      "completeness": "partial",
+      "source_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0"
+    },
+    {
+      "source_id": "source-4c67eb97f57e",
+      "asset_ids": [
+        "asset-e095649de879"
+      ],
+      "telemetry": "identity-audit",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0.25,
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "sensor_version": "invented-1",
+      "config_version": "invented-fields-1",
+      "completeness": "complete",
+      "source_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0"
+    },
+    {
+      "source_id": "source-bbca437d4695",
+      "asset_ids": [
+        "asset-e095649de879"
+      ],
+      "telemetry": "dns",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0.25,
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "sensor_version": "invented-1",
+      "config_version": "invented-fields-1",
+      "completeness": "complete",
+      "source_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0"
+    },
+    {
+      "source_id": "source-c60978903808",
+      "asset_ids": [
+        "asset-153448b32466"
+      ],
+      "telemetry": "windows-security",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0.25,
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "sensor_version": "invented-1",
+      "config_version": "invented-fields-1",
+      "completeness": "complete",
+      "source_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-703d60cd1f3d",
+      "timestamp_utc": "2026-01-15T00:01:39Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:01:39Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "1"
+      }
+    },
+    {
+      "event_id": "event-58263055272a",
+      "timestamp_utc": "2026-01-15T00:03:02Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:03:02Z",
+        "answers": [
+          "192.0.2.100"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "time.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "2"
+      }
+    },
+    {
+      "event_id": "event-501db878e443",
+      "timestamp_utc": "2026-01-15T00:04:00Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "change_authorized",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:04:00Z",
+        "account_ref": "account-3d10bb05e93d",
+        "change_ref": "change-f6277392f7c7",
+        "destination_asset": "asset-0a7314fb3c47",
+        "task_ref": "task-31a9d2d2ee99"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "3"
+      }
+    },
+    {
+      "event_id": "event-c2656114d7c8",
+      "timestamp_utc": "2026-01-15T00:04:09Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:04:09Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "wuauclt.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6000
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "4"
+      }
+    },
+    {
+      "event_id": "event-c590d88f10d7",
+      "timestamp_utc": "2026-01-15T00:04:58Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:04:58Z",
+        "client_ip": "192.0.2.10",
+        "query_name": "node-b.south.test",
+        "query_type": "A",
+        "answers": [
+          "192.0.2.21"
+        ],
+        "rcode": "NOERROR",
+        "forwarder_zone": "south.test",
+        "resolution": "conditional-forwarder"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "5"
+      }
+    },
+    {
+      "event_id": "event-1a62e2748976",
+      "timestamp_utc": "2026-01-15T00:05:00Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "remote_session_open",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:05:00Z",
+        "account_class": "interactive-only",
+        "account_ref": "account-86b5d9023ee1",
+        "change_ref": null,
+        "destination_asset": "asset-153448b32466",
+        "destination_domain": "south.test",
+        "origin_domain": "north.test",
+        "session_ref": "session-72f39889d170",
+        "source_ip": "192.0.2.10"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "6"
+      }
+    },
+    {
+      "event_id": "event-dec8160f5875",
+      "timestamp_utc": "2026-01-15T00:06:00Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:06:00Z",
+        "account_domain": "north.test",
+        "account_ref": "account-86b5d9023ee1",
+        "logon_type": "network",
+        "network_segment": "vlan-210",
+        "origin_asset": "asset-e095649de879",
+        "result": "accepted",
+        "session_ref": "session-72f39889d170"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "7"
+      }
+    },
+    {
+      "event_id": "event-612cee2adf9e",
+      "timestamp_utc": "2026-01-15T00:07:00Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "scheduled_task_registered",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:07:00Z",
+        "account_ref": "account-86b5d9023ee1",
+        "change_ref": null,
+        "executable_basename": "inventory.exe",
+        "session_ref": "session-72f39889d170",
+        "task_ref": "task-8f4ef9ce41bf",
+        "trigger": "logon"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "8"
+      }
+    },
+    {
+      "event_id": "event-9c506a3865a3",
+      "timestamp_utc": "2026-01-15T00:08:00Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "scheduled_task_registered",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:08:00Z",
+        "account_ref": "account-3d10bb05e93d",
+        "change_ref": "change-f6277392f7c7",
+        "executable_basename": "inventory.exe",
+        "task_ref": "task-31a9d2d2ee99",
+        "trigger": "logon"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "9"
+      }
+    },
+    {
+      "event_id": "event-7b3d4f7ad188",
+      "timestamp_utc": "2026-01-15T00:09:25Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:09:25Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "10"
+      }
+    },
+    {
+      "event_id": "event-0c87a417afed",
+      "timestamp_utc": "2026-01-15T00:10:30Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:10:30Z",
+        "result": "healthy",
+        "sequence": 0,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "11"
+      }
+    },
+    {
+      "event_id": "event-c204e7414022",
+      "timestamp_utc": "2026-01-15T00:12:38Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:12:38Z",
+        "result": "healthy",
+        "sequence": 1,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "12"
+      }
+    },
+    {
+      "event_id": "event-6bbc5c1a8c14",
+      "timestamp_utc": "2026-01-15T00:15:11Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:15:11Z",
+        "result": "healthy",
+        "sequence": 2,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "13"
+      }
+    },
+    {
+      "event_id": "event-1e134eca046a",
+      "timestamp_utc": "2026-01-15T00:16:39Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:16:39Z",
+        "answers": [
+          "192.0.2.101"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "files.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "14"
+      }
+    },
+    {
+      "event_id": "event-5977dee27460",
+      "timestamp_utc": "2026-01-15T00:17:09Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:17:09Z",
+        "result": "healthy",
+        "sequence": 3,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "15"
+      }
+    },
+    {
+      "event_id": "event-6c5fd740e61b",
+      "timestamp_utc": "2026-01-15T00:18:15Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:18:15Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "16"
+      }
+    },
+    {
+      "event_id": "event-de52c3c7c46d",
+      "timestamp_utc": "2026-01-15T00:18:29Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:18:29Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "MsMpEng.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6001
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "17"
+      }
+    },
+    {
+      "event_id": "event-78d7fdf42ecc",
+      "timestamp_utc": "2026-01-15T00:18:34Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:18:34Z",
+        "result": "healthy",
+        "sequence": 4,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "18"
+      }
+    },
+    {
+      "event_id": "event-978d19574e1c",
+      "timestamp_utc": "2026-01-15T00:20:37Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:20:37Z",
+        "result": "healthy",
+        "sequence": 5,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "19"
+      }
+    },
+    {
+      "event_id": "event-ed97e0d5b758",
+      "timestamp_utc": "2026-01-15T00:21:01Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:21:01Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "20"
+      }
+    },
+    {
+      "event_id": "event-1bd98fc8016c",
+      "timestamp_utc": "2026-01-15T00:22:09Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:22:09Z",
+        "answers": [
+          "192.0.2.102"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "update.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "21"
+      }
+    },
+    {
+      "event_id": "event-aef955e73209",
+      "timestamp_utc": "2026-01-15T00:22:34Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:22:34Z",
+        "result": "healthy",
+        "sequence": 6,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "22"
+      }
+    },
+    {
+      "event_id": "event-17a57c1ea589",
+      "timestamp_utc": "2026-01-15T00:24:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:24:28Z",
+        "result": "healthy",
+        "sequence": 7,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "23"
+      }
+    },
+    {
+      "event_id": "event-62a054cbee6f",
+      "timestamp_utc": "2026-01-15T00:26:51Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:26:51Z",
+        "result": "healthy",
+        "sequence": 8,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "24"
+      }
+    },
+    {
+      "event_id": "event-921ba9fc087e",
+      "timestamp_utc": "2026-01-15T00:27:55Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:27:55Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "25"
+      }
+    },
+    {
+      "event_id": "event-3f6d26bf7a2d",
+      "timestamp_utc": "2026-01-15T00:28:32Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:28:32Z",
+        "result": "healthy",
+        "sequence": 9,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "26"
+      }
+    },
+    {
+      "event_id": "event-7ec1c3661a49",
+      "timestamp_utc": "2026-01-15T00:31:07Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:31:07Z",
+        "answers": [
+          "192.0.2.103"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "print.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "27"
+      }
+    },
+    {
+      "event_id": "event-848a6535c292",
+      "timestamp_utc": "2026-01-15T00:31:36Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:31:36Z",
+        "result": "healthy",
+        "sequence": 10,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "28"
+      }
+    },
+    {
+      "event_id": "event-f21ae5dce32c",
+      "timestamp_utc": "2026-01-15T00:32:30Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:32:30Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "backgroundTaskHost.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6002
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "29"
+      }
+    },
+    {
+      "event_id": "event-66a215e3fc4c",
+      "timestamp_utc": "2026-01-15T00:32:57Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:32:57Z",
+        "result": "healthy",
+        "sequence": 11,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "30"
+      }
+    },
+    {
+      "event_id": "event-79a57a984638",
+      "timestamp_utc": "2026-01-15T00:34:22Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:34:22Z",
+        "result": "healthy",
+        "sequence": 12,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "31"
+      }
+    },
+    {
+      "event_id": "event-40d0ee12993b",
+      "timestamp_utc": "2026-01-15T00:36:06Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:36:06Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "32"
+      }
+    },
+    {
+      "event_id": "event-9884a8f39dc4",
+      "timestamp_utc": "2026-01-15T00:36:31Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:36:31Z",
+        "result": "healthy",
+        "sequence": 13,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "33"
+      }
+    },
+    {
+      "event_id": "event-171ef1c4f8c8",
+      "timestamp_utc": "2026-01-15T00:38:25Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:38:25Z",
+        "answers": [
+          "192.0.2.100"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "time.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "34"
+      }
+    },
+    {
+      "event_id": "event-a482f9fab91a",
+      "timestamp_utc": "2026-01-15T00:38:34Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:38:34Z",
+        "result": "healthy",
+        "sequence": 14,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "35"
+      }
+    },
+    {
+      "event_id": "event-bf2bc1b7fdcb",
+      "timestamp_utc": "2026-01-15T00:41:13Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:41:13Z",
+        "result": "healthy",
+        "sequence": 15,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "36"
+      }
+    },
+    {
+      "event_id": "event-59f60114c7b3",
+      "timestamp_utc": "2026-01-15T00:42:20Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:42:20Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "37"
+      }
+    },
+    {
+      "event_id": "event-4ff6e9b98b30",
+      "timestamp_utc": "2026-01-15T00:42:34Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:42:34Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "wuauclt.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6003
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "38"
+      }
+    },
+    {
+      "event_id": "event-a390ef6d224b",
+      "timestamp_utc": "2026-01-15T00:43:05Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:43:05Z",
+        "result": "healthy",
+        "sequence": 16,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "39"
+      }
+    },
+    {
+      "event_id": "event-3a9284b604cf",
+      "timestamp_utc": "2026-01-15T00:43:41Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:43:41Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "40"
+      }
+    },
+    {
+      "event_id": "event-15ffea50c924",
+      "timestamp_utc": "2026-01-15T00:44:45Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:44:45Z",
+        "result": "healthy",
+        "sequence": 17,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "41"
+      }
+    },
+    {
+      "event_id": "event-ee1cbd3c9e13",
+      "timestamp_utc": "2026-01-15T00:46:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:46:18Z",
+        "result": "healthy",
+        "sequence": 18,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "42"
+      }
+    },
+    {
+      "event_id": "event-706683a9bab4",
+      "timestamp_utc": "2026-01-15T00:49:01Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:49:01Z",
+        "result": "healthy",
+        "sequence": 19,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "43"
+      }
+    },
+    {
+      "event_id": "event-cf091c38820a",
+      "timestamp_utc": "2026-01-15T00:50:16Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:50:16Z",
+        "result": "healthy",
+        "sequence": 20,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "44"
+      }
+    },
+    {
+      "event_id": "event-00e0be672e2b",
+      "timestamp_utc": "2026-01-15T00:51:05Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:51:05Z",
+        "answers": [
+          "192.0.2.101"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "files.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "45"
+      }
+    },
+    {
+      "event_id": "event-ed7fe3709a9d",
+      "timestamp_utc": "2026-01-15T00:53:04Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:53:04Z",
+        "result": "healthy",
+        "sequence": 21,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "46"
+      }
+    },
+    {
+      "event_id": "event-b43d9de3409b",
+      "timestamp_utc": "2026-01-15T00:55:22Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:55:22Z",
+        "answers": [
+          "192.0.2.102"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "update.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "47"
+      }
+    },
+    {
+      "event_id": "event-f54c66801f06",
+      "timestamp_utc": "2026-01-15T00:55:30Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:55:30Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "48"
+      }
+    },
+    {
+      "event_id": "event-ecf63100d7c1",
+      "timestamp_utc": "2026-01-15T00:55:38Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:55:38Z",
+        "result": "healthy",
+        "sequence": 22,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "49"
+      }
+    },
+    {
+      "event_id": "event-2ea521b38369",
+      "timestamp_utc": "2026-01-15T00:56:03Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:56:03Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "MsMpEng.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6004
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "50"
+      }
+    },
+    {
+      "event_id": "event-de3f591aa930",
+      "timestamp_utc": "2026-01-15T00:56:52Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:56:52Z",
+        "result": "healthy",
+        "sequence": 23,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "51"
+      }
+    },
+    {
+      "event_id": "event-6b0a565d3023",
+      "timestamp_utc": "2026-01-15T00:58:48Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:58:48Z",
+        "result": "healthy",
+        "sequence": 24,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "52"
+      }
+    },
+    {
+      "event_id": "event-73e26cd7293c",
+      "timestamp_utc": "2026-01-15T00:58:50Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T00:58:50Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "53"
+      }
+    },
+    {
+      "event_id": "event-c8a39629d446",
+      "timestamp_utc": "2026-01-15T01:00:51Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:00:51Z",
+        "result": "healthy",
+        "sequence": 25,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "54"
+      }
+    },
+    {
+      "event_id": "event-0ad249ebf233",
+      "timestamp_utc": "2026-01-15T01:02:49Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:02:49Z",
+        "result": "healthy",
+        "sequence": 26,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "55"
+      }
+    },
+    {
+      "event_id": "event-4095423dc170",
+      "timestamp_utc": "2026-01-15T01:04:55Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:04:55Z",
+        "result": "healthy",
+        "sequence": 27,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "56"
+      }
+    },
+    {
+      "event_id": "event-7e4dd8eedb51",
+      "timestamp_utc": "2026-01-15T01:07:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:07:18Z",
+        "result": "healthy",
+        "sequence": 28,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "57"
+      }
+    },
+    {
+      "event_id": "event-f6748d5e07ed",
+      "timestamp_utc": "2026-01-15T01:08:04Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:08:04Z",
+        "answers": [
+          "192.0.2.103"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "print.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "58"
+      }
+    },
+    {
+      "event_id": "event-0e9da25b006f",
+      "timestamp_utc": "2026-01-15T01:08:12Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:08:12Z",
+        "result": "healthy",
+        "sequence": 29,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "59"
+      }
+    },
+    {
+      "event_id": "event-4884e252f2d9",
+      "timestamp_utc": "2026-01-15T01:08:31Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:08:31Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "60"
+      }
+    },
+    {
+      "event_id": "event-7832312cb5c1",
+      "timestamp_utc": "2026-01-15T01:10:25Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:10:25Z",
+        "result": "healthy",
+        "sequence": 30,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "61"
+      }
+    },
+    {
+      "event_id": "event-a68cf39bc64b",
+      "timestamp_utc": "2026-01-15T01:13:38Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:13:38Z",
+        "result": "healthy",
+        "sequence": 31,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "62"
+      }
+    },
+    {
+      "event_id": "event-6a826f2f8225",
+      "timestamp_utc": "2026-01-15T01:14:34Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:14:34Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "63"
+      }
+    },
+    {
+      "event_id": "event-bb7bfa636371",
+      "timestamp_utc": "2026-01-15T01:15:34Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:15:34Z",
+        "answers": [
+          "192.0.2.100"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "time.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "64"
+      }
+    },
+    {
+      "event_id": "event-42d4468bb706",
+      "timestamp_utc": "2026-01-15T01:15:40Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:15:40Z",
+        "result": "healthy",
+        "sequence": 32,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "65"
+      }
+    },
+    {
+      "event_id": "event-38a5fa2fe236",
+      "timestamp_utc": "2026-01-15T01:17:06Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:17:06Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "backgroundTaskHost.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6005
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "66"
+      }
+    },
+    {
+      "event_id": "event-58ff4e096d1d",
+      "timestamp_utc": "2026-01-15T01:17:38Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:17:38Z",
+        "result": "healthy",
+        "sequence": 33,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "67"
+      }
+    },
+    {
+      "event_id": "event-c757749a3fef",
+      "timestamp_utc": "2026-01-15T01:19:10Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:19:10Z",
+        "result": "healthy",
+        "sequence": 34,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "68"
+      }
+    },
+    {
+      "event_id": "event-9e15899de6fa",
+      "timestamp_utc": "2026-01-15T01:20:00Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "system_boot",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:20:00Z",
+        "boot_ref": "boot-c5ca245f588b"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "69"
+      }
+    },
+    {
+      "event_id": "event-fc6e272d98ac",
+      "timestamp_utc": "2026-01-15T01:20:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:20:28Z",
+        "result": "healthy",
+        "sequence": 35,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "70"
+      }
+    },
+    {
+      "event_id": "event-ce86b1141f43",
+      "timestamp_utc": "2026-01-15T01:21:51Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:21:51Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "71"
+      }
+    },
+    {
+      "event_id": "event-eb2956ea6e90",
+      "timestamp_utc": "2026-01-15T01:22:29Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:22:29Z",
+        "result": "healthy",
+        "sequence": 36,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "72"
+      }
+    },
+    {
+      "event_id": "event-b7b75f1d9933",
+      "timestamp_utc": "2026-01-15T01:25:35Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:25:35Z",
+        "result": "healthy",
+        "sequence": 37,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "73"
+      }
+    },
+    {
+      "event_id": "event-66eb9d951013",
+      "timestamp_utc": "2026-01-15T01:26:19Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:26:19Z",
+        "result": "healthy",
+        "sequence": 38,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "74"
+      }
+    },
+    {
+      "event_id": "event-49f8d629831d",
+      "timestamp_utc": "2026-01-15T01:28:15Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:28:15Z",
+        "result": "healthy",
+        "sequence": 39,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "75"
+      }
+    },
+    {
+      "event_id": "event-22fdfc0d576c",
+      "timestamp_utc": "2026-01-15T01:28:47Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:28:47Z",
+        "answers": [
+          "192.0.2.101"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "files.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "76"
+      }
+    },
+    {
+      "event_id": "event-8693fb4478fe",
+      "timestamp_utc": "2026-01-15T01:29:14Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:29:14Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "77"
+      }
+    },
+    {
+      "event_id": "event-1482a3fdd929",
+      "timestamp_utc": "2026-01-15T01:29:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:29:28Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "wuauclt.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6006
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "78"
+      }
+    },
+    {
+      "event_id": "event-67cd1ab830dc",
+      "timestamp_utc": "2026-01-15T01:30:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:30:18Z",
+        "result": "healthy",
+        "sequence": 40,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "79"
+      }
+    },
+    {
+      "event_id": "event-bd9875d75076",
+      "timestamp_utc": "2026-01-15T01:32:31Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:32:31Z",
+        "answers": [
+          "192.0.2.102"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "update.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "80"
+      }
+    },
+    {
+      "event_id": "event-f30c67464417",
+      "timestamp_utc": "2026-01-15T01:33:26Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:33:26Z",
+        "result": "healthy",
+        "sequence": 41,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "81"
+      }
+    },
+    {
+      "event_id": "event-1327536ae6f7",
+      "timestamp_utc": "2026-01-15T01:33:40Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:33:40Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "82"
+      }
+    },
+    {
+      "event_id": "event-09b0001848c8",
+      "timestamp_utc": "2026-01-15T01:35:00Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "scheduled_task_started",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:35:00Z",
+        "account_ref": "account-86b5d9023ee1",
+        "boot_ref": "boot-c5ca245f588b",
+        "executable_basename": "inventory.exe",
+        "process_id": 4412,
+        "process_ref": "process-90dd1eee9044",
+        "task_ref": "task-8f4ef9ce41bf",
+        "trigger": "logon"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "83"
+      }
+    },
+    {
+      "event_id": "event-de56104576bf",
+      "timestamp_utc": "2026-01-15T01:35:00Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:35:00Z",
+        "account_ref": "account-86b5d9023ee1",
+        "executable_basename": "inventory.exe",
+        "logon_type": "batch",
+        "parent_basename": "svchost.exe",
+        "process_id": 4412
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "84"
+      }
+    },
+    {
+      "event_id": "event-800ac385f367",
+      "timestamp_utc": "2026-01-15T01:35:22Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:35:22Z",
+        "result": "healthy",
+        "sequence": 42,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "85"
+      }
+    },
+    {
+      "event_id": "event-eea8fecc8cd5",
+      "timestamp_utc": "2026-01-15T01:36:00Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "scheduled_task_started",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:36:00Z",
+        "account_ref": "account-3d10bb05e93d",
+        "change_ref": "change-f6277392f7c7",
+        "executable_basename": "inventory.exe",
+        "process_id": 5120,
+        "process_ref": "process-e967414bc22c",
+        "task_ref": "task-31a9d2d2ee99",
+        "trigger": "logon"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "86"
+      }
+    },
+    {
+      "event_id": "event-7e168f83f72c",
+      "timestamp_utc": "2026-01-15T01:37:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:37:18Z",
+        "result": "healthy",
+        "sequence": 43,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "87"
+      }
+    },
+    {
+      "event_id": "event-99471553adf9",
+      "timestamp_utc": "2026-01-15T01:37:51Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:37:51Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "MsMpEng.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6007
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "88"
+      }
+    },
+    {
+      "event_id": "event-cc8436e4ffc7",
+      "timestamp_utc": "2026-01-15T01:38:42Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:38:42Z",
+        "result": "healthy",
+        "sequence": 44,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "89"
+      }
+    },
+    {
+      "event_id": "event-3b3e11d21535",
+      "timestamp_utc": "2026-01-15T01:41:41Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:41:41Z",
+        "result": "healthy",
+        "sequence": 45,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "90"
+      }
+    },
+    {
+      "event_id": "event-435905cb29c0",
+      "timestamp_utc": "2026-01-15T01:43:31Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:43:31Z",
+        "result": "healthy",
+        "sequence": 46,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "91"
+      }
+    },
+    {
+      "event_id": "event-5da814ef49c6",
+      "timestamp_utc": "2026-01-15T01:44:17Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:44:17Z",
+        "result": "healthy",
+        "sequence": 47,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "92"
+      }
+    },
+    {
+      "event_id": "event-ceda583afb18",
+      "timestamp_utc": "2026-01-15T01:44:27Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:44:27Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "93"
+      }
+    },
+    {
+      "event_id": "event-78291fb30257",
+      "timestamp_utc": "2026-01-15T01:44:55Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:44:55Z",
+        "answers": [
+          "192.0.2.103"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "print.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "94"
+      }
+    },
+    {
+      "event_id": "event-0efc5c9abc30",
+      "timestamp_utc": "2026-01-15T01:46:34Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:46:34Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "95"
+      }
+    },
+    {
+      "event_id": "event-dc2c071a2a19",
+      "timestamp_utc": "2026-01-15T01:47:12Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:47:12Z",
+        "result": "healthy",
+        "sequence": 48,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "96"
+      }
+    },
+    {
+      "event_id": "event-f7893ba38976",
+      "timestamp_utc": "2026-01-15T01:48:56Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:48:56Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "97"
+      }
+    },
+    {
+      "event_id": "event-41be67db4e5e",
+      "timestamp_utc": "2026-01-15T01:49:38Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:49:38Z",
+        "result": "healthy",
+        "sequence": 49,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "98"
+      }
+    },
+    {
+      "event_id": "event-f154c0fb8e84",
+      "timestamp_utc": "2026-01-15T01:50:45Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:50:45Z",
+        "result": "healthy",
+        "sequence": 50,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "99"
+      }
+    },
+    {
+      "event_id": "event-fcde28cfe063",
+      "timestamp_utc": "2026-01-15T01:51:46Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:51:46Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "backgroundTaskHost.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6008
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "100"
+      }
+    },
+    {
+      "event_id": "event-ef3608f75942",
+      "timestamp_utc": "2026-01-15T01:53:26Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:53:26Z",
+        "result": "healthy",
+        "sequence": 51,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "101"
+      }
+    },
+    {
+      "event_id": "event-84eb6f7ec7f9",
+      "timestamp_utc": "2026-01-15T01:54:32Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:54:32Z",
+        "result": "healthy",
+        "sequence": 52,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "102"
+      }
+    },
+    {
+      "event_id": "event-1ecd4fdc2414",
+      "timestamp_utc": "2026-01-15T01:55:55Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:55:55Z",
+        "answers": [
+          "192.0.2.100"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "time.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "103"
+      }
+    },
+    {
+      "event_id": "event-15171b00f5fc",
+      "timestamp_utc": "2026-01-15T01:56:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:56:28Z",
+        "result": "healthy",
+        "sequence": 53,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "104"
+      }
+    },
+    {
+      "event_id": "event-5576c1ea9cab",
+      "timestamp_utc": "2026-01-15T01:59:21Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T01:59:21Z",
+        "result": "healthy",
+        "sequence": 54,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "105"
+      }
+    },
+    {
+      "event_id": "event-0d5303d7829d",
+      "timestamp_utc": "2026-01-15T02:01:35Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:01:35Z",
+        "result": "healthy",
+        "sequence": 55,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "106"
+      }
+    },
+    {
+      "event_id": "event-90ab95c17fb9",
+      "timestamp_utc": "2026-01-15T02:01:45Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:01:45Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "107"
+      }
+    },
+    {
+      "event_id": "event-06fb82370a94",
+      "timestamp_utc": "2026-01-15T02:02:14Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:02:14Z",
+        "result": "healthy",
+        "sequence": 56,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "108"
+      }
+    },
+    {
+      "event_id": "event-d61ee8d671cf",
+      "timestamp_utc": "2026-01-15T02:02:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:02:28Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "wuauclt.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6009
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "109"
+      }
+    },
+    {
+      "event_id": "event-93b64720238e",
+      "timestamp_utc": "2026-01-15T02:03:21Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:03:21Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "110"
+      }
+    },
+    {
+      "event_id": "event-fedda76933ab",
+      "timestamp_utc": "2026-01-15T02:04:28Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:04:28Z",
+        "result": "healthy",
+        "sequence": 57,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "111"
+      }
+    },
+    {
+      "event_id": "event-c3180d207d90",
+      "timestamp_utc": "2026-01-15T02:04:52Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:04:52Z",
+        "answers": [
+          "192.0.2.101"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "files.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "112"
+      }
+    },
+    {
+      "event_id": "event-5de833498584",
+      "timestamp_utc": "2026-01-15T02:06:29Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:06:29Z",
+        "result": "healthy",
+        "sequence": 58,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "113"
+      }
+    },
+    {
+      "event_id": "event-4f35343444d3",
+      "timestamp_utc": "2026-01-15T02:09:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:09:18Z",
+        "result": "healthy",
+        "sequence": 59,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "114"
+      }
+    },
+    {
+      "event_id": "event-d8e560a6f396",
+      "timestamp_utc": "2026-01-15T02:11:00Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:11:00Z",
+        "result": "healthy",
+        "sequence": 60,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "115"
+      }
+    },
+    {
+      "event_id": "event-09b737a9c6ed",
+      "timestamp_utc": "2026-01-15T02:12:53Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:12:53Z",
+        "result": "healthy",
+        "sequence": 61,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "116"
+      }
+    },
+    {
+      "event_id": "event-abbda82bc68b",
+      "timestamp_utc": "2026-01-15T02:13:05Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:13:05Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "117"
+      }
+    },
+    {
+      "event_id": "event-33a4948684a9",
+      "timestamp_utc": "2026-01-15T02:13:33Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:13:33Z",
+        "answers": [
+          "192.0.2.102"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "update.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "118"
+      }
+    },
+    {
+      "event_id": "event-78ed4ee7c3ec",
+      "timestamp_utc": "2026-01-15T02:14:46Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:14:46Z",
+        "result": "healthy",
+        "sequence": 62,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "119"
+      }
+    },
+    {
+      "event_id": "event-3d6436bd7bb2",
+      "timestamp_utc": "2026-01-15T02:16:18Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:16:18Z",
+        "result": "healthy",
+        "sequence": 63,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "120"
+      }
+    },
+    {
+      "event_id": "event-92d780328e0a",
+      "timestamp_utc": "2026-01-15T02:16:44Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:16:44Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "121"
+      }
+    },
+    {
+      "event_id": "event-e8c57e593147",
+      "timestamp_utc": "2026-01-15T02:18:25Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:18:25Z",
+        "result": "healthy",
+        "sequence": 64,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "122"
+      }
+    },
+    {
+      "event_id": "event-58e42c8ecc40",
+      "timestamp_utc": "2026-01-15T02:18:30Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:18:30Z",
+        "answers": [
+          "192.0.2.103"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "print.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "123"
+      }
+    },
+    {
+      "event_id": "event-1fcd6105c94a",
+      "timestamp_utc": "2026-01-15T02:19:13Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:19:13Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "MsMpEng.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6010
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "124"
+      }
+    },
+    {
+      "event_id": "event-80e58e6a41be",
+      "timestamp_utc": "2026-01-15T02:20:08Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:20:08Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "125"
+      }
+    },
+    {
+      "event_id": "event-0b1d12c2cecf",
+      "timestamp_utc": "2026-01-15T02:21:32Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:21:32Z",
+        "result": "healthy",
+        "sequence": 65,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "126"
+      }
+    },
+    {
+      "event_id": "event-879ee2f58aa8",
+      "timestamp_utc": "2026-01-15T02:22:33Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:22:33Z",
+        "result": "healthy",
+        "sequence": 66,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "127"
+      }
+    },
+    {
+      "event_id": "event-2c815730df48",
+      "timestamp_utc": "2026-01-15T02:23:13Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:23:13Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "backgroundTaskHost.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6011
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "128"
+      }
+    },
+    {
+      "event_id": "event-fb1f783bedf9",
+      "timestamp_utc": "2026-01-15T02:25:24Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:25:24Z",
+        "result": "healthy",
+        "sequence": 67,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "129"
+      }
+    },
+    {
+      "event_id": "event-6e8e9e282604",
+      "timestamp_utc": "2026-01-15T02:27:04Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:27:04Z",
+        "result": "healthy",
+        "sequence": 68,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "130"
+      }
+    },
+    {
+      "event_id": "event-5e648f2924a1",
+      "timestamp_utc": "2026-01-15T02:28:43Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:28:43Z",
+        "answers": [
+          "192.0.2.100"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "time.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "131"
+      }
+    },
+    {
+      "event_id": "event-a1e29f8f7a79",
+      "timestamp_utc": "2026-01-15T02:29:19Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:29:19Z",
+        "result": "healthy",
+        "sequence": 69,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "132"
+      }
+    },
+    {
+      "event_id": "event-d5072bf99dc0",
+      "timestamp_utc": "2026-01-15T02:31:44Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:31:44Z",
+        "result": "healthy",
+        "sequence": 70,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "133"
+      }
+    },
+    {
+      "event_id": "event-434976d3133c",
+      "timestamp_utc": "2026-01-15T02:31:55Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:31:55Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "134"
+      }
+    },
+    {
+      "event_id": "event-aae4b0325f77",
+      "timestamp_utc": "2026-01-15T02:33:45Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:33:45Z",
+        "result": "healthy",
+        "sequence": 71,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "135"
+      }
+    },
+    {
+      "event_id": "event-376fe436abbc",
+      "timestamp_utc": "2026-01-15T02:35:35Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:35:35Z",
+        "result": "healthy",
+        "sequence": 72,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "136"
+      }
+    },
+    {
+      "event_id": "event-3d0e7a1b8edf",
+      "timestamp_utc": "2026-01-15T02:37:29Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:37:29Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "wuauclt.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6012
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "137"
+      }
+    },
+    {
+      "event_id": "event-6b2cafe3a259",
+      "timestamp_utc": "2026-01-15T02:37:36Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:37:36Z",
+        "result": "healthy",
+        "sequence": 73,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "138"
+      }
+    },
+    {
+      "event_id": "event-d9c65c647831",
+      "timestamp_utc": "2026-01-15T02:38:47Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:38:47Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "139"
+      }
+    },
+    {
+      "event_id": "event-19fc914e5fcf",
+      "timestamp_utc": "2026-01-15T02:39:20Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:39:20Z",
+        "result": "healthy",
+        "sequence": 74,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "140"
+      }
+    },
+    {
+      "event_id": "event-e6672c4e547f",
+      "timestamp_utc": "2026-01-15T02:40:35Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:40:35Z",
+        "answers": [
+          "192.0.2.101"
+        ],
+        "client_ip": "192.0.2.13",
+        "query_name": "files.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "141"
+      }
+    },
+    {
+      "event_id": "event-880b4e0f6b76",
+      "timestamp_utc": "2026-01-15T02:40:58Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:40:58Z",
+        "result": "healthy",
+        "sequence": 75,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "142"
+      }
+    },
+    {
+      "event_id": "event-a46cf1f565e8",
+      "timestamp_utc": "2026-01-15T02:43:27Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:43:27Z",
+        "result": "healthy",
+        "sequence": 76,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "143"
+      }
+    },
+    {
+      "event_id": "event-282eabddd38f",
+      "timestamp_utc": "2026-01-15T02:44:20Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:44:20Z",
+        "result": "healthy",
+        "sequence": 77,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "144"
+      }
+    },
+    {
+      "event_id": "event-0bc43eb3b145",
+      "timestamp_utc": "2026-01-15T02:44:58Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:44:58Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "145"
+      }
+    },
+    {
+      "event_id": "event-6637d478c83d",
+      "timestamp_utc": "2026-01-15T02:47:11Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:47:11Z",
+        "result": "healthy",
+        "sequence": 78,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "146"
+      }
+    },
+    {
+      "event_id": "event-f13855bbe7d2",
+      "timestamp_utc": "2026-01-15T02:48:22Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:48:22Z",
+        "answers": [
+          "192.0.2.102"
+        ],
+        "client_ip": "192.0.2.11",
+        "query_name": "update.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "147"
+      }
+    },
+    {
+      "event_id": "event-bfe11c0be13e",
+      "timestamp_utc": "2026-01-15T02:49:23Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-0a7314fb3c47",
+      "event_type": "service_health",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:49:23Z",
+        "result": "healthy",
+        "sequence": 79,
+        "service_ref": "service-2ce01beb0945"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "148"
+      }
+    },
+    {
+      "event_id": "event-bc5735b98bb8",
+      "timestamp_utc": "2026-01-15T02:50:30Z",
+      "source_id": "source-c60978903808",
+      "asset_id": "asset-153448b32466",
+      "event_type": "remote_logon",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:50:30Z",
+        "account_domain": "south.test",
+        "account_ref": "account-e4b0601a8ef7",
+        "logon_type": "service",
+        "result": "accepted"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "149"
+      }
+    },
+    {
+      "event_id": "event-f359c6773155",
+      "timestamp_utc": "2026-01-15T02:50:45Z",
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:50:45Z",
+        "account_ref": "account-1af55e8dfd8a",
+        "executable_basename": "MsMpEng.exe",
+        "parent_basename": "svchost.exe",
+        "process_id": 6013
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "150"
+      }
+    },
+    {
+      "event_id": "event-0ad5ec995b63",
+      "timestamp_utc": "2026-01-15T02:53:08Z",
+      "source_id": "source-4c67eb97f57e",
+      "asset_id": "asset-e095649de879",
+      "event_type": "kerberos_ticket_renewed",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:53:08Z",
+        "account_ref": "account-3c516a192497",
+        "result": "success",
+        "service": "krbtgt/north.test"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "151"
+      }
+    },
+    {
+      "event_id": "event-7593e73e7105",
+      "timestamp_utc": "2026-01-15T02:54:39Z",
+      "source_id": "source-bbca437d4695",
+      "asset_id": "asset-e095649de879",
+      "event_type": "dns_query",
+      "fields": {
+        "timestamp_original": "2026-01-15T02:54:39Z",
+        "answers": [
+          "192.0.2.103"
+        ],
+        "client_ip": "192.0.2.12",
+        "query_name": "print.north.test",
+        "query_type": "A",
+        "rcode": "NOERROR",
+        "resolution": "authoritative"
+      },
+      "locator": {
+        "file_sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0",
+        "record_id": "152"
+      }
+    }
+  ],
+  "known_gaps": [
+    {
+      "source_id": "source-0d460d506dd4",
+      "asset_id": "asset-153448b32466",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:06:30Z",
+        "end_exclusive": "2026-01-15T00:09:00Z"
+      },
+      "reason": "The endpoint sensor service on this host restarted; records for this interval were not delivered and cannot be recovered from the released export."
+    }
+  ],
+  "files": [
+    {
+      "path": "records.jsonl",
+      "byte_count": 48804,
+      "sha256": "76b58fb97ee0ecd63cbbba66d754ef1f42a29b0b078be56b743398484e05cab0"
+    }
+  ],
+  "assessment_questions": [
+    {
+      "question_id": "question-19544fda15f5",
+      "asset_id": "asset-153448b32466",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-36daadc02bb3",
+      "asset_id": "asset-0a7314fb3c47",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-9a9ca640ff4a",
+      "asset_id": "asset-e095649de879",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    }
+  ]
+}

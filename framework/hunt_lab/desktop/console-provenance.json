@@ -1,0 +1,14 @@
+{
+  "component": "noVNC",
+  "version": "1.6.0",
+  "repository": "https://github.com/novnc/noVNC",
+  "release": "v1.6.0",
+  "release_tag_object": "95aaf779f7e16c5c427c68ac56976c6ae1c080f5",
+  "source_commit": "a8dfd6a3ea3c74244f5ebdaa5a7f1023007a7820",
+  "archive_url": "https://github.com/novnc/noVNC/archive/a8dfd6a3ea3c74244f5ebdaa5a7f1023007a7820.tar.gz",
+  "archive_sha256": "ebb8eabcd3670ce1a02e4025f03976826c289121cf631183647bd8325b003403",
+  "verification": "HTTPS public release tag dereferenced to the commit; tag is unsigned. Builder checks archive SHA256 and all 57 selected source files before bundling.",
+  "build": "framework/hunt_lab/desktop_src/build_console.py uses Bun browser ESM bundling, retaining upstream top-level await; no runtime CDN or npm dependency.",
+  "runtime_surface": "Single native plugin.js imports only @hermes/plugin-sdk and react/jsx-runtime. SandboxedFrame has allow-scripts and an opaque origin. Inline noVNC module connects only to the owned QEMU IPv4-loopback WebSocket.",
+  "license": "MPL-2.0; notices and additional upstream licenses are in licenses/. Source is available at the immutable archive URL and can be rebuilt with the authored desktop_src files."
+}

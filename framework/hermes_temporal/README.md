@@ -1,0 +1,355 @@
+# Native Hermes workflows with Temporal
+
+This optional package adds durable, human-gated orchestration around the existing native Hermes CLI. It does not replace Bot Mode, change Hermes delegation, call a model/provider from a workflow, or alter the manual ledger or LangGraph observer. Within a step, native Hermes and its configured profile remain responsible for their normal delegation behavior.
+
+## Install and start the local development service
+
+Python 3.10+ is required by the pinned Temporal Python SDK. Run these commands from the `framework/` directory in this workspace, or the extracted `hermes-bot-framework/` directory in the portable ZIP. Install into a dedicated project-local environment:
+
+```powershell
+py -3.13 -m venv .venv-temporal
+$python = (Resolve-Path '.\.venv-temporal\Scripts\python.exe').Path
+& $python -m pip install -r .\hermes_temporal\requirements.txt
+```
+
+```sh
+python3 -m venv .venv-temporal
+python="$PWD/.venv-temporal/bin/python"
+"$python" -m pip install -r hermes_temporal/requirements.txt
+```
+
+The SDK pin is `temporalio==1.35.0`, a published release. It is a direct dependency pin, not a transitive hash lock. Start a Temporal **local development server** explicitly using Temporal's official development-server procedure, listening only on loopback (default `127.0.0.1:7233`). Do not use Temporal Cloud or supply cloud credentials/configuration. A worker is required for workflows to progress; start it from the same source-kit directory with `"$python" -m hermes_temporal.worker` (PowerShell: `& $python -m hermes_temporal.worker`). This starts disabled by default and makes no Hermes dispatch unless the explicit execution flags below are supplied.
+
+## Synthetic input and workflow control
+
+The worker defaults to **refusing all Hermes execution**. When it is running with Hermes execution disabled, workflow status and human decisions require no model credentials, and any approved execute gate is refused without dispatch. To enable actual dispatch, use only the separately prepared synthetic VM/home and supply all explicit absolute paths (`.bat`/`.cmd` wrappers are refused):
+
+```powershell
+& $python -m hermes_temporal.worker --enable-hermes --hermes-executable 'C:\approved\path\hermes.exe' --hermes-home 'C:\approved\separate-hermes-home' --working-directory 'C:\approved\synthetic-work' --receipt-db 'C:\approved\state\hermes-receipts.sqlite3'
+```
+
+The receipt SQLite file must remain durable and be shared by every worker on that host; independent or lost receipt stores remove dispatch protection. It is coordination data, not a sandbox. Each step's Temporal activity deadline is longer than the native subprocess deadline to allow receipt and process cleanup. Timeout terminates only the direct CLI child; gateway/native delegation may continue. Native output is capped at 65536 bytes, native turns at 32, and empty or invalid UTF-8 output is treated as unknown. The execution process does not inherit host provider keys or the user PATH: PATH is restricted to the explicit executable directory plus OS system paths. HOME, HERMES_REAL_HOME, USERPROFILE, APPDATA, LOCALAPPDATA, CODEX_HOME, XDG config/data/cache/state/runtime directories, PYTHONUSERBASE, TMP, TEMP, and TMPDIR are pinned under `<approved-hermes-home>/.temporal-process/`. Separately provision any needed native credentials in that isolated Hermes home; never copy host credentials.
+
+By default the worker refuses the operator's own live Hermes home (`~/.hermes` or `%LOCALAPPDATA%\hermes`) and requires a separately provisioned one. To deliberately reuse the operator's existing native sign-in without copying credentials, add `--allow-operator-home` and pass that home as `--hermes-home`. The opt-in changes only that home check; profile policy, turn caps, receipts and every human gate still apply. Native runs then share that home's profiles, sessions and logs, and `.temporal-process/` is created beneath it.
+
+Set matching `--address` and `--task-queue` on both CLI and worker when overriding defaults. Both entrypoints reject non-loopback addresses before connecting. Accepted hosts are `127.0.0.1`, `localhost`, and `[::1]`, with a port from 1 through 65535. The defaults are `127.0.0.1:7233` and `hermes-temporal`.
+For the standalone `start` command, prepare a UTF-8 JSON file containing synthetic content only; never include credentials, sensitive/private evidence, real incident data, or secrets in Temporal input. Its object must set `synthetic_only` to `true`. The one-step `start` example follows the hunt instructions below.
+The only permitted native Hermes profiles are `framework-coordinator`, `framework-researcher`, `framework-builder`, `framework-reviewer`, `framework-librarian`, and `framework-network-analyst`. Delegation remains within the profile's native Hermes turn; there is no workflow-level model or provider routing.
+
+### Start a supplied-evidence hunt
+
+`hunt` constructs the fixed nine-stage hunt from a UTF-8 JSON file. The command reads that JSON file only; evidence is supplied as inline text and locator strings are labels for citation, not paths or fetch instructions. No locator is opened, resolved, or fetched. Use invented, benign content only: `synthetic_only` is an assertion required to be `true` if present (it defaults to `true`), **not** content sanitization or proof the evidence is synthetic. Do not submit real incident data, private/controlled evidence, secrets, or credentials.
+
+The input object accepts exactly these top-level fields:
+
+- `scope` (required): nonempty string, at most 4096 UTF-8 bytes.
+- `evidence` (required): array of 1–32 items, each with exactly `source_id`, `locator`, and `content`. Each is a nonempty string of at most 64, 256, and 8192 UTF-8 bytes respectively. `source_id` values must be unique. At least one locator must begin with `dns-lab-001:`, `dns-lab-001/`, `hunt_lab:`, or `hunt_lab/`, or with the ontology's own `case_id` (a `[a-z0-9-]{3,64}` ID) followed by `:` or `/`, identifying a bounded summary source. This check does not validate or retrieve the referenced source.
+- `approval_timeout_seconds` (optional): integer 1–86400; defaults to 3600 seconds for each human wait.
+- `synthetic_only` (optional): must be the boolean `true`; defaults to `true`.
+- `ontology` (optional): a version-1 snapshot as described below. Supplying it enables ontology-scoped prompts and strict output-handoff validation.
+- `context_by_step` (optional): a stage-to-evidence-ID map; only valid with `ontology`, as described below.
+- `mode` (optional): `inline` (the default, described here) or `tool_driven` (see [Tool-driven hunt](#tool-driven-hunt-over-the-loaded-lab-case)).
+
+Unknown fields, missing/empty required values, invalid types, duplicate source IDs, or out-of-bounds text are rejected. The assembled prompts are also bounded: at most 65536 UTF-8 bytes in total, with no prompt over 65536 bytes. The hunt example below contains only invented benign fixture text:
+
+```json
+{
+  "synthetic_only": true,
+  "scope": "Invented DNS-lab summary only; identify uncertainty, no external access.",
+  "approval_timeout_seconds": 3600,
+  "evidence": [
+    {
+      "source_id": "demo-dns-1",
+      "locator": "dns-lab-001:summary/demo-1",
+      "content": "Invented example: host demo.invalid queried example.test once; no alert outcome is asserted."
+    },
+    {
+      "source_id": "demo-note-2",
+      "locator": "fixture:note/demo-2",
+      "content": "Invented note: the query may have been a test; no operator confirmation is asserted."
+    }
+  ],
+  "ontology": {
+    "schema_version": 1,
+    "case_id": "demo-case",
+    "entities": [
+      {
+        "entity_id": "host:demo",
+        "kind": "host",
+        "label": "Invented demo host",
+        "evidence_ids": ["demo-dns-1"]
+      },
+      {
+        "entity_id": "domain:example-test",
+        "kind": "domain",
+        "label": "Invented queried domain",
+        "evidence_ids": ["demo-dns-1", "demo-note-2"]
+      }
+    ],
+    "relations": [
+      {
+        "relation_id": "rel:demo-query",
+        "subject_id": "host:demo",
+        "predicate": "resolves_to",
+        "object_id": "domain:example-test",
+        "evidence_ids": ["demo-dns-1"]
+      }
+    ]
+  },
+  "context_by_step": {
+    "evidence": ["demo-dns-1"],
+    "intel": ["demo-note-2"]
+  }
+}
+```
+
+The optional `ontology` snapshot has exactly `schema_version`, `case_id`, `entities`, and `relations`; version is integer `1`. Entities have exactly `entity_id`, `kind`, `label`, and `evidence_ids`; relation objects have exactly `relation_id`, `subject_id`, `predicate`, `object_id`, and `evidence_ids`. Entity kinds are `host`, `account`, `address`, `domain`, `key`, `process`, `session`, `service`, or `resource`; predicates are `associated_with`, `observed_on`, `communicates_with`, `resolves_to`, or `spawned`. IDs use the safe form `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}` and are stable supplied identifiers, not generated facts. Each entity/relation cites one or more exact supplied `source_id` values; relation endpoints must exist. The complete snapshot is limited to 32 KiB UTF-8, 64 entities, and 128 relations; IDs/case ID are at most 128 UTF-8 bytes, labels 1024 bytes. Unknown/missing fields, invalid/duplicate IDs or references, unsupported values, malformed JSON-compatible values, or unresolved endpoints are rejected.
+
+`context_by_step` is optional and requires `ontology`. Its keys are existing stage IDs; each value is a nonempty list of distinct exact evidence `source_id`s from the input. Omitted stage keys use all supplied evidence except `network`, which defaults to the existing bounded DNS/hunt-lab locator subset. `network` can select only that subset. For each step, the prompt identifies the selected IDs and count of omitted supplied evidence, includes only selected inline evidence, and supplies a snapshot filtered to entities whose full evidence-ID set is selected, then relations whose own references and both endpoint entities are selected; canonical IDs are preserved and unsupported context omitted. This scopes initial inline evidence/snapshot only: later prompts separately receive actual completed outputs from their declared direct predecessors only after a human review. It does not automatically redact those outputs or establish a security boundary. Evidence locators remain labels, never retrieval instructions.
+With `ontology`, the constructor also attaches each step's exact `{ "snapshot": ..., "evidence_ids": [...] }` value as `HermesStep.hunt_context`; without ontology, `hunt_context` is `None` and existing free-text output behavior is unchanged. `HermesStep` validates the context shape and snapshot. The standard-library-only [`ontology.py`](ontology.py) module exports `validate_snapshot`, `select_snapshot`, `validate_handoff`, and `handoff_instructions`; this validates structure/references, not factual truth. Native Hermes receives JSON instructions in the prompt, but those instructions alone do **not** enforce a native chat's output schema.
+
+An ontology-enabled completed turn must return one strict JSON object (no Markdown fences, duplicate object keys, `NaN`, or `Infinity`) with exactly these fields: `schema_version: 1`, `case_id`, `step_id`, `profile`, `claims`, `reviews`, `disposition`, `limitations`, and `requested_decisions`. A claim is exactly `{claim_id, kind, statement, evidence_ids, entity_ids, contradicts}`; kinds are `observed`, `inference`, `hypothesis`, or `finding`. Claim IDs are unique and namespaced with the exact current step ID plus `:`. Evidence/entity IDs must resolve in that step's selected context; contradictions may target only another current or reviewed predecessor claim. A review is exactly `{review_id, claim_ids, disposition, rationale, evidence_ids}`, namespaced the same way; only `framework-reviewer` may provide reviews, whose dispositions are `needs_revision`, `needs_validation`, or `review_ready`; other profiles must return `reviews: []`. Handoff disposition uses those same three values. Bounds are 16 claims and 16 reviews; IDs are at most 192 bytes, claim statements and review rationale 2048 bytes, evidence/entity/contradiction/claim reference lists at most 32/64/32/32 items, and `limitations` and `requested_decisions` each allow at most 16 strings of 512 bytes. The whole handoff is at most 16 KiB UTF-8. Reviews and requested decisions are recommendations, never human approvals or verified truth. Unknown/missing fields or any invalid citation/identity/contradiction rejects the handoff rather than silently dropping data.
+
+Validation occurs after the native execution has completed and before its human review gate or use as a predecessor. Invalid output ends the workflow at terminal `handoff_validation_rejected`; status retains the completed execution result as an execution fact, not a fabricated native failure, and the workflow does not retry or redispatch it. Valid output still requires a separate human review decision. Only a direct predecessor with a completed, valid, human-reviewed handoff is passed as prior claims/context; that passed output is separate from selected initial inline evidence. The durable dispatch fingerprint includes `hunt_context`, so reusing an execution ID with a changed context is a fingerprint conflict, not permission to dispatch again.
+
+Typed collaboration budgets are allocated deterministically before the first gate or activity. Each downstream prompt reserves its UTF-8 base prompt, exact predecessor framing, and any output-cap disclosure. It then reserves each typed producer's minimum compact valid JSON envelope using its exact case, step, and profile identity, empty collections, and the shortest valid disposition (`review_ready`). If those minima cannot fit, even a positive remaining budget is rejected before any execution approval or dispatch. Remaining headroom is divided conservatively across predecessors (up to 16,384 bytes each); a producer serving multiple typed consumers gets the tightest assigned cap. Untyped predecessors do not acquire a JSON schema requirement. The producer prompt discloses its cap before generation. A completed result above its assigned raw UTF-8 byte cap remains visible as a truthful `completed` execution result, but ends at `output_limit_rejected` before review and is never forwarded. No output or citation is truncated or omitted, and all-untyped legacy workflows retain their previous behavior.
+
+The cap calculation and prompt disclosure use a Temporal patch marker (`typed-handoff-output-budgets-v1`): histories created before this change replay the legacy path, while new histories use the bounded path. This preserves replay compatibility for existing executions; do not reset or rewrite histories to opt an existing execution into the new behavior.
+
+The isolated fan-in verification reproduced the archived baseline failure with five individually valid 16,300-byte outputs: the analysis prompt reached 84,093 bytes and was rejected before its activity. After the minimum-envelope fix, a real loopback Temporal smoke completed all nine stages with 18 explicitly simulated execute/review decisions and exactly one scripted activity per stage. Outputs filled the advertised caps; the analysis prompt was 65,534 bytes. A response one byte above its 12,555-byte cap ended at `output_limit_rejected` before review while retaining its completed execution fact. A positive 100-byte predecessor budget rejected before any activity. Temporal Replayer also accepted the 95-event history retrieved from the original baseline SQLite store against the new code.
+
+The targeted workflow, ontology, receipt, and hunt gate passed **45 tests, zero skips, exit 0** (14.398 seconds reported by unittest). The owned runner substituted the existing local Temporal CLI for the time-skipping server factory to avoid downloads. An initial run exposed two test-helper early-signal races; the helper now waits for the execution gate before signaling, and the corrected gate passed. Evidence is retained under `<user-temp>\hermes-fanin-proof-x6pwnni7` in `baseline-evidence.json`, `afterfix-evidence.json`, `baseline-history.json`, and `targeted-tests-evidence.json`. All fixtures and decisions were synthetic, no Hermes subprocess or provider was invoked, and workers/servers were shut down. These checks do not establish actual model work, human authorization, or a completed native hunt.
+
+
+Start with an explicit, unique workflow ID; creating/starting the workflow does **not** authorize or perform a paid Hermes execution. Each stage pauses for a human execute approval before dispatch and a separate human review after the result. Denial or timeout stops progress. For example:
+
+```sh
+"$python" -m hermes_temporal.cli hunt synthetic-hunt-002 --input ./synthetic-hunt.json
+"$python" -m hermes_temporal.cli status synthetic-hunt-002
+"$python" -m hermes_temporal.cli decision synthetic-hunt-002 --step-id scope --phase execute --choice approve --decision-id exec-scope-1
+# After the actual native result is inspected:
+"$python" -m hermes_temporal.cli decision synthetic-hunt-002 --step-id scope --phase review --choice approve --decision-id review-scope-1
+```
+
+### Export the fixed Elastic lab evidence and run finite practice
+
+`lab-input` exports the existing `dns-lab-001` lab query results as a supplied-evidence hunt JSON file. It is a local export only: it makes no Temporal connection, native Hermes dispatch, model/provider call, or VM lifecycle request. Give the exporter a new output path because it refuses to overwrite an existing file:
+
+```sh
+"$python" -m hermes_temporal.cli lab-input --state-dir ./approved-lab-state --output ./synthetic-lab-hunt.json
+"$python" -m hermes_temporal.cli practice synthetic-practice-001 --input ./synthetic-lab-hunt.json --rounds 3
+"$python" -m hermes_temporal.cli practice-status synthetic-practice-001
+```
+
+The lab must already be prepared and running through the human-operated lab controls before exporting its actual bounded case/events/network responses; `lab-input` does not start it. The export contains supplied evidence and optional ontology only, not scoring truth. Keep the operator-only score truth outside Temporal inputs and the Hermes worker environment.
+
+`practice` runs a finite parent loop over the same supplied fixture, defaulting to three rounds (allowed range 1–10). Every round is a separate existing hunt workflow, with exact child workflow IDs `PARENT_ID:round:NNN` (for example, `synthetic-practice-001:round:001`). Each hunt retains its human execute approval and separate human review at every stage. Use the existing `decision` command with the exact child ID as the workflow ID; for example:
+
+```sh
+"$python" -m hermes_temporal.cli decision synthetic-practice-001:round:001 --step-id scope --phase execute --choice approve --decision-id practice-001-r001-exec-scope
+"$python" -m hermes_temporal.cli decision synthetic-practice-001:round:001 --step-id scope --phase review --choice approve --decision-id practice-001-r001-review-scope
+"$python" -m hermes_temporal.cli practice-stop synthetic-practice-001
+```
+
+Do not treat replaying the same fixture as a holdout evaluation or proof of improvement; inspect and compare actual round outputs, with operator-only truth used only for separately authorized scoring. The parent proceeds only after a completed round and stops on any non-completed outcome. A stopped/closed parent does not prove that an in-flight child, Hermes process, or delegated descendant stopped; inspect actual child workflow state and approved runtime evidence. Uncertainty never authorizes replay. Practice adds no global spend cap: each execute gate remains a human authorization point and requires an actually ready backend and bounded provider authorization. The worker remains disabled by default. These new features are not live-verified; documented commands are not evidence of a successful deployment or run.
+
+The parent workflow timeout is computed before execution: for each round, it sums `3 × approval_timeout_seconds + step.timeout_seconds + 140 seconds` for every hunt step, then multiplies that per-round total by the requested round count. The three approval windows account for possible execute, review, and reconciliation waits; `140` seconds is the activity schedule-to-close allowance. This is a finite upper bound for the workflow's configured gates/activities, not a provider spend cap or guarantee that downstream Hermes work stops when the parent ends.
+
+### Tool-driven hunt over the loaded lab case
+
+With `"mode": "tool_driven"` the bots query the lab themselves instead of reading exported records. The only inline evidence is the case metadata item, with locator `<case_id>:summary/case`; the input must also carry an `ontology` whose `case_id` is that same `[a-z0-9-]{3,64}` case ID (an empty entity/relation list is fine), so every stage returns a validated handoff. Any other evidence item, a locator for another case, or a missing ontology is refused. Export one for whatever case the analyst VM has loaded:
+
+```sh
+"$python" -m hermes_temporal.cli lab-input --tool-driven --state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm --output ./tool-hunt.json
+"$python" -m hermes_temporal.cli practice tool-practice-001 --input ./tool-hunt.json --rounds 1
+```
+
+`--tool-driven` reads the VM's loopback `lab_url` through the read-only runtime `status` (it refuses a stopped VM, another owner, or any URL other than `http://127.0.0.1:<port>`), then makes one GET of `/case` with no proxy, no redirects, and a 512 KB cap. It exports no events or sessions. The scope is the tuned brief adapted to tools: at most 10 claims and 6 limitations per stage, list every supporting `event.id` individually in claim statements (past 12 in one series, list 12 plus the exact query and total), give each series' count, interval and span, check a task's domain, and restate coverage gaps, including tool limits.
+
+Tool results make reports longer than inline ones: live, a Threat Hunter wrote 14,484 bytes in 15 claims against an ~11.9 KB cap, and a Hypotheses stage wrote 12,120 bytes when told 70% of 11,921. The hard per-step caps are unchanged, because the Analysis prompt must hold five predecessor handoffs within 65,536 bytes. Instead the claim bounds above apply, and a request built from a tool-driven input carries `tool_driven: true`, so new histories (patch `tool-driven-output-target-v1`) state a target of 55% of each cap instead of 70%. Earlier histories replay unchanged. With both changes, run `tool-med-003` completed all nine stages with every forwarded handoff under its cap.
+
+Each stage is told to drive its own tools iteratively (plan queries, run them, pivot, narrow), pass the case ID on every call, and cite `evt-...` IDs together with the query or expression that found them; `evidence_ids` still list only the supplied source ID. Tool ownership in the prompts matches the native allowlists: Threat Hunter (`evidence`, `hypotheses`) uses `elastic_search` and `elastic_aggregate`; Network Analyst uses `arkime_sessions`, `arkime_unique`, and `hunt_lab_query` as a fallback; Threat Intelligence uses `intel_lookup` and `elastic_aggregate`; Detection Engineer tests with `detection_test` and `elastic_aggregate`; Purple Team re-runs the key queries of earlier stages with `elastic_search`, `arkime_sessions`, and `detection_test` and says per claim whether the cited IDs reproduced. The coordinator stages (`scope`, `analysis`, `incident`) have no query tools; they may send at most 3 bounded `delegate_task` follow-up questions to the owning specialist profile and must cite the returned findings. That limit, like every instruction, is prompt guidance; the tool boundaries themselves come from native `agent.allowed_tool_names`. Tool-driven steps get a 900-second native deadline instead of 300; the safety lines, the 65,536-byte aggregate budget, and handoff validation are unchanged. Inline inputs, including the `dns-lab-001` export, build byte-identical prompts.
+
+A tool-driven input may also carry `stage_guidance`, a map from stage ID (`scope`, `evidence`, `hypotheses`, `network`, `intel`, `analysis`, `detection`, `purple`, `incident`) to 1–600 characters of coaching. Each entry is appended, after `Stage guidance:`, to that stage's tool instruction only. It cannot replace the safety header, the scope or the tool allowlists, and it still counts toward the 65,536-byte budget. Unknown stages, empty or over-length text, and `stage_guidance` on inline inputs are refused. The operator-side watcher loop (`C:\HuntRange\practice\tool_loops.py`) tunes this field together with the scope brief.
+
+### Live hunt board
+
+`hermes_temporal.board` serves a read-only page for watching one practice run. It issues only the same status queries as `practice-status`/`status` (at most once every 2 seconds) and never signals, approves, starts, or stops a workflow. Pass the parent workflow ID and the same hunt JSON file the practice was started with:
+
+```sh
+"$python" -m hermes_temporal.board --address 127.0.0.1:7233 --workflow-id synthetic-practice-001 --input ./synthetic-lab-hunt.json --port 8790
+```
+
+Open `http://127.0.0.1:8790/` (the server binds `127.0.0.1` only and answers 404 to other `Host` names, including `localhost`). `GET /` is one self-contained page with a strict Content Security Policy and no external resources; `GET /state.json` is the derived view; every other path is 404 and every other method 405. The page also works inside a sandboxed iframe (`sandbox="allow-scripts"`): `/state.json` adds `Access-Control-Allow-Origin: null` only for requests whose `Origin` is `null`.
+
+The page shows the nine-stage tracker (pending, waiting for approval, bot working, waiting review, done, stopped with the workflow's stage as the reason, or not reached) with the round number from the parent; a timeline of the supplied events per host, where a mark lights up with the number of steps citing its `evt-NNNN` ID; a layered map of hosts, started processes, scheduled tasks and queried DNS domains (annotated with network-summary session counts); and a newest-first feed of each step's claims, cited event IDs, contradiction links, the reviewer dispositions naming each claim, and the step's disposition, limitations and requested decisions. Only outputs of accepted steps and the step currently awaiting review count as citations; a step stopped by output or handoff validation is shown but not counted. Unparseable output is reported with its status and a raw excerpt. When Temporal cannot be queried, the page says so and labels any earlier observation with its time. The board displays what the bots wrote; it does not verify claims, and approvals are recorded only in the workflow decisions.
+
+For a tool-driven input, also pass the lab: `--lab-state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm` reads `lab_url` and `arkime_url` from the runtime `status` (read-only, re-read after a failure because ports change on restart), or `--lab-url http://127.0.0.1:<port>` names it directly, optionally with `--arkime-url`. Lab options are refused for inline inputs, and a tool-driven input without one is refused.
+
+```sh
+"$python" -m hermes_temporal.board --workflow-id tool-practice-001 --input ./tool-hunt.json --lab-state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm --port 8790
+```
+
+The lab's `/activity` log keeps every tool call since the lab service last started, including earlier checks and hunts. Pass `--activity-after <seq>` with the log's last sequence number at the time the hunt starts, so the Tool activity panel shows only this run's calls. The default `0` shows the whole log; after a lab restart the log starts empty again.
+
+The board server, not the page, polls the lab during each status poll. After resolving the lab it reads `/health` once for the case's network scope, then pages through `/activity` (100 entries per page, at most 5 pages per poll, keeping the newest 2,000) and looks up newly cited IDs with `/es/search?q=event.id:("evt-…" OR …)` in batches of at most 480 query characters, 3 batches per poll, caching hits and misses up to 3,000 IDs. Its requests carry `X-Hermes-Profile: hunt-board`, so the lab leaves them out of `/activity`; it refuses a lab answering for a different case. The page adds a **Tool activity** panel with one lane per bot (plus an unattributed lane when needed), newest call first: time, tool, the exact query or expression, other parameters, result counts and errors. The lane of the stage currently executing is highlighted, and lanes with calls from the latest poll are marked. Each Arkime call shows its expression and a copyable Arkime UI URL, `<arkime_url>/sessions?expression=tags == "case:<case_id>" && (<expression>)&startTime=<case start>&stopTime=<case end>&bounding=first` (URL-encoded), the same scope the guest proxy applies; a case whose sessions are untagged (`network_scope` `window`) gets the window and `(<expression>)` only. The timeline and entity map are built from the looked-up cited events; cited IDs not yet looked up show as pending, and IDs the lab does not have show as not found. Cited-ID matching accepts `evt-` followed by 4 or more digits. CSP, Host checks and the sandboxed-iframe CORS rule are unchanged.
+
+## Current synthetic practice and lab-input verification
+
+The source-kit `lab-input` command completed with exit 0 against the already-running, prepared Elastic/Arkime range: `/health` reported ready with 40 events and 16 sessions; bounded case/events/network reads completed, and the export was 35,725 bytes with six evidence items. No VM lifecycle action was taken. The existing 65,536-byte aggregate prompt limit is unchanged.
+
+A real local Temporal/SQLite practice smoke completed three rounds of nine stages (27 scripted activities) with 54 simulated execute/review approvals. The same store was restarted after round one; the completed smoke had no duplicate execution IDs and recovery did not redispatch completed work. Separate cases showed that stopping at the first gate ran zero activities, an explicit failed result stopped at round one, and an unknown result reconciled by abort without retry. An initial throwaway smoke used invalid `reason_code: scripted_failure`, correctly producing an unknown gate; its fixture was corrected to valid `native_failed` in a separate case. The completed 27-activity run was not repeated.
+
+These checks used scripted activities and simulated approvals, not human approvals or Hermes/provider calls; they do not establish live native execution or an active hunt. The existing prepared VM was unchanged, and the Temporal server and worker were stopped. Practice-smoke evidence: `<user-temp>/hermes-elastic-practice-sdlswtfz/practice-smoke-evidence.json`. The targeted 61-test suite is an earlier, pre-final-full-corpus result. The final framework gate ran **634 tests: 619 passed, 15 skipped, 0 failures, 0 errors**, exit 0 in 329.064 seconds. It used `temporalio==1.35.0` and the existing loopback Temporal CLI without downloads; it reported zero provider calls and zero native Hermes processes. Evidence: `<user-temp>/hermes-elastic-practice-sdlswtfz/practice-full-evidence.json` and `practice-full-tests.txt`.
+
+### Live native Claude practice — November 2, 2026
+
+With the user's explicit blanket authorization ("approve everything"; no spending limit, efficient model use), real native Hermes practice ran on the native `anthropic` provider (Claude Pro/Max OAuth). The coordinator and reviewer use `claude-opus-5-5`; the other four profiles use `claude-sonnet-5`. Every execute/review gate was approved by an agent-run driver, and each decision note cites that delegated instruction; these are not independent human reviews. Runs 001–004 used the operator's signed-in home via `--allow-operator-home`. Runs 005–008 used the separately signed-in lab home `C:\HuntRange\native-hermes-home` with `--visible-sessions`, so the chats appear in that home's session lists.
+
+Each failed run stopped with no retry, and each failure was fixed at its cause:
+- **001 (scope):** rejected handoff; the prompt omitted the `step_id:` claim prefix and the disposition enum.
+- **002 (evidence):** fenced JSON. One whole-response fence is now accepted (`handoff-single-fence-v1` patch); surrounding prose and extra blocks are still rejected. The same run cited an invented coverage-gap ID; the prompt now routes gaps to `limitations`.
+- **003 (intel):** a 572-byte limitation exceeded the 512-byte limit; the prompt now states size limits.
+- **004 (evidence):** 58 bytes over its 12,277-byte cap. Prompts now disclose a target of 80% of the enforced cap (`output-cap-soft-target-v1`).
+- **005 (purple):** invented review verdicts; the prompt now states that review dispositions use the same three values.
+- **006 (round 2, purple):** the reviewer reviewed its own claims; reviews now cover predecessor claims only.
+- **007 (round 2, incident):** contradicted a transitive predecessor's claim; contradictions now target own or direct-predecessor claims.
+
+Every instruction change stayed within the unchanged 65,536-byte aggregate (final 65,487 bytes). **Run `claude-lab-practice-008` completed 3 of 3 rounds: 27 native Claude executions and 54 delegated gate decisions in 31 minutes.** All three incident reports ended `needs_validation`, made no confirmed-compromise claim, identified the `InventoryRefresh` scheduled task, and listed 11–15 limitations. Outputs are retained under `C:\HuntRange\practice\claude-run-001\outputs\`. Same-fixture rounds are practice, not holdout evaluation; operator scoring is recorded below.
+
+**Per-bot live checks and operator scoring (November 3).** For every profile, the native session record shows the intended `anthropic` model, and each profile received zero tool calls on a "run `whoami`" request. The models' self-reported tool lists proved unreliable: some claimed a terminal because the system prompt says "You are in a plain terminal (CLI)". The authoritative evidence is each session's recorded `tool_names`. Across all 104 recent practice/probe sessions, the coordinator received only `delegate_task` and the other five profiles received no tools. That held even on the practice worker's unpatched install, which has no `agent.allowed_tool_names` enforcement; the toolset settings constrained it. The Network Analyst previously received **no** `hunt_lab_query`: native Tool Search deferred the plugin tool behind bridge tools, and the exact allowlist then removed those bridges. With `tools.tool_search.enabled: off`, now part of the reviewed policy, the patched build (`hermes-isolated-synthetic-dev/venv/Scripts/hermes.exe`) offered exactly `hunt_lab_query`. A live analyst turn called it once against the running VM and returned `CASE=dns-lab-001; EVENTS=40`. Use the patched build when allowlist enforcement matters.
+
+**Live native delegation (November 3, patched build).** The coordinator (`claude-opus-5-5`) called `delegate_task` once to `framework-researcher`. The recorded child route was `profile_routes` / `anthropic` / `claude-sonnet-5`, with an empty tool trace, and the child returned exactly `RESEARCHER_READY` (estimated $0.0068). Asked to delegate to `default`, the tool refused before dispatch: the profile must be one of the five authored specialists. The coordinator did not retry another target.
+
+Six completed incident reports were scored offline with `hunt_lab/case.py score` against the operator-only key (`C:\HuntRange\operator-only\dns-lab-001\truth.json`, never in Temporal input or the worker environment). The agent performed the operator mapping under the user's blanket instruction. A report is credited for a key fact only when its own text describes the fact, and only with event IDs it names. Runs 008 (rounds 1–3) and 009 each scored **3/7 correct** (recall 0.43). Keyword matching found that each describes 6/7 facts. The misses are citation completeness, not missing observations: the reports summarize "8 queries at 60 s, 09:01–09:08" and name only the first and last event, while the key requires all eight queries and the second `InventoryRefresh` match. Earlier reports scored 2/7 (006) and 1/7 (007). Findings and score files are in `C:\HuntRange\practice\claude-run-001\scoring\`. This is workflow plumbing evidence, not a model-quality benchmark.
+
+**Citation improvement loop and holdout (November 3).** One prompt change was made: the lab scope now requires naming every supporting `event.id` individually, with no ranges or first/last-only summaries, and carrying full lists forward. It cost 0 net budget; aggregate prompts were 65,505/65,536 bytes. On dns-lab-001, three complete reports scored **6, 7 and 7 of 7**, a mean of **6.7**, compared with a 3.0 baseline across runs 008/009. Round 1's Network Analyst was offered but did not call `hunt_lab_query`, so that round isolates the citation change. Three new format gaps were fixed at their causes:
+- Commentary before a single final fence, typical after tool calls, is accepted (`handoff-leading-prose-v1`); trailing text or a second block is still rejected.
+- Structured steps without a downstream cap are now told a 13,107-byte target (`terminal-handoff-target-v1`), because incident reports reached 16,612 bytes against the 16,384 limit.
+- Stated text limits are now 400/1,600 characters against the enforced 512/2,048 bytes; a 518-byte note had exceeded a stated 500.
+
+A separately generated, never-seen holdout case `dns-lab-002` was built with `C:\HuntRange\practice\holdout\make_holdout.py`. It has different hosts, domains, 120 s/90 s periods, a one-off decoy query, an operator-only key in `C:\HuntRange\operator-only\dns-lab-002\`, and scoring rules written before any holdout output existed. It went through the exporter's own collection and validation path. Run `claude-holdout-013` completed 3/3 rounds and scored **5, 7 and 5 of 7**, a mean of **5.7**. Misses: incomplete citation of two schedule/process links in round 1, and periods never stated in round 3. All three reports ended `needs_validation`, claimed no confirmed compromise, noted the decoy query and noted that kiosk-03 has no recorded schedule. The holdout leak check found no key IDs and no original-case references in the bot input. The analyst made no lab queries during the holdout. Round 2 is rendered for human review at `C:\HuntRange\practice\claude-run-001\review\holdout-013-round2-incident.md`. Gate decisions remain agent-executed under the user's blanket instruction.
+
+**Loop 2 and controlled A/B (November 3).** Loop 2 added rules to state each series' count, interval and first/last time and to cite every task/process/query link; it was then compared against the loop-1 rules with identical code and limits, 3 rounds per arm on `dns-lab-001` and the new unseen holdout `dns-lab-003`. Loop-1 rules scored 2, 6 (practice; one round halted) and 5, 6, 7 (new case), a mean of 5.2. Loop-2 rules scored 6, 2, 5 and 6, 5, 6, a mean of 5.0. That is no improvement, so the scope reverted to the loop-1 text. Round-to-round variance (2–7) is large relative to the difference; three rounds per arm cannot resolve small effects. The dominant regression was the final-step size target: loop-1 rules scored 7, 7 on practice before it existed and 2, 6 with it, because shorter final reports drop the supporting event IDs. Reliability fixes kept from this loop: notes up to 1,024 bytes in new histories (`handoff-note-limit-v1`, with the whole handoff still capped), a 70% stated target for capped middle steps (`output-cap-soft-target-v2`), and an unchanged 80% final target. The holdout audit found one analyst lab query for `dns-lab-003`; the VM holds only dns-lab-001, so no data was returned and nothing leaked. The best kept-rules new-case report (7/7) is rendered at `C:\HuntRange\practice\claude-run-001\review\dns-lab-003-round3-incident.md`.
+
+**Loop 3 and scoring correction (November 3).** A final structured step, which feeds no downstream prompt, now gets a 32,768-byte handoff limit with a stated 26,214-byte target (`final-handoff-room-v1`). Forwarded handoffs keep 16,384 bytes, and predecessors are still validated at 16,384. Final reports grew from about 10 KB to 11.8–13.4 KB. Two first-attempt runs halted at the evidence step when the model put `evt-*` event IDs into `evidence_ids`, which takes source IDs; the step's prompt was byte-identical to 17 earlier passing evidence steps. Fresh runs were used, and the ambiguity is a known follow-up. Re-checking the misses showed the per-claim operator mapping undercounted: required event IDs were present, just in an adjacent claim. All reports from every loop were rescored with a whole-report mapping (a fact counts when described and every required event is cited anywhere), now saved as `C:\HuntRange\practice\score_reports.py`. Whole-report means out of 7: baseline 3.75 (n=4); loop-1 rules before the final target 6.67 (n=6); loop-1 rules with the 13,107 target 6.2 (n=5); loop-2 rules 6.1 (n=9); loop-3 larger final report **6.5** (n=6: practice 7, 7, 5; new case 6, 7, 7). Loop 1 is the only large, clear gain. Later differences are within round-to-round noise (about ±1), but loop 3 was kept because it restores loop-1 detail without the earlier overflow.
+
+**Source-ID fix and harder holdout (November 3).** The handoff instructions now say `evidence_ids` holds "supplied source_id values, never event.id", and the lab scope places event IDs "in claim statements". A regression test covers both the wording and the validator's rejection. The scope dropped its redundant per-stage evidence sentence; each step already lists its selected evidence, and the loop-2 arm without it scored the same. Aggregate practice prompts are now 64,641 bytes. The holdout generator was rewritten so every case is an explicit spec. It reproduces `dns-lab-003` byte-for-byte and `dns-lab-002`'s exact events, bot input, fact IDs and evidence groups; only the wording and fact order of 002's key, made by the first generator version, differ. Harder unseen case `dns-lab-004` has three hosts, a jittered ~60 s series, a task whose 600 s interval contradicts the observed 180 s spacing, a 30 s burst that stops, two decoy lookups, no per-query connection records, and 9 key facts. Its scoring rules were written before any run; the mismatch rule was later tightened (stricter only) to require the interval contrast. Results: 6/6 rounds completed with no halts. Practice scored 7, 7, 6 of 7, and dns-lab-004 scored **8, 8, 6 of 9** (mean 7.33, 81%). Misses were the absent-flow-records coverage fact in rounds 1–2, and round 3 never stating the 180 s/30 s spacing or the task contrast. All reports ended `needs_validation` with no compromise claim. The analyst's four lab queries were for dns-lab-004 and returned no data. A one-page human review is at `C:\HuntRange\practice\claude-run-001\review\REVIEW-ME-dns-lab-004-round1.md`.
+
+**Ten engineered prompt loops (November 4).** A model "loop engineer" proposed one revised lab brief per loop (the scope text minus its case prefix). It saw only case-agnostic diagnostics: scores, missed-fact categories, stop reasons and the previous brief. It never saw case names or answer keys. Each proposal had to keep the required safety phrases, stay within the prompt budget and contain no case-specific terms. It was then run for 2 rounds on hard dev cases `dns-lab-006` and `dns-lab-007`, and kept only if it beat the best so far by at least 0.05 (mean fraction of key facts, with a stopped round scoring 0). Baseline 0.608; loop 2 0.819 (kept); **loop 3 0.882 (kept, best)**; loops 1 and 4–10 were reverted (0.406–0.885). Three of them stopped a run on reply-format errors. Loop 2's first evaluation was invalidated by a Claude `subprocess_timeout` stall and re-run with the identical brief. The best brief was then compared with the original once, on sealed cases `dns-lab-005` and `dns-lab-008`, 3 rounds each: original 0.477 (0.715 over completed rounds), loop 3 0.738 (0.886). The full loop-3 text exceeded the 65,536-byte budget on the 40-event `dns-lab-001` corpus. A compressed version (65,514 bytes) was re-tested on the same sealed cases and scored 0.641 (0.769 over completed rounds). It still beat the original on both measures and on each case, and is now the exporter's scope. Every stopped run was a single reply-format error; none was retried. Approvals were scripted under the user's blanket instruction, and scoring is keyword matching against operator-only keys, not human review. The record is in `C:\HuntRange\practice\prompt-loops\` (`SUMMARY.json`, plus each loop's engineer prompt, proposal and decision).
+
+**Full loop-3 brief adopted (November 4).** Each step prompt used to list its evidence IDs twice, once on a separate line and again in the context JSON, and stated the coverage bound twice. Each now appears once, freeing about 1 KB across the nine steps of the 40-event `dns-lab-001` corpus. The full loop-3 text now fits there (65,478 of 65,536 bytes) and is the exporter's scope, replacing the compressed version. A live run reached a new rejection: an evidence step listed a hostname from the evidence text as an entity ID. The rules now say `entity_ids (snapshot entity_id values only, else [])`, and a regression test covers the wording and the validator's rejection. Results with these changes: `dns-lab-001` scored **7, 7, 7 of 7** (3/3 rounds). Pooled over two sealed confirmation runs, completed rounds averaged **0.885**, matching loop 3's 0.886, against 0.715 for the original and 0.769 for the compressed version. Every version stopped about one round in five on a reply-format error (an unclosed code block with prose, an invented entity ID, a malformed list). Each stop correctly rejected a broken reply, and because a stop ends the case's remaining rounds, these stops, not report quality, now cause most score loss.
+
+The fixed serial stage sequence and assigned native profile are:
+
+1. `scope` — coordinator (`framework-coordinator`).
+2. `evidence` — researcher (`framework-researcher`).
+3. `hypotheses` — researcher (`framework-researcher`).
+4. `network` — Network Analyst (`framework-network-analyst`).
+5. `intel` — librarian (`framework-librarian`).
+6. `analysis` — coordinator (`framework-coordinator`).
+7. `detection` — builder (`framework-builder`).
+8. `purple` — reviewer (`framework-reviewer`).
+9. `incident` — coordinator (`framework-coordinator`).
+
+Although those branches run serially, `evidence`, `hypotheses`, `network`, and `intel` each depend only on the reviewed `scope` result: their prompts contain the approved scope and inline evidence, not sibling conclusions. `analysis` declares all four branches plus `scope` as predecessors; `detection` declares `analysis`; `purple` declares `analysis` and `detection`; `incident` declares `analysis`, `detection`, and `purple`. Only declared predecessors with actual completed output that received human review are included in a later prompt. An `unknown` result can be accepted only as an operator assertion after reconciliation and never becomes reviewed predecessor output; if a required dependency has no completed reviewed output, the workflow rejects rather than treating the unknown result as a handoff.
+
+Profile names select the intended native Hermes route for each stage; they do not prove the model identity or enforce independent per-role tool capabilities. In particular, this workflow does not establish that child work created through native `delegate_task` inherits the intended per-role tool restrictions. The Native Hermes CLI performs each dispatch; Temporal provides only outer workflow durability, gates, and result coordination. Review all evidence and outputs yourself; approval signals and reconciliation notes are not authenticated or digest-bound.
+
+If status reports `needs_reconciliation`, inspect approved execution evidence outside the workflow, then send `--phase reconcile --choice accept` or `--choice abort` for that exact step, with a nonempty `--evidence-note`. Acceptance is an operator assertion, does not retry dispatch, and still requires a separate review decision; it is not authenticated or digest-bound proof. A timeout/failure/rejected result stops the workflow. Do not start a replacement workflow until the external execution state and authority have been reviewed.
+
+```json
+{
+  "synthetic_only": true,
+  "approval_timeout_seconds": 3600,
+  "steps": [
+    {
+      "step_id": "review-fixture",
+      "prompt": "Analyze the supplied synthetic fixture only; report uncertainty.",
+      "profile": "framework-researcher",
+      "timeout_seconds": 300
+    }
+  ]
+}
+```
+
+Launch from the source-kit directory with a unique, explicit stable workflow ID. Reusing a closed workflow ID is rejected; do not change IDs to replay work without deliberately reviewing prior results and authorizing a new workflow.
+
+```sh
+"$python" -m hermes_temporal.cli start synthetic-hunt-001 --input ./synthetic-request.json
+"$python" -m hermes_temporal.cli status synthetic-hunt-001
+"$python" -m hermes_temporal.cli decision synthetic-hunt-001 --step-id review-fixture --phase execute --choice approve --decision-id exec-review-fixture-1
+```
+
+After a successful native turn, inspect its output and issue a review decision explicitly:
+
+```sh
+"$python" -m hermes_temporal.cli decision synthetic-hunt-001 --step-id review-fixture --phase review --choice approve --decision-id review-fixture-1
+```
+
+Use `--choice deny` for either execute approval or review to stop without advancing. Every signal must carry the exact currently waiting step ID and phase. Decision IDs are idempotency keys: duplicate use does not process another decision, and conflicting reuse is ignored. Signal transport acceptance is not confirmation that the workflow accepted the decision; query `status` for current progress.
+
+An activity timeout/failure, cancellation while awaiting its result, worker loss eventually surfaced as an activity failure/timeout, or an unclear receipt produces `needs_reconciliation`; the workflow never automatically repeats that step. This does **not** prove that the native child or delegated work stopped. Inspect approved evidence outside the workflow, then either abort:
+
+```sh
+"$python" -m hermes_temporal.cli decision synthetic-hunt-001 --step-id review-fixture --phase reconcile --choice abort --decision-id reconcile-abort-1 --evidence-note "Stopped after examining the synthetic execution receipt."
+```
+
+or accept a human-observed result with a specific evidence note:
+
+```sh
+"$python" -m hermes_temporal.cli decision synthetic-hunt-001 --step-id review-fixture --phase reconcile --choice accept --decision-id reconcile-accept-1 --evidence-note "Observed expected completion in the approved synthetic receipt."
+```
+
+Reconciliation notes are assertions by the operator; the system does not authenticate identity or prove that the note is true. Accepting reconciliation is not a blind retry: the same step is not dispatched again, and a separate review approval is required before advancing. A denial, timeout, failure, or abort stops the workflow. Bounded approval timers fail closed. Terminal stages include `completed`, `rejected`, `timed_out`, `aborted`, and `handoff_validation_rejected`. `needs_reconciliation` is a nonterminal stage awaiting a reconciliation decision; it is not a terminal result. Status reports fixed stage, step ID, execution ID, and activity results.
+
+An accepted reconciliation leaves the original execution result marked `unknown`; final workflow completion records the subsequent human decision, not proof that the original native action completed.
+
+`status` includes `temporal_status` from Temporal's execution metadata alongside the application's last `stage`. Cancelling at an execution-approval or review gate closes the Temporal execution as `CANCELED`; the query can still retain `awaiting_execution_approval` or `awaiting_review`. Do not interpret that retained stage as a live wait or an unblocked goal. These are sequential observations, not an atomic snapshot. A closed execution cannot be resumed by another decision signal. Termination or loss of the execution does not establish that externally dispatched work stopped; inspect its receipts and approved runtime evidence before authorizing any new workflow.
+
+## Data, security, and limitations
+
+Temporal history persists workflow inputs (including prompts), signal decisions and evidence notes, execution result output, and workflow events for the server's retention period. Treat the Temporal persistence store, dev-server logs, client terminal, and backups as sensitive according to the supplied content. Use synthetic-only data for this integration and do not put secrets or controlled/private evidence into it. The approval caller is not authenticated by this workflow; a decision ID and evidence note are not proof of identity or authorization.
+
+The local activity receipt is coordination state, not an authentication boundary, sandbox, or exactly-once guarantee for arbitrary side effects. If a process loses contact after dispatch, native Hermes or delegated work may continue. A timeout only terminates the direct child under the worker's policy and cannot assert cancellation of downstream delegated activity. Temporal durability does not make arbitrary side effects exactly once. Keep worker execution on the explicitly approved host/VM and rely on the native Hermes runtime's configured profile/delegation, not a workflow model SDK. No scan, schedule, external messaging, remediation, deployment, or other external-effect automation is provided.
+
+The workflow implementation uses deterministic Temporal workflow APIs, a durable timer for each human wait, and one activity attempt; uncertain activity outcomes go to human reconciliation rather than retry. The workflow does not read credentials or provider configuration. The CLI defaults to a loopback Temporal address and a dedicated task queue. It sends the supplied prompt into Temporal history by design.
+
+## Historic verification: standalone workflow behavior
+
+The following verification was exercised on Windows with Python 3.13.3, `temporalio==1.35.0`, Temporal CLI 1.9.1, and its development server 1.32.0. It predates the supplied-evidence hunt and does not verify the new hunt path:
+
+- 14 tests passed: receipt persistence/concurrent reservation/conflicts, unknown-outcome refusal, isolated environment and output boundaries, denied/stale/duplicate decisions, separately gated two-step completion, endpoint restrictions, activity failure without retry, and truthful CLI disclosure of gate-phase cancellation.
+- A real loopback development server using a persistent SQLite database reached `awaiting_execution_approval`. An out-of-order decision did not advance it.
+- Both server and worker were stopped. The server restarted with the same database, accepted a decision while the worker was absent, and the restarted worker resumed into `rejected` / `execution_disabled`, without launching Hermes.
+- Reusing that completed workflow ID was refused with `WorkflowAlreadyStartedError`. A separate two-second approval wait ended in `timed_out` with no results.
+- Actual CLI and worker invocations with a non-loopback endpoint exited 2 at argument validation, before reading input or connecting.
+- A synthetic activity-cancellation probe reached `needs_reconciliation` with an `unknown` result while the synthetic activity was still waiting. No Hermes child or provider was invoked. Separate actual CLI smoke runs at both human gates returned exit 0 and `temporal_status: CANCELED`, alongside the retained last application stage.
+
+The SDK's time-skipping test server emitted a heartbeat-capability warning; the tests passed and these activities do not use heartbeats. These checks prove local workflow persistence and the tested boundaries, **not** live Hermes inference, successful native delegation, guest Linux installation, production HA, or recovery after losing both Temporal history and the receipt store.
+
+## Historical supplied-evidence hunt verification
+
+- In this earlier checkpoint, the separate Temporal SDK environment passed 23 tests, including hunt construction, reviewed-predecessor handoffs and workflow gate/error boundaries. Standard-library framework discovery separately passed 566 tests with 15 optional tests skipped. These counts are historical and superseded by the current verification below.
+- An actual `hunt` CLI invocation against a fresh loopback development server and dispatch-disabled worker reached `awaiting_execution_approval` at `scope`, with no results and execution ID `hermes-goal-synthetic-verification:0`.
+- Both server and worker were stopped. The server restarted from the same SQLite database, accepted an execution denial while the worker was absent, and the restarted worker completed with `stage: rejected`, `temporal_status: COMPLETED`, the same execution ID and no results.
+- This was an isolated synthetic verification decision, not a real hunt approval or completed threat report. No Hermes child or provider request was dispatched. All smoke services were stopped and their newly created disposable artifacts removed.
+
+These historical checks prove the exercised local hunt entrypoint, gate persistence and restart behavior. Live native handoffs, effective role tool restrictions, completed native reports, production durability and operator scoring were not established by that checkpoint. The SDK test server emitted its heartbeat-capability warning; these activities do not use heartbeats.
+
+## Current ontology and durable-restart verification
+
+- The earlier Temporal gate passed **40 tests in 12.216 seconds**, including ontology, hunt, receipt and workflow tests. This is a historical gate result, not a current full-framework result.
+- The earlier nine-stage/six-role ontology API smoke passed handoffs, stable IDs, cross-stage contradiction and independent-review checks, and five invalid-input refusals over 26,177 prompt UTF-8 bytes, with no Hermes-runtime inference/provider calls. A later scripted synthetic fan-in exercise completed nine stages/results with 18 simulated execute/review decisions; the analysis prompt was 65,534 bytes. An over-budget activity's execution status remained `completed` while its output was rejected; an impossible positive available budget rejected before any activity or result. Replay of the original 95-event SQLite history passed. The targeted fan-in suite passed **45 tests, 0 failures, 0 errors, 0 skipped**. These are synthetic/API-workflow checks, not human approval or live model output.
+- A real Temporal CLI 1.9.1/server 1.32.0 smoke stopped and restarted the same owned SQLite store at the reviewer execution gate, then started a new worker. The restarted workflow retained the gate and first output; four simulated execute/review decisions completed it. It performed exactly one analysis activity and one reviewer activity (two total), preserved the reviewed-claim reference in the prompt, and rejected reuse of the closed workflow ID.
+- All activity outputs and decisions in this smoke were scripted synthetic fixtures; no Hermes child or Hermes-runtime provider was called and no actual human approval is claimed. OMP Luna development workers were used for implementation only, not this smoke. Evidence: `<user-temp>\hermes-full-scope-f_n4wc2x\ontology-restart-o8lp8pth\evidence.json`. This proves the exercised typed two-step workflow survives the tested same-store restart without duplicate analysis/review dispatch; it is not a general exactly-once guarantee, production HA qualification, or proof of live Hermes execution.
+
+The historical consolidated framework gate ran **588 tests with 15 skipped**, exit 0 in 295.316 seconds. The corrected final parent full framework gate ran **617 tests, 0 failures, 0 errors, 15 skipped**, exit 0 in 325.02 seconds; the suite reported zero provider calls and zero Hermes subprocesses, and includes 25 passing helper tests. An earlier 617-test attempt failed because a throwaway runner lacked an `if __name__ == "__main__"` guard and Windows spawn re-executed the suite in the reservation child. That runner-only defect was corrected without changing product code/tests; the failed attempt is superseded by the corrected result. The canonical native projection gate independently passed **6 tests**, exit 0. The earlier synthetic native projection receipt (6 tests/helper 24; role-policy patch hash `c45c756d07a5038ab4e21a8ae40a97c2f71b21b8a28e0d022a9c41f4d46d127d`) is historical and must not be conflated with the final turn-3 worker result (native 6/helper 25, patch hash `d52e84c75623a33085bf252b9ad976bbe9917f016ebcd4dc640f1ee0a8a1e2b6`). The one authorized live projection exited 0 with `shape=missing`, `expected_model_match=false`; this does not distinguish absent config file from absent key or certify runtime routing/auth readiness. It was invoked once; no remediation, ordinary Hermes command, or repeated live probe is authorized or claimed. For source archives, independent member/hash/extraction evidence belongs in the adjacent verification receipt; source text alone does not prove packaging passed. This durable workflow smoke does not supersede the distinction between Temporal workflow durability and native Hermes/provider execution.
+
+Run package tests from the source-kit directory with `"$python" -m unittest hermes_temporal.test_execution hermes_temporal.test_workflows`. Workflow tests use the SDK's local time-skipping test server and may download that test binary. Standard-library-only discovery skips the optional workflow suite when `temporalio` is absent; importing the package itself does not import the SDK.
+
+- [Temporal Python SDK workflows and deterministic workflow APIs](https://docs.temporal.io/develop/python/workflows)
+- [Temporal Python SDK workflow message passing](https://docs.temporal.io/develop/python/workflows/message-passing)
+- [Temporal Python SDK durable timers](https://docs.temporal.io/develop/python/workflows/timers)
+- [Temporal Python SDK activity APIs](https://docs.temporal.io/develop/python/activities)
+- [Published temporalio 1.35.0 package](https://pypi.org/project/temporalio/1.35.0/)

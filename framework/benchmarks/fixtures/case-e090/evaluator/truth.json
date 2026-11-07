@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "case_id": "case-e090",
+  "evidence_manifest_sha256": "cb93ff86c3e1992347623931a67d0e4b25f5fba2873ce98b34ff88459909945b",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-a",
+      "asset_id": "asset-a6b0fdd045a3",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "expected_disposition": "benign"
+    },
+    {
+      "control_id": "control-b",
+      "asset_id": "asset-83b72533b638",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "expected_disposition": "benign"
+    },
+    {
+      "control_id": "control-c",
+      "asset_id": "asset-27007178cbf8",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-1b2e3843998d": 0,
+    "question-4d102f5e5018": 0,
+    "question-df9bd3e133a0": 0
+  },
+  "lookalike_event_ids": [
+    [
+      "event-342d6f3c7163",
+      "event-5884c9605b87",
+      "event-672d70e3025e"
+    ]
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-8b42",
+  "family_id": "family-17af",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-client"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "isolated-airgap",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "sysmon"
+    ]
+  },
+  "difficulty": {
+    "band": "D1",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 0,
+        "rationale": "8 benign / 2 relevant events; ratio 4."
+      },
+      "joins": {
+        "score": 0,
+        "rationale": "1 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 0,
+        "rationale": "130 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 0,
+        "rationale": "0 unresolvable questions; missing records False; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 0,
+        "rationale": "0 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S1",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-468c7fce70a3",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      }
+    ],
+    "edges": [],
+    "preconditions": [
+      "An invented service host process started by the service control manager under the local service account launches an account-discovery utility; the same service starts on the second host without any child process."
+    ],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "host"
+      }
+    ],
+    "emulation_limitations": [
+      "Synthetic behavioral illustration from process ancestry only; no command line, output, compromise or model-quality observation is claimed.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1033/"
+  ],
+  "evidence_manifest_sha256": "cfbcfb76a4f943267c90a055bc25ba0d6ade8b4b491f365eb3942cfb03ecf002"
+}

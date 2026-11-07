@@ -1,0 +1,4 @@
+type=SYSCALL msg=audit(01/01/2026 01:00:00.100:201) : arch=x86_64 syscall=execve success=yes exit=0 a0=0x1 a1=0x2 a2=0x3 a3=0x0 items=2 ppid=900 pid=950 auid=labuser uid=labuser gid=labuser euid=labuser suid=labuser fsuid=labuser egid=labuser sgid=labuser fsgid=labuser tty=pts0 ses=1 comm=whoami exe=/usr/bin/whoami subj=unconfined key=recon 
+type=SYSCALL msg=audit(01/01/2026 01:00:05.250:202) : arch=x86_64 syscall=openat success=no exit=EACCES(Permission denied) a0=AT_FDCWD a1=0x7ffd a2=O_RDONLY a3=0x0 items=1 ppid=900 pid=951 auid=labuser uid=labuser gid=labuser euid=labuser suid=labuser fsuid=labuser egid=labuser sgid=labuser fsgid=labuser tty=pts0 ses=1 comm=cat exe=/usr/bin/cat subj=unconfined key=file_access 
+type=PROCTITLE msg=audit(01/01/2026 01:00:05.250:202) : proctitle=cat /home/labuser/notes 
+type=EXECVE msg=audit(01/01/2026 01:00:05.250:202) : argc=2 a0=cat a1=/home/labuser/my notes 

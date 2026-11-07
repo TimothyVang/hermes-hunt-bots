@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "case_id": "case-9e44",
+  "evidence_manifest_sha256": "84aab0432039a9436317a20360e2434d647de983120ec859766057fe13c36f01",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [
+    {
+      "step_id": "step-a",
+      "technique_id": "T1021",
+      "asset_id": "asset-e095649de879",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:05:00Z",
+        "end_exclusive": "2026-01-15T00:06:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-1a62e2748976",
+          "event-dec8160f5875"
+        ]
+      ],
+      "source_receipt_sha256": "efcf54c07adfe51f27357cd46ec338c5529d8ff6e850900df70081a4d1e84196"
+    },
+    {
+      "step_id": "step-b",
+      "technique_id": "T1053.005",
+      "asset_id": "asset-153448b32466",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:07:00Z",
+        "end_exclusive": "2026-01-15T00:07:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-612cee2adf9e",
+          "event-dec8160f5875"
+        ]
+      ],
+      "source_receipt_sha256": "297d71832840a7035673a9d97727904c6d4dfa72419c6fafcf6f9b9613818bec"
+    },
+    {
+      "step_id": "step-c",
+      "technique_id": "T1053.005",
+      "asset_id": "asset-153448b32466",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T01:35:00Z",
+        "end_exclusive": "2026-01-15T01:35:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-09b0001848c8",
+          "event-1a62e2748976",
+          "event-612cee2adf9e",
+          "event-dec8160f5875"
+        ],
+        [
+          "event-1a62e2748976",
+          "event-612cee2adf9e",
+          "event-de56104576bf",
+          "event-dec8160f5875"
+        ]
+      ],
+      "source_receipt_sha256": "cb03e92e607f3739d72904e644e3883a90d52ed162571a50845dc0e746f28915"
+    }
+  ],
+  "edges": [
+    [
+      "step-a",
+      "step-b"
+    ],
+    [
+      "step-b",
+      "step-c"
+    ]
+  ],
+  "controls": [
+    {
+      "control_id": "control-c",
+      "asset_id": "asset-0a7314fb3c47",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-19544fda15f5": 1,
+    "question-36daadc02bb3": 0,
+    "question-9a9ca640ff4a": 1
+  },
+  "lookalike_event_ids": [
+    [
+      "event-501db878e443",
+      "event-9c506a3865a3",
+      "event-eea8fecc8cd5"
+    ]
+  ]
+}

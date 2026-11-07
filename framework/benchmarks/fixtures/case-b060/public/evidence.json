@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "case_id": "case-b060",
+  "window_utc": {
+    "start_inclusive": "2026-02-01T00:00:00+00:00",
+    "end_exclusive": "2026-02-01T00:30:00+00:00"
+  },
+  "assets": [
+    {
+      "asset_id": "asset-530dd9a26d88",
+      "os_family": "windows-client",
+      "os_version": "Windows 11, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    },
+    {
+      "asset_id": "asset-a1dc3554d2d9",
+      "os_family": "windows-client",
+      "os_version": "Windows 11, invented fixture",
+      "architecture": "x86_64",
+      "vendor": "Invented fixture"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "source-44714c86c79d",
+      "asset_ids": [
+        "asset-a1dc3554d2d9"
+      ],
+      "telemetry": "sysmon",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5"
+    },
+    {
+      "source_id": "source-c2079ff6f036",
+      "asset_ids": [
+        "asset-530dd9a26d88"
+      ],
+      "telemetry": "sysmon",
+      "clock_offset_seconds": 0,
+      "clock_uncertainty_seconds": 0,
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "sensor_version": "invented-normalizer-1",
+      "config_version": "invented-complete-window-1",
+      "completeness": "complete",
+      "source_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-b96a3618a0d4",
+      "timestamp_utc": "2026-02-01T00:01:00+00:00",
+      "source_id": "source-c2079ff6f036",
+      "asset_id": "asset-530dd9a26d88",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:01:00+00:00",
+        "parent_basename": "services.exe",
+        "parent_process_id": 645,
+        "process_basename": "cfgsync.exe",
+        "process_id": 2210,
+        "user": "NT AUTHORITY\\LOCAL SERVICE",
+        "result": "success",
+        "parent_process_guid": "process-bb9c9906a7d5",
+        "process_guid": "process-fcdc621d69d2",
+        "integrity_level": "System",
+        "terminal_session": 0
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "1"
+      }
+    },
+    {
+      "event_id": "event-689ea72cfa18",
+      "timestamp_utc": "2026-02-01T00:01:30+00:00",
+      "source_id": "source-44714c86c79d",
+      "asset_id": "asset-a1dc3554d2d9",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:01:30+00:00",
+        "parent_basename": "services.exe",
+        "parent_process_id": 640,
+        "process_basename": "cfgsync.exe",
+        "process_id": 2240,
+        "user": "NT AUTHORITY\\LOCAL SERVICE",
+        "result": "success",
+        "parent_process_guid": "process-f295949f82be",
+        "process_guid": "process-161a3076dd7e",
+        "integrity_level": "System",
+        "terminal_session": 0
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "2"
+      }
+    },
+    {
+      "event_id": "event-fa24caa80b42",
+      "timestamp_utc": "2026-02-01T00:04:00+00:00",
+      "source_id": "source-c2079ff6f036",
+      "asset_id": "asset-530dd9a26d88",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:04:00+00:00",
+        "parent_basename": "userinit.exe",
+        "parent_process_id": 7900,
+        "process_basename": "explorer.exe",
+        "process_id": 8000,
+        "user": "kim.lee",
+        "result": "success",
+        "parent_process_guid": "process-28f85b6ba9da",
+        "process_guid": "process-20853e36e1ca",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "3"
+      }
+    },
+    {
+      "event_id": "event-234efde61390",
+      "timestamp_utc": "2026-02-01T00:04:30+00:00",
+      "source_id": "source-c2079ff6f036",
+      "asset_id": "asset-530dd9a26d88",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:04:30+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8000,
+        "process_basename": "notepad.exe",
+        "process_id": 8001,
+        "user": "kim.lee",
+        "result": "success",
+        "parent_process_guid": "process-20853e36e1ca",
+        "process_guid": "process-e59e3cf61446",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "4"
+      }
+    },
+    {
+      "event_id": "event-fd267a671c07",
+      "timestamp_utc": "2026-02-01T00:05:00+00:00",
+      "source_id": "source-44714c86c79d",
+      "asset_id": "asset-a1dc3554d2d9",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:05:00+00:00",
+        "parent_basename": "userinit.exe",
+        "parent_process_id": 7910,
+        "process_basename": "explorer.exe",
+        "process_id": 8010,
+        "user": "ari.chen",
+        "result": "success",
+        "parent_process_guid": "process-cc172cb5be61",
+        "process_guid": "process-44ed915c27b8",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "5"
+      }
+    },
+    {
+      "event_id": "event-476306cbb369",
+      "timestamp_utc": "2026-02-01T00:05:40+00:00",
+      "source_id": "source-44714c86c79d",
+      "asset_id": "asset-a1dc3554d2d9",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:05:40+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8010,
+        "process_basename": "notepad.exe",
+        "process_id": 8011,
+        "user": "ari.chen",
+        "result": "success",
+        "parent_process_guid": "process-44ed915c27b8",
+        "process_guid": "process-de19dd7df9e1",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "6"
+      }
+    },
+    {
+      "event_id": "event-ceb8207783ca",
+      "timestamp_utc": "2026-02-01T00:07:00+00:00",
+      "source_id": "source-c2079ff6f036",
+      "asset_id": "asset-530dd9a26d88",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:07:00+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8000,
+        "process_basename": "calc.exe",
+        "process_id": 8002,
+        "user": "kim.lee",
+        "result": "success",
+        "parent_process_guid": "process-20853e36e1ca",
+        "process_guid": "process-3e9320478b0b",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "7"
+      }
+    },
+    {
+      "event_id": "event-108794bf9206",
+      "timestamp_utc": "2026-02-01T00:09:20+00:00",
+      "source_id": "source-44714c86c79d",
+      "asset_id": "asset-a1dc3554d2d9",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:09:20+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8010,
+        "process_basename": "msedge.exe",
+        "process_id": 8012,
+        "user": "ari.chen",
+        "result": "success",
+        "parent_process_guid": "process-44ed915c27b8",
+        "process_guid": "process-b2f7d64b3b49",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "8"
+      }
+    },
+    {
+      "event_id": "event-6aeb3e2eaeb3",
+      "timestamp_utc": "2026-02-01T00:15:00+00:00",
+      "source_id": "source-c2079ff6f036",
+      "asset_id": "asset-530dd9a26d88",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:15:00+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8000,
+        "process_basename": "taskhostw.exe",
+        "process_id": 8003,
+        "user": "kim.lee",
+        "result": "success",
+        "parent_process_guid": "process-20853e36e1ca",
+        "process_guid": "process-2c9aa69d4af8",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "9"
+      }
+    },
+    {
+      "event_id": "event-f803ed7445c2",
+      "timestamp_utc": "2026-02-01T00:16:00+00:00",
+      "source_id": "source-44714c86c79d",
+      "asset_id": "asset-a1dc3554d2d9",
+      "event_type": "process_start",
+      "fields": {
+        "timestamp_original": "2026-02-01T00:16:00+00:00",
+        "parent_basename": "explorer.exe",
+        "parent_process_id": 8010,
+        "process_basename": "taskhostw.exe",
+        "process_id": 8013,
+        "user": "ari.chen",
+        "result": "success",
+        "parent_process_guid": "process-44ed915c27b8",
+        "process_guid": "process-dadf43215c42",
+        "integrity_level": "Medium",
+        "terminal_session": 1
+      },
+      "locator": {
+        "file_sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5",
+        "record_id": "10"
+      }
+    }
+  ],
+  "known_gaps": [],
+  "files": [
+    {
+      "path": "records.jsonl",
+      "byte_count": 5134,
+      "sha256": "bab25fec3c6256256038b626c9d53e99d8981028a520a590387e921a63231fe5"
+    }
+  ],
+  "assessment_questions": [
+    {
+      "question_id": "question-306a0c5d72f4",
+      "asset_id": "asset-a1dc3554d2d9",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    },
+    {
+      "question_id": "question-40bca106ae5e",
+      "asset_id": "asset-530dd9a26d88",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "question": "Does the supplied evidence support suspicious activity on this asset in this window?"
+    }
+  ]
+}

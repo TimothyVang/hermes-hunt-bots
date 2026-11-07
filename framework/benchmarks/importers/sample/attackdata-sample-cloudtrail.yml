@@ -1,0 +1,13 @@
+author: Invented Sample Author
+id: 00000000-0000-4000-8000-000000000002
+date: '2026-01-01'
+description: INVENTED sample for test_benchmark_import_attackdata.py only.
+environment: invented_range
+directory: invented_cloudtrail_sample
+mitre_technique:
+- T1562.008
+datasets:
+- name: invented_cloudtrail-json
+  path: /datasets/attack_techniques/T1562.008/invented_cloudtrail_sample/attackdata_sample_cloudtrail.json
+  sourcetype: aws:cloudtrail
+  source: aws_cloudtrail

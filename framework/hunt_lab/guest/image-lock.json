@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "images": [
+    {
+      "tag": "docker.elastic.co/elasticsearch/elasticsearch:8.19.23",
+      "manifest_digest": "sha256:4d0724bb8d78d7a2330693623e26ca4d621079d062ecc8a30b3e1fc180ec14c1",
+      "config_digest": "sha256:c8ec58306c7c7b426362a2feb04cc42652e71483b8601591132ef9d583e303b7"
+    },
+    {
+      "tag": "ghcr.io/arkime/arkime/arkime:v6.9.1",
+      "manifest_digest": "sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0",
+      "config_digest": "sha256:df567a6acbd82b44777ef0d4fa90b56c297f48299c75c5763f0f7995a7ce5251"
+    }
+  ]
+}

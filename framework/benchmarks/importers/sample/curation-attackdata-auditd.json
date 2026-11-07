@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "dbefbfbf3ebe8906a0b54e0939e0c386b2b987478e974a7e122d9be25f300705",
+  "metadata_sha256": "8c30e286c88193865ee14893ac8600d4c5dfafdcddfb783925122eb5472838a7",
+  "curated_by": "INVENTED sample curator",
+  "curated_utc": "2026-01-02T00:00:00+00:00",
+  "note": "INVENTED curation for tests only; not an answer key for any real data.",
+  "revision": 1,
+  "truth_revision": 1,
+  "attack_release": "v20",
+  "clock_declaration": null,
+  "coverage": {
+    "os": [
+      "linux"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "flat-lan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "linux-audit"
+    ]
+  },
+  "assets": [
+    {
+      "asset_name": "audit-host",
+      "os_family": "linux",
+      "os_version": null,
+      "architecture": "x86_64",
+      "vendor": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "technique_id": "T1003.008",
+      "asset": {
+        "asset_name": "audit-host"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T00:01:00Z",
+        "end_exclusive": "2026-01-01T00:01:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          {
+            "line": 6
+          },
+          {
+            "record_id": "104",
+            "record_type": "PATH"
+          }
+        ]
+      ],
+      "boundary_id": "boundary-host",
+      "phase": "initial"
+    },
+    {
+      "step_id": "step-2",
+      "technique_id": "T1033",
+      "asset": {
+        "asset_name": "audit-host"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T00:02:00Z",
+        "end_exclusive": "2026-01-01T00:02:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          {
+            "line": 9
+          }
+        ]
+      ],
+      "boundary_id": "boundary-host",
+      "phase": "initial"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-1",
+      "asset": {
+        "asset_name": "audit-host"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T00:00:00Z",
+        "end_exclusive": "2026-01-01T00:00:30Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "lookalike_event_ids": [
+    [
+      {
+        "line": 3
+      },
+      {
+        "line": 4
+      }
+    ]
+  ],
+  "sophistication": {
+    "band": "S1",
+    "boundaries": [
+      {
+        "boundary_id": "boundary-host",
+        "kind": "host"
+      }
+    ],
+    "preconditions": [
+      "INVENTED: interactive shell on the host"
+    ],
+    "emulation_limitations": [
+      "INVENTED sample"
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "source_references": [
+    "https://example.test/invented-linux-sample"
+  ],
+  "assessment_windows": [
+    {
+      "start_inclusive": "2026-01-01T00:00:00Z",
+      "end_exclusive": "2026-01-01T00:00:30Z"
+    },
+    {
+      "start_inclusive": "2026-01-01T00:00:30Z",
+      "end_exclusive": "2026-01-01T00:02:01Z"
+    }
+  ]
+}

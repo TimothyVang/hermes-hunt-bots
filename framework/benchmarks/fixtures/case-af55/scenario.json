@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-af55",
+  "family_id": "family-55ef",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-server",
+      "not-applicable"
+    ],
+    "execution_platform": [
+      "virtual-machine",
+      "cloud-control-plane"
+    ],
+    "network": [
+      "hybrid",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "federated-sso",
+      "cloud-iam"
+    ],
+    "operational_domain": [
+      "enterprise-it",
+      "cloud-saas"
+    ],
+    "dns_domain": [
+      "split-horizon"
+    ],
+    "telemetry": [
+      "identity-audit",
+      "sysmon",
+      "cloud-audit",
+      "dns"
+    ]
+  },
+  "difficulty": {
+    "band": "D5",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 2,
+        "rationale": "650 benign / 5 relevant events; ratio 130."
+      },
+      "joins": {
+        "score": 2,
+        "rationale": "4 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 2,
+        "rationale": "7800 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 2,
+        "rationale": "1 unresolvable questions; missing records True; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 2,
+        "rationale": "2 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S5",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-52872df2cab8",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-b",
+        "asset_id": "asset-8145b5308940",
+        "boundary_id": "boundary-b",
+        "phase": "persistence"
+      },
+      {
+        "step_id": "step-c",
+        "asset_id": "asset-8145b5308940",
+        "boundary_id": "boundary-c",
+        "phase": "reentry"
+      },
+      {
+        "step_id": "step-d",
+        "asset_id": "asset-8145b5308940",
+        "boundary_id": "boundary-d",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-e",
+        "asset_id": "asset-6b6591a3f9ac",
+        "boundary_id": "boundary-e",
+        "phase": "persistence"
+      },
+      {
+        "step_id": "step-f",
+        "asset_id": "asset-1d62a5e71851",
+        "boundary_id": "boundary-d",
+        "phase": "reentry"
+      }
+    ],
+    "edges": [
+      [
+        "step-a",
+        "step-b"
+      ],
+      [
+        "step-b",
+        "step-c"
+      ],
+      [
+        "step-c",
+        "step-d"
+      ],
+      [
+        "step-d",
+        "step-e"
+      ],
+      [
+        "step-e",
+        "step-f"
+      ]
+    ],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "domain"
+      },
+      {
+        "boundary_id": "boundary-b",
+        "kind": "identity"
+      },
+      {
+        "boundary_id": "boundary-c",
+        "kind": "on-prem"
+      },
+      {
+        "boundary_id": "boundary-d",
+        "kind": "cloud"
+      },
+      {
+        "boundary_id": "boundary-e",
+        "kind": "privilege"
+      }
+    ],
+    "preconditions": [
+      "All hosts, domains, sessions, roles and records are invented; nothing was executed.",
+      "A cross-forest remote session registers a logon task under the foreign identity; the task re-enters on the on-prem host after a long idle interval and reboot, and its process initiates a federated cloud sign-in whose session binds a persistent Owner role scoped to a separate resource.",
+      "The resource has no data-plane records, so the intended final resource step is unknown, not an observed successful action.",
+      "An authorized maintenance task and a temporary, change-referenced role rotation from the same host are two competing routine explanations."
+    ],
+    "emulation_limitations": [
+      "Synthetic hybrid illustration, not a live recipe or evidence of an available cloud environment.",
+      "Boundary kinds name the trust zone each step occurs in or enters; the on-prem to cloud crossing lies between the re-entry and the federated sign-in.",
+      "The final edge is evaluator-only intended order with unknown outcome and absent visibility; it must be excluded from supported-edge recall.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1021/",
+    "https://attack.mitre.org/techniques/T1053/005/",
+    "https://attack.mitre.org/techniques/T1078/004/",
+    "https://attack.mitre.org/techniques/T1098/001/",
+    "https://attack.mitre.org/techniques/T1098/003/"
+  ],
+  "evidence_manifest_sha256": "f2e41488d848c4365636334314d306a52c0a494d66c790854f8b0bc9d2fc0e58"
+}

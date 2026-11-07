@@ -1,0 +1,541 @@
+{
+  "schema_version": 1,
+  "catalog_version": "hunt-coverage-2",
+  "axes": {
+    "os": ["windows-client", "windows-server", "linux", "macos", "bsd-unix", "android", "ios", "embedded-rtos", "network-os", "mainframe", "not-applicable"],
+    "execution_platform": ["physical", "virtual-machine", "hypervisor", "container", "kubernetes", "serverless", "cloud-control-plane", "saas", "mobile", "embedded"],
+    "network": ["flat-lan", "segmented-vlan", "routed-wan", "dmz", "vpn-remote-access", "zero-trust", "wireless", "cloud-vpc", "hybrid", "multicloud", "container-overlay", "ot-fieldbus", "iot-edge", "isolated-airgap", "ipv4", "ipv6", "dual-stack", "encrypted-traffic", "proxy-nat", "sdwan", "cellular"],
+    "identity_domain": ["workgroup-local", "ad-single-domain", "ad-multidomain", "ad-cross-forest", "entra-hybrid", "ldap-kerberos", "cloud-iam", "federated-sso", "machine-service-identity", "multi-tenant"],
+    "operational_domain": ["enterprise-it", "cloud-saas", "ot-ics", "iot", "telecom", "healthcare", "finance", "government-defense", "education", "retail", "energy-utilities", "transport", "manufacturing"],
+    "dns_domain": ["internal-authoritative", "split-horizon", "delegated-subdomain", "recursive-forwarder", "owned-public-zone", "encrypted-dns", "cross-domain-trust", "no-dns"],
+    "telemetry": ["windows-security", "sysmon", "linux-audit", "journald", "macos-unified", "identity-audit", "dns", "flow", "zeek", "suricata", "firewall-proxy", "cloud-audit", "kubernetes-audit", "saas-audit", "mobile-device", "ot-protocol"]
+  },
+  "rows": [
+    {
+      "row_id": "windows-member-discovery",
+      "coverage": {
+        "os": ["windows-client", "windows-server"],
+        "execution_platform": ["virtual-machine"],
+        "network": ["flat-lan", "ipv4"],
+        "identity_domain": ["workgroup-local"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["windows-security", "sysmon"]
+      },
+      "owner": "Windows range operator; named assignment required before execution",
+      "prerequisites": ["Owned isolated Hyper-V member guest with enrolled VM and machine identity, separately recorded OS family/version/architecture/vendor, and approved guest credentials supplied outside manifests", "Reviewed containment and clock offsets; independent Security 4688 or Sysmon process instrumentation and bounded export", "Reviewed windows-discovery-v1 executor, phase authorization, verified owned-session cleanup, and human evidence release"],
+      "status": "planned",
+      "reason": "Initial discovery target only; neither guest availability nor process telemetry nor live execution has been verified. Client and server variants require separate evidence before either is credited.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "linux-segmented-discovery",
+      "coverage": {
+        "os": ["linux"],
+        "execution_platform": ["virtual-machine"],
+        "network": ["segmented-vlan", "routed-wan", "dual-stack"],
+        "identity_domain": ["workgroup-local"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["recursive-forwarder"],
+        "telemetry": ["linux-audit", "journald", "flow"]
+      },
+      "owner": "Linux range operator; named assignment required before execution",
+      "prerequisites": ["Owned isolated victim and range-side executor with pinned two-hop SSH identities, forced worker command, dedicated keys, and unchanged host-to-victim ACLs", "Enrolled machine identity and distribution/version/architecture; independent audit export, session records, clock offsets and both address-family sensor coverage", "Reviewed linux-discovery-v1 worker, bounded read-only exports, verified session cleanup, phase authorization and human release"],
+      "status": "planned",
+      "reason": "Initial discovery target only; no worker, guest, audit export or dual-stack containment is assumed. Journald alone does not establish process coverage or coverage of all Linux distributions.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "ad-single-domain-discovery",
+      "coverage": {
+        "os": ["windows-client", "windows-server"],
+        "execution_platform": ["virtual-machine"],
+        "network": ["segmented-vlan", "vpn-remote-access", "ipv4"],
+        "identity_domain": ["ad-single-domain"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["identity-audit", "windows-security", "sysmon", "dns"]
+      },
+      "owner": "AD range operator; named assignment required before execution",
+      "prerequisites": ["Owned isolated domain controller and member with enrolled domain/machine IDs and one preapproved synthetic account; isolated VPN path and explicit inventory", "Reviewed ad-discovery-v1 fixed reads, independently configured identity/process/DNS audit, clock offsets and bounded collector windows", "Separate authorization, credential delivery outside manifests, read-effect verification, owned-session cleanup and human public release"],
+      "status": "planned",
+      "reason": "Initial bounded AD read target only; no domain, VPN or audit availability is verified. A directory read does not guarantee Security 4662, multi-host attack coverage or S3 sophistication.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "internal-dns-http-correlation",
+      "coverage": {
+        "os": ["windows-client", "linux"],
+        "execution_platform": ["virtual-machine"],
+        "network": ["segmented-vlan", "ipv4", "proxy-nat"],
+        "identity_domain": ["workgroup-local"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["dns", "zeek", "flow", "firewall-proxy"]
+      },
+      "owner": "Network range operator; named assignment required before execution",
+      "prerequisites": ["Owned isolated guests, precreated internal .test label, benign enrolled HTTP endpoint and exact approved resolved addresses", "Reviewed internal-dns-http-v1 no-redirect transport, independent Zeek DNS/connection/HTTP exports and proxy/NAT correlation with source clocks and watermark", "Bounded collection, verified no remaining owned session, per-phase authorization and human release; guest OS routes separately supported and exercised"],
+      "status": "planned",
+      "reason": "Initial correlation target only; no DNS service, proxy mapping, collector or guest transport is presumed. This row grants no permission for public DNS or arbitrary HTTP traffic.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "aws-test-trail-control-plane",
+      "coverage": {
+        "os": ["not-applicable"],
+        "execution_platform": ["cloud-control-plane"],
+        "network": ["cloud-vpc", "ipv4"],
+        "identity_domain": ["cloud-iam"],
+        "operational_domain": ["cloud-saas"],
+        "dns_domain": ["owned-public-zone"],
+        "telemetry": ["cloud-audit"]
+      },
+      "owner": "AWS sandbox owner; named assignment required before execution",
+      "prerequisites": ["Exclusive owned nonproduction account, exact approved SSO role/region, spending authority and separately enrolled continuously logging baseline trail", "Pinned compatible Stratus and Terraform binaries, dedicated executor home, preserved correlation UUID, reviewed aws-test-trail-stop-v1 phases and campaign-owned trail/bucket identities", "Independent baseline CloudTrail export with watermark; clock/isolation review, bounded cost/time/export quotas, verified exact cleanup and human release", "Explicit owned-zone enrollment for this combination; no DNS test is implied by the CloudTrail recipe"],
+      "status": "planned",
+      "reason": "Initial AWS control-plane target only; no account, binary, resource, owned zone or export is verified. not-applicable describes analyzed service OS, not executor OS, and never counts as Windows or Linux evidence.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "ad-cross-forest-correlation",
+      "coverage": {
+        "os": ["windows-client", "windows-server"],
+        "execution_platform": ["virtual-machine"],
+        "network": ["segmented-vlan", "zero-trust", "dual-stack"],
+        "identity_domain": ["ad-multidomain", "ad-cross-forest"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["split-horizon", "cross-domain-trust"],
+        "telemetry": ["identity-audit", "windows-security", "dns", "firewall-proxy"]
+      },
+      "owner": "Directory isolation and identity telemetry owner; named assignment required",
+      "prerequisites": ["Owned licensed isolated multidomain forests, enrolled trust boundaries and accounts, independently reviewed cross-segment containment and clocks", "Identity, process, DNS and policy-enforcement sensors with bounded correlated exports and explicit family/version facts", "Separately reviewed boundary-crossing recipe, non-destructive effect checks, bounded cleanup and release authority; synthetic fixtures do not satisfy live prerequisites"],
+      "status": "blocked",
+      "reason": "Cross-forest and higher-tier live recipe, enrolled forests and independent boundary telemetry are not available as verified prerequisites. Multiple domain tags do not establish S3 or S4.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "hybrid-multicloud-identity",
+      "coverage": {
+        "os": ["windows-server", "linux", "not-applicable"],
+        "execution_platform": ["virtual-machine", "cloud-control-plane"],
+        "network": ["hybrid", "multicloud", "cloud-vpc", "encrypted-traffic"],
+        "identity_domain": ["entra-hybrid", "cloud-iam", "federated-sso"],
+        "operational_domain": ["enterprise-it", "cloud-saas"],
+        "dns_domain": ["delegated-subdomain", "split-horizon"],
+        "telemetry": ["identity-audit", "cloud-audit", "flow", "dns"]
+      },
+      "owner": "Hybrid identity and cloud account owners; named assignments required",
+      "prerequisites": ["Owned isolated on-prem directory and separately enrolled nonproduction cloud tenants/accounts with synthetic identities and reviewed federation boundaries", "Cross-provider clock-aware identity/network audit, exact owned DNS delegation and bounded independent exports", "Separately approved boundary-crossing recipe, pinned provider tooling, per-account budgets, verifiable scoped cleanup and destination-specific release authority"],
+      "status": "blocked",
+      "reason": "No multicloud/federation executor or reviewed S4/S5 live chain is supplied. Each service's not-applicable OS remains separate from actual Windows/Linux host evidence; tags and synthetic context do not prove live coverage.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "macos-campus-wireless",
+      "coverage": {
+        "os": ["macos"],
+        "execution_platform": ["physical"],
+        "network": ["wireless", "dual-stack"],
+        "identity_domain": ["federated-sso"],
+        "operational_domain": ["education"],
+        "dns_domain": ["recursive-forwarder"],
+        "telemetry": ["macos-unified", "identity-audit", "flow"]
+      },
+      "owner": "Apple endpoint and isolated wireless range owners; named assignments required",
+      "prerequisites": ["Owned licensed Apple hardware with exact version/architecture facts, enrolled synthetic identity and physically controlled isolated wireless environment", "Version-specific unified-log field mapping and independent identity/flow sensors excluding SSIDs and authentication material", "Reviewed fixed macOS recipe and collector, positive quotas, containment/clock proof, bounded cleanup and human release authority"],
+      "status": "blocked",
+      "reason": "No macOS action/collector adapter or owned instrumented wireless lab is implemented or verified; education is synthetic context, not compliance certification.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "bsd-unix-dmz",
+      "coverage": {
+        "os": ["bsd-unix"],
+        "execution_platform": ["physical"],
+        "network": ["dmz", "routed-wan", "proxy-nat", "ipv4"],
+        "identity_domain": ["ldap-kerberos"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["delegated-subdomain"],
+        "telemetry": ["flow", "suricata", "firewall-proxy", "identity-audit"]
+      },
+      "owner": "BSD/Unix platform and network sensor owners; named assignments required",
+      "prerequisites": ["Owned isolated BSD/Unix host with exact vendor/version/architecture, licensed tooling where required and enrolled DMZ/LDAP/Kerberos identities", "Independent supported network/identity exports, approved source field maps, reviewed NAT correlation and clock offsets", "Platform-specific reviewed fixed recipe, bounded collection and cleanup, verified isolation and human release authority"],
+      "status": "blocked",
+      "reason": "No BSD/Unix transport or platform collector is supplied; Linux support cannot be extrapolated. Registered network telemetry does not establish host process visibility.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "mobile-healthcare-access",
+      "coverage": {
+        "os": ["android", "ios"],
+        "execution_platform": ["mobile"],
+        "network": ["wireless", "cellular", "vpn-remote-access"],
+        "identity_domain": ["federated-sso"],
+        "operational_domain": ["healthcare"],
+        "dns_domain": ["recursive-forwarder"],
+        "telemetry": ["mobile-device", "identity-audit", "flow"]
+      },
+      "owner": "Mobile device and private-radio lab owners; named assignments required",
+      "prerequisites": ["Owned isolated Android and iOS test devices with separately recorded versions/vendors, licensed management tooling and authorized private cellular/wireless environment", "Synthetic identities and healthcare context only; instrumented management/network exports with personal data, SSIDs and authentication material excluded", "Separately reviewed per-platform recipe and field mappings, non-disruptive quotas, device/session cleanup and human release authority"],
+      "status": "blocked",
+      "reason": "Neither mobile platform has a supported executor or verified owned cellular lab. No patient data, public carrier testing, platform equivalence or healthcare certification is implied.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "embedded-industrial-iot",
+      "coverage": {
+        "os": ["embedded-rtos"],
+        "execution_platform": ["embedded"],
+        "network": ["iot-edge", "segmented-vlan", "ipv6"],
+        "identity_domain": ["machine-service-identity"],
+        "operational_domain": ["iot", "manufacturing"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["flow", "dns", "ot-protocol"]
+      },
+      "owner": "Embedded safety and IoT range owners; named assignments required",
+      "prerequisites": ["Owned physically isolated nonproduction embedded testbed with exact vendor/firmware/architecture and licensed protocol tooling", "Independent instrumented network/protocol sources, enrolled device identities, safe power/process state, reviewed isolation and clock uncertainty", "Separately reviewed read-only or benign emulation recipe prohibiting firmware changes and process disruption; bounded cleanup, safety review and human release authority"],
+      "status": "blocked",
+      "reason": "No embedded/RTOS recipe, collector mapping or safety-reviewed physical testbed is supplied. Synthetic industrial labels do not prove device support or safe live emulation.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "network-appliance-sdwan",
+      "coverage": {
+        "os": ["network-os"],
+        "execution_platform": ["physical"],
+        "network": ["sdwan", "routed-wan", "encrypted-traffic", "dual-stack"],
+        "identity_domain": ["machine-service-identity"],
+        "operational_domain": ["telecom"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["flow", "firewall-proxy", "identity-audit"]
+      },
+      "owner": "Network appliance and telecom testbed owners; named assignments required",
+      "prerequisites": ["Owned isolated licensed network appliances and SD-WAN test fabric, exact vendor/firmware identities and dedicated management authority", "Independent bounded flow/policy/identity exports, sanitized source mappings and clock-aware tunnel correlation without raw payloads", "Reviewed vendor-specific recipe without routing/ACL mutation, explicit cleanup checks, containment proof and human release authority"],
+      "status": "blocked",
+      "reason": "No network-OS/SD-WAN executor or vendor collector is implemented. Encrypted traffic permits only evidenced metadata conclusions, not inferred payload visibility or telecom certification.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "mainframe-isolated-finance",
+      "coverage": {
+        "os": ["mainframe"],
+        "execution_platform": ["physical"],
+        "network": ["isolated-airgap"],
+        "identity_domain": ["ldap-kerberos"],
+        "operational_domain": ["finance"],
+        "dns_domain": ["no-dns"],
+        "telemetry": ["identity-audit"]
+      },
+      "owner": "Mainframe platform and isolated-transfer owners; named assignments required",
+      "prerequisites": ["Owned isolated licensed mainframe environment with exact platform/version facts, synthetic finance identities and validated absence of external connectivity", "Supported independent identity-audit export, reviewed safe transfer procedure, source clocks and bounded field mapping", "Separately reviewed platform recipe, licensed tooling, effect and cleanup checks, dedicated administrative ownership and human release authority"],
+      "status": "blocked",
+      "reason": "No mainframe adapter, audit mapping or owned licensed environment is supplied. no-dns and isolated-airgap are planned facts requiring evidence; finance context is not certification.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "container-kubernetes-retail",
+      "coverage": {
+        "os": ["linux"],
+        "execution_platform": ["container", "kubernetes"],
+        "network": ["container-overlay", "segmented-vlan", "dual-stack"],
+        "identity_domain": ["machine-service-identity"],
+        "operational_domain": ["retail"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["kubernetes-audit", "linux-audit", "dns", "flow"]
+      },
+      "owner": "Container platform and cluster security owners; named assignments required",
+      "prerequisites": ["Owned isolated nonproduction cluster with enrolled nodes/namespaces/service identities, pinned runtime/orchestrator versions and no production credentials", "Enabled independent API/node/network audit, bounded source exports, overlay correlation and reviewed clock/isolation evidence", "Separately approved namespace-scoped recipe, explicit resource ownership and cleanup proof, positive quotas and human release authority"],
+      "status": "blocked",
+      "reason": "No Kubernetes/container action or audit collector adapter is supplied. A Linux guest recipe does not validate containers, orchestration or retail compliance.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "serverless-owned-cloud",
+      "coverage": {
+        "os": ["not-applicable"],
+        "execution_platform": ["serverless"],
+        "network": ["cloud-vpc", "ipv6"],
+        "identity_domain": ["cloud-iam", "machine-service-identity"],
+        "operational_domain": ["cloud-saas"],
+        "dns_domain": ["owned-public-zone"],
+        "telemetry": ["cloud-audit", "dns", "flow"]
+      },
+      "owner": "Serverless sandbox and cloud audit owners; named assignments required",
+      "prerequisites": ["Owned nonproduction cloud account, enrolled function/resource/role identities, owned DNS zone and explicit network egress boundary", "Independent service invocation/control-plane/network exports with supported field mappings, source clocks and watermarks", "Separately reviewed fixed serverless recipe, provider-enforced or conservatively bounded spend, resource cleanup proof and human release authority"],
+      "status": "blocked",
+      "reason": "No serverless executor or service collector is supplied. Control-plane coverage cannot stand in for function execution; analyzed service OS remains not-applicable rather than inferred Linux.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "saas-multitenant-federation",
+      "coverage": {
+        "os": ["not-applicable"],
+        "execution_platform": ["saas"],
+        "network": ["zero-trust", "encrypted-traffic"],
+        "identity_domain": ["multi-tenant", "federated-sso"],
+        "operational_domain": ["cloud-saas"],
+        "dns_domain": ["owned-public-zone"],
+        "telemetry": ["saas-audit", "identity-audit", "firewall-proxy"]
+      },
+      "owner": "SaaS test tenant and federation owners; named assignments required",
+      "prerequisites": ["Owned licensed dedicated test tenants with synthetic users, explicit provider authorization, enrolled tenant IDs and owned DNS zone", "Independently exported tenant/federation/access-policy audit with cross-tenant correlation, bounded quotas and reviewed sanitization mappings", "Separately reviewed non-destructive SaaS recipe, tenant isolation proof, session/resource cleanup and destination-specific human release authority"],
+      "status": "blocked",
+      "reason": "No SaaS API executor, tenant export collector or verified test tenancy is supplied. Tenant isolation and service OS are not inferred from a provider label.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "ot-utilities-transport",
+      "coverage": {
+        "os": ["embedded-rtos", "network-os"],
+        "execution_platform": ["physical", "embedded"],
+        "network": ["ot-fieldbus", "isolated-airgap"],
+        "identity_domain": ["machine-service-identity"],
+        "operational_domain": ["ot-ics", "energy-utilities", "transport"],
+        "dns_domain": ["no-dns"],
+        "telemetry": ["ot-protocol", "flow"]
+      },
+      "owner": "OT safety authority and physical testbed owners; named assignments required",
+      "prerequisites": ["Owned physically isolated safety-reviewed testbed with no real utility/transport actuation, exact controller/firmware inventory and licensed protocol tooling", "Independent passive protocol exports, source-specific public field mappings and measured clock uncertainty; verified no external connectivity", "Separately reviewed non-disruptive recipe excluding firmware/process changes, safe shutdown and bounded cleanup procedure, safety approval and human evidence release"],
+      "status": "blocked",
+      "reason": "No OT/fieldbus driver or safety-approved testbed is supplied. Sector labels are synthetic context only; no operational safety or compliance certification and no S5 live chain are claimed.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "hypervisor-isolated-government",
+      "coverage": {
+        "os": ["linux", "network-os"],
+        "execution_platform": ["hypervisor"],
+        "network": ["isolated-airgap", "segmented-vlan"],
+        "identity_domain": ["ldap-kerberos"],
+        "operational_domain": ["government-defense"],
+        "dns_domain": ["internal-authoritative"],
+        "telemetry": ["identity-audit", "flow", "firewall-proxy"]
+      },
+      "owner": "Hypervisor platform and isolated range owners; named assignments required",
+      "prerequisites": ["Owned licensed isolated hypervisor environment with exact vendor/version/architecture, enrolled management identities and synthetic unclassified context", "Independent management/network audit with supported field mappings, explicit guest/host separation, reviewed containment and clocks", "Separately reviewed hypervisor-specific recipe with no guest destruction or isolation weakening, bounded cleanup and human release authority"],
+      "status": "blocked",
+      "reason": "No ESXi or other hypervisor action/collector adapter is supplied; running a guest does not establish hypervisor-analysis support. Government-defense context is not certification or permission to use classified data.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "encrypted-dns-owned-resolver",
+      "coverage": {
+        "os": ["linux"],
+        "execution_platform": ["physical"],
+        "network": ["ipv6", "encrypted-traffic", "segmented-vlan"],
+        "identity_domain": ["machine-service-identity"],
+        "operational_domain": ["enterprise-it"],
+        "dns_domain": ["encrypted-dns"],
+        "telemetry": ["dns", "flow", "suricata"]
+      },
+      "owner": "Resolver and network telemetry owners; named assignments required",
+      "prerequisites": ["Owned isolated encrypted-DNS resolver and clients with exact enrolled endpoints, internal .test namespace and no arbitrary external resolution", "Independent resolver query export and bounded passive network metadata with clock offsets; declared encryption-related visibility gaps", "Separately reviewed no-redirect fixed encrypted-DNS recipe and source mappings, scoped session cleanup, containment proof and human release authority"],
+      "status": "blocked",
+      "reason": "The internal-DNS recipe does not establish encrypted-DNS support; no encrypted resolver driver or verified export exists. Flow metadata alone cannot disclose encrypted query contents.",
+      "evidence_references": []
+    },
+    {
+      "row_id": "synthetic-windows-atomic",
+      "coverage": {
+        "os": [
+          "windows-client"
+        ],
+        "execution_platform": [
+          "virtual-machine"
+        ],
+        "network": [
+          "isolated-airgap",
+          "ipv4"
+        ],
+        "identity_domain": [
+          "workgroup-local"
+        ],
+        "operational_domain": [
+          "enterprise-it"
+        ],
+        "dns_domain": [
+          "no-dns"
+        ],
+        "telemetry": [
+          "sysmon"
+        ]
+      },
+      "owner": "Benchmark fixture curator; invented development evidence only",
+      "prerequisites": [
+        "Maintain strict public/truth separation, digests, source locators, causal support sets and independently measured rubric factors.",
+        "Real execution requires separately enrolled isolated targets, approved sensors/recipe, bounded cleanup and per-destination release; this row grants no lab authority."
+      ],
+      "status": "synthetic_verified",
+      "reason": "Invented D1/S1 evidence validated through the real CLI and fixture regressions. Software/measurement coverage only; no live sensor, campaign or model-quality result.",
+      "evidence_references": [
+        "fixtures/case-8b42/public/evidence.json",
+        "fixtures/case-8b42/public/records.jsonl"
+      ]
+    },
+    {
+      "row_id": "synthetic-linux-host-chain",
+      "coverage": {
+        "os": [
+          "linux"
+        ],
+        "execution_platform": [
+          "virtual-machine"
+        ],
+        "network": [
+          "isolated-airgap",
+          "ipv4"
+        ],
+        "identity_domain": [
+          "workgroup-local"
+        ],
+        "operational_domain": [
+          "enterprise-it"
+        ],
+        "dns_domain": [
+          "no-dns"
+        ],
+        "telemetry": [
+          "linux-audit"
+        ]
+      },
+      "owner": "Benchmark fixture curator; invented development evidence only",
+      "prerequisites": [
+        "Maintain strict public/truth separation, digests, source locators, causal support sets and independently measured rubric factors.",
+        "Real execution requires separately enrolled isolated targets, approved sensors/recipe, bounded cleanup and per-destination release; this row grants no lab authority."
+      ],
+      "status": "synthetic_verified",
+      "reason": "Invented D2/S2 evidence validated through the real CLI and fixture regressions. Software/measurement coverage only; no live sensor, campaign or model-quality result.",
+      "evidence_references": [
+        "fixtures/case-5c21/public/evidence.json",
+        "fixtures/case-5c21/public/records.jsonl"
+      ]
+    },
+    {
+      "row_id": "synthetic-ad-cross-host",
+      "coverage": {
+        "os": [
+          "windows-client",
+          "windows-server"
+        ],
+        "execution_platform": [
+          "virtual-machine"
+        ],
+        "network": [
+          "flat-lan",
+          "ipv4"
+        ],
+        "identity_domain": [
+          "ad-single-domain"
+        ],
+        "operational_domain": [
+          "enterprise-it"
+        ],
+        "dns_domain": [
+          "internal-authoritative"
+        ],
+        "telemetry": [
+          "identity-audit",
+          "windows-security",
+          "dns"
+        ]
+      },
+      "owner": "Benchmark fixture curator; invented development evidence only",
+      "prerequisites": [
+        "Maintain strict public/truth separation, digests, source locators, causal support sets and independently measured rubric factors.",
+        "Real execution requires separately enrolled isolated targets, approved sensors/recipe, bounded cleanup and per-destination release; this row grants no lab authority."
+      ],
+      "status": "synthetic_verified",
+      "reason": "Invented D3/S3 evidence validated through the real CLI and fixture regressions. Software/measurement coverage only; no live sensor, campaign or model-quality result.",
+      "evidence_references": [
+        "fixtures/case-7d33/public/evidence.json",
+        "fixtures/case-7d33/public/records.jsonl"
+      ]
+    },
+    {
+      "row_id": "synthetic-cross-domain-reentry",
+      "coverage": {
+        "os": [
+          "windows-server"
+        ],
+        "execution_platform": [
+          "virtual-machine"
+        ],
+        "network": [
+          "segmented-vlan",
+          "ipv4"
+        ],
+        "identity_domain": [
+          "ad-cross-forest"
+        ],
+        "operational_domain": [
+          "enterprise-it"
+        ],
+        "dns_domain": [
+          "cross-domain-trust"
+        ],
+        "telemetry": [
+          "identity-audit",
+          "windows-security",
+          "sysmon",
+          "dns"
+        ]
+      },
+      "owner": "Benchmark fixture curator; invented development evidence only",
+      "prerequisites": [
+        "Maintain strict public/truth separation, digests, source locators, causal support sets and independently measured rubric factors.",
+        "Real execution requires separately enrolled isolated targets, approved sensors/recipe, bounded cleanup and per-destination release; this row grants no lab authority."
+      ],
+      "status": "synthetic_verified",
+      "reason": "Invented D4/S4 evidence validated through the real CLI and fixture regressions. Software/measurement coverage only; no live sensor, campaign or model-quality result.",
+      "evidence_references": [
+        "fixtures/case-9e44/public/evidence.json",
+        "fixtures/case-9e44/public/records.jsonl"
+      ]
+    },
+    {
+      "row_id": "synthetic-hybrid-correlation",
+      "coverage": {
+        "os": [
+          "windows-server",
+          "not-applicable"
+        ],
+        "execution_platform": [
+          "virtual-machine",
+          "cloud-control-plane"
+        ],
+        "network": [
+          "hybrid",
+          "ipv4"
+        ],
+        "identity_domain": [
+          "federated-sso",
+          "cloud-iam"
+        ],
+        "operational_domain": [
+          "enterprise-it",
+          "cloud-saas"
+        ],
+        "dns_domain": [
+          "split-horizon"
+        ],
+        "telemetry": [
+          "identity-audit",
+          "sysmon",
+          "cloud-audit",
+          "dns"
+        ]
+      },
+      "owner": "Benchmark fixture curator; invented development evidence only",
+      "prerequisites": [
+        "Maintain strict public/truth separation, digests, source locators, causal support sets and independently measured rubric factors.",
+        "Real execution requires separately enrolled isolated targets, approved sensors/recipe, bounded cleanup and per-destination release; this row grants no lab authority."
+      ],
+      "status": "synthetic_verified",
+      "reason": "Invented D5/S5 evidence validated through the real CLI and fixture regressions. Software/measurement coverage only; no live sensor, campaign or model-quality result.",
+      "evidence_references": [
+        "fixtures/case-af55/public/evidence.json",
+        "fixtures/case-af55/public/records.jsonl"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+manifest_version: 2
+name: hunt-lab
+version: 1.0.0
+description: "Human-operated native QEMU lab with bounded, read-only, case-scoped bot evidence tools."
+author: "Local hunting lab development"
+kind: standalone
+provides_tools: [hunt_lab_query, elastic_search, elastic_aggregate, detection_test, intel_lookup, arkime_sessions, arkime_unique]
+provides_hooks: []
+python_dependencies: []

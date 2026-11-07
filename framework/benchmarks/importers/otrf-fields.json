@@ -1,0 +1,1334 @@
+{
+  "channels": {
+    "Application": {
+      "events": {
+        "1000": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "1001": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "1002": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "2303": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "4": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "4007": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "47": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "48": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "9000": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "windows-application",
+      "telemetry": null
+    },
+    "MSExchange Management": {
+      "events": {
+        "1": {
+          "Level": "keep",
+          "Message": "content",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-management",
+      "telemetry": null
+    },
+    "Microsoft-Exchange-ActiveMonitoring/MaintenanceResult": {
+      "events": {
+        "5": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-monitoring-maintenance",
+      "telemetry": null
+    },
+    "Microsoft-Exchange-ActiveMonitoring/MonitorResult": {
+      "events": {
+        "3": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-monitoring-monitor",
+      "telemetry": null
+    },
+    "Microsoft-Exchange-ActiveMonitoring/ProbeResult": {
+      "events": {
+        "2": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-monitoring-probe",
+      "telemetry": null
+    },
+    "Microsoft-Exchange-ActiveMonitoring/ResponderResult": {
+      "events": {
+        "4": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-monitoring-responder",
+      "telemetry": null
+    },
+    "Microsoft-Exchange-HighAvailability/Network": {
+      "events": {
+        "1001": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "1013": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "1014": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        },
+        "1015": {
+          "Level": "keep",
+          "SourceName": "keep",
+          "Task": "keep"
+        }
+      },
+      "source": "exchange-high-availability",
+      "telemetry": null
+    },
+    "Microsoft-Windows-PowerShell/Operational": {
+      "events": {
+        "40961": {},
+        "40962": {},
+        "4103": {
+          "ContextInfo": "content",
+          "Payload": "content"
+        },
+        "4104": {
+          "MessageNumber": "keep",
+          "MessageTotal": "keep",
+          "Path": "path",
+          "ScriptBlockId": "guid",
+          "ScriptBlockText": "content"
+        },
+        "4105": {
+          "RunspaceId": "guid",
+          "ScriptBlockId": "guid"
+        },
+        "4106": {
+          "RunspaceId": "guid",
+          "ScriptBlockId": "guid"
+        },
+        "53504": {
+          "param1": "keep",
+          "param2": "keep"
+        }
+      },
+      "source": "windows-powershell",
+      "telemetry": "windows-security"
+    },
+    "Microsoft-Windows-Sysmon/Operational": {
+      "events": {
+        "1": {
+          "CommandLine": "content",
+          "Company": "keep",
+          "CurrentDirectory": "path",
+          "Description": "keep",
+          "FileVersion": "keep",
+          "Hashes": "keep",
+          "Image": "basename",
+          "IntegrityLevel": "keep",
+          "LogonGuid": "guid",
+          "LogonId": "keep",
+          "OriginalFileName": "keep",
+          "ParentCommandLine": "content",
+          "ParentImage": "basename",
+          "ParentProcessGuid": "guid",
+          "ParentProcessId": "keep",
+          "ParentUser": "account",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "Product": "keep",
+          "TerminalSessionId": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "10": {
+          "GrantedAccess": "keep",
+          "SourceImage": "basename",
+          "SourceProcessGUID": "guid",
+          "SourceProcessId": "keep",
+          "SourceThreadId": "keep",
+          "SourceUser": "account",
+          "TargetImage": "basename",
+          "TargetProcessGUID": "guid",
+          "TargetProcessId": "keep",
+          "TargetUser": "account",
+          "UtcTime": "keep"
+        },
+        "11": {
+          "CreationUtcTime": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetFilename": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "12": {
+          "EventType": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetObject": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "13": {
+          "Details": "content",
+          "EventType": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetObject": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "14": {
+          "EventType": "keep",
+          "Image": "basename",
+          "NewName": "path",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetObject": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "15": {
+          "CreationUtcTime": "keep",
+          "Hash": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetFilename": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "17": {
+          "EventType": "keep",
+          "Image": "basename",
+          "PipeName": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "18": {
+          "EventType": "keep",
+          "Image": "basename",
+          "PipeName": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "19": {
+          "EventNamespace": "keep",
+          "EventType": "keep",
+          "Name": "opaque",
+          "Operation": "keep",
+          "Query": "content",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "2": {
+          "CreationUtcTime": "keep",
+          "Image": "basename",
+          "PreviousCreationUtcTime": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetFilename": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "20": {
+          "Destination": "content",
+          "EventType": "keep",
+          "Name": "opaque",
+          "Operation": "keep",
+          "Type": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "21": {
+          "Consumer": "content",
+          "EventType": "keep",
+          "Filter": "opaque",
+          "Operation": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "22": {
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "QueryName": "dns",
+          "QueryResults": "content",
+          "QueryStatus": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "23": {
+          "Archived": "keep",
+          "Hashes": "keep",
+          "Image": "basename",
+          "IsExecutable": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetFilename": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "24": {
+          "Archived": "keep",
+          "Hashes": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "Session": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "25": {
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "Type": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "26": {
+          "Hashes": "keep",
+          "Image": "basename",
+          "IsExecutable": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "TargetFilename": "path",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "3": {
+          "DestinationHostname": "dns",
+          "DestinationIp": "ip",
+          "DestinationIsIpv6": "keep",
+          "DestinationPort": "keep",
+          "DestinationPortName": "keep",
+          "Image": "basename",
+          "Initiated": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "Protocol": "keep",
+          "SourceHostname": "dns",
+          "SourceIp": "ip",
+          "SourceIsIpv6": "keep",
+          "SourcePort": "keep",
+          "SourcePortName": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "5": {
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "6": {
+          "Hashes": "keep",
+          "ImageLoaded": "basename",
+          "Signature": "keep",
+          "SignatureStatus": "keep",
+          "Signed": "keep",
+          "UtcTime": "keep"
+        },
+        "7": {
+          "Company": "keep",
+          "Description": "keep",
+          "FileVersion": "keep",
+          "Hashes": "keep",
+          "Image": "basename",
+          "ImageLoaded": "basename",
+          "OriginalFileName": "keep",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "Product": "keep",
+          "Signature": "keep",
+          "SignatureStatus": "keep",
+          "Signed": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        },
+        "8": {
+          "NewThreadId": "keep",
+          "SourceImage": "basename",
+          "SourceProcessGuid": "guid",
+          "SourceProcessId": "keep",
+          "SourceUser": "account",
+          "StartAddress": "keep",
+          "StartFunction": "keep",
+          "StartModule": "basename",
+          "TargetImage": "basename",
+          "TargetProcessGuid": "guid",
+          "TargetProcessId": "keep",
+          "TargetUser": "account",
+          "UtcTime": "keep"
+        },
+        "9": {
+          "Device": "keep",
+          "Image": "basename",
+          "ProcessGuid": "guid",
+          "ProcessId": "keep",
+          "User": "account",
+          "UtcTime": "keep"
+        }
+      },
+      "source": "sysmon",
+      "telemetry": "sysmon"
+    },
+    "Microsoft-Windows-TaskScheduler/Operational": {
+      "events": {
+        "106": {
+          "TaskName": "path",
+          "UserContext": "content"
+        },
+        "129": {
+          "Path": "path",
+          "Priority": "keep",
+          "ProcessID": "keep",
+          "TaskName": "path"
+        },
+        "140": {
+          "TaskName": "path",
+          "UserName": "content"
+        },
+        "141": {
+          "TaskName": "path",
+          "UserName": "content"
+        },
+        "200": {
+          "ActionName": "path",
+          "TaskInstanceId": "guid",
+          "TaskName": "path"
+        },
+        "201": {
+          "ActionName": "path",
+          "EnginePID": "keep",
+          "ResultCode": "keep",
+          "TaskInstanceId": "guid",
+          "TaskName": "path"
+        }
+      },
+      "source": "windows-taskscheduler",
+      "telemetry": "windows-security"
+    },
+    "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational": {
+      "events": {
+        "21": {
+          "Address": "content",
+          "SessionID": "keep",
+          "User": "account"
+        },
+        "24": {
+          "Address": "content",
+          "SessionID": "keep",
+          "User": "account"
+        },
+        "25": {
+          "Address": "content",
+          "SessionID": "keep",
+          "User": "account"
+        },
+        "39": {
+          "Source": "keep",
+          "TargetSession": "keep"
+        },
+        "40": {
+          "Reason": "keep",
+          "Session": "keep"
+        }
+      },
+      "source": "windows-terminal-services",
+      "telemetry": "windows-security"
+    },
+    "Microsoft-Windows-WMI-Activity/Operational": {
+      "events": {
+        "5857": {
+          "Code": "keep",
+          "HostProcess": "basename",
+          "ProcessID": "keep",
+          "ProviderName": "keep",
+          "ProviderPath": "path"
+        },
+        "5858": {
+          "ClientMachine": "host",
+          "ClientProcessId": "keep",
+          "Component": "keep",
+          "Id": "guid",
+          "Operation": "content",
+          "PossibleCause": "content",
+          "ResultCode": "keep",
+          "User": "account"
+        },
+        "5860": {
+          "MachineName": "host",
+          "NamespaceName": "keep",
+          "PossibleCause": "content",
+          "Query": "content",
+          "User": "account",
+          "processid": "keep"
+        },
+        "5861": {
+          "CONSUMER": "content",
+          "ESS": "content",
+          "Namespace": "keep",
+          "PossibleCause": "content"
+        }
+      },
+      "source": "windows-wmi-activity",
+      "telemetry": "windows-security"
+    },
+    "Security": {
+      "events": {
+        "1100": {},
+        "1102": {
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4611": {
+          "LogonProcessName": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4624": {
+          "AuthenticationPackageName": "keep",
+          "ElevatedToken": "keep",
+          "ImpersonationLevel": "keep",
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "LogonGuid": "guid",
+          "LogonProcessName": "keep",
+          "LogonType": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonGuid": "guid",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid",
+          "WorkstationName": "host"
+        },
+        "4625": {
+          "AuthenticationPackageName": "keep",
+          "FailureReason": "keep",
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "LogonProcessName": "keep",
+          "LogonType": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "Status": "keep",
+          "SubStatus": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid",
+          "WorkstationName": "host"
+        },
+        "4627": {
+          "EventCountTotal": "keep",
+          "EventIdx": "keep",
+          "GroupMembership": "content",
+          "LogonType": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4634": {
+          "LogonType": "keep",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4648": {
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "LogonGuid": "guid",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonGuid": "guid",
+          "TargetLogonId": "keep",
+          "TargetServerName": "host",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4656": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "PrivilegeList": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "RestrictedSidCount": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TransactionId": "guid"
+        },
+        "4657": {
+          "HandleId": "keep",
+          "NewValue": "content",
+          "NewValueType": "keep",
+          "ObjectName": "path",
+          "ObjectValueName": "keep",
+          "OldValue": "content",
+          "OldValueType": "keep",
+          "OperationType": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4658": {
+          "HandleId": "keep",
+          "ObjectServer": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4661": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "PrivilegeList": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "Properties": "content",
+          "RestrictedSidCount": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TransactionId": "guid"
+        },
+        "4662": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "AdditionalInfo": "content",
+          "AdditionalInfo2": "content",
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "OperationType": "keep",
+          "Properties": "content",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4663": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4670": {
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4672": {
+          "PrivilegeList": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4673": {
+          "ObjectServer": "keep",
+          "PrivilegeList": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "Service": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4674": {
+          "AccessMask": "keep",
+          "HandleId": "keep",
+          "ObjectName": "path",
+          "ObjectServer": "keep",
+          "ObjectType": "keep",
+          "PrivilegeList": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4688": {
+          "CommandLine": "content",
+          "MandatoryLabel": "sid",
+          "NewProcessId": "keep",
+          "NewProcessName": "basename",
+          "ParentProcessName": "basename",
+          "ProcessId": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid",
+          "TokenElevationType": "keep"
+        },
+        "4689": {
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "Status": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4690": {
+          "SourceHandleId": "keep",
+          "SourceProcessId": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetHandleId": "keep",
+          "TargetProcessId": "keep"
+        },
+        "4697": {
+          "ClientProcessId": "keep",
+          "ClientProcessStartKey": "keep",
+          "ParentProcessId": "keep",
+          "ServiceAccount": "user",
+          "ServiceFileName": "content",
+          "ServiceName": "keep",
+          "ServiceStartType": "keep",
+          "ServiceType": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4698": {
+          "ClientProcessId": "keep",
+          "ClientProcessStartKey": "keep",
+          "FQDN": "dns",
+          "ParentProcessId": "keep",
+          "RpcCallClientLocality": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TaskContent": "content",
+          "TaskName": "path"
+        },
+        "4699": {
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TaskName": "path"
+        },
+        "4702": {
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TaskContentNew": "content",
+          "TaskName": "path"
+        },
+        "4703": {
+          "DisabledPrivilegeList": "keep",
+          "EnabledPrivilegeList": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4719": {
+          "AuditPolicyChanges": "keep",
+          "CategoryId": "keep",
+          "SubcategoryGuid": "guid",
+          "SubcategoryId": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "4720": {
+          "SamAccountName": "user",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid",
+          "UserAccountControl": "keep"
+        },
+        "4728": {
+          "MemberSid": "sid",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4732": {
+          "MemberSid": "sid",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4738": {
+          "AccountExpires": "keep",
+          "AllowedToDelegateTo": "content",
+          "DisplayName": "opaque",
+          "HomeDirectory": "path",
+          "HomePath": "path",
+          "LogonHours": "keep",
+          "NewUacValue": "keep",
+          "OldUacValue": "keep",
+          "PasswordLastSet": "keep",
+          "PrimaryGroupId": "keep",
+          "PrivilegeList": "keep",
+          "ProfilePath": "path",
+          "SamAccountName": "user",
+          "ScriptPath": "path",
+          "SidHistory": "content",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetSid": "sid",
+          "TargetUserName": "user",
+          "UserAccountControl": "keep",
+          "UserParameters": "content",
+          "UserPrincipalName": "account",
+          "UserWorkstations": "content"
+        },
+        "4756": {
+          "MemberSid": "sid",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4768": {
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "PreAuthType": "keep",
+          "ServiceName": "user",
+          "Status": "keep",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid",
+          "TicketEncryptionType": "keep",
+          "TicketOptions": "keep"
+        },
+        "4769": {
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "LogonGuid": "guid",
+          "ServiceName": "user",
+          "ServiceSid": "sid",
+          "Status": "keep",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "account",
+          "TargetUserSid": "sid",
+          "TicketEncryptionType": "keep",
+          "TicketOptions": "keep"
+        },
+        "4776": {
+          "PackageName": "keep",
+          "Status": "keep",
+          "TargetUserName": "user",
+          "Workstation": "host"
+        },
+        "4778": {
+          "AccountDomain": "domain",
+          "AccountName": "user",
+          "ClientAddress": "content",
+          "ClientName": "host",
+          "LogonID": "keep",
+          "SessionName": "keep"
+        },
+        "4779": {
+          "AccountDomain": "domain",
+          "AccountName": "user",
+          "ClientAddress": "content",
+          "ClientName": "host",
+          "LogonID": "keep",
+          "SessionName": "keep"
+        },
+        "4798": {
+          "CallerProcessId": "keep",
+          "CallerProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetSid": "sid",
+          "TargetUserName": "user"
+        },
+        "4799": {
+          "CallerProcessId": "keep",
+          "CallerProcessName": "basename",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetDomainName": "domain",
+          "TargetSid": "sid",
+          "TargetUserName": "user"
+        },
+        "4800": {
+          "SessionId": "keep",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4801": {
+          "SessionId": "keep",
+          "TargetDomainName": "domain",
+          "TargetLogonId": "keep",
+          "TargetUserName": "user",
+          "TargetUserSid": "sid"
+        },
+        "4946": {
+          "ProfileChanged": "keep",
+          "RuleId": "keep",
+          "RuleName": "opaque"
+        },
+        "4948": {
+          "ProfileChanged": "keep",
+          "RuleId": "keep",
+          "RuleName": "opaque"
+        },
+        "4957": {
+          "RuleAttr": "keep",
+          "RuleId": "keep",
+          "RuleName": "opaque"
+        },
+        "4985": {
+          "NewState": "keep",
+          "ProcessId": "keep",
+          "ProcessName": "basename",
+          "ResourceManager": "guid",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TransactionId": "guid"
+        },
+        "5140": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "ObjectType": "keep",
+          "ShareLocalPath": "path",
+          "ShareName": "path",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "5145": {
+          "AccessList": "keep",
+          "AccessMask": "keep",
+          "IpAddress": "ip",
+          "IpPort": "keep",
+          "ObjectType": "keep",
+          "RelativeTargetName": "path",
+          "ShareLocalPath": "path",
+          "ShareName": "path",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "5154": {
+          "Application": "basename",
+          "FilterRTID": "keep",
+          "LayerName": "keep",
+          "LayerRTID": "keep",
+          "ProcessId": "keep",
+          "Protocol": "keep",
+          "SourceAddress": "ip",
+          "SourcePort": "keep"
+        },
+        "5156": {
+          "Application": "basename",
+          "DestAddress": "ip",
+          "DestPort": "keep",
+          "Direction": "keep",
+          "FilterRTID": "keep",
+          "LayerName": "keep",
+          "LayerRTID": "keep",
+          "ProcessID": "keep",
+          "Protocol": "keep",
+          "RemoteMachineID": "sid",
+          "RemoteUserID": "sid",
+          "SourceAddress": "ip",
+          "SourcePort": "keep"
+        },
+        "5158": {
+          "Application": "basename",
+          "FilterRTID": "keep",
+          "LayerName": "keep",
+          "LayerRTID": "keep",
+          "ProcessId": "keep",
+          "Protocol": "keep",
+          "SourceAddress": "ip",
+          "SourcePort": "keep"
+        },
+        "5379": {
+          "ClientProcessId": "keep",
+          "CountOfCredentialsReturned": "keep",
+          "ProcessCreationTime": "keep",
+          "ReadOperation": "keep",
+          "ReturnCode": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid",
+          "TargetName": "opaque",
+          "Type": "keep"
+        },
+        "5381": {
+          "ClientProcessId": "keep",
+          "CountOfCredentialsReturned": "keep",
+          "Flags": "keep",
+          "ProcessCreationTime": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "5382": {
+          "ClientProcessId": "keep",
+          "Flags": "keep",
+          "Identity": "user",
+          "PackageSid": "sid",
+          "ProcessCreationTime": "keep",
+          "Resource": "opaque",
+          "ReturnCode": "keep",
+          "Schema": "guid",
+          "SchemaFriendlyName": "keep",
+          "SubjectDomainName": "domain",
+          "SubjectLogonId": "keep",
+          "SubjectUserName": "user",
+          "SubjectUserSid": "sid"
+        },
+        "5447": {
+          "Action": "keep",
+          "CalloutKey": "guid",
+          "CalloutName": "keep",
+          "ChangeType": "keep",
+          "Conditions": "content",
+          "FilterId": "keep",
+          "FilterKey": "guid",
+          "FilterName": "keep",
+          "FilterType": "keep",
+          "LayerId": "keep",
+          "LayerKey": "guid",
+          "LayerName": "keep",
+          "ProcessId": "keep",
+          "ProviderKey": "guid",
+          "ProviderName": "keep",
+          "UserName": "account",
+          "UserSid": "sid",
+          "Weight": "keep"
+        }
+      },
+      "source": "windows-security",
+      "telemetry": "windows-security"
+    },
+    "System": {
+      "events": {
+        "10": {
+          "MiniportName": "keep",
+          "MiniportNameLen": "keep"
+        },
+        "104": {},
+        "11": {
+          "MiniportName": "keep",
+          "MiniportNameLen": "keep"
+        },
+        "7000": {
+          "param1": "keep",
+          "param2": "keep"
+        },
+        "7009": {
+          "param1": "keep",
+          "param2": "keep"
+        },
+        "7034": {
+          "param1": "keep",
+          "param2": "keep"
+        },
+        "7036": {},
+        "7040": {},
+        "7045": {
+          "AccountName": "account",
+          "ImagePath": "content",
+          "ServiceName": "keep",
+          "ServiceType": "keep",
+          "StartType": "keep"
+        }
+      },
+      "source": "windows-system",
+      "telemetry": "windows-security"
+    },
+    "Windows PowerShell": {
+      "events": {
+        "400": {
+          "CommandLine": "content",
+          "CommandName": "keep",
+          "CommandPath": "path",
+          "CommandType": "keep",
+          "EngineVersion": "keep",
+          "HostApplication": "content",
+          "HostId": "guid",
+          "HostName": "keep",
+          "HostVersion": "keep",
+          "NewEngineState": "keep",
+          "PipelineId": "keep",
+          "PreviousEngineState": "keep",
+          "RunspaceId": "guid",
+          "ScriptName": "path",
+          "SequenceNumber": "keep"
+        },
+        "403": {
+          "CommandLine": "content",
+          "CommandName": "keep",
+          "CommandPath": "path",
+          "CommandType": "keep",
+          "EngineVersion": "keep",
+          "HostApplication": "content",
+          "HostId": "guid",
+          "HostName": "keep",
+          "HostVersion": "keep",
+          "NewEngineState": "keep",
+          "PipelineId": "keep",
+          "PreviousEngineState": "keep",
+          "RunspaceId": "guid",
+          "ScriptName": "path",
+          "SequenceNumber": "keep"
+        },
+        "600": {
+          "CommandLine": "content",
+          "CommandName": "keep",
+          "CommandPath": "path",
+          "CommandType": "keep",
+          "EngineVersion": "keep",
+          "HostApplication": "content",
+          "HostId": "guid",
+          "HostName": "keep",
+          "HostVersion": "keep",
+          "NewProviderState": "keep",
+          "PipelineId": "keep",
+          "ProviderName": "keep",
+          "RunspaceId": "guid",
+          "ScriptName": "path",
+          "SequenceNumber": "keep"
+        },
+        "800": {
+          "CommandLine": "content",
+          "DetailSequence": "keep",
+          "DetailTotal": "keep",
+          "Details": "content",
+          "EngineVersion": "keep",
+          "HostApplication": "content",
+          "HostId": "guid",
+          "HostName": "keep",
+          "HostVersion": "keep",
+          "PipelineId": "keep",
+          "RunspaceId": "guid",
+          "ScriptName": "path",
+          "SequenceNumber": "keep",
+          "UserId": "account"
+        }
+      },
+      "source": "windows-powershell-classic",
+      "telemetry": "windows-security"
+    }
+  },
+  "message_fields": {
+    "Microsoft-Windows-PowerShell/Operational": {
+      "4103": "powershell-module"
+    },
+    "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational": {
+      "21": "terminal-services",
+      "24": "terminal-services",
+      "25": "terminal-services",
+      "39": "terminal-services",
+      "40": "terminal-services"
+    },
+    "Microsoft-Windows-WMI-Activity/Operational": {
+      "5857": "wmi-activity",
+      "5858": "wmi-activity",
+      "5860": "wmi-activity",
+      "5861": "wmi-activity"
+    },
+    "Windows PowerShell": {
+      "400": "powershell-classic",
+      "403": "powershell-classic",
+      "600": "powershell-classic",
+      "800": "powershell-classic"
+    }
+  },
+  "note": "Allowlist for OTRF Security-Datasets JSON-lines exports (flat-timecreated and nxlog-eventtime shapes). Event types without an entry are imported metadata-only (SourceName/Level/Severity/Task/Opcode); unlisted fields are dropped and counted. Content fields (command lines, script blocks, module payloads, registry values, DNS results, service image paths, task XML, WMI consumer text, group memberships, filter conditions, application messages) use the `content` transform: benchmark_sanitize redacts secrets, pseudonymizes identities with the structured-field pseudonyms, masks ATT&CK tokens and truncates explicitly at 16384 bytes. CallTrace, Sysmon RuleName, AccessReason and security descriptors remain absent. message_fields names a parser that extracts fields from the rendered Message when the export carries the event data nowhere else (classic Windows PowerShell; UserData events in the NXLog shape); extracted fields fill only names the record lacks. shape_aliases rename an original field of one record shape to the allowlisted name of the SAME Windows field (verified on the inspected exports). Any operator who adds a field takes responsibility for its release review.",
+  "schema_version": 1,
+  "shape_aliases": {
+    "nxlog-eventtime": {
+      "Security": {
+        "5156": {
+          "ProcessId": "ProcessID"
+        }
+      }
+    }
+  },
+  "version": "otrf-fields-5"
+}

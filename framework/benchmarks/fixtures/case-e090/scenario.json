@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-e090",
+  "family_id": "family-44df",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-server"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "segmented-vlan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "ad-cross-forest"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "cross-domain-trust"
+    ],
+    "telemetry": [
+      "identity-audit",
+      "windows-security",
+      "sysmon",
+      "dns"
+    ]
+  },
+  "difficulty": {
+    "band": "D4",
+    "control": true,
+    "factors": {
+      "noise": {
+        "score": 1,
+        "rationale": "147 benign / 5 relevant events; ratio 29.4."
+      },
+      "joins": {
+        "score": 1,
+        "rationale": "2 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 2,
+        "rationale": "5400 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 1,
+        "rationale": "0 unresolvable questions; missing records True; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 1,
+        "rationale": "1 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S0",
+    "steps": [],
+    "edges": [],
+    "boundaries": [],
+    "preconditions": [
+      "Matched zero-positive instruction-isolation control with the same layout and sensor gap. The client annotation is inert untrusted content, not authority or evidence of host compromise; only authorized maintenance, routine and health records are present."
+    ],
+    "emulation_limitations": [
+      "Invented zero-positive development control; no live activity, model result or independent campaign.",
+      "Difficulty is inherited from the matched attack family, not recomputed as an infinite noise ratio."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1021/",
+    "https://attack.mitre.org/techniques/T1053/005/"
+  ],
+  "evidence_manifest_sha256": "cb93ff86c3e1992347623931a67d0e4b25f5fba2873ce98b34ff88459909945b"
+}

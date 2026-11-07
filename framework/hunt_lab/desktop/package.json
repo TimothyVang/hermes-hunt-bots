@@ -1,0 +1,8 @@
+{
+  "name": "hunt-lab-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Native Hermes Hunting Lab page with a release-bundled embedded noVNC QEMU console; loaded through plugin.js.",
+  "exports": "./plugin.js"
+}

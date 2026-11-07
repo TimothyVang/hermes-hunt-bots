@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-9e44",
+  "family_id": "family-44df",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-server"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "segmented-vlan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "ad-cross-forest"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "cross-domain-trust"
+    ],
+    "telemetry": [
+      "identity-audit",
+      "windows-security",
+      "sysmon",
+      "dns"
+    ]
+  },
+  "difficulty": {
+    "band": "D4",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 1,
+        "rationale": "147 benign / 5 relevant events; ratio 29.4."
+      },
+      "joins": {
+        "score": 1,
+        "rationale": "2 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 2,
+        "rationale": "5400 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 1,
+        "rationale": "0 unresolvable questions; missing records True; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 1,
+        "rationale": "1 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S4",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-e095649de879",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-b",
+        "asset_id": "asset-153448b32466",
+        "boundary_id": "boundary-b",
+        "phase": "persistence"
+      },
+      {
+        "step_id": "step-c",
+        "asset_id": "asset-153448b32466",
+        "boundary_id": "boundary-b",
+        "phase": "reentry"
+      }
+    ],
+    "edges": [
+      [
+        "step-a",
+        "step-b"
+      ],
+      [
+        "step-b",
+        "step-c"
+      ]
+    ],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "domain"
+      },
+      {
+        "boundary_id": "boundary-b",
+        "kind": "identity"
+      }
+    ],
+    "preconditions": [
+      "Entirely invented records; no guest, account, scheduled task or sensor was operated.",
+      "The remote session record itself carries the cross-forest crossing (origin and destination domains) and the conditional-forwarder lookup that resolves the destination; the destination logon is in another network segment.",
+      "The interactive-only foreign-forest identity accepted on the destination host registers a logon-triggered task under that identity; the task runs again after the host reboots, ninety minutes later.",
+      "An authorized maintenance task on a different host, with its own change reference and account, is the competing routine explanation."
+    ],
+    "emulation_limitations": [
+      "Synthetic correlation and scoring illustration only; no live persistence, compromise or model-quality claim.",
+      "The endpoint sensor on the destination host has a declared delivery gap around the task registration; the security log independently records the registration and the re-entry process, so an alternative complete support set exists.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1021/",
+    "https://attack.mitre.org/techniques/T1053/005/"
+  ],
+  "evidence_manifest_sha256": "84aab0432039a9436317a20360e2434d647de983120ec859766057fe13c36f01"
+}

@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "case_id": "case-af55",
+  "evidence_manifest_sha256": "f2e41488d848c4365636334314d306a52c0a494d66c790854f8b0bc9d2fc0e58",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [
+    {
+      "step_id": "step-a",
+      "technique_id": "T1021",
+      "asset_id": "asset-52872df2cab8",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:05:00Z",
+        "end_exclusive": "2026-01-15T00:05:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-902564fa4d3d",
+          "event-c5a42b77c9a3"
+        ]
+      ],
+      "source_receipt_sha256": "518c1073055f4d0f7a26fb81d92ffff9fc556cdb6b50939ff581384959c63b84"
+    },
+    {
+      "step_id": "step-b",
+      "technique_id": "T1053.005",
+      "asset_id": "asset-8145b5308940",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:06:00Z",
+        "end_exclusive": "2026-01-15T00:06:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-902564fa4d3d",
+          "event-c5a42b77c9a3"
+        ]
+      ],
+      "source_receipt_sha256": "518c1073055f4d0f7a26fb81d92ffff9fc556cdb6b50939ff581384959c63b84"
+    },
+    {
+      "step_id": "step-c",
+      "technique_id": "T1053.005",
+      "asset_id": "asset-8145b5308940",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T02:05:00Z",
+        "end_exclusive": "2026-01-15T02:05:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-8199f678c61f",
+          "event-902564fa4d3d"
+        ]
+      ],
+      "source_receipt_sha256": "01aeea3990a4cf56c99abcd19ec094f79fc03240ea07acb6d26cf47a0314b15f"
+    },
+    {
+      "step_id": "step-d",
+      "technique_id": "T1078.004",
+      "asset_id": "asset-8145b5308940",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T02:10:00Z",
+        "end_exclusive": "2026-01-15T02:10:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-43f0f6b2f09e",
+          "event-8199f678c61f",
+          "event-902564fa4d3d"
+        ]
+      ],
+      "source_receipt_sha256": "4d109e7a423c05d482a8c95452ec5d846390ff661ace90ca2714dc3785e9397a"
+    },
+    {
+      "step_id": "step-e",
+      "technique_id": "T1098.003",
+      "asset_id": "asset-6b6591a3f9ac",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T02:15:00Z",
+        "end_exclusive": "2026-01-15T02:15:01Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-43f0f6b2f09e",
+          "event-55086c38d36c",
+          "event-8199f678c61f",
+          "event-902564fa4d3d",
+          "event-c5a42b77c9a3"
+        ]
+      ],
+      "source_receipt_sha256": "67558998bd373ae4ab55d7305538f27e7bec39098608b9082ac3fd96eb82021a"
+    },
+    {
+      "step_id": "step-f",
+      "technique_id": "T1098.001",
+      "asset_id": "asset-1d62a5e71851",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T02:15:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "execution_outcome": "unknown",
+      "observability": "absent",
+      "support_sets": [],
+      "source_receipt_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  ],
+  "edges": [
+    [
+      "step-a",
+      "step-b"
+    ],
+    [
+      "step-b",
+      "step-c"
+    ],
+    [
+      "step-c",
+      "step-d"
+    ],
+    [
+      "step-d",
+      "step-e"
+    ],
+    [
+      "step-e",
+      "step-f"
+    ]
+  ],
+  "controls": [
+    {
+      "control_id": "control-e",
+      "asset_id": "asset-1d62a5e71851",
+      "window_utc": {
+        "start_inclusive": "2026-01-15T00:00:00Z",
+        "end_exclusive": "2026-01-15T03:00:00Z"
+      },
+      "expected_disposition": "insufficient"
+    }
+  ],
+  "assessment_labels": {
+    "question-350755762b2d": 1,
+    "question-6959b0366216": 1,
+    "question-9c2fda27b538": 1,
+    "question-b76ac5a2b07d": null
+  },
+  "lookalike_event_ids": [
+    [
+      "event-0a39356e8bd7",
+      "event-2ad7dda22f28",
+      "event-d4e68a97ac07"
+    ],
+    [
+      "event-82cab7483a7f",
+      "event-d09a6cb7e2c5",
+      "event-f065d26291fd"
+    ]
+  ]
+}

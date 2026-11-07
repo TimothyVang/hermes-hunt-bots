@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "829b1c11aee5b7c46eb156d474b8df4dad76906866d075ac66fd98de54b0bca5",
+  "metadata_sha256": "93db0b54450884d9ffd4a5dcece21c347862fd72d47cf0e9279bd5e2a21f9132",
+  "curated_by": "invented-sample-curator",
+  "curated_utc": "2026-01-02T00:00:00Z",
+  "note": "INVENTED curation for the invented importer sample. Not a real dataset; never use for model evaluation.",
+  "revision": 1,
+  "truth_revision": 1,
+  "attack_release": "v18",
+  "coverage": {
+    "os": [
+      "windows-client"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "flat-lan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "windows-security",
+      "sysmon"
+    ]
+  },
+  "assets": [
+    {
+      "hostname": "LABHOST01",
+      "os_family": "windows-client",
+      "os_version": "Windows 10, invented sample",
+      "architecture": "x86_64",
+      "vendor": "Invented sample"
+    },
+    {
+      "hostname": "LABHOST02",
+      "os_family": "windows-client",
+      "os_version": "Windows 10, invented sample",
+      "architecture": "x86_64",
+      "vendor": "Invented sample"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "technique_id": "T1033",
+      "asset": {
+        "hostname": "LABHOST01"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T09:00:02Z",
+        "end_exclusive": "2026-01-01T09:00:03Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          {
+            "line": 3
+          }
+        ],
+        [
+          {
+            "line": 4
+          }
+        ]
+      ],
+      "boundary_id": "boundary-host",
+      "phase": "initial"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-1",
+      "asset": {
+        "hostname": "LABHOST02"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T09:00:00Z",
+        "end_exclusive": "2026-01-01T09:00:20Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "lookalike_event_ids": [
+    [
+      {
+        "line": 8
+      },
+      {
+        "line": 9
+      }
+    ]
+  ],
+  "sophistication": {
+    "band": "S1",
+    "boundaries": [
+      {
+        "boundary_id": "boundary-host",
+        "kind": "host"
+      }
+    ],
+    "preconditions": [
+      "Invented interactive user session on LABHOST01."
+    ],
+    "emulation_limitations": [
+      "All records are invented; they prove importer behaviour only, never model quality or live coverage."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "source_references": [
+    "https://example.test/otrf-sample/sample_owner_discovery.zip"
+  ]
+}

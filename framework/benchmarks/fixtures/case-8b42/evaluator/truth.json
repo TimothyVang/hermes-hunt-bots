@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "case_id": "case-8b42",
+  "evidence_manifest_sha256": "cfbcfb76a4f943267c90a055bc25ba0d6ade8b4b491f365eb3942cfb03ecf002",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [
+    {
+      "step_id": "step-a",
+      "technique_id": "T1033",
+      "asset_id": "asset-468c7fce70a3",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:03:10+00:00",
+        "end_exclusive": "2026-02-01T00:03:11+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-02556c2037ba",
+          "event-33ab3b53028a"
+        ]
+      ],
+      "source_receipt_sha256": "f784d124d6addfa7bc49ec4dc238bd75277d0f4ffccaa901a0ebb781d800822b"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-b",
+      "asset_id": "asset-05b66815725b",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-010099f46313": 1,
+    "question-8e5f30b8b67e": 0
+  },
+  "lookalike_event_ids": []
+}

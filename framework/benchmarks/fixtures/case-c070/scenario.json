@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-c070",
+  "family_id": "family-55ef",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-server",
+      "not-applicable"
+    ],
+    "execution_platform": [
+      "virtual-machine",
+      "cloud-control-plane"
+    ],
+    "network": [
+      "hybrid",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "federated-sso",
+      "cloud-iam"
+    ],
+    "operational_domain": [
+      "enterprise-it",
+      "cloud-saas"
+    ],
+    "dns_domain": [
+      "split-horizon"
+    ],
+    "telemetry": [
+      "identity-audit",
+      "sysmon",
+      "cloud-audit",
+      "dns"
+    ]
+  },
+  "difficulty": {
+    "band": "D5",
+    "control": true,
+    "factors": {
+      "noise": {
+        "score": 2,
+        "rationale": "650 benign / 5 relevant events; ratio 130."
+      },
+      "joins": {
+        "score": 2,
+        "rationale": "4 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 2,
+        "rationale": "7800 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 2,
+        "rationale": "1 unresolvable questions; missing records True; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 2,
+        "rationale": "2 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S0",
+    "steps": [],
+    "edges": [],
+    "boundaries": [],
+    "preconditions": [
+      "Matched visibility control for the same family and layout: only authorized maintenance, role-rotation, routine and health records are supplied; the resource remains undecidable because its audit source is absent."
+    ],
+    "emulation_limitations": [
+      "Invented zero-positive development control; no live activity, model result or independent campaign.",
+      "Difficulty is inherited from the matched attack family, not recomputed as an infinite noise ratio."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1021/",
+    "https://attack.mitre.org/techniques/T1053/005/",
+    "https://attack.mitre.org/techniques/T1078/004/",
+    "https://attack.mitre.org/techniques/T1098/001/",
+    "https://attack.mitre.org/techniques/T1098/003/"
+  ],
+  "evidence_manifest_sha256": "2265b4bbd3e9a19c92ea5a4cda4dd8eb2d8bbfe72be533e78c3a5ca2852d49c6"
+}

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "case_id": "case-7d33",
+  "evidence_manifest_sha256": "1b2aeae3637f90d5192dfaf212475d9db05452dd642d3e218da5e8863e6cf3a7",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [
+    {
+      "step_id": "step-a",
+      "technique_id": "T1018",
+      "asset_id": "asset-356ccc5146d8",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:01:00+00:00",
+        "end_exclusive": "2026-02-01T00:01:02+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-42b8be3dbf7a",
+          "event-48b981e7bf76"
+        ]
+      ],
+      "source_receipt_sha256": "ccfb4bb53a14014e11353a552278d0accd42214d967a9fd13393d2bcb8e052cd"
+    },
+    {
+      "step_id": "step-b",
+      "technique_id": "T1021.006",
+      "asset_id": "asset-356ccc5146d8",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:20:58+00:00",
+        "end_exclusive": "2026-02-01T00:21:01+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-132b46a1149b",
+          "event-42b8be3dbf7a",
+          "event-c0ad5d265390",
+          "event-fb6c2e4b7ef5"
+        ],
+        [
+          "event-0ea8e46a5a3f",
+          "event-132b46a1149b",
+          "event-42b8be3dbf7a",
+          "event-fb6c2e4b7ef5"
+        ]
+      ],
+      "source_receipt_sha256": "06abe23a139cee6bbed1083077f714c3c339fce43a2bea9f5977c5916e140953"
+    },
+    {
+      "step_id": "step-c",
+      "technique_id": "T1033",
+      "asset_id": "asset-e6775df4cd83",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:21:05+00:00",
+        "end_exclusive": "2026-02-01T00:21:06+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-132b46a1149b",
+          "event-c4a84ae05b26"
+        ]
+      ],
+      "source_receipt_sha256": "801996035c25b4a263dd7c46b9a3c83bbcfc54930df16f3c25e44b3a0307f3f9"
+    }
+  ],
+  "edges": [
+    [
+      "step-a",
+      "step-b"
+    ],
+    [
+      "step-b",
+      "step-c"
+    ]
+  ],
+  "controls": [
+    {
+      "control_id": "control-d",
+      "asset_id": "asset-1aac67a05416",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-0056e1e43903": 1,
+    "question-11774afc52dd": 0,
+    "question-304abfd94d7f": 0,
+    "question-d25e3991be86": 1
+  },
+  "lookalike_event_ids": [
+    [
+      "event-5496aa59397f",
+      "event-5dfde1933c71",
+      "event-ccc903f2bab7"
+    ]
+  ]
+}

@@ -1,0 +1,5 @@
+name: framework-coordinator
+version: "1.0.0"
+description: "Coordinates human-led incident response stages and approved native analysis delegation."
+distribution_owned:
+  - SOUL.md

@@ -1,0 +1,19 @@
+{
+  "case_id": "dns-lab-001",
+  "question": "What activity is observed, how does it compare across the two hosts, what alternative explanations remain, and which coverage gaps limit conclusions? Cite event.id values and separate observations from intent; do not assume compromise.",
+  "schema_version": 1,
+  "sources": [
+    {
+      "artifact": "events.jsonl",
+      "coverage": "Selected invented Windows process, local logon, DNS, network, task and coverage records; 40 records."
+    },
+    {
+      "artifact": "traffic.pcap",
+      "coverage": "Invented DNS query/response pairs matching the endpoint DNS records; Ethernet/IPv4/UDP only; 32 packets."
+    }
+  ],
+  "time_range_utc": {
+    "end_exclusive": "2025-04-15T09:10:00Z",
+    "start_inclusive": "2025-04-15T09:00:00Z"
+  }
+}

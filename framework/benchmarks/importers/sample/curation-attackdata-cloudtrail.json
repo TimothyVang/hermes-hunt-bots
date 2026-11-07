@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "a53d8802249077bf8ab5cb05e4a7cc5309f3a3fb19d672b6e9e036c8c94048ce",
+  "metadata_sha256": "9cb0aabd8f732d59e8a42217431f3aba1f747b79228be8ae01575ef92806a132",
+  "curated_by": "INVENTED sample curator",
+  "curated_utc": "2026-01-02T00:00:00+00:00",
+  "note": "INVENTED curation for tests only; not an answer key for any real data.",
+  "revision": 1,
+  "truth_revision": 1,
+  "attack_release": "v20",
+  "clock_declaration": null,
+  "coverage": {
+    "os": [
+      "not-applicable"
+    ],
+    "execution_platform": [
+      "cloud-control-plane"
+    ],
+    "network": [
+      "routed-wan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "cloud-iam"
+    ],
+    "operational_domain": [
+      "cloud-saas"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "cloud-audit"
+    ]
+  },
+  "assets": [
+    {
+      "asset_name": "123456789012",
+      "os_family": "not-applicable",
+      "os_version": null,
+      "architecture": null,
+      "vendor": "Amazon Web Services"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "technique_id": "T1562.008",
+      "asset": {
+        "asset_name": "123456789012"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T00:05:30Z",
+        "end_exclusive": "2026-01-01T00:05:31Z"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          {
+            "record_id": "00000000-0000-4000-8000-0000000000a4"
+          }
+        ]
+      ],
+      "boundary_id": "boundary-account",
+      "phase": "initial"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {
+      "control_id": "control-1",
+      "asset": {
+        "asset_name": "123456789012"
+      },
+      "window_utc": {
+        "start_inclusive": "2026-01-01T00:00:00Z",
+        "end_exclusive": "2026-01-01T00:04:00Z"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "lookalike_event_ids": [
+    [
+      {
+        "line": 6
+      }
+    ]
+  ],
+  "sophistication": {
+    "band": "S1",
+    "boundaries": [
+      {
+        "boundary_id": "boundary-account",
+        "kind": "cloud"
+      }
+    ],
+    "preconditions": [
+      "INVENTED: IAM user with CloudTrail permissions"
+    ],
+    "emulation_limitations": [
+      "INVENTED sample"
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "source_references": [
+    "https://example.test/invented-cloudtrail-sample"
+  ],
+  "assessment_windows": [
+    {
+      "start_inclusive": "2026-01-01T00:00:00Z",
+      "end_exclusive": "2026-01-01T00:04:00Z"
+    },
+    {
+      "start_inclusive": "2026-01-01T00:04:00Z",
+      "end_exclusive": "2026-01-01T00:06:01Z"
+    }
+  ]
+}

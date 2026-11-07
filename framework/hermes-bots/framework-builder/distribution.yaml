@@ -1,0 +1,5 @@
+name: framework-builder
+version: "1.0.0"
+description: "Drafts authorized detection content proposals without deployment or remediation."
+distribution_owned:
+  - SOUL.md

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "case_id": "case-5c21",
+  "evidence_manifest_sha256": "16d6759db8c7b614317c7e38286bc29e10d5d1d5d3d7214e60dd5efb1a8e5966",
+  "truth_revision": 2,
+  "attack_release": "v20",
+  "steps": [
+    {
+      "step_id": "step-a",
+      "technique_id": "T1059.004",
+      "asset_id": "asset-f544d4ca8fc5",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:01:00+00:00",
+        "end_exclusive": "2026-02-01T00:01:01+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-28b417821506"
+        ]
+      ],
+      "source_receipt_sha256": "73deccb33805d4916b94122406943896ba898e47083a33cc4624fd7c8f2d033d"
+    },
+    {
+      "step_id": "step-b",
+      "technique_id": "T1033",
+      "asset_id": "asset-f544d4ca8fc5",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:11:00+00:00",
+        "end_exclusive": "2026-02-01T00:11:01+00:00"
+      },
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [
+        [
+          "event-28b417821506",
+          "event-d2d9ecef9e43"
+        ]
+      ],
+      "source_receipt_sha256": "fc2cf71b8c58d9cb1a7d3020755efacf1dac8912cb8138c6209f3936b81d8b48"
+    }
+  ],
+  "edges": [
+    [
+      "step-a",
+      "step-b"
+    ]
+  ],
+  "controls": [
+    {
+      "control_id": "control-b",
+      "asset_id": "asset-be56f87185eb",
+      "window_utc": {
+        "start_inclusive": "2026-02-01T00:00:00+00:00",
+        "end_exclusive": "2026-02-01T00:30:00+00:00"
+      },
+      "expected_disposition": "benign"
+    }
+  ],
+  "assessment_labels": {
+    "question-9b668acf6715": 0,
+    "question-f5f6d91967d3": 1
+  },
+  "lookalike_event_ids": [
+    [
+      "event-2a8e687fcb4d",
+      "event-42180f592830"
+    ]
+  ]
+}

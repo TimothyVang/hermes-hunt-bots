@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-d080",
+  "family_id": "family-22bf",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "linux"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "isolated-airgap",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "workgroup-local"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "no-dns"
+    ],
+    "telemetry": [
+      "linux-audit"
+    ]
+  },
+  "difficulty": {
+    "band": "D1",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 0,
+        "rationale": "6 benign / 1 relevant events; ratio 6."
+      },
+      "joins": {
+        "score": 0,
+        "rationale": "1 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 0,
+        "rationale": "0 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 0,
+        "rationale": "0 unresolvable questions; missing records False; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 0,
+        "rationale": "0 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S1",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-6432c3392362",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      }
+    ],
+    "edges": [],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "host"
+      }
+    ],
+    "preconditions": [
+      "The same web-worker context attempts to execute id; a local execution policy denies the attempt before process creation."
+    ],
+    "emulation_limitations": [
+      "Only the attempted account-discovery invocation is observable; no id child, output or successful compromise is claimed. This is an observable attempt, not an S0 negative control.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1033/"
+  ],
+  "evidence_manifest_sha256": "dd945509a359783dbb30967ba38c74f233028404b76feeb19c74cc9079a694b9"
+}

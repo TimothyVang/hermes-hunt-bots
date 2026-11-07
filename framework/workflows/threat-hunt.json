@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "threat-hunt",
+  "description": "Human-operated defensive threat hunting from explicitly approved supplied evidence, with parallel evidence and hypothesis work, joined analysis, independent review, and a human-reviewed disposition; no collection or response actions.",
+  "tasks": [
+    {
+      "key": "scope",
+      "title": "Approve the hunt scope and evidence boundary",
+      "role": "coordinator",
+      "scope": "Define the bounded defensive question and record the operator-approved supplied sources, exact time range and timezone, authority to use them, and explicit exclusions. Sources must be supplied manually; do not browse, collect live telemetry, scan networks, execute tools, or access private archives, .env files, credentials, profiles, logs, or account data. Do not remediate or mutate production. If authority, source handling, or scope is unclear, stop and request a separate human authorization.",
+      "acceptance": "Submit a scope handoff naming the approved supplied artifact paths/references, time bounds, authority and exclusions, hunt question, and criteria for sufficient evidence. State explicitly that no other sources or collection are authorized. Treat this as a procedural boundary, not technical enforcement; request separate authorization before any out-of-scope activity.",
+      "depends_on": []
+    },
+    {
+      "key": "evidence",
+      "title": "Map approved evidence and coverage",
+      "role": "researcher",
+      "scope": "After scope is human-approved, examine only the manually supplied approved sources and the bounded time range recorded in the scope handoff. Do not browse, collect telemetry, scan, execute tools, access private archives, .env files, credentials, profiles, logs, or account data, or alter production. Do not treat a missing record as proof that an event did not occur.",
+      "acceptance": "Submit a sourced evidence inventory with stable artifact paths/references and precise locators for each relevant observation, time bounds, coverage actually examined, telemetry/source gaps, contradictory observations, and limits on what can be concluded. Distinguish direct observations from interpretation. Explain whether evidence is sufficient for each scoped question; state when it is insufficient. No assertion of compromise or absence may exceed the supplied evidence and coverage.",
+      "depends_on": ["scope"]
+    },
+    {
+      "key": "hypotheses",
+      "title": "Develop competing bounded hypotheses",
+      "role": "researcher",
+      "scope": "After scope is human-approved, develop testable explanations for the scoped question using only the supplied approved scope and sources. Do not browse, collect telemetry, scan, execute tools, or access private archives, .env files, credentials, profiles, logs, or account data. Do not treat a hypothesis, model output, or absent telemetry as an observation.",
+      "acceptance": "Submit clearly labeled hypotheses and their expected supporting and disconfirming evidence, plausible benign and alternative explanations, and specific unresolved questions. Tie claims to supplied evidence locators where applicable; do not invent observations or assert compromise or absence. Identify what approved evidence would be needed to distinguish alternatives and request separate authorization if it is not already supplied.",
+      "depends_on": ["scope"]
+    },
+    {
+      "key": "analysis",
+      "title": "Analyze evidence against competing hypotheses",
+      "role": "researcher",
+      "scope": "Synthesize only the human-approved scope, evidence handoff, and hypotheses handoff. Use locators from supplied artifacts, not assumed access to artifact contents. Do not browse, collect telemetry, scan, execute tools, access private archives, .env files, credentials, profiles, logs, or account data, or perform remediation or production changes.",
+      "acceptance": "Submit a concise analysis citing exact evidence locators and distinguishing direct observation, hypothesis, and inference. Assess evidence sufficiency and actual coverage; test competing and benign explanations; address contradictory evidence, telemetry gaps, uncertainty, and unresolved questions. Bound any negative statement to the sources, time range, and coverage actually reviewed. Do not automatically assert compromise or its absence. Give a disposition for every unresolved finding and identify the human decision or separately authorized evidence needed next.",
+      "depends_on": ["scope", "evidence", "hypotheses"]
+    },
+    {
+      "key": "review",
+      "title": "Independently review the hunt analysis",
+      "role": "reviewer",
+      "scope": "Review the approved scope, evidence and hypothesis handoffs, and analysis against the supplied approved sources and criteria. Do not expand collection, browse, scan, execute tools, access forbidden private data, or alter production. Do not treat approval or citation presence as proof. Disclose any independence limitation.",
+      "acceptance": "Submit an evidence-based check of scope compliance, locator accuracy, observation/hypothesis/inference distinctions, coverage and sufficiency, alternative and contradictory explanations, bounded negative claims, uncertainty, and the disposition of every unresolved finding. Identify unsupported claims and specific corrections or missing evidence. Recommend acceptance or revision for a human decision; do not approve on the human's behalf and do not imply that findings were remediated.",
+      "depends_on": ["scope", "evidence", "hypotheses", "analysis"]
+    },
+    {
+      "key": "handoff",
+      "title": "Prepare the final hunt disposition handoff",
+      "role": "coordinator",
+      "scope": "Prepare a human decision handoff from the approved scope, evidence, hypotheses, analysis and review. Preserve source locators, uncertainty, contradictory evidence and unresolved findings. Do not claim remediation, change production, publish, or initiate response actions. Request separate authorization for any activity beyond this supplied-evidence workflow.",
+      "acceptance": "Submit a concise, traceable final disposition that states the scoped question and boundaries, key observations with locators, analysis and review conclusions, actual evidence coverage/sufficiency, competing explanations, bounded conclusions, and each unresolved finding with its explicit disposition and requested human decision or next authorization. Do not assert compromise or its absence without sufficient evidence; this handoff is not a response action or technical clearance. A human must review and approve or reject it.",
+      "depends_on": ["scope", "evidence", "hypotheses", "analysis", "review"]
+    }
+  ]
+}

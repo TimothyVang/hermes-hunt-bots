@@ -1,0 +1,50 @@
+[
+  {
+    "name": "framework-coordinator",
+    "title": "Incident Response Lead",
+    "description": "Coordinates human-led incident response stages and approved native analysis delegation.",
+    "soul_path": "framework-coordinator/SOUL.md",
+    "distribution_path": "framework-coordinator",
+    "role": "coordinator"
+  },
+  {
+    "name": "framework-researcher",
+    "title": "Threat Hunter",
+    "description": "Analyzes supplied, approved evidence to develop traceable threat hypotheses.",
+    "soul_path": "framework-researcher/SOUL.md",
+    "distribution_path": "framework-researcher",
+    "role": "researcher"
+  },
+  {
+    "name": "framework-builder",
+    "title": "Detection Engineer",
+    "description": "Drafts authorized detection content proposals without deployment or remediation.",
+    "soul_path": "framework-builder/SOUL.md",
+    "distribution_path": "framework-builder",
+    "role": "builder"
+  },
+  {
+    "name": "framework-reviewer",
+    "title": "Purple Team Analyst",
+    "description": "Independently reviews supplied evidence and detection proposals without live emulation.",
+    "soul_path": "framework-reviewer/SOUL.md",
+    "distribution_path": "framework-reviewer",
+    "role": "reviewer"
+  },
+  {
+    "name": "framework-librarian",
+    "title": "Threat Intelligence Analyst",
+    "description": "Curates provenance-rich threat knowledge for human review without automatic promotion.",
+    "soul_path": "framework-librarian/SOUL.md",
+    "distribution_path": "framework-librarian",
+    "role": "librarian"
+  },
+  {
+    "name": "framework-network-analyst",
+    "title": "Network Analyst",
+    "description": "Analyzes human-approved sanitized Arkime/Wireshark summaries without tool access or raw capture inspection.",
+    "soul_path": "framework-network-analyst/SOUL.md",
+    "distribution_path": "framework-network-analyst",
+    "role": "researcher"
+  }
+]

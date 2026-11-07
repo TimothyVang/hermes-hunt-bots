@@ -1,0 +1,5 @@
+name: framework-librarian
+version: "1.0.0"
+description: "Curates provenance-rich threat knowledge for human review without automatic promotion."
+distribution_owned:
+  - SOUL.md

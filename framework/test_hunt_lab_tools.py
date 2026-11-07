@@ -1,0 +1,265 @@
+"""Host-side hunt_lab tools: registration, ownership-independent wiring, bounds, and guest calls."""
+from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import types
+import unittest
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+
+import hunt_lab
+from hunt_lab import query_adapter, runtime as lab_runtime
+
+CASE = 'lab-med-001'
+ANALYST = 'framework-network-analyst'
+HOST_TOOLS = {'elastic_search', 'elastic_aggregate', 'detection_test', 'intel_lookup',
+              'arkime_sessions', 'arkime_unique'}
+
+
+class GuestStub:
+    """Loopback stand-in for the guest lab_server; records every request it receives."""
+
+    def __init__(self, case_id=CASE):
+        self.case_id = case_id
+        self.requests = []
+        self.overrides = {}
+        stub = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                url = urlsplit(self.path)
+                params = {key: values[0] for key, values in parse_qs(url.query, keep_blank_values=True).items()}
+                stub.requests.append((url.path, params, self.headers.get('X-Hermes-Profile')))
+                status, body, headers = stub.overrides.get(url.path) or stub.default(url.path, params)
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
+                self.send_response(status)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f'http://127.0.0.1:{self.server.server_address[1]}'
+
+    def default(self, path, params):
+        if path == '/case':
+            return 200, {'case_id': self.case_id, 'question': 'synthetic'}, {}
+        if path == '/events':
+            return 200, {'case_id': self.case_id, 'dataset': 'events', 'read_only': True,
+                         'total': 1, 'records': [{'event': {'id': 'evt-000001'}}]}, {}
+        return 200, {'case_id': self.case_id, 'path': path, 'echo': params}, {}
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def endpoint_calls(self):
+        return [item for item in self.requests if item[0] != '/case']
+
+
+class Runtime:
+    def __init__(self, lab_url, state='running'):
+        self.lab_url, self.state, self.calls = lab_url, state, []
+
+    def invoke(self, action, *, state_dir, profile):
+        self.calls.append((action, state_dir, profile))
+        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url}
+
+
+class ToolCallTests(unittest.TestCase):
+    def setUp(self):
+        self.guest = GuestStub()
+        self.addCleanup(self.guest.close)
+        self.runtime = Runtime(self.guest.url)
+
+    def call(self, name, arguments, profile='framework-researcher', state_dir='analyst-state'):
+        return query_adapter.call(name, arguments, runtime=self.runtime, state_dir=state_dir, profile=profile)
+
+    def test_each_tool_reaches_only_its_guest_endpoint_with_caller_identity(self):
+        cases = {
+            'elastic_search': ({'q': 'host.name:ws-01', 'size': 25, 'sort': 'desc', 'after': 'abc==',
+                                'fields': 'event.id,@timestamp,process.command_line'},
+                               '/es/search', {'q': 'host.name:ws-01', 'size': '25', 'sort': 'desc',
+                                              'after': 'abc==', 'fields': 'event.id,@timestamp,process.command_line'}),
+            'elastic_aggregate': ({'field': '@timestamp', 'interval': '5m'},
+                                  '/es/aggs', {'q': '', 'field': '@timestamp', 'size': '20', 'interval': '5m'}),
+            'detection_test': ({'q': 'process.name:rundll32.exe', 'name': 'rundll32 outbound'},
+                               '/es/detect', {'q': 'process.name:rundll32.exe', 'name': 'rundll32 outbound'}),
+            'intel_lookup': ({'values': '203.0.113.7,bad.example'}, '/intel', {'values': '203.0.113.7,bad.example'}),
+            'arkime_sessions': ({'expression': 'ip.dst == 203.0.113.7', 'length': 10, 'start': 20},
+                                '/arkime/sessions', {'expression': 'ip.dst == 203.0.113.7', 'length': '10', 'start': '20'}),
+            'arkime_unique': ({'field': 'host.dns'}, '/arkime/unique', {'expression': '', 'field': 'host.dns', 'counts': '1'}),
+        }
+        self.assertEqual(set(cases), HOST_TOOLS)
+        for name, (arguments, path, params) in cases.items():
+            with self.subTest(tool=name):
+                self.guest.requests.clear()
+                result = self.call(name, {'case_id': CASE, **arguments}, profile='framework-reviewer')
+                self.assertTrue(result['ok'], result)
+                self.assertEqual((result['tool'], result['case_id'], result['profile']),
+                                 (name, CASE, 'framework-reviewer'))
+                self.assertEqual(result['result']['path'], path)
+                self.assertEqual(self.guest.endpoint_calls(), [(path, params, 'framework-reviewer')])
+                # The loaded case is confirmed before the scoped query.
+                self.assertEqual(self.guest.requests[0][0], '/case')
+        self.assertTrue(all(call == ('status', 'analyst-state', ANALYST) for call in self.runtime.calls))
+
+    def test_case_mismatch_stops_before_any_scoped_query(self):
+        result = self.call('elastic_search', {'case_id': 'dns-lab-001'})
+        self.assertEqual((result['ok'], result['error']), (False, 'case_mismatch'))
+        self.assertEqual(self.guest.endpoint_calls(), [])
+
+    def test_out_of_bounds_arguments_never_reach_the_lab(self):
+        invalid = [
+            ('elastic_search', {'case_id': CASE, 'size': 201}),
+            ('elastic_search', {'case_id': CASE, 'size': True}),
+            ('elastic_search', {'case_id': CASE, 'q': 'x' * 501}),
+            ('elastic_search', {'case_id': CASE, 'sort': 'random'}),
+            ('elastic_search', {'case_id': CASE, 'fields': 'event.id,../etc'}),
+            ('elastic_search', {'case_id': CASE, 'index': 'other'}),
+            ('elastic_search', {'case_id': 'Not_A_Case'}),
+            ('elastic_search', {'q': 'no case'}),
+            ('elastic_aggregate', {'case_id': CASE, 'field': 'host.name', 'interval': '5m'}),
+            ('elastic_aggregate', {'case_id': CASE, 'field': '@timestamp', 'interval': '2h'}),
+            ('elastic_aggregate', {'case_id': CASE, 'field': 'host.name', 'size': 101}),
+            ('elastic_aggregate', {'case_id': CASE}),
+            ('detection_test', {'case_id': CASE, 'q': 'a', 'name': 'n' * 81}),
+            ('detection_test', {'case_id': CASE, 'name': 'missing query'}),
+            ('intel_lookup', {'case_id': CASE, 'values': ','.join(['v'] * 51)}),
+            ('intel_lookup', {'case_id': CASE, 'values': 'a' * 201}),
+            ('intel_lookup', {'case_id': CASE, 'values': 'a,,b'}),
+            ('arkime_sessions', {'case_id': CASE, 'start': 10001}),
+            ('arkime_sessions', {'case_id': CASE, 'length': 0}),
+            ('arkime_sessions', {'case_id': CASE, 'expression': 'a\nb'}),
+            ('arkime_unique', {'case_id': CASE, 'field': 'ip.dst; drop'}),
+        ]
+        for name, arguments in invalid:
+            with self.subTest(tool=name, arguments=arguments):
+                result = self.call(name, arguments)
+                self.assertFalse(result['ok'])
+        self.assertEqual(self.guest.requests, [])
+        self.assertEqual(self.runtime.calls, [])
+
+    def test_guest_error_codes_are_relayed_but_free_text_is_not(self):
+        self.guest.overrides['/es/search'] = (400, {'error': 'invalid_field'}, {})
+        result = self.call('elastic_search', {'case_id': CASE, 'fields': 'unknown.field'})
+        self.assertEqual((result['error'], result['detail']), ('lab_http_400', 'invalid_field'))
+        self.guest.overrides['/es/search'] = (400, {'error': 'Traceback: C:/private/path'}, {})
+        result = self.call('elastic_search', {'case_id': CASE})
+        self.assertEqual(result['error'], 'lab_http_400')
+        self.assertNotIn('detail', result)
+
+    def test_advertised_fields_are_exactly_the_guest_allowlists(self):
+        sys.path.insert(0, str(Path(query_adapter.__file__).parent / 'guest'))
+        try:
+            import lab_server
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(set(query_adapter.ES_AGG_FIELDS), set(lab_server.AGG_FIELDS))
+        self.assertEqual(set(query_adapter.ES_RETURN_FIELDS), set(lab_server.SEARCH_FIELDS))
+        self.assertEqual(query_adapter.ARKIME_SESSION_FIELDS, tuple(lab_server.ARKIME_SESSION_FIELDS))
+        self.assertEqual(set(query_adapter.ARKIME_UNIQUE_FIELDS), set(lab_server.ARKIME_UNIQUE_FIELDS))
+        described = query_adapter.TOOLS['elastic_search'][2]['parameters']['properties']['fields']['description']
+        self.assertIn('winlog.event_data.TargetImage', described)
+
+    def test_oversized_redirected_or_foreign_case_responses_are_refused(self):
+        self.guest.overrides['/arkime/sessions'] = (200, b'{"case_id":"lab-med-001","x":"' + b'a' * (512 * 1024) + b'"}', {})
+        self.assertEqual(self.call('arkime_sessions', {'case_id': CASE})['error'], 'lab_response_too_large')
+        self.guest.overrides['/arkime/unique'] = (302, {}, {'Location': 'http://example.invalid/'})
+        self.assertEqual(self.call('arkime_unique', {'case_id': CASE, 'field': 'ip.src'})['error'], 'lab_http_302')
+        self.guest.overrides['/intel'] = (200, {'case_id': 'other-case', 'matches': []}, {})
+        self.assertEqual(self.call('intel_lookup', {'case_id': CASE, 'values': 'x'})['error'], 'lab_invalid_response')
+
+    def test_stopped_vm_non_loopback_url_or_unresolved_state_fail_closed(self):
+        self.runtime.state = 'stopped'
+        self.assertEqual(self.call('elastic_search', {'case_id': CASE})['error'], 'owned_vm_not_running')
+        self.runtime.state, self.runtime.lab_url = 'running', 'http://192.0.2.10:8765'
+        self.assertEqual(self.call('elastic_search', {'case_id': CASE})['error'], 'invalid_owned_endpoint')
+        self.runtime.lab_url = self.guest.url
+        self.assertEqual(self.call('elastic_search', {'case_id': CASE}, state_dir=None)['error'],
+                         'lab_state_unavailable')
+        self.assertEqual(self.guest.requests, [])
+
+    def test_existing_hunt_lab_query_behavior_is_kept(self):
+        guest = GuestStub(case_id='dns-lab-001')
+        self.addCleanup(guest.close)
+        self.runtime.lab_url = guest.url
+        result = self.call('hunt_lab_query', {'case_id': 'dns-lab-001', 'dataset': 'events', 'q': 'dns', 'limit': 200},
+                           profile=ANALYST)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['evidence']['records'], [{'event': {'id': 'evt-000001'}}])
+        self.assertEqual(guest.endpoint_calls(),
+                         [('/events', {'q': 'dns', 'host': '', 'limit': '200', 'offset': '0'}, ANALYST)])
+        case = self.call('hunt_lab_query', {'case_id': 'dns-lab-001', 'dataset': 'case'}, profile=ANALYST)
+        self.assertEqual(case['evidence']['case_id'], 'dns-lab-001')
+        self.assertFalse(self.call('hunt_lab_query', {'case_id': 'dns-lab-001', 'dataset': 'events', 'offset': 5001},
+                                   profile=ANALYST)['ok'])
+
+
+class RegistrationTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def register(self, home, owner):
+        constants = types.SimpleNamespace(get_hermes_home=lambda: home, profile_name_for_home=lambda _home: owner)
+        ctx = types.SimpleNamespace(tools={}, commands=[])
+        ctx.register_cli_command = lambda **kwargs: ctx.commands.append(kwargs['name'])
+        ctx.register_tool = lambda name, toolset, schema, handler: ctx.tools.__setitem__(name, (toolset, schema, handler))
+        with patch.dict(sys.modules, {'hermes_constants': constants}):
+            hunt_lab.register(ctx)
+        return ctx
+
+    def test_every_framework_profile_registers_all_tools_against_the_analyst_lab(self):
+        analyst_state = self.root / 'profiles' / ANALYST / 'hunt-lab-vm'
+        for owner in query_adapter.FRAMEWORK_PROFILES:
+            with self.subTest(profile=owner):
+                ctx = self.register(self.root / 'profiles' / owner, owner)
+                self.assertEqual(ctx.commands, ['hunt-lab'])
+                self.assertEqual(set(ctx.tools), HOST_TOOLS | {'hunt_lab_query'})
+                for name, (toolset, schema, _handler) in ctx.tools.items():
+                    self.assertEqual(toolset, 'hunt_lab')
+                    self.assertEqual(schema['name'], name)
+                    self.assertIn('case_id', schema['parameters']['required'])
+                    self.assertFalse(schema['parameters']['additionalProperties'])
+                calls = []
+                status = lambda action, *, state_dir, profile: calls.append((action, Path(state_dir), profile)) or {}
+                with patch.object(lab_runtime, 'invoke', side_effect=status):
+                    output = ctx.tools['elastic_search'][2]({'case_id': CASE})
+                self.assertEqual(json.loads(output)['error'], 'owned_vm_not_running')
+                self.assertEqual(calls, [('status', analyst_state, ANALYST)])
+
+    def test_non_framework_or_unanchored_homes_get_no_working_lab(self):
+        self.assertEqual(self.register(self.root / 'profiles' / 'default', 'default').tools, {})
+        ctx = self.register(self.root / 'elsewhere', 'framework-builder')
+        with patch.object(lab_runtime, 'invoke', side_effect=AssertionError('no status without analyst state')):
+            output = ctx.tools['detection_test'][2]({'case_id': CASE, 'q': 'a', 'name': 'b'})
+        self.assertEqual(json.loads(output)['error'], 'lab_state_unavailable')
+
+    def test_vm_lifecycle_cli_refuses_every_profile_but_the_analyst(self):
+        for requested in sorted(query_adapter.FRAMEWORK_PROFILES - {ANALYST}):
+            cli = types.SimpleNamespace(explicit_cli_profile=lambda requested=requested: requested)
+            constants = types.SimpleNamespace(get_hermes_home=lambda: self.root, profile_name_for_home=lambda _h: requested)
+            stdout = io.StringIO()
+            with patch.dict(sys.modules, {'hermes_cli': types.ModuleType('hermes_cli'), 'hermes_cli.main': cli,
+                                          'hermes_constants': constants}), redirect_stdout(stdout):
+                code = hunt_lab._command(types.SimpleNamespace(hunt_lab_operation='start'))
+            self.assertEqual(code, 2)
+            self.assertEqual(json.loads(stdout.getvalue())['state'], 'refused')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,35 @@
+title: INVENTED sample - owner discovery (not an OTRF dataset)
+id: SDWIN-990101000001
+contributors:
+- Invented for importer tests
+creation_date: 2026/01/01
+modification_date: 2026/01/01
+platform:
+- Windows
+type: atomic
+tags:
+  - invented-sample
+description: INVENTED OTRF-shaped sample. All hosts, users, records and timestamps are fictitious test data.
+attack_mappings:
+  - technique: T1033
+    sub-technique:
+    tactics:
+      - TA0007
+notebooks:
+files:
+- type: Host
+  link: https://example.test/otrf-sample/sample_owner_discovery.zip
+simulation:
+  environment: Invented
+  tools:
+    - type: Manual
+      name: cmd
+      module: cmd
+      script: https://example.test/otrf-sample/README
+  permissions_required:
+    - User
+  adversary_view: |-
+    C:\Users\analyst> whoami /all
+    (invented output omitted)
+references:
+  - https://example.test/otrf-sample/README

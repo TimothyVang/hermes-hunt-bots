@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "evidence-acquisition",
+  "description": "Human-operated forensic evidence acquisition with imager: a recorded authority and target scope, human-run imaging or triage collection from an elevated prompt, independent imager verify, and a human-approved custody handoff; the bot never launches acquisition.",
+  "tasks": [
+    {
+      "key": "scope",
+      "title": "Record acquisition authority, source and target set",
+      "role": "coordinator",
+      "scope": "Record the written authority for the acquisition (who authorized it, reference, date), the exact source device or host (for example \\\\.\\PhysicalDrive2, /dev/sdb, /dev/rdisk4, or the live host for triage), the target set (full-disk image format and segment size, or the collect target names and source root), the destination volume (never the source volume), and the imager --case-file path holding case, evidence, examiner, notes and authorization reference. Do not open, mount, image, collect from, or browse the source; do not execute imager or any tool. If authority, ownership or the device identity is unclear, stop and request a separate human authorization.",
+      "acceptance": "Submit a scope handoff naming the authority reference, the exact source identifier with its model/serial/size as listed by the operator, the target set, the destination path, the case-file path and its SHA-256, and explicit exclusions. State that only this source and target set are authorized and that acquisition will be run by a human operator, not by the framework. A human must approve this scope before acquisition starts.",
+      "depends_on": []
+    },
+    {
+      "key": "acquire",
+      "title": "Operator acquires the approved source with imager",
+      "role": "builder",
+      "scope": "After scope is human-approved, a human operator runs imager from an elevated prompt (Administrator on Windows, root/sudo on macOS/Linux) against only the approved source and target set: `imager image --source SRC --out BASE --case-file CASE.json` for a disk image, or `imager collect --target TARGETS --source ROOT --dest DIR --case-file CASE.json --json` for triage. The bot and any agent must never start acquisition, read raw devices, or run imager themselves. Write nothing to the source. Then import the record into this task with `imager_import.py`, which re-hashes every referenced file and registers it as an artifact; do not hand-edit records or artifacts.",
+      "acceptance": "Submit (normally via imager_import.py) the imager record path and its SHA-256, every image segment / BASE.txt / BASE.json / CopyLog.csv / SkipLog.csv registered as artifacts with SHA-256 and byte counts, acquired bytes, image MD5/SHA-1/SHA-256, the bad-sector count and ranges, imager's own post-acquisition verification result, the exit code, and any errors or deviations from scope. Do not claim verification beyond what imager reported. A human must review and approve or reject.",
+      "depends_on": ["scope"]
+    },
+    {
+      "key": "verify",
+      "title": "Independently verify the acquired evidence",
+      "role": "reviewer",
+      "scope": "After acquisition is human-approved, a reviewer other than the acquiring operator runs `imager verify BASE.E01 --json` (or the raw image path) on the acquired files, optionally also with the expected hashes from the record (--md5/--sha1/--sha256), and imports the verify output with `imager_import.py`. Re-hash, do not modify, the evidence. Disclose any independence limitation (same person, same host, same binary).",
+      "acceptance": "Submit the verify record and its SHA-256, the computed image hashes, the comparison against the acquisition record's stored hashes and the E01 embedded hashes, and a statement whether every ledger artifact SHA-256 still matches the file on disk. Report any mismatch as a failure; never approve on the human's behalf. A human must review and approve or reject.",
+      "depends_on": ["scope", "acquire"]
+    },
+    {
+      "key": "handoff",
+      "title": "Prepare the evidence custody handoff",
+      "role": "coordinator",
+      "scope": "Prepare a custody handoff from the approved scope, acquisition and verification tasks. Reference artifacts by their ledger path and SHA-256; do not copy, alter, open or analyze the evidence contents. Do not start analysis, response or publication.",
+      "acceptance": "Submit a traceable handoff listing the authority, source, every evidence artifact path with SHA-256 and bytes, acquisition and verification results, bad sectors, independence disclosures, storage location and the next custodian. Downstream workflows (for example threat-hunt) may reference these artifacts only after this handoff is human-approved. A human must review and approve or reject it.",
+      "depends_on": ["scope", "acquire", "verify"]
+    }
+  ]
+}

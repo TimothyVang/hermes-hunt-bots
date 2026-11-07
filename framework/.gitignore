@@ -1,0 +1,13 @@
+# Local runtime and secrets are not portable source.
+bot-workspace/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.venv*/
+langgraph.sqlite3*
+orchestration-lock.sqlite3*
+dist/
+envision-bridge-runtime/
+.temporal-tools/
+temporal-runtime/

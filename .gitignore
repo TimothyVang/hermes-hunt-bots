@@ -332,3 +332,16 @@ native/fts5_cjk/*.so
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+
+# hermes-hunt-bots: local lab runtime and private framework state are never committed.
+/runtime/
+/framework/envision_bridge.py
+/framework/envision_queue.py
+/framework/test_envision_bridge.py
+/framework/test_envision_queue.py
+/framework/.temporal-tools/
+/framework/dist/
+/framework/bot-workspace/
+# Upstream ignores every examples/ folder; these two are reviewed source.
+!/framework/examples/
+!/framework/benchmarks/examples/

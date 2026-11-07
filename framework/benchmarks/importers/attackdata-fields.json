@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "version": "attackdata-fields-2",
+  "note": "Public field allowlist for benchmark_import_attackdata.py. auditd: process (comm/exe/pid), parent (ppid), user basics (auid/uid/euid/gid/egid, enriched names), outcome, PATH names and CWD; command_line (EXECVE argv of the same audit event, reassembled) and proctitle are content (benchmark_sanitize) on SYSCALL and on their own records. Syscall arguments a0-a3, the LSM label and the audit rule key (a detector label) are excluded. CloudTrail: event identity, region, outcome, caller identity and session issuer with pseudonymized ARN/principal/account/key, pseudonymized source address, selected pseudonymized request names and trail-scope booleans; userAgent, errorMessage, requestParameters, responseElements and additionalEventData are content (objects as canonical JSON after dropping secret keys). tlsDetails, requestID and eventID are dropped. A record type without an entry keeps only metadata_only fields (metadata-only event).",
+  "formats": {
+    "linux-auditd": {
+      "source": "linux-audit",
+      "telemetry": "linux-audit",
+      "record_types": {
+        "SYSCALL": {
+          "arch": "keep",
+          "syscall": "keep",
+          "success": "keep",
+          "exit": "keep",
+          "ppid": "keep",
+          "pid": "keep",
+          "auid": "linux-user",
+          "uid": "linux-user",
+          "euid": "linux-user",
+          "gid": "linux-group",
+          "egid": "linux-group",
+          "tty": "keep",
+          "ses": "keep",
+          "comm": "linux-comm",
+          "exe": "linux-path",
+          "ARCH": "keep",
+          "SYSCALL": "keep",
+          "AUID": "linux-user",
+          "UID": "linux-user",
+          "EUID": "linux-user",
+          "GID": "linux-group",
+          "EGID": "linux-group",
+          "command_line": "content",
+          "proctitle": "content"
+        },
+        "PATH": {
+          "item": "keep",
+          "name": "linux-path",
+          "nametype": "keep",
+          "mode": "keep",
+          "ouid": "linux-user",
+          "ogid": "linux-group",
+          "OUID": "linux-user",
+          "OGID": "linux-group"
+        },
+        "CWD": {
+          "cwd": "linux-path"
+        },
+        "EXECVE": {
+          "argc": "keep",
+          "command_line": "content"
+        },
+        "PROCTITLE": {
+          "proctitle": "content"
+        }
+      },
+      "metadata_only": {}
+    },
+    "aws-cloudtrail": {
+      "source": "cloudtrail",
+      "telemetry": "cloud-audit",
+      "record_types": {
+        "AwsApiCall": {
+          "eventName": "keep",
+          "eventSource": "keep",
+          "eventCategory": "keep",
+          "awsRegion": "keep",
+          "errorCode": "keep",
+          "readOnly": "keep",
+          "managementEvent": "keep",
+          "recipientAccountId": "aws-account",
+          "sourceIPAddress": "aws-source",
+          "userIdentity.type": "keep",
+          "userIdentity.arn": "aws-arn",
+          "userIdentity.principalId": "aws-principal",
+          "userIdentity.accountId": "aws-account",
+          "userIdentity.userName": "aws-user",
+          "userIdentity.accessKeyId": "aws-key",
+          "userIdentity.invokedBy": "aws-source",
+          "userIdentity.sessionContext.sessionIssuer.type": "keep",
+          "userIdentity.sessionContext.sessionIssuer.arn": "aws-arn",
+          "userIdentity.sessionContext.sessionIssuer.principalId": "aws-principal",
+          "userIdentity.sessionContext.sessionIssuer.accountId": "aws-account",
+          "userIdentity.sessionContext.sessionIssuer.userName": "aws-role",
+          "userIdentity.sessionContext.attributes.mfaAuthenticated": "keep",
+          "requestParameters.userName": "aws-user",
+          "requestParameters.roleName": "aws-role",
+          "requestParameters.groupName": "aws-resource",
+          "requestParameters.policyArn": "aws-arn",
+          "requestParameters.name": "aws-resource",
+          "requestParameters.trailName": "aws-resource",
+          "requestParameters.bucketName": "aws-resource",
+          "requestParameters.s3BucketName": "aws-resource",
+          "requestParameters.isMultiRegionTrail": "keep",
+          "requestParameters.includeGlobalServiceEvents": "keep",
+          "requestParameters.enableLogFileValidation": "keep",
+          "requestParameters.isOrganizationTrail": "keep",
+          "responseElements.ConsoleLogin": "keep",
+          "additionalEventData.MFAUsed": "keep",
+          "userAgent": "content",
+          "errorMessage": "content",
+          "requestParameters": "content",
+          "responseElements": "content",
+          "additionalEventData": "content"
+        },
+        "AwsConsoleSignIn": {
+          "eventName": "keep",
+          "eventSource": "keep",
+          "eventCategory": "keep",
+          "awsRegion": "keep",
+          "errorCode": "keep",
+          "readOnly": "keep",
+          "managementEvent": "keep",
+          "recipientAccountId": "aws-account",
+          "sourceIPAddress": "aws-source",
+          "userIdentity.type": "keep",
+          "userIdentity.arn": "aws-arn",
+          "userIdentity.principalId": "aws-principal",
+          "userIdentity.accountId": "aws-account",
+          "userIdentity.userName": "aws-user",
+          "userIdentity.accessKeyId": "aws-key",
+          "userIdentity.sessionContext.sessionIssuer.type": "keep",
+          "userIdentity.sessionContext.sessionIssuer.arn": "aws-arn",
+          "userIdentity.sessionContext.sessionIssuer.principalId": "aws-principal",
+          "userIdentity.sessionContext.sessionIssuer.accountId": "aws-account",
+          "userIdentity.sessionContext.sessionIssuer.userName": "aws-role",
+          "userIdentity.sessionContext.attributes.mfaAuthenticated": "keep",
+          "responseElements.ConsoleLogin": "keep",
+          "additionalEventData.MFAUsed": "keep",
+          "userAgent": "content",
+          "errorMessage": "content",
+          "requestParameters": "content",
+          "responseElements": "content",
+          "additionalEventData": "content"
+        }
+      },
+      "metadata_only": {
+        "eventName": "keep",
+        "eventSource": "keep",
+        "eventCategory": "keep",
+        "awsRegion": "keep",
+        "recipientAccountId": "aws-account"
+      }
+    }
+  }
+}

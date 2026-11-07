@@ -1,0 +1,2579 @@
+--- a/apps/desktop/electron/channel-build-version.test.ts
++++ b/apps/desktop/electron/channel-build-version.test.ts
+@@ -469,6 +469,10 @@
+     archive.writestr('AppxManifest.xml', (root / 'manifest.xml').read_bytes())
+     archive.writestr('app/resources/install-stamp.json', json.dumps({
+         'source': 'channel-build', 'channelBuild': request, 'commit': request['commit'], 'tag': None}))
++# This fixture exercises the manifest writer, not a compiled PE resource.
++# Supply the recorder's supported cross-platform version sidecar.
++(root / 'version-info-x64.json').write_text(
++    json.dumps({'productVersion': request['version']}), encoding='utf-8')
+ out = root / 'metadata.json'
+ record('windows', 'x64', root, '', request['commit'], out, channel_request=request)
+ manifest = ET.fromstring((root / 'manifest.xml').read_bytes())
+--- a/apps/desktop/electron/entry.ts
++++ b/apps/desktop/electron/entry.ts
+@@ -1,10 +1,10 @@
+-import { readFileSync } from 'node:fs'
++import { mkdirSync, readFileSync } from 'node:fs'
+ import os from 'node:os'
+ import path from 'node:path'
+ 
+ import { app } from 'electron'
+ 
+-import { resolveDesktopHermesHome } from './data-paths'
++import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+ import { readDesktopLaunchConfig } from './renderer-heap-flags'
+ import { wslgLaunchArgs } from './wslg-launch'
+ import { spawnWslgLaunch } from './wslg-launch-process'
+@@ -74,5 +74,12 @@
+     process.once(signal, () => child.kill(signal))
+   }
+ } else {
++  // Imported modules may resolve cache paths. Establish an explicit isolated
++  // location first, without asking Electron for a possibly unavailable default.
++  if (process.env.HERMES_DESKTOP_USER_DATA_DIR) {
++    const userData = resolveDesktopUserData('')
++    mkdirSync(userData, { recursive: true })
++    app.setPath('userData', userData)
++  }
+   await import('./main')
+ }
+--- /dev/null
++++ b/apps/desktop/electron/link-metadata.test.ts
+@@ -0,0 +1,58 @@
++import fs from 'node:fs'
++import path from 'node:path'
++import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
++
++const boundary = vi.hoisted(() => {
++  const root = `${process.env.TEMP || process.env.TMPDIR || '/tmp'}/hermes-favicon-isolation-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
++  return { root, userData: `${root}/default` }
++})
++
++vi.mock('electron', () => ({
++  app: { getPath: () => boundary.userData },
++  BrowserWindow: vi.fn(),
++  session: {},
++  net: { fetch: async () => new Response('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><path fill="blue" d="M0 0h1v1H0z"/></svg>', { headers: { 'content-type': 'image/svg+xml' } }) }
++}))
++
++import { resolveFaviconCached } from './link-metadata'
++
++let ownsRoot = false
++beforeAll(() => {
++  fs.mkdirSync(boundary.root)
++  ownsRoot = true
++  fs.mkdirSync(path.join(boundary.root, 'default'))
++  fs.mkdirSync(path.join(boundary.root, 'isolated'))
++})
++afterEach(() => {
++  vi.restoreAllMocks()
++  vi.useRealTimers()
++})
++afterAll(() => {
++  if (ownsRoot) fs.rmSync(boundary.root, { recursive: true, force: true })
++})
++
++it('reads and persists favicons only in the userData override applied after module import', async () => {
++  vi.useFakeTimers()
++  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
++  const defaultFile = path.join(boundary.root, 'default/favicon-cache.json')
++  const isolatedFile = path.join(boundary.root, 'isolated/favicon-cache.json')
++  const defaultIcon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><text>default synthetic canary</text></svg>'
++  const isolatedIcon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"><text>isolated synthetic canary</text></svg>'
++  const defaultBytes = JSON.stringify({ icons: { 'cached.example.invalid': { at: Date.now(), icon: defaultIcon } } })
++  fs.writeFileSync(defaultFile, defaultBytes)
++  fs.writeFileSync(isolatedFile, JSON.stringify({ icons: { 'cached.example.invalid': { at: Date.now(), icon: isolatedIcon } } }))
++  boundary.userData = path.join(boundary.root, 'isolated')
++  const reads = vi.spyOn(fs, 'readFileSync')
++  const writes = vi.spyOn(fs, 'writeFileSync')
++
++  expect(await resolveFaviconCached('https://cached.example.invalid/page')).toBe(isolatedIcon)
++  await resolveFaviconCached('https://new.example.invalid/page')
++  await vi.runOnlyPendingTimersAsync()
++  expect(reads.mock.calls.some(([file]) => path.resolve(String(file)) === path.resolve(defaultFile))).toBe(false)
++  expect(writes.mock.calls.map(([file]) => path.resolve(String(file)))).toEqual([path.resolve(isolatedFile)])
++  vi.restoreAllMocks()
++  expect(fs.readFileSync(defaultFile, 'utf8')).toBe(defaultBytes)
++  const saved = JSON.parse(fs.readFileSync(isolatedFile, 'utf8')).icons
++  expect(Object.keys(saved).sort()).toEqual(['cached.example.invalid', 'new.example.invalid'])
++  expect(saved['cached.example.invalid'].icon).toBe(isolatedIcon)
++})
+--- a/apps/desktop/electron/link-metadata.ts
++++ b/apps/desktop/electron/link-metadata.ts
+@@ -315,7 +315,6 @@
+ // the host key means Linear's docs page and Linear's MCP endpoint cost one
+ // lookup between them.
+ 
+-const FAVICON_CACHE_PATH = path.join(app.getPath('userData'), 'favicon-cache.json')
+ const FAVICON_CACHE_LIMIT = 400
+ const FAVICON_TTL_MS = 30 * 24 * 60 * 60 * 1000
+ // A miss is cheap to re-check and expensive to be wrong about (a site that
+@@ -325,7 +324,11 @@
+ const FAVICON_MAX_BYTES = 256 * 1024
+ const FAVICON_WRITE_DEBOUNCE_MS = 3000
+ 
+-let faviconCache: Map<string, { at: number; icon: string }> | null = null
++type FaviconCacheState = {
++  filePath: string
++  icons: Map<string, { at: number; icon: string }>
++}
++let faviconCache: FaviconCacheState | null = null
+ let faviconWriteTimer: null | ReturnType<typeof setTimeout> = null
+ const faviconInflight = new Map<string, Promise<string>>()
+ 
+@@ -337,22 +340,25 @@
+   }
+ }
+ 
+-function loadFaviconCache(): Map<string, { at: number; icon: string }> {
++function loadFaviconCache(): FaviconCacheState {
+   if (faviconCache) {
+     return faviconCache
+   }
+ 
+-  faviconCache = new Map()
++  faviconCache = {
++    filePath: path.join(app.getPath('userData'), 'favicon-cache.json'),
++    icons: new Map()
++  }
+ 
+   try {
+-    const raw = JSON.parse(fs.readFileSync(FAVICON_CACHE_PATH, 'utf8'))
++    const raw = JSON.parse(fs.readFileSync(faviconCache.filePath, 'utf8'))
+ 
+     for (const [host, entry] of Object.entries(raw?.icons ?? {})) {
+       const at = Number((entry as { at?: number })?.at)
+       const icon = String((entry as { icon?: string })?.icon ?? '')
+ 
+       if (Number.isFinite(at) && Date.now() - at < (icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
+-        faviconCache.set(host, { at, icon })
++        faviconCache.icons.set(host, { at, icon })
+       }
+     }
+   } catch {
+@@ -371,9 +377,10 @@
+     faviconWriteTimer = null
+ 
+     try {
+-      const icons = Object.fromEntries(loadFaviconCache())
+-
+-      fs.writeFileSync(FAVICON_CACHE_PATH, JSON.stringify({ icons }), 'utf8')
++      const cache = loadFaviconCache()
++      const icons = Object.fromEntries(cache.icons)
++
++      fs.writeFileSync(cache.filePath, JSON.stringify({ icons }), 'utf8')
+     } catch {
+       // Cache is an optimization; failing to persist it costs one refetch.
+     }
+@@ -435,7 +442,7 @@
+     return Promise.resolve('')
+   }
+ 
+-  const cache = loadFaviconCache()
++  const cache = loadFaviconCache().icons
+   const hit = cache.get(key)
+ 
+   if (hit && Date.now() - hit.at < (hit.icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
+--- a/apps/desktop/electron/main.ts
++++ b/apps/desktop/electron/main.ts
+@@ -571,6 +571,7 @@
+ import { createStreamThrottle } from './stream-throttle'
+ import { installSystemCaTrust } from './system-ca'
+ import { registerTerminalIpc } from './terminal-ipc'
++import { confirmQemuVmExit, registerQemuVmIpc } from './qemu-vm-ipc'
+ import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
+ import {
+   applyWindowsBackdrop,
+@@ -719,7 +720,7 @@
+ const IDENTITY_APP_NAME: string | null = applyDesktopIdentity(app)
+ const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
+ 
+-if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
++if (!USER_DATA_OVERRIDE && process.env.HERMES_DATA_DIR_SUFFIX) {
+   const resolvedUserData: string = resolveDesktopUserData(app.getPath('userData'))
+   fs.mkdirSync(resolvedUserData, { recursive: true })
+   app.setPath('userData', resolvedUserData)
+@@ -17216,6 +17217,7 @@
+ // Client-side loopback callback for MCP OAuth against remote backends — see
+ // mcp-oauth-callback-ipc.ts.
+ registerMcpOauthCallbackIpc()
++registerQemuVmIpc(DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString())
+ 
+ // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
+ const terminalIpc = registerTerminalIpc({
+@@ -18200,6 +18202,8 @@
+   }
+ }
+ 
++let qemuQuitApproved = false
++let qemuQuitPromptPending = false
+ app.on('before-quit', event => {
+   // Runs ahead of every teardown below, so "Keep Running" leaves the app
+   // exactly as it was: a held quit is not a quit in progress, and the
+@@ -18211,6 +18215,28 @@
+     return
+   }
+ 
++  if (!qemuQuitApproved) {
++    event.preventDefault()
++    if (!qemuQuitPromptPending) {
++      qemuQuitPromptPending = true
++      void confirmQemuVmExit(mainWindow).then(allowQuit => {
++        qemuQuitPromptPending = false
++        if (allowQuit) {
++          qemuQuitApproved = true
++          app.quit()
++        } else {
++          appQuitting = false
++          quitInProgress = false
++        }
++      }).catch(error => {
++        qemuQuitPromptPending = false
++        appQuitting = false
++        quitInProgress = false
++        rememberLog(`[qemu] could not prepare VM for application quit: ${String(error)}`)
++      })
++    }
++    return
++  }
+   // Quit is really proceeding: latch both before ANY teardown below closes
+   // the pet overlay — its 'closed' handler must not echo pop-in during quit,
+   // or the persisted popped-out state is wiped and the overlay never restores
+--- a/apps/desktop/electron/preload.ts
++++ b/apps/desktop/electron/preload.ts
+@@ -505,6 +505,16 @@
+       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
+     }
+   },
++  qemu: {
++    capture: () => ipcRenderer.invoke('hermes:qemu:capture'),
++    inputControl: (enabled: boolean) => ipcRenderer.invoke('hermes:qemu:input-control', enabled),
++    key: (key: string, down: boolean) => ipcRenderer.invoke('hermes:qemu:key', key, down),
++    setPaneVisible: (visible: boolean) => ipcRenderer.invoke('hermes:qemu:visible', visible),
++    pointer: (x: number, y: number, button?: 'left' | 'right', down?: boolean) => ipcRenderer.invoke('hermes:qemu:pointer', x, y, button, down),
++    start: (mode: 'install' | 'boot-existing' | 'firmware-smoke' = 'install') => ipcRenderer.invoke('hermes:qemu:start', mode),
++    status: () => ipcRenderer.invoke('hermes:qemu:status'),
++    stop: (graceful: boolean) => ipcRenderer.invoke('hermes:qemu:stop', graceful)
++  },
+   terminal: {
+     attach: id => ipcRenderer.invoke('hermes:terminal:attach', id),
+     cwd: id => ipcRenderer.invoke('hermes:terminal:cwd', id),
+--- a/apps/desktop/electron/product-identity.test.ts
++++ b/apps/desktop/electron/product-identity.test.ts
+@@ -112,6 +112,29 @@
+     assert.equal(runtime.applyDesktopIdentity(app, canary), canary.displayName)
+     assert.equal(paths.userData, path.join(paths.appData, canary.appNamePascal))
+     assert.equal(name, canary.displayName)
++  } finally {
++    fs.rmSync(root, { recursive: true, force: true })
++  }
++})
++
++test('nonstable identity preserves an explicit isolated userData directory', async (): Promise<void> => {
++  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
++  const canary = await identityForVariant('bundled')
++  const runtime = await import('./product-identity')
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-isolated-'))
++  const isolated = path.join(root, 'isolated')
++  let selected = ''
++  let displayedName = ''
++  try {
++    assert.equal(runtime.applyDesktopIdentity({
++      getPath: (): string => assert.fail('The default appData path must not be accessed'),
++      setPath: (_name: 'userData', value: string): void => { selected = value },
++      setName: (value: string): void => { displayedName = value }
++    }, canary, { HERMES_DESKTOP_USER_DATA_DIR: isolated }), canary.displayName)
++    assert.equal(selected, isolated)
++    assert.equal(displayedName, canary.displayName)
++    assert.ok(fs.statSync(isolated).isDirectory())
++    assert.deepEqual(fs.readdirSync(root), ['isolated'])
+   } finally {
+     fs.rmSync(root, { recursive: true, force: true })
+   }
+--- a/apps/desktop/electron/product-identity.ts
++++ b/apps/desktop/electron/product-identity.ts
+@@ -33,13 +33,15 @@
+     setPath(name: 'userData', value: string): void
+     setName(name: string): void
+   },
+-  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY
++  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY,
++  env: NodeJS.ProcessEnv = process.env
+ ): string | null {
+   if (!identity.token && identity.appNamePascal === identity.artifactNamePascal) {
+     return null
+   }
+ 
+-  const userData: string = path.join(app.getPath('appData'), identity.appNamePascal)
++  const override = env.HERMES_DESKTOP_USER_DATA_DIR
++  const userData = override ? path.resolve(override) : path.join(app.getPath('appData'), identity.appNamePascal)
+   mkdirSync(userData, { recursive: true })
+   app.setPath('userData', userData)
+   app.setName(identity.displayName)
+--- /dev/null
++++ b/apps/desktop/electron/qemu-pane-owner.test.ts
+@@ -0,0 +1,26 @@
++import assert from 'node:assert/strict'
++import { test } from 'vitest'
++import { QemuPaneOwner } from './qemu-pane-owner'
++
++test('a replacement pane takes ownership and a stale close cannot release it', () => {
++  const owners = new QemuPaneOwner()
++  owners.claim(11)
++  owners.claim(22)
++
++  assert.equal(owners.release(11), false)
++  assert.equal(owners.owns(22), true)
++  assert.equal(owners.active, true)
++})
++
++test('hide and destruction release only the currently owning pane', () => {
++  const owners = new QemuPaneOwner()
++  owners.claim(11)
++
++  // Both BrowserWindow.hide and WebContents.destroyed route through release.
++  assert.equal(owners.release(11), true)
++  assert.equal(owners.active, false)
++  assert.equal(owners.release(11), false)
++  owners.claim(22)
++  assert.equal(owners.release(22), true)
++  assert.equal(owners.current, null)
++})
+--- /dev/null
++++ b/apps/desktop/electron/qemu-pane-owner.ts
+@@ -0,0 +1,24 @@
++export class QemuPaneOwner {
++  private ownerId: number | null = null
++
++  claim(ownerId: number): void {
++    this.ownerId = ownerId
++  }
++
++  release(ownerId: number): boolean {
++    if (this.ownerId !== ownerId) return false
++    this.ownerId = null
++    return true
++  }
++
++  owns(ownerId: number): boolean {
++    return this.ownerId === ownerId
++  }
++  get current(): number | null {
++    return this.ownerId
++  }
++
++  get active(): boolean {
++    return this.ownerId !== null
++  }
++}
+--- /dev/null
++++ b/apps/desktop/electron/qemu-vm-ipc.ts
+@@ -0,0 +1,179 @@
++import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron'
++import { QemuVmController } from './qemu-vm'
++import { QemuPaneOwner } from './qemu-pane-owner'
++
++const paneOwner = new QemuPaneOwner()
++let controller: QemuVmController | undefined
++let expectedUrl: URL | undefined
++
++export function isTrustedQemuRendererUrl(actual: string, expected: URL): boolean {
++  try {
++    const url = new URL(actual)
++    return url.protocol === expected.protocol && url.host === expected.host && url.pathname === expected.pathname
++  } catch {
++    return false
++  }
++}
++
++function trusted(event: IpcMainInvokeEvent, requireVisible = true): boolean {
++  const window = BrowserWindow.fromWebContents(event.sender)
++  return Boolean(
++    controller && expectedUrl && window && !window.isDestroyed() &&
++    (!requireVisible || (window.isVisible() && !window.isMinimized())) &&
++    event.senderFrame === event.sender.mainFrame &&
++    isTrustedQemuRendererUrl(event.senderFrame.url, expectedUrl)
++  )
++}
++const ownerListeners = new Map<number, { window: BrowserWindow; sender: IpcMainInvokeEvent['sender']; release: () => void; blur: () => void }>()
++
++function releaseOwner(ownerId: number): void {
++  const released = paneOwner.release(ownerId)
++  const listeners = ownerListeners.get(ownerId)
++  if (listeners) {
++    listeners.window.removeListener('hide', listeners.release)
++    listeners.window.removeListener('minimize', listeners.release)
++    listeners.window.removeListener('blur', listeners.blur)
++    listeners.sender.removeListener('render-process-gone', listeners.release)
++    listeners.sender.removeListener('did-navigate', listeners.release)
++    listeners.sender.removeListener('destroyed', listeners.release)
++    ownerListeners.delete(ownerId)
++  }
++  if (released) controller?.setPaneVisible(false)
++}
++
++function watchOwner(event: IpcMainInvokeEvent, window: BrowserWindow): void {
++  if (ownerListeners.has(event.sender.id)) return
++  const release = () => releaseOwner(event.sender.id)
++  const blur = () => { if (paneOwner.owns(event.sender.id)) controller?.releaseInput() }
++  ownerListeners.set(event.sender.id, { window, sender: event.sender, release, blur })
++  window.on('hide', release)
++  window.on('minimize', release)
++  window.on('blur', blur)
++  event.sender.on('render-process-gone', release)
++  event.sender.on('did-navigate', release)
++  event.sender.on('destroyed', release)
++}
++
++export function registerQemuVmIpc(rendererUrl: string): void {
++  controller = new QemuVmController()
++  expectedUrl = new URL(rendererUrl)
++  ipcMain.handle('hermes:qemu:status', event => {
++    if (!trusted(event, false)) throw new Error('Untrusted QEMU status request')
++    const status = controller!.status()
++    return { ...status, inputEnabled: paneOwner.owns(event.sender.id) && status.inputEnabled }
++  })
++  ipcMain.handle('hermes:qemu:visible', (event, visible: unknown) => {
++    if (!trusted(event, visible !== false) || typeof visible !== 'boolean') throw new Error('Invalid QEMU pane visibility')
++    if (visible) {
++      if (paneOwner.current !== null && paneOwner.current !== event.sender.id) releaseOwner(paneOwner.current)
++      paneOwner.claim(event.sender.id)
++      const window = BrowserWindow.fromWebContents(event.sender)
++      if (!window || window.isDestroyed()) throw new Error('QEMU console window is unavailable')
++      watchOwner(event, window)
++      controller!.setPaneVisible(true)
++    } else {
++      releaseOwner(event.sender.id)
++    }
++    return controller!.status()
++  })
++  ipcMain.handle('hermes:qemu:start', async (event, request?: unknown) => {
++    if (!trusted(event)) throw new Error('Untrusted QEMU start request')
++    if (!paneOwner.owns(event.sender.id)) throw new Error('Open the QEMU console pane before starting a VM')
++    if (request !== undefined && request !== 'firmware-smoke' && request !== 'boot-existing' && request !== 'install') throw new Error('Invalid QEMU start mode')
++    if (request === 'firmware-smoke' && app.isPackaged) throw new Error('Firmware smoke is available only in an unpackaged developer build')
++    const developerSmoke = !app.isPackaged && request === 'firmware-smoke'
++    const bootExisting = request === 'boot-existing'
++    let iso: string | undefined
++    if (!developerSmoke && !bootExisting) {
++      const choice = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, {
++        title: 'Choose an operating system installation ISO', properties: ['openFile'],
++        filters: [{ name: 'ISO images', extensions: ['iso'] }]
++      })
++      if (choice.canceled || !choice.filePaths[0]) return { state: controller!.status().state, cancelled: true }
++      iso = choice.filePaths[0]
++    }
++    let networkEnabled = false
++    if (!developerSmoke) {
++      if (!paneOwner.owns(event.sender.id)) throw new Error('QEMU console pane closed before network choice')
++      const networking = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender)!, {
++        type: 'warning',
++        title: 'Guest network access for this boot',
++        message: 'The guest can boot offline or use outbound NAT for this boot.',
++        detail: 'NAT can reach the Internet and host services; it is not sandbox isolation. No port forwarding, host shares, clipboard, or device passthrough is configured. Hermes will not connect the guest to a gateway or sign in for you.',
++        buttons: ['Cancel', 'Boot offline', 'Enable outbound NAT for this boot'],
++        defaultId: 1,
++        cancelId: 0,
++        noLink: true
++      })
++      if (networking.response === 0) return { state: controller!.status().state, cancelled: true }
++      networkEnabled = networking.response === 2
++    }
++    if (!paneOwner.owns(event.sender.id)) throw new Error('QEMU console pane closed before VM start')
++    await controller!.start({ developerSmoke, bootExisting, iso, networkEnabled })
++    return controller!.status()
++  })
++  ipcMain.handle('hermes:qemu:stop', async (event, graceful: unknown) => {
++    if (!trusted(event) || !paneOwner.owns(event.sender.id) || typeof graceful !== 'boolean') throw new Error('Invalid QEMU stop request')
++    await controller!.stop(graceful)
++    return controller!.status()
++  })
++  ipcMain.handle('hermes:qemu:capture', async event => {
++    if (!trusted(event) || !paneOwner.owns(event.sender.id)) throw new Error('Untrusted QEMU frame request')
++    return controller!.capture()
++  })
++  ipcMain.handle('hermes:qemu:input-control', async (event, enabled: unknown) => {
++    if (typeof enabled !== 'boolean' || !trusted(event, enabled)) throw new Error('Invalid QEMU control request')
++    if (enabled) {
++      if (!paneOwner.owns(event.sender.id)) throw new Error('Open the QEMU console before taking control')
++      controller!.takeInput()
++    } else if (paneOwner.owns(event.sender.id)) {
++      await controller!.releaseInput()
++    }
++    const status = controller!.status()
++    return { ...status, inputEnabled: paneOwner.owns(event.sender.id) && status.inputEnabled }
++  })
++  ipcMain.handle('hermes:qemu:key', async (event, key: unknown, down: unknown) => {
++    if (!trusted(event) || !paneOwner.owns(event.sender.id) || typeof key !== 'string' || typeof down !== 'boolean') throw new Error('Invalid QEMU key request')
++    await controller!.sendKey(key, down)
++  })
++  ipcMain.handle('hermes:qemu:pointer', async (event, x: unknown, y: unknown, button?: unknown, down?: unknown) => {
++    if (!trusted(event) || !paneOwner.owns(event.sender.id) || typeof x !== 'number' || typeof y !== 'number' || (button !== undefined && typeof button !== 'string') || (down !== undefined && typeof down !== 'boolean')) throw new Error('Invalid QEMU pointer request')
++    await controller!.sendPointer(x, y, button as string | undefined, down as boolean | undefined)
++  })
++}
++
++function showVmMessage(parent: BrowserWindow | null, options: MessageBoxOptions) {
++  const owner = parent && !parent.isDestroyed() ? parent : BrowserWindow.getFocusedWindow()
++  return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options)
++}
++
++export async function confirmQemuVmExit(parent: BrowserWindow | null): Promise<boolean> {
++  const vm = controller
++  if (!vm || !vm.hasOwnedVmOrStartup()) return true
++  const result = await showVmMessage(parent, {
++    type: 'warning',
++    title: 'A local QEMU VM is running',
++    message: 'Quitting will force the local QEMU VM to power off.',
++    detail: 'The guest may lose unsaved work. Choose Cancel to keep Hermes and the VM running.',
++    buttons: ['Cancel', 'Power off VM and quit'],
++    defaultId: 0,
++    cancelId: 0,
++    noLink: true
++  })
++  if (result.response !== 1) return false
++  try {
++    const stopped = await vm.stopForAppExit()
++    if (!stopped) throw new Error('QEMU process is still owned')
++    return true
++  } catch (error) {
++    await showVmMessage(parent, {
++      type: 'error',
++      title: 'QEMU VM is still running',
++      message: 'Hermes will remain open because the owned QEMU process did not exit.',
++      detail: error instanceof Error ? error.message : String(error),
++      buttons: ['OK'],
++      noLink: true
++    })
++    return false
++  }
++}
+--- /dev/null
++++ b/apps/desktop/electron/qemu-vm.test.ts
+@@ -0,0 +1,365 @@
++import { EventEmitter } from 'node:events'
++import { PassThrough } from 'node:stream'
++import fs from 'node:fs'
++import os from 'node:os'
++import path from 'node:path'
++import crypto from 'node:crypto'
++import type { ChildProcessWithoutNullStreams } from 'node:child_process'
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }))
++
++import { QmpStdio, QemuVmController } from './qemu-vm'
++
++type Command = { id: number; execute: string; arguments?: Record<string, unknown> }
++const roots: string[] = []
++const controllers: QemuVmController[] = []
++const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
++
++function transport() {
++  const emitter = new EventEmitter()
++  const stdin = new PassThrough()
++  const stdout = new PassThrough()
++  const commands: Command[] = []
++  const child = Object.assign(emitter, {
++    stdin, stdout, stderr: new PassThrough(), exitCode: null as number | null,
++    kill: vi.fn(() => { exit(0); return true })
++  })
++  const exit = (code: number) => { child.exitCode = code; emitter.emit('exit', code, null) }
++  stdin.on('data', chunk => commands.push(JSON.parse(chunk.toString())))
++  const reply = (command: Command, value: unknown) => stdout.write(`${JSON.stringify({ id: command.id, return: value })}\r\n`)
++  return { child: child as unknown as ChildProcessWithoutNullStreams, stdin, stdout, commands, reply, exit }
++}
++
++function engineFixture() {
++  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-qemu-test-')))
++  roots.push(root)
++  const engine = path.join(root, 'engine')
++  const userData = path.join(root, 'user-data')
++  fs.mkdirSync(userData)
++  const files = [
++    'ucrt64/bin/qemu-system-x86_64.exe', 'ucrt64/bin/qemu-img.exe',
++    'ucrt64/share/qemu/edk2-x86_64-code.fd', 'ucrt64/share/qemu/edk2-i386-vars.fd',
++    'ucrt64/share/locale/sr@latin/LC_MESSAGES/at-spi2-core.mo'
++  ].map(relative => {
++    const bytes = Buffer.from(`Synthetic fixture only: ${relative}`)
++    const filename = path.join(engine, relative)
++    fs.mkdirSync(path.dirname(filename), { recursive: true })
++    fs.writeFileSync(filename, bytes)
++    return { path: relative, size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }
++  })
++  fs.writeFileSync(path.join(engine, 'engine.json'), JSON.stringify({
++    schemaVersion: 1, platform: 'win32-x64', qemuExecutable: files[0].path,
++    qemuImgExecutable: files[1].path, firmwareDirectory: 'ucrt64/share/qemu', files
++  }))
++  return { root, engine, userData }
++}
++
++function controllerFixture() {
++  const fixture = engineFixture()
++  const wire = transport()
++  const guestKeys = new Set<string>()
++  const guestButtons = new Set<string>()
++  let screenshot: Command | undefined
++  const spawn = vi.fn(() => {
++    queueMicrotask(() => wire.stdout.write('{"QMP":{"version":{}}}\r\n'))
++    return wire.child
++  })
++  const diskGate = Promise.withResolvers<void>()
++  const diskStarted = Promise.withResolvers<void>()
++  let delayDisk = false
++  const execFile = vi.fn(async (_file: string, args: string[]) => {
++    diskStarted.resolve()
++    if (delayDisk) await diskGate.promise
++    fs.writeFileSync(args[3], 'Synthetic disk fixture')
++    return { stdout: '', stderr: '' }
++  })
++  wire.stdin.on('data', chunk => {
++    const command = JSON.parse(chunk.toString()) as Command
++    if (command.execute === 'screendump') { screenshot = command; return }
++    if (command.execute === 'input-send-event') {
++      const events = command.arguments?.events as Array<{ type: string; data: { down: boolean; key?: { type: string; data: string }; button?: string } }>
++      for (const event of events) {
++        if (event.type === 'key') {
++          expect(event.data.key?.type).toBe('qcode')
++          const key = event.data.key!.data
++          if (event.data.down) guestKeys.add(key)
++          else guestKeys.delete(key)
++        } else if (event.type === 'btn') {
++          const button = event.data.button!
++          if (event.data.down) guestButtons.add(button)
++          else guestButtons.delete(button)
++        }
++      }
++    }
++    wire.reply(command, {})
++  })
++  const controller = new QemuVmController({
++    userDataPath: () => fixture.userData, engineRoot: () => fixture.engine,
++    freeMemory: () => 16 * 1024 ** 3, spawn: spawn as never, execFile: execFile as never
++  })
++  controllers.push(controller)
++  controller.setPaneVisible(true)
++  return {
++    ...fixture, ...wire, controller, spawn, execFile, guestKeys, guestButtons,
++    delayDisk: () => { delayDisk = true }, releaseDisk: diskGate.resolve,
++    diskStarted: diskStarted.promise,
++    finishScreenshot: () => {
++      if (!screenshot) throw new Error('No screenshot request is pending')
++      const filename = String(screenshot.arguments?.filename)
++      fs.writeFileSync(filename, png)
++      wire.reply(screenshot, {})
++      return filename
++    }
++  }
++}
++
++afterEach(async () => {
++  for (const controller of controllers.splice(0)) await controller.stop(false)
++  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
++  vi.restoreAllMocks()
++})
++
++describe('QMP protocol boundaries', () => {
++  it('waits for each reply before sending another command and ignores unrelated messages', async () => {
++    const wire = transport()
++    const qmp = new QmpStdio(wire.child)
++    wire.stdout.write('{"QM')
++    wire.stdout.write('P":{"version":{}}}\r\n')
++    await qmp.greeting
++    const status = qmp.command('query-status')
++    const machines = qmp.command('query-machines')
++    const settled = Promise.allSettled([status, machines])
++    try {
++      await Promise.resolve()
++      expect(wire.commands.map(command => command.execute)).toEqual(['query-status'])
++      wire.stdout.write('{"event":"RESET"}\r\n{"id":999,"return":{"status":"wrong"}}\r\n')
++      wire.reply(wire.commands[0], { status: 'running' })
++      expect((await status).return).toEqual({ status: 'running' })
++      await Promise.resolve()
++      expect(wire.commands.map(command => command.execute)).toEqual(['query-status', 'query-machines'])
++      wire.reply(wire.commands[1], [{ name: 'q35' }])
++      expect((await machines).return).toEqual([{ name: 'q35' }])
++    } finally {
++      wire.child.kill()
++      await settled
++    }
++  })
++
++  it('fails queued and future commands when the active command times out', async () => {
++    vi.useFakeTimers()
++    const wire = transport()
++    const qmp = new QmpStdio(wire.child)
++    wire.stdout.write('{"QMP":{}}\n')
++    await qmp.greeting
++    const active = expect(qmp.command('query-status', undefined, 10)).rejects.toThrow('timed out')
++    const queued = expect(qmp.command('query-machines')).rejects.toThrow('timed out')
++    try {
++      await vi.advanceTimersByTimeAsync(11)
++      await Promise.all([active, queued])
++      await expect(qmp.command('quit')).rejects.toThrow('timed out')
++      expect(wire.commands.map(command => command.execute)).toEqual(['query-status'])
++    } finally {
++      wire.child.kill()
++      vi.useRealTimers()
++    }
++  })
++
++  it.each([
++    { label: 'null', output: 'null\n' },
++    { label: 'array', output: '[]\n' },
++    { label: 'missing result', output: '{"id":1}\n' },
++    { label: 'oversized line', output: `${'x'.repeat(1024 * 1024 + 1)}\n` }
++  ])('fails pending and future operations on $label', async ({ output }) => {
++    const wire = transport()
++    const qmp = new QmpStdio(wire.child)
++    wire.stdout.write('{"QMP":{}}\n')
++    await qmp.greeting
++    const pending = expect(qmp.command('query-status')).rejects.toBeInstanceOf(Error)
++    wire.stdout.write(output)
++    await pending
++    const sentBefore = wire.commands.length
++    await expect(qmp.command('query-status')).rejects.toBeInstanceOf(Error)
++    expect(wire.commands.length).toBe(sentBefore)
++    wire.child.kill()
++  })
++
++  it('rejects readiness when the process exits before its greeting', async () => {
++    const wire = transport()
++    const qmp = new QmpStdio(wire.child)
++    const readiness = expect(qmp.greeting).rejects.toBeInstanceOf(Error)
++    wire.child.kill()
++    await readiness
++    await expect(qmp.command('query-status')).rejects.toBeInstanceOf(Error)
++  })
++
++  it('contains a broken input pipe instead of emitting an unhandled stream error', async () => {
++    const wire = transport()
++    const qmp = new QmpStdio(wire.child)
++    wire.stdout.write('{"QMP":{}}\n')
++    await qmp.greeting
++    const pending = expect(qmp.command('query-status')).rejects.toBeInstanceOf(Error)
++    wire.stdin.emit('error', new Error('Synthetic closed pipe'))
++    await pending
++    wire.child.kill()
++  })
++})
++
++describe.skipIf(process.platform !== 'win32')('owned VM lifecycle', () => {
++  it('rejects concurrent startup and cancels a pending disk creation before spawning', async () => {
++    const f = controllerFixture()
++    expect(f.controller.status().state).toBe('stopped')
++    f.delayDisk()
++    const iso = path.join(f.root, 'installation.iso')
++    fs.writeFileSync(iso, 'Synthetic ISO fixture')
++    const startup = f.controller.start({ iso })
++    const cancelled = expect(startup).rejects.toBeInstanceOf(Error)
++    expect(f.controller.status().state).toBe('starting')
++    await expect(f.controller.start({ iso })).rejects.toBeInstanceOf(Error)
++    await f.diskStarted
++    await f.controller.stop(false)
++    f.releaseDisk()
++    await cancelled
++    expect(f.execFile).toHaveBeenCalledTimes(1)
++    expect(f.spawn).not.toHaveBeenCalled()
++    expect(f.controller.hasOwnedVmOrStartup()).toBe(false)
++  })
++
++  it('refuses an unindexed DLL before creating VM state or starting a process', async () => {
++    const f = controllerFixture()
++    fs.writeFileSync(path.join(f.engine, 'ucrt64/bin/unindexed.dll'), 'Benign synthetic injected DLL fixture')
++    await expect(f.controller.start({ developerSmoke: true })).rejects.toBeInstanceOf(Error)
++    expect(f.execFile).not.toHaveBeenCalled()
++    expect(f.spawn).not.toHaveBeenCalled()
++    expect(fs.existsSync(path.join(f.userData, 'qemu-vms'))).toBe(false)
++  })
++
++  it('refuses unexpected root directories and aliases in unindexed subtrees', async () => {
++    const rootDirectory = controllerFixture()
++    fs.mkdirSync(path.join(rootDirectory.engine, 'unexpected-directory'))
++    await expect(rootDirectory.controller.start({ developerSmoke: true })).rejects.toBeInstanceOf(Error)
++    expect(rootDirectory.spawn).not.toHaveBeenCalled()
++    expect(fs.existsSync(path.join(rootDirectory.userData, 'qemu-vms'))).toBe(false)
++
++    const alias = controllerFixture()
++    const outside = path.join(alias.root, 'outside')
++    fs.mkdirSync(outside)
++    fs.symlinkSync(outside, path.join(alias.engine, 'ucrt64/alias'), 'junction')
++    await expect(alias.controller.start({ developerSmoke: true })).rejects.toBeInstanceOf(Error)
++    expect(alias.spawn).not.toHaveBeenCalled()
++    expect(fs.existsSync(path.join(alias.userData, 'qemu-vms'))).toBe(false)
++    expect(fs.readdirSync(outside)).toEqual([])
++  })
++
++  it('cancels during asynchronous verification without creating VM state', async () => {
++    const f = controllerFixture()
++    const startup = f.controller.start({ developerSmoke: true })
++    const cancelled = expect(startup).rejects.toBeInstanceOf(Error)
++    await f.controller.stop(false)
++    await cancelled
++    expect(f.controller.hasOwnedVmOrStartup()).toBe(false)
++    expect(f.execFile).not.toHaveBeenCalled()
++    expect(f.spawn).not.toHaveBeenCalled()
++    expect(fs.existsSync(path.join(f.userData, 'qemu-vms'))).toBe(false)
++  })
++
++  it('releases delivered keys and buttons when the pane hides and refuses new input', async () => {
++    const f = controllerFixture()
++    await f.controller.start({ developerSmoke: true })
++    f.controller.takeInput()
++    await f.controller.sendKey('a', true)
++    await f.controller.sendPointer(100, 200, 'left', true)
++    expect(f.guestKeys.has('a')).toBe(true)
++    expect(f.guestButtons.has('left')).toBe(true)
++    f.controller.setPaneVisible(false)
++    await f.controller.releaseInput()
++    expect(f.guestKeys.size).toBe(0)
++    expect(f.guestButtons.size).toBe(0)
++    expect(f.controller.status().inputEnabled).toBe(false)
++    await expect(f.controller.sendKey('b', true)).rejects.toBeInstanceOf(Error)
++  })
++
++  it('releases repeated key and button presses after earlier release acknowledgements', async () => {
++    const f = controllerFixture()
++    await f.controller.start({ developerSmoke: true })
++    f.controller.takeInput()
++    await Promise.all([
++      f.controller.sendKey('a', true),
++      f.controller.sendKey('a', false),
++      f.controller.sendKey('a', true),
++      f.controller.sendPointer(100, 200, 'left', true),
++      f.controller.sendPointer(100, 200, 'left', false),
++      f.controller.sendPointer(100, 200, 'left', true)
++    ])
++    expect(f.guestKeys.has('a')).toBe(true)
++    expect(f.guestButtons.has('left')).toBe(true)
++    f.controller.setPaneVisible(false)
++    await f.controller.releaseInput()
++    expect(f.guestKeys.has('a')).toBe(false)
++    expect(f.guestButtons.has('left')).toBe(false)
++    expect(f.controller.status()).toMatchObject({ inputEnabled: false, inputReleaseFailed: false })
++  })
++
++  it('keeps an unacknowledged key release visible and refuses another takeover', async () => {
++    const f = controllerFixture()
++    await f.controller.start({ developerSmoke: true })
++    f.controller.takeInput()
++    await f.controller.sendKey('ctrl', true)
++    f.stdout.emit('end')
++    await f.controller.releaseInput()
++    expect(f.guestKeys.has('ctrl')).toBe(true)
++    expect(f.controller.status()).toMatchObject({
++      state: 'running', owned: true, inputEnabled: false, inputReleaseFailed: true
++    })
++    expect(() => f.controller.takeInput()).toThrow()
++    await expect(f.controller.sendKey('a', true)).rejects.toBeInstanceOf(Error)
++    await f.controller.stop(false)
++    expect(f.controller.status()).toMatchObject({ owned: false, inputReleaseFailed: false })
++  })
++
++  it('distinguishes explicit forced termination from an unexpected nonzero exit', async () => {
++    const requested = controllerFixture()
++    await requested.controller.start({ developerSmoke: true })
++    vi.mocked(requested.child.kill).mockImplementation(() => {
++      requested.exit(1)
++      return true
++    })
++    await requested.controller.stop(false)
++    expect(requested.controller.status()).toMatchObject({ state: 'stopped', owned: false })
++
++    const unexpected = controllerFixture()
++    await unexpected.controller.start({ developerSmoke: true })
++    unexpected.exit(1)
++    expect(unexpected.controller.status()).toMatchObject({ state: 'error', owned: false })
++  })
++
++  it('allows only one capture and discards an in-flight frame after visibility changes', async () => {
++    const f = controllerFixture()
++    await f.controller.start({ developerSmoke: true })
++    const first = expect(f.controller.capture()).rejects.toBeInstanceOf(Error)
++    expect(await f.controller.capture()).toBeNull()
++    f.controller.setPaneVisible(false)
++    const filename = f.finishScreenshot()
++    await first
++    expect(fs.existsSync(filename)).toBe(false)
++    expect(await f.controller.capture()).toBeNull()
++  })
++
++  it('rejects tampered runtime bytes before creating VM state or launching a process', async () => {
++    const f = controllerFixture()
++    fs.appendFileSync(path.join(f.engine, 'ucrt64/bin/qemu-system-x86_64.exe'), 'tampered')
++    await expect(f.controller.start({ developerSmoke: true })).rejects.toBeInstanceOf(Error)
++    expect(f.spawn).not.toHaveBeenCalled()
++    expect(fs.existsSync(path.join(f.userData, 'qemu-vms'))).toBe(false)
++  })
++
++  it('refuses a junction before creating VM files outside its owned directory', async () => {
++    const f = controllerFixture()
++    const outside = path.join(f.root, 'outside')
++    fs.mkdirSync(outside)
++    fs.symlinkSync(outside, path.join(f.userData, 'qemu-vms'), 'junction')
++    await expect(f.controller.start({ developerSmoke: true })).rejects.toBeInstanceOf(Error)
++    expect(fs.readdirSync(outside)).toEqual([])
++    expect(f.spawn).not.toHaveBeenCalled()
++  })
++})
+--- /dev/null
++++ b/apps/desktop/electron/qemu-vm.ts
+@@ -0,0 +1,487 @@
++import { execFile as execFileCallback, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
++import { promisify } from 'node:util'
++import crypto from 'node:crypto'
++import os from 'node:os'
++import fs from 'node:fs'
++import path from 'node:path'
++import { app } from 'electron'
++
++const execFile = promisify(execFileCallback)
++const MAX_ENGINE_INDEX = 65_536
++const MAX_ENGINE_MANIFEST_BYTES = 16 * 1024 * 1024
++const MAX_FRAME_BYTES = 8 * 1024 * 1024
++const MAX_QMP_LINE = 1024 * 1024
++const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i
++
++type EngineManifest = {
++  schemaVersion: 1
++  platform: 'win32-x64'
++  qemuExecutable: string
++  qemuImgExecutable: string
++  firmwareDirectory: string
++  files: Array<{ path: string; sha256: string; size: number }>
++}
++type QmpReply = { return?: unknown; error?: { desc?: string; class?: string }; event?: string }
++type VmState = 'stopped' | 'starting' | 'running' | 'error'
++
++export interface QemuVmStatus {
++  state: VmState
++  owned: boolean
++  available: boolean
++  developerSmokeAvailable: boolean
++  hasDisk: boolean
++  inputEnabled: boolean
++  inputReleaseFailed: boolean
++  networkEnabled: boolean
++}
++
++function isSafeEnginePath(value: unknown): value is string {
++  if (typeof value !== 'string' || !value || value.startsWith('/') || value.includes('\\') || /[<>:"|?*\x00-\x1f]/.test(value)) return false
++  return value.split('/').every(part => part && part !== '.' && part !== '..' && !part.endsWith('.') && !part.endsWith(' ') && !WINDOWS_RESERVED.test(part))
++}
++
++function contained(root: string, relative: string): string {
++  if (!isSafeEnginePath(relative)) throw new Error('Invalid engine path')
++  const full = path.resolve(root, ...relative.split('/'))
++  if (!full.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error('Engine path escapes its root')
++  return full
++}
++
++function rejectReparseAncestors(root: string, target: string): void {
++  const rel = path.relative(root, target)
++  let current = root
++  for (const part of rel.split(path.sep)) {
++    current = path.join(current, part)
++    const stat = fs.lstatSync(current)
++    const canonical = fs.realpathSync.native(current)
++    const expected = path.resolve(current)
++    const samePath = process.platform === 'win32'
++      ? canonical.toLowerCase() === expected.toLowerCase()
++      : canonical === expected
++    if (stat.isSymbolicLink() || !samePath) {
++      throw new Error('QEMU paths must not contain links or aliases')
++    }
++  }
++}
++
++export async function validateQemuEngine(engineRoot: string, signal?: AbortSignal): Promise<EngineManifest> {
++  if (process.platform !== 'win32' || !path.isAbsolute(engineRoot)) throw new Error('Portable QEMU requires an absolute Windows engine directory')
++  const root = path.resolve(engineRoot)
++  const manifestPath = path.join(root, 'engine.json')
++  rejectReparseAncestors(path.parse(root).root, manifestPath)
++  const manifestStat = await fs.promises.stat(manifestPath)
++  if (!manifestStat.isFile() || manifestStat.nlink !== 1 || manifestStat.size > MAX_ENGINE_MANIFEST_BYTES) throw new Error('QEMU engine index is too large or not a single-link regular file')
++  const raw = await fs.promises.readFile(manifestPath, { signal })
++  if (raw.length > MAX_ENGINE_MANIFEST_BYTES) throw new Error('QEMU engine index is too large')
++  const manifest = JSON.parse(raw.toString('utf8')) as EngineManifest
++  if (manifest.schemaVersion !== 1 || manifest.platform !== 'win32-x64' || manifest.qemuExecutable !== 'ucrt64/bin/qemu-system-x86_64.exe' || manifest.qemuImgExecutable !== 'ucrt64/bin/qemu-img.exe' || manifest.firmwareDirectory !== 'ucrt64/share/qemu' || !Array.isArray(manifest.files) || manifest.files.length > MAX_ENGINE_INDEX) throw new Error('Unsupported QEMU engine index')
++  const seen = new Set<string>()
++  for (const file of manifest.files) {
++    signal?.throwIfAborted()
++    if (!file || !isSafeEnginePath(file.path) || !file.path.startsWith('ucrt64/') || seen.has(file.path.toLowerCase()) || !Number.isSafeInteger(file.size) || file.size < 0 || !/^[a-f0-9]{64}$/i.test(file.sha256)) throw new Error('Invalid QEMU engine file entry')
++    seen.add(file.path.toLowerCase())
++    const target = contained(root, file.path)
++    rejectReparseAncestors(root, target)
++    const stat = fs.statSync(target)
++    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== file.size) throw new Error(`QEMU engine file does not match index: ${file.path}`)
++    const digest = crypto.createHash('sha256').update(await fs.promises.readFile(target, { signal })).digest('hex')
++    if (digest.toLowerCase() !== file.sha256.toLowerCase()) throw new Error(`QEMU engine hash mismatch: ${file.path}`)
++  }
++  for (const required of [manifest.qemuExecutable, manifest.qemuImgExecutable, `${manifest.firmwareDirectory}/edk2-x86_64-code.fd`, `${manifest.firmwareDirectory}/edk2-i386-vars.fd`]) {
++    if (!seen.has(required.toLowerCase())) throw new Error(`QEMU engine is missing ${required}`)
++  }
++  let indexedCount = 0
++  const verifyTree = async (directory: string, prefix = ''): Promise<void> => {
++    signal?.throwIfAborted()
++    for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
++      signal?.throwIfAborted()
++      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
++      if (!prefix && !['ucrt64', 'engine.json', 'provenance.json'].includes(entry.name)) throw new Error('Unexpected QEMU engine root entry')
++      const target = path.join(directory, entry.name)
++      const stat = await fs.promises.lstat(target)
++      const canonical = await fs.promises.realpath(target)
++      if (stat.isSymbolicLink() || canonical.toLowerCase() !== path.resolve(target).toLowerCase()) throw new Error('QEMU engine tree contains a link or alias')
++      if (stat.isDirectory()) {
++        if (relative !== 'ucrt64' && !relative.startsWith('ucrt64/')) throw new Error('Unexpected QEMU engine metadata directory')
++        // Signed packages include empty structural directories. No unindexed file is allowed within them.
++        await verifyTree(target, relative)
++      } else {
++        if (!stat.isFile() || stat.nlink !== 1) throw new Error('QEMU engine tree contains a non-regular or hard-linked file')
++        if (relative !== 'engine.json' && relative !== 'provenance.json') {
++          if (!seen.has(relative.toLowerCase())) throw new Error(`Unindexed QEMU runtime file: ${relative}`)
++          indexedCount++
++        }
++      }
++    }
++  }
++  await verifyTree(root)
++  if (indexedCount !== seen.size) throw new Error('QEMU engine inventory changed during verification')
++  return manifest
++}
++
++export class QmpStdio {
++  private buffer = ''
++  private nextId = 0
++  private failure: Error | null = null
++  private commandTail: Promise<void> = Promise.resolve()
++  private readonly pending = new Map<number, { resolve(value: QmpReply): void; reject(error: Error): void; timer: NodeJS.Timeout }>()
++  private readonly greetingCompletion = Promise.withResolvers<QmpReply>()
++  readonly greeting = this.greetingCompletion.promise
++
++  constructor(private readonly child: ChildProcessWithoutNullStreams) {
++    child.stdout.setEncoding('utf8')
++    child.stdout.on('data', (chunk: string) => this.consume(chunk))
++    child.stdout.on('error', () => this.failAll(new Error('QMP output pipe failed')))
++    child.stdout.on('end', () => this.failAll(new Error('QMP output pipe closed')))
++    child.stdin.on('error', () => this.failAll(new Error('QMP input pipe failed')))
++    child.on('exit', () => this.failAll(new Error('QEMU exited')))
++    child.on('error', () => this.failAll(new Error('QEMU failed to launch')))
++  }
++  private consume(chunk: string) {
++    if (this.failure) return
++    this.buffer += chunk
++    if (this.buffer.length > MAX_QMP_LINE && !this.buffer.includes('\n')) return this.failAll(new Error('QMP response exceeded limit'))
++    for (;;) {
++      const end = this.buffer.indexOf('\n')
++      if (end < 0) break
++      const line = this.buffer.slice(0, end).trim()
++      this.buffer = this.buffer.slice(end + 1)
++      if (line.length > MAX_QMP_LINE) return this.failAll(new Error('QMP response exceeded limit'))
++      if (!line) continue
++      let value: unknown
++      try { value = JSON.parse(line) } catch { return this.failAll(new Error('Invalid QMP response')) }
++      if (!value || typeof value !== 'object' || Array.isArray(value)) return this.failAll(new Error('Invalid QMP response'))
++      const reply = value as QmpReply & { id?: number; QMP?: unknown }
++      if ('QMP' in reply) {
++        this.greetingCompletion.resolve(reply)
++        continue
++      }
++      if (typeof reply.event === 'string') continue
++      const id = reply.id
++      if (!Number.isSafeInteger(id) || (('return' in reply) === ('error' in reply))) {
++        return this.failAll(new Error('Invalid QMP response envelope'))
++      }
++      const waiter = this.pending.get(id as number)
++      if (!waiter) continue
++      clearTimeout(waiter.timer)
++      this.pending.delete(id as number)
++      if (reply.error) waiter.reject(new Error(reply.error.desc || 'QMP command failed'))
++      else waiter.resolve(reply)
++    }
++  }
++  private failAll(error: Error) {
++    if (this.failure) return
++    this.failure = error
++    this.buffer = ''
++    this.greetingCompletion.reject(error)
++    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(error) }
++    this.pending.clear()
++  }
++  command(execute: string, args?: Record<string, unknown>, timeoutMs = 5000): Promise<QmpReply> {
++    // Windows stdio can corrupt pipelined QMP input. Send only after the prior reply.
++    const result = this.commandTail.then(() => this.sendCommand(execute, args, timeoutMs))
++    this.commandTail = result.then(() => undefined, () => undefined)
++    return result
++  }
++  private async sendCommand(execute: string, args: Record<string, unknown> | undefined, timeoutMs: number): Promise<QmpReply> {
++    if (this.failure) throw this.failure
++    const id = ++this.nextId
++    return new Promise((resolve, reject) => {
++      const timer = setTimeout(() => this.failAll(new Error('QMP command timed out')), timeoutMs)
++      this.pending.set(id, { resolve, reject, timer })
++      this.child.stdin.write(`${JSON.stringify({ execute, ...(args ? { arguments: args } : {}), id })}\r\n`, error => {
++        if (error) this.failAll(new Error('QMP pipe closed'))
++      })
++    })
++  }
++}
++export const qemuDrivePath = (value: string) => value.replace(/,/g, ',,')
++export function qemuInputReleaseEvents(keys: Iterable<string>, buttons: Iterable<'left' | 'right'>): Array<Record<string, unknown>> {
++  return [
++    ...Array.from(keys, qcode => ({ type: 'key', data: { down: false, key: { type: 'qcode', data: qcode.toLowerCase() } } })),
++    ...Array.from(buttons, button => ({ type: 'btn', data: { down: false, button } }))
++  ]
++}
++export function qemuNetworkingArguments(enabled: boolean, developerSmoke = false): string[] {
++  if (!enabled || developerSmoke) return []
++  return ['-netdev', 'user,id=hermes-nat', '-device', 'virtio-net-pci,netdev=hermes-nat']
++}
++
++type QemuVmDependencies = {
++  userDataPath: () => string
++  engineRoot: () => string
++  freeMemory: () => number
++  spawn: typeof spawn
++  execFile: typeof execFile
++}
++const defaultDependencies: QemuVmDependencies = {
++  userDataPath: () => app.getPath('userData'),
++  engineRoot: () => process.env.HERMES_DESKTOP_QEMU_ROOT || path.join(app.getPath('userData'), 'portable-qemu'),
++  freeMemory: () => os.freemem(),
++  spawn,
++  execFile
++}
++
++export class QemuVmController {
++  private child: ChildProcessWithoutNullStreams | null = null
++  private qmp: QmpStdio | null = null
++  private state: VmState = 'stopped'
++  private inputLease = false
++  private inputRelease: Promise<void> | null = null
++  private inputReleaseFailed = false
++  private networkEnabled = false
++  private paneVisible = false
++  private paneEpoch = 0
++  private starting = false
++  private verificationAbort: AbortController | null = null
++  private forceStopping = false
++  private capturing = false
++  private vmRoot: string
++  private readonly deps: QemuVmDependencies
++  constructor(dependencies: Partial<QemuVmDependencies> = {}) {
++    this.deps = { ...defaultDependencies, ...dependencies }
++    this.vmRoot = path.join(this.deps.userDataPath(), 'qemu-vms', 'default')
++  }
++  private startCompletion: Promise<void> | null = null
++  private resolveStartCompletion: (() => void) | null = null
++
++  private inputGeneration = 0
++  private heldKeys = new Map<string, number>()
++  private heldButtons = new Map<'left' | 'right', number>()
++  status(): QemuVmStatus {
++    const root = this.deps.engineRoot()
++    const disk = path.join(this.deps.userDataPath(), 'qemu-vms', 'default', 'system.qcow2')
++    return { state: this.state, owned: this.hasOwnedVmOrStartup(), available: process.platform === 'win32' && fs.existsSync(path.join(root, 'engine.json')), developerSmokeAvailable: !app.isPackaged, hasDisk: fs.existsSync(disk), inputEnabled: this.inputLease, inputReleaseFailed: this.inputReleaseFailed, networkEnabled: this.networkEnabled }
++  }
++  setPaneVisible(visible: boolean) {
++    if (this.paneVisible !== visible) this.paneEpoch += 1
++    this.paneVisible = visible
++    if (!visible) {
++      this.verificationAbort?.abort()
++      this.releaseInput()
++    }
++  }
++  async start(options: { developerSmoke?: boolean; bootExisting?: boolean; iso?: string; networkEnabled?: boolean } = {}) {
++    if (process.platform !== 'win32') throw new Error('Portable QEMU is available only on Windows x64')
++    if (this.child || this.starting) throw new Error('QEMU VM is already owned or starting')
++    if (!this.paneVisible) throw new Error('Open the QEMU console pane before starting a VM')
++    if (options.developerSmoke !== true && !options.bootExisting && !options.iso) throw new Error('Select an installation ISO or boot an existing VM')
++    if (options.developerSmoke && options.networkEnabled) throw new Error('Firmware smoke never enables guest networking')
++    const epoch = this.paneEpoch
++    this.starting = true
++    const verificationAbort = new AbortController()
++    this.verificationAbort = verificationAbort
++    const completion = Promise.withResolvers<void>()
++    this.startCompletion = completion.promise
++    this.resolveStartCompletion = completion.resolve
++    this.vmRoot = path.join(this.deps.userDataPath(), 'qemu-vms', options.developerSmoke ? 'firmware-smoke' : 'default')
++    const engineRoot = this.deps.engineRoot()
++    this.state = 'starting'
++    try {
++      const manifest = await validateQemuEngine(engineRoot, verificationAbort.signal)
++      if (epoch !== this.paneEpoch || !this.paneVisible) throw new Error('QEMU console ownership changed during engine verification')
++      const userData = this.deps.userDataPath()
++      rejectReparseAncestors(path.parse(userData).root, userData)
++      const vmParent = path.dirname(this.vmRoot)
++      if (fs.existsSync(vmParent)) rejectReparseAncestors(userData, vmParent)
++      fs.mkdirSync(this.vmRoot, { recursive: true })
++      rejectReparseAncestors(this.deps.userDataPath(), this.vmRoot)
++      const varsTemplate = contained(engineRoot, `${manifest.firmwareDirectory}/edk2-i386-vars.fd`)
++      const vars = path.join(this.vmRoot, 'vars.fd')
++      if (fs.existsSync(vars)) rejectReparseAncestors(this.vmRoot, vars)
++      if (options.developerSmoke) fs.copyFileSync(varsTemplate, vars)
++      else if (!fs.existsSync(vars)) fs.copyFileSync(varsTemplate, vars)
++      const code = contained(engineRoot, `${manifest.firmwareDirectory}/edk2-x86_64-code.fd`)
++      const memoryMiB = options.developerSmoke ? 768 : 4096
++      const memoryBytes = memoryMiB * 1024 * 1024
++      const requiredHeadroom = (options.developerSmoke ? 1024 : 2048) * 1024 * 1024
++      if (this.deps.freeMemory() < memoryBytes + requiredHeadroom) throw new Error(`Not enough available memory for the ${memoryMiB} MiB QEMU VM`)
++      const argv = ['-machine', 'q35,accel=tcg', '-m', String(memoryMiB), '-smp', '2', '-nodefaults', '-device', 'VGA', '-device', 'qemu-xhci,id=usb', '-device', 'usb-kbd,bus=usb.0', '-device', 'usb-tablet,bus=usb.0', '-no-user-config', '-display', 'none', '-monitor', 'none', '-serial', 'none', '-parallel', 'none', '-L', contained(engineRoot, manifest.firmwareDirectory), '-drive', `if=pflash,format=raw,readonly=on,file=${qemuDrivePath(code)}`, '-drive', `if=pflash,format=raw,file=${qemuDrivePath(vars)}`, '-qmp', 'stdio']
++      argv.push(...qemuNetworkingArguments(options.networkEnabled === true, options.developerSmoke === true))
++      if (!options.developerSmoke) {
++        const disk = path.join(this.vmRoot, 'system.qcow2')
++        if (fs.existsSync(disk)) rejectReparseAncestors(this.vmRoot, disk)
++        if (options.bootExisting && !fs.existsSync(disk)) throw new Error('No owned VM disk exists yet; choose an installation ISO first')
++        if (!options.bootExisting && !fs.existsSync(disk)) {
++          await this.deps.execFile(contained(engineRoot, manifest.qemuImgExecutable), ['create', '-f', 'qcow2', disk, '32G'], {
++            cwd: this.vmRoot, windowsHide: true, timeout: 10_000, maxBuffer: 16 * 1024,
++            env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows', WINDIR: process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows', TEMP: this.vmRoot, TMP: this.vmRoot, HOME: this.vmRoot, PATH: path.join(engineRoot, 'ucrt64', 'bin') }
++          })
++        }
++        if (!fs.existsSync(disk)) throw new Error('Owned VM disk was not created')
++        argv.push('-drive', `if=virtio,format=qcow2,file=${qemuDrivePath(disk)}`)
++      }
++      if (epoch !== this.paneEpoch || !this.paneVisible) throw new Error('QEMU console ownership changed during VM startup')
++      if (options.iso) {
++        const iso = path.resolve(options.iso)
++        if (!fs.statSync(iso).isFile()) throw new Error('Installation ISO is unavailable')
++        argv.push('-drive', `media=cdrom,readonly=on,file=${qemuDrivePath(iso)}`)
++      }
++      if (epoch !== this.paneEpoch || !this.paneVisible) throw new Error('QEMU console ownership changed during VM startup')
++      const child = this.deps.spawn(contained(engineRoot, manifest.qemuExecutable), argv, {
++        cwd: this.vmRoot, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
++        env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows', WINDIR: process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows', TEMP: this.vmRoot, TMP: this.vmRoot, HOME: this.vmRoot, PATH: path.join(engineRoot, 'ucrt64', 'bin') }
++      })
++      this.networkEnabled = options.networkEnabled === true
++      this.child = child
++      this.forceStopping = false
++      child.once('exit', code => {
++        if (this.child === child) {
++          this.child = null
++          this.qmp = null
++          this.networkEnabled = false
++          this.inputLease = false
++          this.inputRelease = null
++          this.inputReleaseFailed = false
++          this.heldKeys.clear()
++          this.heldButtons.clear()
++          this.state = code === 0 || this.forceStopping ? 'stopped' : 'error'
++          this.forceStopping = false
++        }
++      })
++      child.stderr.on('data', () => undefined)
++      const qmp = new QmpStdio(child)
++      this.qmp = qmp
++      let readyTimer: NodeJS.Timeout | undefined
++      await Promise.race([qmp.greeting, new Promise<never>((_, reject) => { readyTimer = setTimeout(() => reject(new Error('QEMU QMP did not become ready')), 10000) })]).finally(() => clearTimeout(readyTimer))
++      await qmp.command('qmp_capabilities')
++      if (epoch !== this.paneEpoch || !this.paneVisible) throw new Error('QEMU console ownership changed during VM startup')
++      this.state = 'running'
++    } catch (error) {
++      await this.stop(false).catch(() => undefined)
++      this.state = 'error'
++      throw error
++    }
++    finally {
++      if (this.verificationAbort === verificationAbort) this.verificationAbort = null
++      this.starting = false
++      this.resolveStartCompletion?.()
++      this.resolveStartCompletion = null
++      this.startCompletion = null
++    }
++  }
++  async stop(graceful = true) {
++    this.paneEpoch += 1
++    this.verificationAbort?.abort()
++    this.releaseInput()
++    const child = this.child
++    const qmp = this.qmp
++    if (!child) { this.state = 'stopped'; this.networkEnabled = false; return }
++    if (graceful) {
++      if (qmp) await qmp.command('system_powerdown', undefined, 1500)
++      if (child.exitCode === null) {
++        await Promise.race([new Promise<void>(resolve => child.once('exit', () => resolve())), new Promise<void>(resolve => setTimeout(resolve, 2500))])
++      }
++      return
++    }
++    this.forceStopping = true
++    if (qmp) {
++      try { await qmp.command('quit', undefined, 1500) } catch { /* process may already have exited */ }
++    }
++    if (child.exitCode === null) child.kill()
++    if (child.exitCode === null) {
++      await Promise.race([new Promise<void>(resolve => child.once('exit', () => resolve())), new Promise<void>(resolve => setTimeout(resolve, 2500))])
++    }
++    if (this.child === child && child.exitCode !== null) {
++      this.child = null
++      this.qmp = null
++      this.state = 'stopped'
++      this.networkEnabled = false
++      return
++    }
++    if (this.child === child) throw new Error('QEMU process did not exit after the explicit power-off request')
++  }
++  hasOwnedVmOrStartup(): boolean {
++    return this.starting || this.child !== null
++  }
++  async stopForAppExit(): Promise<boolean> {
++    if (!this.hasOwnedVmOrStartup()) return true
++    await this.stop(false)
++    if (this.startCompletion) await this.startCompletion
++    if (this.child) await this.stop(false)
++    return !this.hasOwnedVmOrStartup()
++  }
++  takeInput() {
++    if (!this.paneVisible || this.state !== 'running') throw new Error('Open the VM console before taking input control')
++    if (this.inputRelease) throw new Error('Wait for the pending guest input release')
++    if (this.inputReleaseFailed) throw new Error('Guest input release was not acknowledged; explicitly power off this VM before taking control again')
++    this.inputLease = true
++  }
++  releaseInput(): Promise<void> {
++    this.inputLease = false
++    const events = qemuInputReleaseEvents(this.heldKeys.keys(), this.heldButtons.keys())
++    this.heldKeys.clear()
++    this.heldButtons.clear()
++    const qmp = this.qmp
++    if (!qmp || !events.length) return this.inputRelease ?? Promise.resolve()
++    // A revoked permission is not proof that the guest received key-up events.
++    // Keep failures visible in status and refuse another takeover of this VM.
++    const release = qmp.command('input-send-event', { events }).then(() => undefined, () => {
++      if (this.qmp === qmp) {
++        this.inputReleaseFailed = true
++        this.inputLease = false
++      }
++    })
++    this.inputRelease = release
++    void release.then(() => { if (this.inputRelease === release) this.inputRelease = null })
++    return release
++  }
++  async capture(): Promise<string | null> {
++    if (!this.paneVisible || this.state !== 'running' || !this.qmp || !this.child || this.capturing) return null
++    this.capturing = true
++    const qmp = this.qmp
++    const child = this.child
++    const epoch = this.paneEpoch
++    const frame = path.join(this.vmRoot, 'console.png')
++    try {
++      if (fs.existsSync(frame)) rejectReparseAncestors(this.vmRoot, frame)
++      await qmp.command('screendump', { filename: frame, format: 'png' }, 5000)
++      if (!this.paneVisible || epoch !== this.paneEpoch || this.child !== child || this.qmp !== qmp || child.exitCode !== null) throw new Error('QEMU console ownership changed during frame capture')
++      const stat = fs.statSync(frame)
++      if (!stat.isFile() || stat.size < 8 || stat.size > MAX_FRAME_BYTES) throw new Error('QEMU console frame is invalid or too large')
++      const bytes = fs.readFileSync(frame)
++      if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('QEMU console frame is not PNG')
++      return `data:image/png;base64,${bytes.toString('base64')}`
++    } finally {
++      try { fs.unlinkSync(frame) } catch { /* no prior frame */ }
++      this.capturing = false
++    }
++  }
++  async sendKey(key: string, down: boolean) {
++    const qmp = this.qmp
++    const held = this.heldKeys.has(key)
++    if (!qmp || !/^[A-Za-z0-9_+-]{1,32}$/.test(key) || (!this.inputLease && !(down === false && held)) || (!this.paneVisible && !(down === false && held))) throw new Error('VM input is not enabled')
++    const generation = down ? ++this.inputGeneration : this.heldKeys.get(key)
++    if (down) this.heldKeys.set(key, generation!)
++    try {
++      await qmp.command('input-send-event', { events: [{ type: 'key', data: { down, key: { type: 'qcode', data: key.toLowerCase() } } }] })
++    } catch (error) {
++      if (down && this.heldKeys.get(key) === generation) this.heldKeys.delete(key)
++      throw error
++    }
++    if (!down && this.heldKeys.get(key) === generation) this.heldKeys.delete(key)
++  }
++  async sendPointer(x: number, y: number, button?: string, down?: boolean) {
++    const qmp = this.qmp
++    const held = button === 'left' || button === 'right' ? this.heldButtons.has(button) : false
++    if (!qmp || (!this.inputLease && !(button && down === false && held)) || (!this.paneVisible && !(button && down === false && held)) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 32767 || y < 0 || y > 32767) throw new Error('VM input is not enabled')
++    const events: Array<Record<string, unknown>> = [
++      { type: 'abs', data: { axis: 'x', value: x } },
++      { type: 'abs', data: { axis: 'y', value: y } }
++    ]
++    const generation = button === 'left' || button === 'right'
++      ? down ? ++this.inputGeneration : this.heldButtons.get(button)
++      : undefined
++    if (button === 'left' || button === 'right') {
++      events.push({ type: 'btn', data: { down: down === true, button } })
++      if (down) this.heldButtons.set(button, generation!)
++    }
++    try {
++      await qmp.command('input-send-event', { events })
++    } catch (error) {
++      if ((button === 'left' || button === 'right') && down && this.heldButtons.get(button) === generation) this.heldButtons.delete(button)
++      throw error
++    }
++    if ((button === 'left' || button === 'right') && !down && this.heldButtons.get(button) === generation) this.heldButtons.delete(button)
++  }
++}
+--- a/apps/desktop/src/contrib/plugin.test.ts
++++ b/apps/desktop/src/contrib/plugin.test.ts
+@@ -4,6 +4,7 @@
+ 
+ import { emitGatewayEvent } from './events'
+ import { createPluginContext } from './plugin'
++import { openNativeScreen } from '@/sdk/native-screen'
+ 
+ vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
+ 
+@@ -24,6 +25,29 @@
+     expect(cleaned).toBe(true)
+   })
+ })
++describe('native screen provider context', () => {
++  it('limits registration to Hermes Bots and retires the provider on deactivate', () => {
++    const route = {
++      connectionId: 'guest-a',
++      mode: 'remote' as const,
++      profile: 'framework-coordinator',
++      targetProfile: 'framework-coordinator'
++    }
++    const rejected = createPluginContext('demo')
++
++    expect(() => rejected.registerNativeScreenProvider(() => ({ status: 'opened' }))).toThrow(
++      'reserved for Hermes Bots'
++    )
++
++    const disposers: Array<() => void> = []
++    const ctx = createPluginContext('hermes-bots', dispose => disposers.push(dispose))
++    ctx.registerNativeScreenProvider(() => ({ status: 'opened' }))
++    expect(openNativeScreen(route, 'remote')).toEqual({ status: 'opened' })
++    disposers.forEach(dispose => dispose())
++    expect(openNativeScreen(route, 'remote')).toEqual({ status: 'plugin_disabled' })
++  })
++})
++
+ 
+ describe('createPluginContext.onEvent', () => {
+   it('retires the gateway listener with the plugin, even when subscribed after register()', () => {
+--- a/apps/desktop/src/contrib/plugin.ts
++++ b/apps/desktop/src/contrib/plugin.ts
+@@ -24,6 +24,7 @@
+   runPluginAppAction
+ } from '@/lib/keybinds/plugin-actions'
+ import { readKey, writeKey } from '@/lib/storage'
++import { registerNativeScreenProvider as registerNativeScreenService, type NativeScreenProvider } from '@/sdk/native-screen'
+ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
+ import { $petActive } from '@/store/pet'
+ import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
+@@ -119,6 +120,8 @@
+    *  Removed with the plugin on disable/unload. Feature-detect on older hosts:
+    *  `ctx.registerSettingsPage?.(...)`. */
+   registerSettingsPage: (page: PluginSettingsPage) => () => void
++  /** First-party Bot Screen service hook; restricted to the bundled Hermes Bots plugin. */
++  registerNativeScreenProvider: (provider: NativeScreenProvider) => () => void
+   /** Register an arbitrary cleanup to run on unload/disable — for side effects
+    *  that aren't contributions or sockets (store subscriptions, timers). Runs
+    *  alongside every other disposer when the plugin deactivates. */
+@@ -360,6 +363,13 @@
+     register: c => track(registry.register(scope(c))),
+     registerMany: cs => track(registry.registerMany(cs.map(scope))),
+     registerSettingsPage: page => track(registry.register(scope(settingsPageContribution(page)))),
++    registerNativeScreenProvider: provider => {
++      if (pluginId !== 'hermes-bots') {
++        throw new Error('Native Screen provider registration is reserved for Hermes Bots')
++      }
++
++      return track(registerNativeScreenService(provider))
++    },
+     onDispose: fn => void track(fn),
+     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
+     ...createPluginLifetime(track),
+--- a/apps/desktop/src/global.d.ts
++++ b/apps/desktop/src/global.d.ts
+@@ -8,6 +8,7 @@
+ import type { MachineProfile } from '../electron/machine-profile'
+ import type { HermesNotification } from '../electron/notification-types'
+ import type { KeepAwakeMode } from '../electron/power-save'
++import type { QemuVmStatus } from '../electron/qemu-vm'
+ import type { UpdateHoldWire } from '../electron/update-hold-types'
+ import type { UpdateRunReport } from '../electron/updater/update-metrics'
+ import type { WindowSizeMode } from '../electron/window-size-types'
+@@ -561,6 +562,16 @@
+           options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[] }
+         ) => Promise<{ root: string; label: string }[]>
+       }
++      qemu: {
++        capture: () => Promise<string | null>
++        inputControl: (enabled: boolean) => Promise<unknown>
++        key: (key: string, down: boolean) => Promise<void>
++        setPaneVisible: (visible: boolean) => Promise<unknown>
++        start: (mode?: 'install' | 'boot-existing' | 'firmware-smoke') => Promise<unknown>
++        status: () => Promise<QemuVmStatus>
++        stop: (graceful: boolean) => Promise<unknown>
++        pointer: (x: number, y: number, button?: 'left' | 'right', down?: boolean) => Promise<void>
++      }
+       terminal: {
+         attach: (id: string) => Promise<boolean>
+         /** Best-effort current working directory of the live PTY child (POSIX
+--- a/apps/desktop/src/plugins/hermes-bots/group-turns.test.ts
++++ b/apps/desktop/src/plugins/hermes-bots/group-turns.test.ts
+@@ -284,6 +284,20 @@
+     expect(turns.isSessionGoneError(null)).toBe(false)
+     expect(turns.isSessionGoneError(new Error('network blip'))).toBe(false)
+   })
++
++  it.each(['runtime_draining', 'profile_mismatch', 'permission_denied', 'invalid_params', 'stale_generation'])(
++    'surfaces authority refusal %s without resuming or resubmitting inference',
++    async reason => {
++      const room = await loadRoom({
++        failFirstSubmitWith: Object.assign(new Error(reason), { code: 4001, data: { reason } }),
++        turn: () => 'unexpected retry'
++      })
++
++      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(reason)
++      expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
++      expect(room.turns.isSessionGoneError({ code: 4001, data: { reason: 'not_found' } })).toBe(true)
++    }
++  )
+ 
+   it('recovers a 4001 on the first submit via the STORED id and delivers', async () => {
+     const room = await loadRoom({
+--- a/apps/desktop/src/plugins/hermes-bots/group-turns.ts
++++ b/apps/desktop/src/plugins/hermes-bots/group-turns.ts
+@@ -530,6 +530,12 @@
+     return false
+   }
+ 
++  // Canonical 4001 refusals carry an authoritative reason; a drain or profile
++  // guard is not a lost runtime and must not trigger another inference submit.
++  if (typeof error.data?.reason === 'string') {
++    return error.data.reason === 'not_found'
++  }
++
+   if (error.code === 4001) {
+     return true
+   }
+--- a/apps/desktop/src/plugins/hermes-bots/plugin.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/plugin.tsx
+@@ -40,6 +40,7 @@
+ import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
+ import { BotChatEmpty } from './chat-empty'
+ import { bindProfileSync, RoutinesPane } from './cron'
++import { QemuConsolePane } from './qemu-console-pane'
+ import {
+   $botMeta,
+   $lastRoster,
+@@ -82,6 +83,7 @@
+ import { startScreenAutoRaise } from './screen-autoraise'
+ import { ProfileGroupScreenPortal } from './screen-portal'
+ import { startHideSweepScheduler } from './session-sweep'
++import { openBotScreen } from './screen-open'
+ import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+ import type { GroupChat, RosterRow } from './types'
+ import { loadBotSections } from './user-sections'
+@@ -125,7 +127,22 @@
+     startBotRelay()
+     // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
+     const stopScreenAutoRaise = startScreenAutoRaise()
+-
++    ctx.registerNativeScreenProvider((route, connectionKind) => {
++      const opened = openBotScreen(
++        {
++          connectionId: route.connectionId,
++          connectionKind,
++          name: route.profile,
++          remoteSource: route.mode === 'remote',
++          route,
++          sourceScoped: true,
++          targetProfile: route.targetProfile
++        },
++        null
++      )
++
++      return opened ? { status: 'opened' } : { status: 'action_failed' }
++    })
+     // Disabling the plugin (or a hot reload) must actually stop the clock —
+     // before this, the rAF loop + 1Hz document scan ran until app restart.
+     if (typeof ctx.onDispose === 'function') {
+@@ -438,6 +455,19 @@
+       id: 'screen-portal',
+       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
++    })
++    ctx.register({
++      id: 'qemu-console',
++      area: 'panes',
++      title: 'Local QEMU console',
++      data: {
++        placement: 'main',
++        defaultCollapsed: true,
++        width: '720px',
++        tabTitle: () => 'QEMU',
++        tabTitleText: () => 'Local QEMU console'
++      },
++      render: () => <QemuConsolePane />
+     })
+     ctx.register({
+       id: 'pane',
+--- /dev/null
++++ b/apps/desktop/src/plugins/hermes-bots/qemu-console-pane.test.tsx
+@@ -0,0 +1,135 @@
++import { useStore } from '@nanostores/react'
++import { act, cleanup, fireEvent, render, type RenderResult } from '@testing-library/react'
++import { atom, type WritableAtom } from 'nanostores'
++import type { ButtonHTMLAttributes } from 'react'
++import { afterEach, beforeEach, expect, it, vi } from 'vitest'
++import type { QemuVmStatus } from '../../../electron/qemu-vm'
++
++vi.mock('@hermes/plugin-sdk', () => {
++  return {
++    Button: ({ children, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
++    useValue: (store: WritableAtom<boolean>) => useStore(store),
++    host: { paneVisibility: () => visible, notifyError: vi.fn() }
++  }
++})
++
++import { QemuConsolePane } from './qemu-console-pane'
++
++type Bridge = Window['hermesDesktop']['qemu']
++const visible = atom(true)
++const syntheticFrame = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
++let vm: QemuVmStatus
++let bridge: Bridge
++let keyEvents: Array<[string, boolean]>
++
++beforeEach(() => {
++  visible.set(true)
++  keyEvents = []
++  vm = {
++    state: 'running', owned: true, available: true, developerSmokeAvailable: true,
++    hasDisk: false, inputEnabled: false, inputReleaseFailed: false, networkEnabled: false
++  }
++  bridge = {
++    status: vi.fn(async () => ({ ...vm })),
++    setPaneVisible: vi.fn(async shown => { if (!shown) vm.inputEnabled = false; return { ...vm } }),
++    capture: vi.fn(async () => null),
++    inputControl: vi.fn(async enabled => { vm.inputEnabled = enabled; return { ...vm } }),
++    key: vi.fn(async (key, down) => { keyEvents.push([key, down]) }),
++    pointer: vi.fn(async () => undefined),
++    start: vi.fn(async () => { vm.state = 'running'; vm.owned = true; return { ...vm } }),
++    stop: vi.fn(async () => { vm.state = 'stopped'; vm.owned = false; vm.inputEnabled = false; return { ...vm } })
++  }
++  vi.stubGlobal('hermesDesktop', { qemu: bridge })
++})
++
++afterEach(() => {
++  cleanup()
++  vi.useRealTimers()
++  vi.unstubAllGlobals()
++})
++
++async function openConsole() {
++  let view!: RenderResult
++  await act(async () => { view = render(<QemuConsolePane />) })
++  return view
++}
++
++it('requires takeover and translates physical modifiers and digits without duplicate key-downs', async () => {
++  const view = await openConsole()
++  const pane = view.getByLabelText('Local QEMU boot console')
++  fireEvent.keyDown(pane, { code: 'KeyA', key: 'a' })
++  expect(keyEvents).toEqual([])
++  await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Take keyboard/mouse control' })) })
++  await act(async () => {
++    fireEvent.keyDown(pane, { code: 'ControlLeft', key: 'Control' })
++    fireEvent.keyDown(pane, { code: 'Digit1', key: '1' })
++    fireEvent.keyDown(pane, { code: 'Digit1', key: '1', repeat: true })
++    fireEvent.keyUp(pane, { code: 'Digit1', key: '1' })
++    fireEvent.keyUp(pane, { code: 'ControlLeft', key: 'Control' })
++  })
++  expect(keyEvents).toEqual([['ctrl', true], ['1', true], ['1', false], ['ctrl', false]])
++})
++
++it('revokes takeover on window blur even when there is no related focus target', async () => {
++  const view = await openConsole()
++  const pane = view.getByLabelText('Local QEMU boot console')
++  await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Take keyboard/mouse control' })) })
++  const release = Promise.withResolvers<void>()
++  vi.mocked(bridge.inputControl).mockImplementation(async enabled => {
++    vm.inputEnabled = enabled
++    if (!enabled) await release.promise
++    return { ...vm }
++  })
++  await act(async () => { fireEvent.blur(window) })
++  expect(vm.inputEnabled).toBe(false)
++  await act(async () => { release.resolve(); await release.promise })
++  expect(pane.tabIndex).toBe(-1)
++  expect(view.getByRole('button', { name: 'Take keyboard/mouse control' })).toBeTruthy()
++  fireEvent.keyDown(pane, { code: 'KeyA', key: 'a' })
++  expect(keyEvents).toEqual([])
++})
++
++it('does not paint a frame completed after hiding, but resumes with a fresh visible capture', async () => {
++  vi.useFakeTimers()
++  const stale = Promise.withResolvers<string>()
++  vi.mocked(bridge.capture).mockReturnValueOnce(stale.promise).mockResolvedValue(syntheticFrame)
++  const view = await openConsole()
++  await act(async () => { await vi.advanceTimersByTimeAsync(750) })
++  await act(async () => { visible.set(false) })
++  await act(async () => { stale.resolve(syntheticFrame); await stale.promise })
++  expect(view.queryByRole('img')).toBeNull()
++  await act(async () => { visible.set(true) })
++  await act(async () => { await vi.advanceTimersByTimeAsync(750) })
++  expect(view.getByRole('img').getAttribute('src')).toBe(syntheticFrame)
++})
++
++it('gates boot actions on engine availability and the native developer-smoke capability', async () => {
++  vi.useFakeTimers()
++  Object.assign(vm, { state: 'stopped', owned: false, available: false, hasDisk: true })
++  const view = await openConsole()
++  for (const name of ['Install from ISO…', 'Boot existing VM', 'Firmware smoke (diskless)']) {
++    expect((view.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
++  }
++  Object.assign(vm, { available: true, developerSmokeAvailable: false })
++  await act(async () => { await vi.advanceTimersByTimeAsync(1200) })
++  expect(view.queryByRole('button', { name: 'Firmware smoke (diskless)' })).toBeNull()
++  expect((view.getByRole('button', { name: 'Boot existing VM' }) as HTMLButtonElement).disabled).toBe(false)
++})
++
++it('keeps power-off available but disables takeover after an unacknowledged input release', async () => {
++  vm.inputReleaseFailed = true
++  const view = await openConsole()
++  expect(view.getByRole('alert')).toBeTruthy()
++  expect((view.getByRole('button', { name: 'Take keyboard/mouse control' }) as HTMLButtonElement).disabled).toBe(true)
++  expect((view.getByRole('button', { name: 'Power off immediately' }) as HTMLButtonElement).disabled).toBe(false)
++})
++
++it('does not hide an owned process behind launch failure and permits explicit power-off', async () => {
++  vm.state = 'error'
++  const view = await openConsole()
++  expect(view.queryByRole('button', { name: 'Install from ISO…' })).toBeNull()
++  expect((view.getByRole('button', { name: 'Take keyboard/mouse control' }) as HTMLButtonElement).disabled).toBe(true)
++  await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Power off immediately' })) })
++  expect(vm.owned).toBe(false)
++  expect(view.getByRole('button', { name: 'Install from ISO…' })).toBeTruthy()
++})
+--- /dev/null
++++ b/apps/desktop/src/plugins/hermes-bots/qemu-console-pane.tsx
+@@ -0,0 +1,141 @@
++import { Button, host, useValue } from '@hermes/plugin-sdk'
++import { atom } from 'nanostores'
++import type { KeyboardEvent, PointerEvent } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
++
++const keys: Record<string, string> = {
++  Enter: 'ret', Escape: 'esc', Backspace: 'backspace', Tab: 'tab', Space: 'spc',
++  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
++  ShiftLeft: 'shift', ShiftRight: 'shift_r', ControlLeft: 'ctrl', ControlRight: 'ctrl_r',
++  AltLeft: 'alt', AltRight: 'alt_r', MetaLeft: 'meta_l', MetaRight: 'meta_r',
++  Minus: 'minus', Equal: 'equal', BracketLeft: 'bracket_left', BracketRight: 'bracket_right',
++  Semicolon: 'semicolon', Quote: 'apostrophe', Backquote: 'grave_accent', Backslash: 'backslash',
++  Comma: 'comma', Period: 'dot', Slash: 'slash', CapsLock: 'caps_lock',
++  Home: 'home', End: 'end', PageUp: 'pgup', PageDown: 'pgdn', Insert: 'insert', Delete: 'delete'
++}
++
++export function QemuConsolePane() {
++  const [status, setStatus] = useState<'stopped' | 'starting' | 'running' | 'error'>('stopped')
++  const [available, setAvailable] = useState(false)
++  const [developerSmokeAvailable, setDeveloperSmokeAvailable] = useState(false)
++  const [owned, setOwned] = useState(false)
++  const [networkEnabled, setNetworkEnabled] = useState(false)
++  const [hasDisk, setHasDisk] = useState(false)
++  const [input, setInput] = useState(false)
++  const [inputReleaseFailed, setInputReleaseFailed] = useState(false)
++  const [frame, setFrame] = useState<string | null>(null)
++  const [error, setError] = useState('')
++  const pane = useRef<HTMLDivElement>(null)
++  const heldKeys = useRef(new Set<string>())
++  const $visible = useMemo(
++    () => (typeof host.paneVisibility === 'function' ? host.paneVisibility('hermes-bots:qemu-console') : atom(false)),
++    []
++  )
++  const visible = useValue($visible)
++  const refresh = useCallback(async () => {
++    try {
++      const value = await window.hermesDesktop.qemu.status()
++      setStatus(value.state); setOwned(value.owned); setAvailable(value.available); setDeveloperSmokeAvailable(value.developerSmokeAvailable)
++      setHasDisk(value.hasDisk); setInput(value.inputEnabled); setNetworkEnabled(value.networkEnabled)
++      setInputReleaseFailed(value.inputReleaseFailed)
++      if (value.inputReleaseFailed) setError('Guest input release was not acknowledged. Control remains disabled; explicitly power off the VM before taking control again.')
++    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
++  }, [])
++  useEffect(() => {
++    let live = true
++    void window.hermesDesktop.qemu.setPaneVisible(visible).then(() => {
++      if (live && visible) void refresh()
++    }).catch(e => { if (live) setError(e instanceof Error ? e.message : String(e)) })
++    if (!visible) {
++      setFrame(null)
++      setInput(false)
++    }
++    const poll = visible ? window.setInterval(() => { void refresh() }, 1200) : undefined
++    return () => {
++      live = false
++      window.clearInterval(poll)
++      void window.hermesDesktop.qemu.setPaneVisible(false)
++        .catch(e => host.notifyError(e, 'Could not release the QEMU console'))
++    }
++  }, [refresh, visible])
++  useEffect(() => {
++    if (!input) heldKeys.current.clear()
++    const blur = () => {
++      if (!input) return
++      void window.hermesDesktop.qemu.inputControl(false).then(refresh)
++        .catch(e => host.notifyError(e, 'Could not release QEMU input control'))
++        .finally(() => { setInput(false); heldKeys.current.clear() })
++    }
++    window.addEventListener('blur', blur)
++    return () => window.removeEventListener('blur', blur)
++  }, [input, refresh])
++  useEffect(() => {
++    if (!visible || status !== 'running') { setFrame(null); return }
++    let live = true
++    const poll = window.setInterval(() => {
++      void window.hermesDesktop.qemu.capture().then(value => { if (live) setFrame(value) }).catch(e => { if (live) setError(e instanceof Error ? e.message : String(e)) })
++    }, 750)
++    return () => { live = false; window.clearInterval(poll) }
++  }, [status, visible])
++  const act = async (operation: () => Promise<unknown>) => {
++    setError('')
++    try { await operation(); await refresh() } catch (e) { setError(e instanceof Error ? e.message : String(e)); await refresh() }
++  }
++  const key = (event: KeyboardEvent, down: boolean) => {
++    if (!input || (down && event.target !== pane.current)) return
++    const qcode = keys[event.code] || (/^Key[A-Z]$/.test(event.code) ? event.code.slice(3).toLowerCase()
++      : /^Digit[0-9]$/.test(event.code) ? event.code.slice(5)
++        : /^F([1-9]|1[0-9]|2[0-4])$/.test(event.code) ? event.code.toLowerCase() : '')
++    if (!qcode) return
++    event.preventDefault()
++    if (down && heldKeys.current.has(qcode)) return
++    if (down) heldKeys.current.add(qcode)
++    else heldKeys.current.delete(qcode)
++    void window.hermesDesktop.qemu.key(qcode, down).catch(e => setError(e instanceof Error ? e.message : String(e)))
++  }
++  const mouse = (event: PointerEvent<HTMLImageElement>, button?: 'left' | 'right', down?: boolean) => {
++    if (!input) return
++    event.preventDefault()
++    if (down) {
++      pane.current?.focus()
++      event.currentTarget.setPointerCapture(event.pointerId)
++    } else if (down === false && event.currentTarget.hasPointerCapture(event.pointerId)) {
++      event.currentTarget.releasePointerCapture(event.pointerId)
++    }
++    const bounds = event.currentTarget.getBoundingClientRect()
++    const x = Math.round(Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * 32767)
++    const y = Math.round(Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)) * 32767)
++    void window.hermesDesktop.qemu.pointer(x, y, button, down).catch(e => setError(e instanceof Error ? e.message : String(e)))
++  }
++  return <div ref={pane} tabIndex={input ? 0 : -1} onKeyDown={event => key(event, true)} onKeyUp={event => key(event, false)} onBlur={event => {
++    if (input && event.relatedTarget instanceof Node && !pane.current?.contains(event.relatedTarget)) {
++      setInput(false)
++      void window.hermesDesktop.qemu.inputControl(false).catch(e => host.notifyError(e, 'Could not release QEMU input control'))
++    }
++  }} aria-label="Local QEMU boot console" style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%', padding: 12, outline: 'none' }}>
++    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
++      <strong>Local QEMU boot console</strong><span>{!available ? 'QEMU runtime unavailable — stage an owned Windows x64 engine' : status === 'running' ? `Running — guest network ${networkEnabled ? 'enabled for this boot' : 'disabled'}` : status === 'starting' ? 'Starting' : status === 'error' ? owned ? 'VM control failed — process still owned' : 'Launch failed' : 'Stopped'}</span>
++      {!owned || status === 'starting' ? <>
++        <Button disabled={!available || status === 'starting'} onClick={() => void act(() => window.hermesDesktop.qemu.start('install'))}>Install from ISO…</Button>
++        {hasDisk && <Button disabled={!available || status === 'starting'} onClick={() => void act(() => window.hermesDesktop.qemu.start('boot-existing'))}>Boot existing VM</Button>}
++        {developerSmokeAvailable && <Button disabled={!available || status === 'starting'} onClick={() => void act(() => window.hermesDesktop.qemu.start('firmware-smoke'))}>Firmware smoke (diskless)</Button>}
++      </> : <>
++        <Button disabled={status !== 'running'} onClick={() => void act(() => window.hermesDesktop.qemu.stop(true))}>Request guest shutdown</Button>
++        <Button onClick={() => void act(() => window.hermesDesktop.qemu.stop(false))}>Power off immediately</Button>
++        <Button disabled={status !== 'running' || inputReleaseFailed} onClick={() => void act(async () => { await window.hermesDesktop.qemu.inputControl(!input); if (!input) pane.current?.focus() })}>{input ? 'Release keyboard/mouse control' : 'Take keyboard/mouse control'}</Button>
++      </>}
++    </div>
++    <div style={{ flex: 1, minHeight: 220, display: 'grid', placeItems: 'center', background: '#111', overflow: 'hidden' }}>
++      {frame ? <img alt="QEMU firmware or guest console" src={frame} onContextMenu={event => event.preventDefault()} onPointerMove={event => mouse(event)} onPointerDown={event => {
++        if (event.button === 0 || event.button === 2) mouse(event, event.button === 2 ? 'right' : 'left', true)
++      }} onPointerUp={event => {
++        if (event.button === 0 || event.button === 2) mouse(event, event.button === 2 ? 'right' : 'left', false)
++      }} onPointerCancel={() => {
++        setInput(false)
++        void window.hermesDesktop.qemu.inputControl(false).catch(e => host.notifyError(e, 'Could not release QEMU pointer control'))
++      }} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', imageRendering: 'pixelated', userSelect: 'none' }} /> : <span style={{ color: '#aaa' }}>{status === 'running' ? 'Waiting for the first QEMU frame…' : 'No guest console is running.'}</span>}
++    </div>
++    <small>This is the VM boot console, not the remote Hermes Bot Screen. No guest login or OS readiness is implied. Keyboard and mouse input are disabled until you explicitly take control.</small>
++    {error && <div role="alert">{error}</div>}
++  </div>
++}
+--- a/apps/desktop/src/plugins/hermes-bots/screen-open.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/screen-open.tsx
+@@ -19,11 +19,11 @@
+   return `plugin-workspace:${ID}:screen:${botSelectionKey(bot)}`
+ }
+ 
+-export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
++export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): boolean {
+   if (typeof host.openWorkspace !== 'function') {
+     host.notify({ kind: 'info', message: botsText().screen.openNeedsUpdate })
+ 
+-    return
++    return false
+   }
+ 
+   const key = botSelectionKey(bot)
+@@ -31,19 +31,24 @@
+   if (openTabs.has(key)) {
+     host.revealPane(screenPaneId(bot))
+ 
+-    return
++    return true
+   }
+ 
+-  const close = host.openWorkspace(`${ID}:screen:${key}`, {
+-    title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
+-    minWidth: '28rem',
+-    render: () => <BotScreenPane bot={bot} />,
+-    onClose: () => {
+-      openTabs.delete(key)
+-      noteScreenTabClosed(bot)
+-    }
+-  })
++  try {
++    const close = host.openWorkspace(`${ID}:screen:${key}`, {
++      title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
++      minWidth: '28rem',
++      render: () => <BotScreenPane bot={bot} />,
++      onClose: () => {
++        openTabs.delete(key)
++        noteScreenTabClosed(bot)
++      }
++    })
+ 
+-  openTabs.set(key, close)
+-  noteScreenTabOpened(bot)
++    openTabs.set(key, close)
++    noteScreenTabOpened(bot)
++    return true
++  } catch {
++    return false
++  }
+ }
+--- a/apps/desktop/src/plugins/hermes-bots/screen-pane-status-events.test.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/screen-pane-status-events.test.tsx
+@@ -108,6 +108,15 @@
+ 
+ afterEach(() => vi.unstubAllGlobals())
+ 
++it('shows an initial status failure without switching connections', async () => {
++  vi.mocked(displayRequest).mockRejectedValueOnce(new Error('guest backend unavailable'))
++  const view = render(<BotScreenPane bot={bot} />)
++
++  await waitFor(() => expect(view.getByText('guest backend unavailable')).toBeTruthy())
++  expect(view.queryByText('Stopped')).toBeNull()
++  view.unmount()
++})
++
+ it('a stopped pane learns of an external start from the pushed display.status event and attaches', async () => {
+   const view = render(<BotScreenPane bot={bot} />)
+   await waitFor(() => expect(view.getByText('Stopped')).toBeTruthy())
+--- a/apps/desktop/src/plugins/hermes-bots/screen-pane.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/screen-pane.tsx
+@@ -116,12 +116,16 @@
+       const next = await displayRequest<DisplayStatus>(bot, 'display.status')
+       setScreenStatus(bot, next, request)
+       setError(null)
++      setConn(current => (current === 'error' ? 'idle' : current))
+     } catch (err) {
+       if (isDisplayUnavailable(err)) {
+         setScreenUnavailable(bot)
+       }
+ 
+       setError(err instanceof Error ? err.message : String(err))
++      // The first status RPC can fail before there is any pane state to render.
++      // Surface the failure without switching to another connection.
++      setConn(current => (current === 'idle' ? 'error' : current))
+     }
+   }, [bot])
+ 
+--- a/apps/desktop/src/sdk/index.test.ts
++++ b/apps/desktop/src/sdk/index.test.ts
+@@ -2,9 +2,10 @@
+ 
+ import { ackComposerInsert } from '@/app/chat/composer/focus'
+ import { createClientSessionState } from '@/lib/chat-runtime'
+-import { host } from '@/sdk'
++import { host, type PluginProfileRoute } from '@/sdk'
+ import { $selectedStoredSessionId, setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
+ import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
++import { registerNativeScreenProvider } from '@/sdk/native-screen'
+ 
+ // The warm path must route through the guarded prewarm resolver (hover dwell,
+ // per-profile throttle), not dial the gateway directly: mocking the store's
+@@ -209,6 +210,102 @@
+   })
+ })
+ 
++describe('host.openScreen routing', () => {
++  const route = {
++    connectionId: 'guest-a',
++    mode: 'remote' as const,
++    profile: 'framework-coordinator',
++    targetProfile: 'framework-coordinator'
++  }
++  let disposeProvider: (() => void) | undefined
++
++  afterEach(() => {
++    disposeProvider?.()
++    disposeProvider = undefined
++    vi.restoreAllMocks()
++  })
++
++  const registry = (routes: PluginProfileRoute[], connectionId = 'guest-a', kind = 'remote') => {
++    vi.spyOn(host, 'profileRoutes').mockResolvedValue(routes)
++    vi.spyOn(host, 'connections').mockResolvedValue([{ id: connectionId, kind }] as never)
++  }
++
++  it('opens only an exact current registered route and passes the true registry kind', async () => {
++    registry([route], 'guest-a', 'cloud')
++    const opened: unknown[] = []
++    disposeProvider = registerNativeScreenProvider((value, connectionKind) => {
++      opened.push([value, connectionKind])
++      return { status: 'opened' }
++    })
++
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'opened' })
++    expect(opened).toEqual([[route, 'cloud']])
++  })
++  it('snapshots the selected route before asynchronous registry validation', async () => {
++    const { promise: routePromise, resolve: resolveRoutes } = Promise.withResolvers<PluginProfileRoute[]>()
++    vi.spyOn(host, 'profileRoutes').mockReturnValue(routePromise)
++    vi.spyOn(host, 'connections').mockResolvedValue([{ id: 'guest-a', kind: 'remote' }] as never)
++    const opened: unknown[] = []
++    disposeProvider = registerNativeScreenProvider(value => {
++      opened.push(value)
++      return { status: 'opened' }
++    })
++    const selected = { ...route }
++    const pending = host.openScreen(selected)
++    selected.connectionId = 'mutated-after-call'
++    resolveRoutes([route])
++
++    await expect(pending).resolves.toEqual({ status: 'opened' })
++    expect(opened).toEqual([route])
++  })
++  it('rejects removed and ambiguous routes without invoking the provider', async () => {
++    const open = vi.fn(() => ({ status: 'opened' as const }))
++    disposeProvider = registerNativeScreenProvider(open)
++    registry([])
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
++    expect(open).not.toHaveBeenCalled()
++
++    registry([route, route])
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_ambiguous' })
++    expect(open).not.toHaveBeenCalled()
++  })
++
++  it('rejects removed connections and mode mismatches without active/local fallback', async () => {
++    const open = vi.fn(() => ({ status: 'opened' as const }))
++    disposeProvider = registerNativeScreenProvider(open)
++    registry([route], 'other-connection')
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'connection_missing' })
++    expect(open).not.toHaveBeenCalled()
++
++    registry([{ ...route, mode: 'local' }])
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
++    expect(open).not.toHaveBeenCalled()
++
++    registry([route], 'guest-a', 'local')
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
++    expect(open).not.toHaveBeenCalled()
++  })
++
++  it.each(['profileRoutes', 'connections'] as const)('reports %s read failures without claiming the API is unsupported', async method => {
++    registry([route])
++    vi.mocked(host[method]).mockRejectedValue(new Error('Synthetic inventory failure'))
++    const open = vi.fn(() => ({ status: 'opened' as const }))
++    disposeProvider = registerNativeScreenProvider(open)
++
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'action_failed' })
++    expect(open).not.toHaveBeenCalled()
++  })
++
++  it('returns a fixed action failure when native opening throws', async () => {
++    registry([route])
++    disposeProvider = registerNativeScreenProvider(() => {
++      throw new Error('private native error')
++    })
++
++    await expect(host.openScreen(route)).resolves.toEqual({ status: 'action_failed' })
++  })
++})
++
+ describe('host workspace scope', () => {
+   afterEach(async () => {
+     host.setWorkspaceScope('sessions')
+--- a/apps/desktop/src/sdk/index.ts
++++ b/apps/desktop/src/sdk/index.ts
+@@ -118,6 +118,11 @@
+   pluginRouteStillRegistered,
+   requestPluginProfile
+ } from './profile-request'
++import {
++  openNativeScreen,
++  type NativeScreenConnectionKind,
++  type NativeScreenOpenResult
++} from './native-screen'
+ import { sessionsHost } from './sessions'
+ import { desktopSettings } from './settings'
+ 
+@@ -1402,6 +1407,72 @@
+     return getProfileRoutes(profiles.map(profile => profile.name))
+   },
+ 
++  /** Open the bundled native Bot Screen for one exact registered route. This
++   *  observes an already-running display; it never starts a screen or chooses
++   *  the active/local route. */
++  openScreen: async (route: PluginProfileRoute): Promise<NativeScreenOpenResult> => {
++    if (
++      !route ||
++      typeof route.connectionId !== 'string' ||
++      typeof route.profile !== 'string' ||
++      typeof route.targetProfile !== 'string' ||
++      (route.mode !== 'local' && route.mode !== 'remote')
++    ) {
++      return { status: 'route_not_registered' }
++    }
++    const selectedRoute = { ...route }
++
++    if (typeof host.openWorkspace !== 'function') {
++      return { status: 'unsupported_version' }
++    }
++
++    let routes: PluginProfileRoute[]
++    let connections: Array<{ id: string; kind: NativeScreenConnectionKind }>
++
++    try {
++      const inventory = await Promise.all([host.profileRoutes(), host.connections()])
++      routes = inventory[0]
++      connections = inventory[1]
++    } catch {
++      return { status: 'action_failed' }
++    }
++
++    const ownerRoutes = routes.filter(
++      candidate =>
++        candidate.connectionId === selectedRoute.connectionId && candidate.profile === selectedRoute.profile
++    )
++
++    if (ownerRoutes.length > 1) {
++      return { status: 'route_ambiguous' }
++    }
++
++    const matchingRoutes = ownerRoutes.filter(
++      candidate => candidate.mode === selectedRoute.mode && candidate.targetProfile === selectedRoute.targetProfile
++    )
++
++    if (matchingRoutes.length === 0) {
++      return { status: 'route_not_registered' }
++    }
++
++    const matchingConnections = connections.filter(connection => connection.id === selectedRoute.connectionId)
++
++    if (matchingConnections.length === 0) {
++      return { status: 'connection_missing' }
++    }
++
++    if (matchingConnections.length > 1) {
++      return { status: 'route_ambiguous' }
++    }
++
++    const connectionKind = matchingConnections[0].kind
++
++    if ((selectedRoute.mode === 'local') !== (connectionKind === 'local')) {
++      return { status: 'route_not_registered' }
++    }
++
++    return openNativeScreen(selectedRoute, connectionKind)
++  },
++
+   /** Gateway JSON-RPC through a credential-free route descriptor without
+    *  foregrounding it. Passing a bare profile is the v1/local compatibility
+    *  overload; registry callers must pass the descriptor so duplicate names
+@@ -1572,6 +1643,7 @@
+ 
+ // -- react bridge -------------------------------------------------------------
+ 
++export type { NativeScreenConnectionKind, NativeScreenOpenResult, NativeScreenProvider } from './native-screen'
+ export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
+ 
+ // -- ui: the design language --------------------------------------------------
+--- /dev/null
++++ b/apps/desktop/src/sdk/native-screen.test.ts
+@@ -0,0 +1,31 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import { openNativeScreen, registerNativeScreenProvider } from './native-screen'
++
++const route = {
++  connectionId: 'guest-a',
++  mode: 'remote' as const,
++  profile: 'framework-coordinator',
++  targetProfile: 'framework-coordinator'
++}
++
++describe('native screen provider lifecycle', () => {
++  it('registers and disposes the bundled provider', () => {
++    const provider = vi.fn(() => ({ status: 'opened' as const }))
++    const dispose = registerNativeScreenProvider(provider)
++
++    expect(openNativeScreen(route, 'cloud')).toEqual({ status: 'opened' })
++    expect(provider).toHaveBeenCalledWith(route, 'cloud')
++    dispose()
++    expect(openNativeScreen(route, 'remote')).toEqual({ status: 'plugin_disabled' })
++  })
++
++  it('returns a fixed failure when the provider action throws', () => {
++    const dispose = registerNativeScreenProvider(() => {
++      throw new Error('private native error')
++    })
++
++    expect(openNativeScreen(route, 'ssh')).toEqual({ status: 'action_failed' })
++    dispose()
++  })
++})
+--- /dev/null
++++ b/apps/desktop/src/sdk/native-screen.ts
+@@ -0,0 +1,68 @@
++import type { PluginProfileRoute } from './profile-request'
++
++export type NativeScreenOpenResult =
++  | { status: 'opened' }
++  | {
++      status:
++        | 'action_failed'
++        | 'connection_missing'
++        | 'plugin_disabled'
++        | 'provider_unavailable'
++        | 'route_ambiguous'
++        | 'route_not_registered'
++        | 'unsupported_version'
++    }
++
++export type NativeScreenConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh'
++
++export type NativeScreenProvider = (
++  route: PluginProfileRoute,
++  connectionKind: NativeScreenConnectionKind
++) => NativeScreenOpenResult
++
++let provider: NativeScreenProvider | null = null
++let providerWasRegistered = false
++
++/** Internal bundled-plugin seam. Registration lifetime follows plugin disable/unload. */
++export function registerNativeScreenProvider(next: NativeScreenProvider): () => void {
++  if (provider) {
++    throw new Error('A native screen provider is already registered')
++  }
++
++  provider = next
++  providerWasRegistered = true
++  return () => {
++    if (provider === next) {
++      provider = null
++    }
++  }
++}
++
++export function openNativeScreen(
++  route: PluginProfileRoute,
++  connectionKind: NativeScreenConnectionKind
++): NativeScreenOpenResult {
++  if (!provider) {
++    return { status: providerWasRegistered ? 'plugin_disabled' : 'provider_unavailable' }
++  }
++
++  try {
++    const result = provider({ ...route }, connectionKind)
++
++    switch (result?.status) {
++      case 'opened':
++      case 'action_failed':
++      case 'connection_missing':
++      case 'plugin_disabled':
++      case 'provider_unavailable':
++      case 'route_ambiguous':
++      case 'route_not_registered':
++      case 'unsupported_version':
++        return { status: result.status }
++      default:
++        return { status: 'action_failed' }
++    }
++  } catch {
++    return { status: 'action_failed' }
++  }
++}
+--- a/apps/desktop/tsconfig.json
++++ b/apps/desktop/tsconfig.json
+@@ -2,7 +2,7 @@
+   "compilerOptions": {
+     "target": "ES2023",
+     "useDefineForClassFields": true,
+-    "lib": ["DOM", "DOM.Iterable", "ES2023"],
++    "lib": ["DOM", "DOM.Iterable", "ES2024"],
+     "types": ["node"],
+     "allowJs": false,
+     "skipLibCheck": true,
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -165,6 +165,10 @@
+                     connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
+                     self._siblings[sibling.profile_id] = connection
+                 return connection
++        from gateway.run_runtime import profile_parked
++        if profile_parked(getattr(self.authority, 'runner', None), profile):
++            from gateway.parked_route_refusal import ParkedProfileRefusal
++            raise ParkedProfileRefusal(profile)
+         raise RuntimeStoreError('profile_mismatch')
+ 
+     def handlers(self):
+--- a/tests/gateway/test_sibling_route_reserve.py
++++ b/tests/gateway/test_sibling_route_reserve.py
+@@ -16,6 +16,9 @@
+     from gateway.runtime_ownership import process_ownership
+     from gateway.session_authorities import authority_for_profile_id, owner_scope
+     from gateway.session_controls import AuthorityConnection
++    # This routing fixture uses the test interpreter, not a sealed Desktop payload.
++    # Do not probe a checkout parent's runtime manifest under the operator's home.
++    monkeypatch.setattr('pm.environments._payload_manifest', lambda _root: None)
+     root, homes = _reserve_homes(tmp_path, monkeypatch)
+     process_ownership.reserve([home for _, home in homes])
+     beta_home = homes[2][1]
+@@ -43,7 +46,21 @@
+         assert await unserve_profile_runtime(runner, beta_home) is True
+         runner._profile_adapters.pop('beta', None)  # as GatewayRunner._unserve_profile does
+         retired.append(old)
++        from gateway.run_runtime import park_profile, unpark_profile
++        park_profile(runner, 'beta', 'synthetic temporary unavailability')
++        reply = await create()
++        assert reply['error']['data']['reason'] == 'runtime_draining', reply
++        # A parked name is not permission to cross a profile-bound connection.
++        connection._identity['profile_scope'] = 'profile'
++        reply = await create()
++        assert reply['error']['data']['reason'] == 'profile_mismatch', reply
++        connection._identity['profile_scope'] = 'host'
++        with owner_scope(launch):
++            unknown = await connection.dispatch({'id': 2, 'method': 'session.create',
++                                                'params': {'profile': 'never-served'}})
++        assert unknown['error']['data']['reason'] == 'profile_mismatch', unknown
+         new = await serve_profile_runtime(runner, 'beta', beta_home)
++        unpark_profile(runner, 'beta')
+         assert new is not old
+         reply = await create()
+         assert 'result' in reply, f'the socket still routes beta to its retired authority: {reply}'
+--- a/tests/tools/test_delegate.py
++++ b/tests/tools/test_delegate.py
+@@ -1760,106 +1760,129 @@
+ 
+ 
+ class TestOrchestratorEndToEnd(unittest.TestCase):
+-    """End-to-end: parent -> orchestrator -> two-leaf nested orchestration.
+-
+-    Covers the acceptance gate: parent delegates to an orchestrator
+-    child; the orchestrator delegates to two leaf grandchildren; the
+-    role/toolset/depth chain all resolve correctly.
+-
+-    Mock strategy: a single AIAgent patch with a side_effect factory
+-    that keys on the child's ephemeral_system_prompt — orchestrator
+-    prompts contain the string "Orchestrator Role" (see
+-    _build_child_system_prompt), leaves don't.  The orchestrator
+-    mock's run_conversation recursively calls delegate_task with
+-    tasks=[{goal:...},{goal:...}] to spawn two leaves.  This keeps
+-    the test in one patch context and avoids depth-indexed nesting.
+-    """
++    """Exercise nested delegation through the real result and route assembly."""
+ 
+     @patch("tools.delegate_tool._resolve_delegation_credentials")
+-    @patch("tools.delegate_tool._load_config",
+-           return_value={"max_spawn_depth": 2})
+-    def test_end_to_end_nested_orchestration(self, mock_cfg, mock_creds):
+-        mock_creds.return_value = {
+-            "provider": None, "base_url": None,
+-            "api_key": None, "api_mode": None, "model": None,
++    @patch("tools.delegate_tool._load_config", return_value={
++        "max_spawn_depth": 2,
++        "fallback_providers": [{"provider": "openrouter", "model": "inherited-backup"}],
++    })
++    def test_nested_results_keep_task_and_route_associations(self, _mock_cfg, mock_creds):
++        from agent.delegation_provider import DelegationProvider
++        from agent.agent_init_fallback import _init_fallback_chain
++        from run_agent import AIAgent
++
++        routes = {
++            "top-level orchestration": {
++                "base_url": "https://chatgpt.com/backend-api/codex",
++                "api_key": "synthetic", "model": "gpt-6-astra", "label": "astra",
++            },
++            "Do worker work for Luna": {
++                "base_url": "https://chatgpt.com/backend-api/codex",
++                "api_key": "synthetic", "model": "gpt-6-luna", "label": "luna",
++            },
++            "Do worker work for Terra": {
++                "base_url": "https://chatgpt.com/backend-api/codex",
++                "api_key": "synthetic", "model": "gpt-6.1-terra", "label": "terra",
++                "fallback_providers": [],
++            },
+         }
++
++        class SyntheticBackend(DelegationProvider):
++            @property
++            def name(self):
++                return "synthetic-success"
++
++            def route_task(self, task, config):
++                return dict(routes[task["goal"]])
++
++        mock_creds.side_effect = lambda route, parent: {
++            "base_url": route["base_url"], "api_key": route["api_key"],
++            "provider": "openai-codex", "model": route["model"],
++            "api_mode": "codex_responses", "request_overrides": {},
++            "fallback_providers": route.get("fallback_providers"),
++        }
+         parent = _make_mock_parent(depth=0)
+         parent.enabled_toolsets = ["terminal", "file", "delegation"]
+-
+-        # (enabled_toolsets, _delegate_role) for each agent built
+-        built_agents: list = []
+-        # Keep the orchestrator mock around so the re-entrant delegate_task
+-        # can reach it via closure.
+-        orch_mock = {}
+-
+-        def _factory(*a, **kw):
+-            prompt = kw.get("ephemeral_system_prompt", "") or ""
+-            is_orchestrator = "Orchestrator Role" in prompt
+-            m = _make_role_mock_child()
+-            built_agents.append({
+-                "enabled_toolsets": list(kw.get("enabled_toolsets") or []),
+-                "is_orchestrator_prompt": is_orchestrator,
+-            })
+-
+-            if is_orchestrator:
+-                # Prepare the orchestrator mock as a parent-capable object
+-                # so the nested delegate_task call succeeds.
+-                m._delegate_depth = 1
+-                m._delegate_role = "orchestrator"
+-                m._active_children = []
+-                m._active_children_lock = threading.Lock()
+-                m._session_db = None
+-                m.platform = "cli"
+-                m.enabled_toolsets = ["terminal", "file", "delegation"]
+-                m.api_key = "***"
+-                m.base_url = ""
+-                m.provider = None
+-                m.api_mode = None
+-                m.providers_allowed = None
+-                m.providers_ignored = None
+-                m.providers_order = None
+-                m.provider_sort = None
+-                m._print_fn = None
+-                m.tool_progress_callback = None
+-                m.thinking_callback = None
+-                orch_mock["agent"] = m
+-
+-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
+-                    # Re-entrant: orchestrator spawns two leaves
+-                    delegate_task(
++        built_agents = []
++        terra_finished = threading.Event()
++        completion_order = []
++
++        def construct(**kwargs):
++            child = _make_role_mock_child()
++            child.model = kwargs["model"]
++            child.provider = kwargs.get("provider")
++            child.request_overrides = kwargs.get("request_overrides") or {}
++            child._credential_pool = None
++            child.quiet_mode = True
++            _init_fallback_chain(child, kwargs["fallback_model"])
++            built_agents.append(child)
++            if kwargs["model"] == "gpt-6-astra":
++                def orchestrator_run(user_message=None, task_id=None, stream_callback=None):
++                    nested_result = delegate_task(
+                         tasks=[
+-                            {"goal": "Do leaf work stream A"},
+-                            {"goal": "Do leaf work stream B"},
++                            {"goal": "Do worker work for Luna"},
++                            {"goal": "Do worker work for Terra"},
+                         ],
+-                        parent_agent=m,
++                        parent_agent=child,
+                     )
++                    # Scripted agent behavior; assertions below exercise the
++                    # production nested tool result, not a real LLM handoff.
+                     return {
+-                        "final_response": "orchestrated 2 workers",
+-                        "completed": True, "api_calls": 1,
+-                        "messages": [],
++                        "final_response": nested_result, "completed": True,
++                        "api_calls": 1, "messages": [],
+                     }
+-                m.run_conversation.side_effect = _orchestrator_run
+-
+-            return m
+-
+-        with patch("run_agent.AIAgent", side_effect=_factory) as MockAgent:
+-            delegate_task(
+-                goal="top-level orchestration",
+-                role="orchestrator",
+-                parent_agent=parent,
+-            )
+-
+-        # 1 orchestrator + 2 leaf grandchildren = 3 agents
+-        self.assertEqual(MockAgent.call_count, 3)
+-        # First built = the orchestrator (parent's direct child)
+-        self.assertIn("delegation", built_agents[0]["enabled_toolsets"])
+-        self.assertTrue(built_agents[0]["is_orchestrator_prompt"])
+-        # Next two = leaves (grandchildren)
+-        self.assertNotIn("delegation", built_agents[1]["enabled_toolsets"])
+-        self.assertFalse(built_agents[1]["is_orchestrator_prompt"])
+-        self.assertNotIn("delegation", built_agents[2]["enabled_toolsets"])
+-        self.assertFalse(built_agents[2]["is_orchestrator_prompt"])
+-
++                child.run_conversation.side_effect = orchestrator_run
++            else:
++                def worker_run(user_message=None, task_id=None, stream_callback=None):
++                    if kwargs["model"] == "gpt-6-luna":
++                        self.assertTrue(terra_finished.wait(5), "Workers did not execute concurrently")
++                    completion_order.append(kwargs["model"])
++                    if kwargs["model"] == "gpt-6.1-terra":
++                        terra_finished.set()
++                    return {
++                        "final_response": f"result from {kwargs['model']}",
++                        "completed": True, "api_calls": 1, "messages": [],
++                    }
++                child.run_conversation.side_effect = worker_run
++            return child
++
++        with (
++            patch("tools.delegate_tool_routes._active_provider", return_value=SyntheticBackend()),
++            patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None),
++            patch("run_agent.AIAgent", side_effect=construct),
++            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
++            patch("tools.delegation_live_log.update_manifest_statuses"),
++        ):
++            outer = json.loads(delegate_task(
++                goal="top-level orchestration", role="orchestrator", parent_agent=parent,
++            ))
++
++        self.assertEqual(len(outer["results"]), 1)
++        outer_entry = outer["results"][0]
++        self.assertEqual(outer_entry["status"], "completed")
++        self.assertEqual(outer_entry["route"]["model"], "gpt-6-astra")
++        nested = json.loads(outer_entry["summary"])
++        self.assertEqual(completion_order, ["gpt-6.1-terra", "gpt-6-luna"])
++        self.assertEqual(
++            [(entry["task_index"], entry["summary"], entry["route"]["model"],
++              entry["route"]["label"], entry["status"])
++             for entry in nested["results"]],
++            [
++                (0, "result from gpt-6-luna", "gpt-6-luna", "luna", "completed"),
++                (1, "result from gpt-6.1-terra", "gpt-6.1-terra", "terra", "completed"),
++            ],
++        )
++        self.assertEqual(built_agents[1]._fallback_chain, [
++            {"provider": "openrouter", "model": "inherited-backup"},
++        ])
++        self.assertTrue(AIAgent._has_pending_fallback(built_agents[1]))
++        self.assertFalse(AIAgent._has_pending_fallback(built_agents[2]))
++        self.assertEqual(
++            [(child.model, child._delegate_role) for child in built_agents],
++            [("gpt-6-astra", "orchestrator"), ("gpt-6-luna", "leaf"),
++             ("gpt-6.1-terra", "leaf")],
++        )
+ 
+ class TestSubagentApprovalCallback(unittest.TestCase):
+     """Subagent worker threads must have a non-interactive approval callback

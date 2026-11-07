@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "scenario_id": "scenario-7d33",
+  "family_id": "family-33cf",
+  "revision": 2,
+  "split": "development",
+  "provenance": "synthetic",
+  "coverage": {
+    "os": [
+      "windows-client",
+      "windows-server"
+    ],
+    "execution_platform": [
+      "virtual-machine"
+    ],
+    "network": [
+      "flat-lan",
+      "ipv4"
+    ],
+    "identity_domain": [
+      "ad-single-domain"
+    ],
+    "operational_domain": [
+      "enterprise-it"
+    ],
+    "dns_domain": [
+      "internal-authoritative"
+    ],
+    "telemetry": [
+      "identity-audit",
+      "windows-security",
+      "dns"
+    ]
+  },
+  "difficulty": {
+    "band": "D3",
+    "control": false,
+    "factors": {
+      "noise": {
+        "score": 0,
+        "rationale": "27 benign / 7 relevant events; ratio 3.85714."
+      },
+      "joins": {
+        "score": 2,
+        "rationale": "3 source/asset contexts required by a complete support set."
+      },
+      "time_span": {
+        "score": 1,
+        "rationale": "1199 seconds of required correlation."
+      },
+      "gaps": {
+        "score": 0,
+        "rationale": "0 unresolvable questions; missing records False; alternative complete support True."
+      },
+      "ambiguity": {
+        "score": 1,
+        "rationale": "1 validated seeded benign or contradictory explanations."
+      }
+    }
+  },
+  "sophistication": {
+    "band": "S3",
+    "steps": [
+      {
+        "step_id": "step-a",
+        "asset_id": "asset-356ccc5146d8",
+        "boundary_id": "boundary-a",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-b",
+        "asset_id": "asset-356ccc5146d8",
+        "boundary_id": "boundary-b",
+        "phase": "initial"
+      },
+      {
+        "step_id": "step-c",
+        "asset_id": "asset-e6775df4cd83",
+        "boundary_id": "boundary-c",
+        "phase": "initial"
+      }
+    ],
+    "edges": [
+      [
+        "step-a",
+        "step-b"
+      ],
+      [
+        "step-b",
+        "step-c"
+      ]
+    ],
+    "boundaries": [
+      {
+        "boundary_id": "boundary-a",
+        "kind": "host"
+      },
+      {
+        "boundary_id": "boundary-b",
+        "kind": "identity"
+      },
+      {
+        "boundary_id": "boundary-c",
+        "kind": "privilege"
+      }
+    ],
+    "preconditions": [
+      "A web-service process running as its own domain service account selects a member server from a directory query, then presents a different administrative account's credentials (explicit credential use and a service ticket for that account) to open a WinRM session.",
+      "The accepted session is a member of the server's local Administrators group and runs an elevated discovery utility inside that session.",
+      "A scheduled inventory WinRM session from another workstation under its own account and Remote Management Users membership is a competing routine explanation."
+    ],
+    "emulation_limitations": [
+      "How the process obtained the administrative credential is outside the released evidence; no credential theft is asserted.",
+      "The directory server only answers queries and issues tickets; techniques are attributed to the host where the acting process or session executed.",
+      "All records and outcomes are invented, not live observations or model-quality measurements. source_receipt_sha256 hashes the canonical array of the step's support records, not an external execution receipt."
+    ],
+    "group_ids": [],
+    "source_references": []
+  },
+  "attack_release": "v20",
+  "source_references": [
+    "https://attack.mitre.org/techniques/T1018/",
+    "https://attack.mitre.org/techniques/T1021/006/",
+    "https://attack.mitre.org/techniques/T1033/"
+  ],
+  "evidence_manifest_sha256": "1b2aeae3637f90d5192dfaf212475d9db05452dd642d3e218da5e8863e6cf3a7"
+}
