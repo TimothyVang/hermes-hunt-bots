@@ -1,0 +1,7 @@
+# gitleaks config for hermes-hunt-bots: default rules, plus one reviewed exception.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Invented AWS key IDs (AKIAEXAMPLEKEY...) in synthetic benchmark import samples and their tests"
+regexes = ['''AKIAEXAMPLEKEY[0-9]{6}''']

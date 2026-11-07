@@ -21,7 +21,8 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-ROOT_MAX_CHARS = 12_000
+# hermes-hunt-bots: +400 for the one-line fork pointer to HUNT-BOTS.md at the top of AGENTS.md.
+ROOT_MAX_CHARS = 12_400
 CHAIN_MAX_CHARS = 30_000
 
 

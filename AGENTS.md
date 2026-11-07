@@ -1,5 +1,7 @@
 # Hermes Agent - Development Guide
 
+**Fork: hermes-hunt-bots.** Read [HUNT-BOTS.md](HUNT-BOTS.md) first; its rules override upstream ones.
+
 For AI coding assistants and developers working on hermes-agent. This root file is a hub: what
 applies everywhere, then a routing table. Each area's `AGENTS.md` loads automatically when you work
 in that directory; read it before editing there. `python scripts/check` caps this file at 12k chars

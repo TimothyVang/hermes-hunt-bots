@@ -1,3 +1,5 @@
+> **hermes-hunt-bots:** this fork adds a human-gated, six-bot threat-hunting team to the Hermes desktop app: each bot drives its own read-only lab tool against invented data in a local lab VM. Start at [HUNT-BOTS.md](HUNT-BOTS.md) (rules, roadmap, how to contribute) and [framework/README.md](framework/README.md). The `framework/` folder is AGPL-3.0; the Hermes code is MIT. Not affiliated with Nous Research.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
