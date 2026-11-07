@@ -229,7 +229,7 @@ class RegistrationTests(unittest.TestCase):
             with self.subTest(profile=owner):
                 ctx = self.register(self.root / 'profiles' / owner, owner)
                 self.assertEqual(ctx.commands, ['hunt-lab'])
-                self.assertEqual(set(ctx.tools), HOST_TOOLS | {'hunt_lab_query'})
+                self.assertEqual(set(ctx.tools), HOST_TOOLS | {'hunt_lab_query', 'lab_browser'})
                 for name, (toolset, schema, _handler) in ctx.tools.items():
                     self.assertEqual(toolset, 'hunt_lab')
                     self.assertEqual(schema['name'], name)
@@ -239,8 +239,10 @@ class RegistrationTests(unittest.TestCase):
                 status = lambda action, *, state_dir, profile: calls.append((action, Path(state_dir), profile)) or {}
                 with patch.object(lab_runtime, 'invoke', side_effect=status):
                     output = ctx.tools['elastic_search'][2]({'case_id': CASE})
+                    browser = ctx.tools['lab_browser'][2]({'case_id': CASE, 'action': 'snapshot'})
                 self.assertEqual(json.loads(output)['error'], 'owned_vm_not_running')
-                self.assertEqual(calls, [('status', analyst_state, ANALYST)])
+                self.assertEqual(json.loads(browser)['error'], 'owned_vm_not_running')
+                self.assertEqual(calls, [('status', analyst_state, ANALYST)] * 2)
 
     def test_non_framework_or_unanchored_homes_get_no_working_lab(self):
         self.assertEqual(self.register(self.root / 'profiles' / 'default', 'default').tools, {})
