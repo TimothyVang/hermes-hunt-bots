@@ -373,10 +373,12 @@ class BrowserSession:
     """One bot profile's browser: its main page, element refs, pointer, and the Fetch enforcement."""
 
     def __init__(self, root, scope, transport, *, ws_url, pid, process=None, state=None, rng=None, sleep=time.sleep,
-                 demo=DEMO_OFF):
+                 demo=DEMO_OFF, window=None):
         state = state or {}
         self.root, self.scope, self.ws_url, self.pid, self.process = root, scope, ws_url, pid, process
         self.demo = demo
+        # The window this browser was launched with (None: headless); a reattach must match it.
+        self.window = tuple(window) if window else None
         self.rng = rng or random.Random()
         self.sleep = sleep
         self.lock = threading.Lock()
@@ -669,7 +671,8 @@ class BrowserSession:
         lab, arkime = self.origins()
         return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
-                'pointer': list(self.pointer), 'last_used': self.last_used}
+                'pointer': list(self.pointer), 'last_used': self.last_used,
+                'window': list(self.window) if self.window else None, 'cursor': bool(self.demo.cursor)}
 
     def close(self):
         try:
@@ -746,7 +749,8 @@ def browser_args(executable, user_data, scope, window=None):
         # then ignores the submitted expression; headless has no window to cover.
         args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:],
                  '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows',
-                 '--disable-renderer-backgrounding', '--disable-background-timer-throttling']
+                 '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+                 '--hide-crash-restore-bubble']
     else:
         args += ['--window-size=%d,%d' % VIEWPORT, '--headless=new']
     return args + ['about:blank']
@@ -757,7 +761,7 @@ def _launch(root, scope, demo):
     user_data.mkdir(parents=True, exist_ok=True)
     port_file = user_data / 'DevToolsActivePort'
     port_file.unlink(missing_ok=True)
-    window = demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
+    window = _wanted_window(demo)
     args = browser_args(_browser_executable(), user_data, scope, window)
     process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 30
@@ -774,7 +778,12 @@ def _launch(root, scope, demo):
             raise QueryFailure('browser_unavailable')
         time.sleep(0.1)
     ws_url = 'ws://127.0.0.1:%s%s' % (lines[0], lines[1])
-    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process, demo=demo)
+    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process, demo=demo,
+                          window=window)
+
+
+def _wanted_window(demo):
+    return demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
 
 
 def _owned(ws_url):
@@ -809,10 +818,15 @@ def _start(root, scope):
     demo = read_demo(root.parent / DEMO_FILE)
     state = _read_state(root)
     if state and _owned(state.get('ws_url')):
+        # Reuse only a browser launched the way the marker asks for now: a headless browser reattached
+        # under a demo marker would be invisible while its audit lines claimed demo mode.
+        wanted = _wanted_window(demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
-                 and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin))
+                 and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin)
+                 and (state.get('window') or None) == (list(wanted) if wanted else None)
+                 and state.get('cursor') == bool(demo.cursor))
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
-                                 pid=state.get('pid'), state=state if fresh else None, demo=demo)
+                                 pid=state.get('pid'), state=state if fresh else None, demo=demo, window=wanted)
         if fresh:
             return session
         session.close()
@@ -849,7 +863,12 @@ def _session(root, scope):
     key = str(root)
     with _REGISTRY:
         session = _SESSIONS.get(key)
-        if session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin):
+        # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
+        # the operator's marker still asks for the mode it was launched in.
+        demo = read_demo(Path(root).parent / DEMO_FILE)
+        wanted = _wanted_window(demo)
+        if (session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin)
+                and session.window == (tuple(wanted) if wanted else None) and bool(session.demo.cursor) == bool(demo.cursor)):
             session.scope = scope
             return session
         if session is not None:

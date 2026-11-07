@@ -546,6 +546,42 @@ class DemoModeTests(unittest.TestCase):
         audit = json.loads((browsers / 'framework-researcher' / 'audit.jsonl').read_text().splitlines()[-1])
         return launched[0].args, fake.calls('Page.addScriptToEvaluateOnNewDocument'), audit
 
+    def test_a_browser_is_relaunched_when_the_marker_changes_its_mode(self):
+        # The gateway hosts the tool for hours: a browser it launched headless must not be reused,
+        # invisibly, after the operator turns demo mode on (and vice versa).
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        browsers = Path(temp.name) / 'hunt-lab-browser'
+        browsers.mkdir()
+        fake, launched = FakeBrowser(), []
+
+        def popen(args, **options):
+            launched.append(FakeProcess(args, **options))
+            return launched[-1]
+
+        def snapshot():
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+                                      state_dir='analyst-state', profile='framework-researcher',
+                                      browser_root=browsers / 'framework-researcher')
+            self.assertTrue(result['ok'], result)
+
+        with patch.object(lab_browser, '_browser_executable', return_value='edge'), \
+                patch.object(lab_browser.subprocess, 'Popen', popen), \
+                patch.object(lab_browser, '_WebSocket', lambda _url: fake):
+            self.addCleanup(lab_browser.shutdown)
+            snapshot()
+            snapshot()
+            self.assertEqual(len(launched), 1)
+            (browsers / 'demo.json').write_text(json.dumps({'headed': True, 'window': [0, 0, 1280, 1080]}), encoding='utf-8')
+            snapshot()
+            (browsers / 'demo.json').unlink()
+            snapshot()
+            lab_browser.shutdown()
+        self.assertEqual(len(launched), 3)
+        self.assertIn('--headless=new', launched[0].args)
+        self.assertIn('--window-position=0,0', launched[1].args)
+        self.assertIn('--headless=new', launched[2].args)
+
     def test_without_a_marker_the_browser_is_headless_and_draws_no_cursor(self):
         args, scripts, audit = self.launch()
         self.assertIn('--headless=new', args)
