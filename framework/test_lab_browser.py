@@ -402,6 +402,58 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(audit['blocked'], 0)
         self.assertEqual(json.loads((self.root / 'session.json').read_text())['refs']['e2'], 12)
 
+    def audit(self):
+        return json.loads((self.root / 'audit.jsonl').read_text().splitlines()[-1])
+
+    def test_demo_open_loads_the_page_unfiltered_and_types_the_search_into_its_search_box(self):
+        for page, name, value, unfiltered in (
+                ('arkime_sessions', 'expression', 'protocols == dns', ARKIME + '/sessions?startTime=%d&stopTime=%d' % (START, STOP)),
+                ('lab_console', 'q', 'event.code:4688', self.lab.url + '/view')):
+            with self.subTest(page=page):
+                lab_browser.shutdown()
+                fake = FakeBrowser()
+                fake.session = session(fake, self.lab.url, self.root, demo=lab_browser.Demo('on'))
+                result = self.call(fake, action='open', page=page, **{name: value})
+                self.assertTrue(result['ok'], result)
+                self.assertEqual([m['params']['url'] for m in fake.calls('Page.navigate')], [unfiltered])
+                self.assertEqual(fake.calls('DOM.resolveNode')[-1]['params'], {'backendNodeId': 12})
+                mouse = [m['params']['type'] for m in fake.calls('Input.dispatchMouseEvent')]
+                self.assertGreaterEqual(mouse.count('mouseMoved'), 12)
+                self.assertEqual(mouse[-2:], ['mousePressed', 'mouseReleased'])
+                keys = [m['params'] for m in fake.calls('Input.dispatchKeyEvent')]
+                self.assertEqual(keys[0]['commands'], ['selectAll'])
+                self.assertEqual(''.join(k['text'] for k in keys if k['type'] == 'keyDown'), value + '\r')
+                self.assertEqual(keys[-1]['key'], 'Enter')
+                self.assertEqual({key: result['result'][key] for key in ('action', 'title', 'url', 'blocked_requests')},
+                                 {'action': 'open', 'title': 'Sessions', 'url': unfiltered, 'blocked_requests': 0})
+                self.assertEqual(result['result']['elements'][1]['name'], 'Search')
+                self.assertEqual(result['result']['text'], 'Showing 1 - 50 of 2,849 entries')
+                audit = self.audit()
+                self.assertEqual((audit['entered'], audit['demo'], audit['query']), ('typed', 'on', value))
+
+    def test_without_demo_open_puts_the_search_in_the_url_and_types_nothing(self):
+        fake = FakeBrowser()
+        self.assertTrue(self.call(fake, action='open', page='arkime_sessions', expression='protocols == dns')['ok'])
+        self.assertEqual([query(m['params']['url']) for m in fake.calls('Page.navigate')],
+                         [{'expression': 'protocols == dns', 'startTime': str(START), 'stopTime': str(STOP)}])
+        self.assertEqual(fake.calls('Input.dispatchKeyEvent') + fake.calls('Input.dispatchMouseEvent'), [])
+        self.assertEqual((self.audit()['entered'], self.audit()['demo']), ('url', None))
+        self.call(fake, action='snapshot')
+        self.assertIsNone(self.audit()['entered'])
+
+    def test_demo_open_without_a_search_box_falls_back_to_the_url_and_audits_why(self):
+        tree = [ax('1', 'RootWebArea', 'Sessions', 1, children=['2', '3']),
+                ax('2', 'link', 'Sessions', 11, parent='1'), ax('3', 'textbox', 'Host', 12, parent='1')]
+        fake = FakeBrowser(tree=tree)
+        fake.session = session(fake, self.lab.url, self.root, demo=lab_browser.Demo('on'))
+        result = self.call(fake, action='open', page='lab_console', q='event.code:4688')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual([m['params']['url'] for m in fake.calls('Page.navigate')],
+                         [self.lab.url + '/view', self.lab.url + '/view?q=event.code%3A4688'])
+        self.assertEqual(result['result']['url'], self.lab.url + '/view?q=event.code%3A4688')
+        self.assertEqual(fake.calls('Input.dispatchKeyEvent') + fake.calls('Input.dispatchMouseEvent'), [])
+        self.assertEqual(self.audit()['entered'], 'fallback:no_search_box')
+
     def test_results_stay_within_bounds_on_huge_pages(self):
         tree = [ax('root', 'RootWebArea', children=[str(i) for i in range(300)])]
         tree += [ax(str(i), 'button', 'n' * 500, 100 + i, parent='root') for i in range(300)]
@@ -493,6 +545,42 @@ class DemoModeTests(unittest.TestCase):
         self.assertTrue(result['ok'], result)
         audit = json.loads((browsers / 'framework-researcher' / 'audit.jsonl').read_text().splitlines()[-1])
         return launched[0].args, fake.calls('Page.addScriptToEvaluateOnNewDocument'), audit
+
+    def test_a_browser_is_relaunched_when_the_marker_changes_its_mode(self):
+        # The gateway hosts the tool for hours: a browser it launched headless must not be reused,
+        # invisibly, after the operator turns demo mode on (and vice versa).
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        browsers = Path(temp.name) / 'hunt-lab-browser'
+        browsers.mkdir()
+        fake, launched = FakeBrowser(), []
+
+        def popen(args, **options):
+            launched.append(FakeProcess(args, **options))
+            return launched[-1]
+
+        def snapshot():
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+                                      state_dir='analyst-state', profile='framework-researcher',
+                                      browser_root=browsers / 'framework-researcher')
+            self.assertTrue(result['ok'], result)
+
+        with patch.object(lab_browser, '_browser_executable', return_value='edge'), \
+                patch.object(lab_browser.subprocess, 'Popen', popen), \
+                patch.object(lab_browser, '_WebSocket', lambda _url: fake):
+            self.addCleanup(lab_browser.shutdown)
+            snapshot()
+            snapshot()
+            self.assertEqual(len(launched), 1)
+            (browsers / 'demo.json').write_text(json.dumps({'headed': True, 'window': [0, 0, 1280, 1080]}), encoding='utf-8')
+            snapshot()
+            (browsers / 'demo.json').unlink()
+            snapshot()
+            lab_browser.shutdown()
+        self.assertEqual(len(launched), 3)
+        self.assertIn('--headless=new', launched[0].args)
+        self.assertIn('--window-position=0,0', launched[1].args)
+        self.assertIn('--headless=new', launched[2].args)
 
     def test_without_a_marker_the_browser_is_headless_and_draws_no_cursor(self):
         args, scripts, audit = self.launch()

@@ -61,6 +61,9 @@ INTERACTIVE_ROLES = frozenset({
     'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider',
     'spinbutton', 'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'treeitem',
 })
+# Demo mode enters an open's search through the page's own box: Arkime's expression input and the lab
+# console's <input name="q"> both carry the accessible name "Search".
+SEARCH_BOX = ('Search', frozenset({'textbox', 'searchbox', 'combobox'}))
 ICON_GLYPHS = re.compile('[\ue000-\uf8ff]')
 FLAGS = ('disabled', 'focused', 'checked', 'expanded', 'selected')
 REF = re.compile(r'e[1-9][0-9]{0,3}')
@@ -370,10 +373,12 @@ class BrowserSession:
     """One bot profile's browser: its main page, element refs, pointer, and the Fetch enforcement."""
 
     def __init__(self, root, scope, transport, *, ws_url, pid, process=None, state=None, rng=None, sleep=time.sleep,
-                 demo=DEMO_OFF):
+                 demo=DEMO_OFF, window=None):
         state = state or {}
         self.root, self.scope, self.ws_url, self.pid, self.process = root, scope, ws_url, pid, process
         self.demo = demo
+        # The window this browser was launched with (None: headless); a reattach must match it.
+        self.window = tuple(window) if window else None
         self.rng = rng or random.Random()
         self.sleep = sleep
         self.lock = threading.Lock()
@@ -386,6 +391,7 @@ class BrowserSession:
         self.main_session = None
         self.dead = False
         self.blocked = 0
+        self.entered = None
         self.requests = deque(maxlen=40)
         self.last_request = 0.0
         self.last_used = time.time()
@@ -503,24 +509,49 @@ class BrowserSession:
 
     def run(self, command):
         self.last_used = time.time()
+        self.entered = None
         return getattr(self, '_' + command.action)(command)
 
-    def _open(self, command):
-        kind, path = PAGES[command.page]
+    def _url(self, page, query):
+        kind, path = PAGES[page]
         if kind == 'arkime':
             params = {'startTime': self.scope.start, 'stopTime': self.scope.stop}
-            if command.query:
-                params = {'expression': command.query, **params}
-            url = self.scope.arkime_origin + path + '?' + parse.urlencode(params)
-        else:
-            url = self.scope.lab_origin + path + ('?' + parse.urlencode({'q': command.query}) if command.query else '')
-        self.page_name = command.page
+            if query:
+                params = {'expression': query, **params}
+            return self.scope.arkime_origin + path + '?' + parse.urlencode(params)
+        return self.scope.lab_origin + path + ('?' + parse.urlencode({'q': query}) if query else '')
+
+    def _navigate(self, url):
         self.loaded.clear()
         if self._page('Page.navigate', {'url': url}).get('errorText'):
             raise QueryFailure('navigation_failed')
         self.loaded.wait(20)
         self._settle()
+
+    def _open(self, command):
+        self.page_name = command.page
+        self.entered = 'url' if command.query else None
+        if self.demo.marker == 'on' and command.query:
+            try:
+                self._search_in_page(command)
+            except QueryFailure as exc:
+                self.entered = 'fallback:' + str(exc)
+            else:
+                self.entered = 'typed'
+                return self._snapshot(command)
+        self._navigate(self._url(command.page, command.query))
         return self._snapshot(command)
+
+    def _search_in_page(self, command):
+        """Demo only: load the page unfiltered, then type the search into its Search box and press Enter on
+        camera. The search still leaves the page as an ordinary request, so Fetch scopes it like any other."""
+        self._navigate(self._url(command.page, ''))
+        name, roles = SEARCH_BOX
+        box = next((element['ref'] for element in self._snapshot(command)['elements']
+                    if element['role'] in roles and element['name'] == name), None)
+        if box is None:
+            raise QueryFailure('no_search_box')
+        self._enter(box, command.query, submit=True)
 
     def _snapshot(self, _command):
         place = self._location()
@@ -592,22 +623,25 @@ class BrowserSession:
         return self._snapshot(command)
 
     def _type(self, command):
-        self._press_on(self._node(command.ref))
+        self._enter(command.ref, command.text, command.submit)
+        return self._snapshot(command)
+
+    def _enter(self, ref, text, submit):
+        self._press_on(self._node(ref))
         select_all = {'key': 'a', 'code': 'KeyA', 'windowsVirtualKeyCode': 65, 'modifiers': CTRL}
         self._key('rawKeyDown', commands=['selectAll'], **select_all)
         self._key('keyUp', **select_all)
-        for char, delay in zip(command.text, humanize.typing_delays(command.text, self.rng)):
+        for char, delay in zip(text, humanize.typing_delays(text, self.rng)):
             self.sleep(delay / 1000)
             if ' ' <= char <= '~':
                 self._key('keyDown', key=char, text=char, unmodifiedText=char)
                 self._key('keyUp', key=char)
             else:
                 self._page('Input.insertText', {'text': char})
-        if command.submit:
+        if submit:
             self.sleep(self.rng.uniform(0.15, 0.4))
             self._press_key('Enter')
         self._settle()
-        return self._snapshot(command)
 
     def _press(self, command):
         self._press_key(command.key)
@@ -637,7 +671,8 @@ class BrowserSession:
         lab, arkime = self.origins()
         return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
-                'pointer': list(self.pointer), 'last_used': self.last_used}
+                'pointer': list(self.pointer), 'last_used': self.last_used,
+                'window': list(self.window) if self.window else None, 'cursor': bool(self.demo.cursor)}
 
     def close(self):
         try:
@@ -714,7 +749,8 @@ def browser_args(executable, user_data, scope, window=None):
         # then ignores the submitted expression; headless has no window to cover.
         args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:],
                  '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows',
-                 '--disable-renderer-backgrounding', '--disable-background-timer-throttling']
+                 '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+                 '--hide-crash-restore-bubble']
     else:
         args += ['--window-size=%d,%d' % VIEWPORT, '--headless=new']
     return args + ['about:blank']
@@ -725,7 +761,7 @@ def _launch(root, scope, demo):
     user_data.mkdir(parents=True, exist_ok=True)
     port_file = user_data / 'DevToolsActivePort'
     port_file.unlink(missing_ok=True)
-    window = demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
+    window = _wanted_window(demo)
     args = browser_args(_browser_executable(), user_data, scope, window)
     process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 30
@@ -742,7 +778,12 @@ def _launch(root, scope, demo):
             raise QueryFailure('browser_unavailable')
         time.sleep(0.1)
     ws_url = 'ws://127.0.0.1:%s%s' % (lines[0], lines[1])
-    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process, demo=demo)
+    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process, demo=demo,
+                          window=window)
+
+
+def _wanted_window(demo):
+    return demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
 
 
 def _owned(ws_url):
@@ -777,10 +818,15 @@ def _start(root, scope):
     demo = read_demo(root.parent / DEMO_FILE)
     state = _read_state(root)
     if state and _owned(state.get('ws_url')):
+        # Reuse only a browser launched the way the marker asks for now: a headless browser reattached
+        # under a demo marker would be invisible while its audit lines claimed demo mode.
+        wanted = _wanted_window(demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
-                 and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin))
+                 and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin)
+                 and (state.get('window') or None) == (list(wanted) if wanted else None)
+                 and state.get('cursor') == bool(demo.cursor))
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
-                                 pid=state.get('pid'), state=state if fresh else None, demo=demo)
+                                 pid=state.get('pid'), state=state if fresh else None, demo=demo, window=wanted)
         if fresh:
             return session
         session.close()
@@ -817,7 +863,12 @@ def _session(root, scope):
     key = str(root)
     with _REGISTRY:
         session = _SESSIONS.get(key)
-        if session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin):
+        # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
+        # the operator's marker still asks for the mode it was launched in.
+        demo = read_demo(Path(root).parent / DEMO_FILE)
+        wanted = _wanted_window(demo)
+        if (session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin)
+                and session.window == (tuple(wanted) if wanted else None) and bool(session.demo.cursor) == bool(demo.cursor)):
             session.scope = scope
             return session
         if session is not None:
@@ -891,6 +942,7 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
                 't': int(time.time() * 1000), 'profile': profile, 'case_id': case_id, 'action': command.action,
                 'page': session.page_name, 'ref': command.ref, 'key': command.key, 'direction': command.direction,
                 'query': command.query or None, 'text': command.text or None, 'submit': command.submit,
+                'entered': session.entered,
                 'url': (outcome.get('result') or {}).get('url'), 'blocked': session.blocked - blocked_before,
                 'requests': list(session.requests)[-20:], 'demo': session.demo.marker,
                 'ok': outcome['ok'], 'error': outcome.get('error')})
