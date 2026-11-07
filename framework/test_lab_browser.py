@@ -430,9 +430,13 @@ class ToolTests(unittest.TestCase):
         self.assertIn('--user-data-dir=' + str(Path('state') / 'user-data'), args)
         self.assertIn('--remote-debugging-address=127.0.0.1', args)
         self.assertIn('--headless=new', args)
+        self.assertNotIn('--disable-features=CalculateNativeWinOcclusion', args)
         headed = lab_browser.browser_args('edge', Path('u'), scope(), window=(10, 20, 1280, 900))
         self.assertNotIn('--headless=new', headed)
-        self.assertEqual(headed[-3:], ['--window-position=10,20', '--window-size=1280,900', 'about:blank'])
+        self.assertEqual(headed[-1], 'about:blank')
+        for flag in ('--window-position=10,20', '--window-size=1280,900',
+                     '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows'):
+            self.assertIn(flag, headed)
 
 
 class FakeProcess:
