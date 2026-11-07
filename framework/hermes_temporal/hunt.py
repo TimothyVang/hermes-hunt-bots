@@ -33,8 +33,8 @@ def _input_case_id(raw: dict) -> str | None:
 
 
 _TOOLS_BY_PROFILE = {
-    "framework-researcher": "elastic_search, elastic_aggregate",
-    "framework-network-analyst": "arkime_sessions, arkime_unique, hunt_lab_query",
+    "framework-researcher": "elastic_search, elastic_aggregate, lab_browser",
+    "framework-network-analyst": "arkime_sessions, arkime_unique, hunt_lab_query, lab_browser",
     "framework-librarian": "intel_lookup, elastic_aggregate",
     "framework-builder": "detection_test, elastic_aggregate",
     "framework-reviewer": "elastic_search, arkime_sessions, detection_test",
@@ -45,17 +45,19 @@ _DELEGATION = (
     "specialist owning the needed tool (" + "; ".join(f"{profile}: {tools}" for profile, tools in _TOOLS_BY_PROFILE.items())
     + "), the case_id, and the exact question. Cite every returned finding you use with its evt- IDs and answering profile."
 )
+_BROWSER = ("lab_browser shows a query in a real browser on the lab console or Arkime's own pages (open, snapshot, then "
+            "click or type by ref); it reads the same case-scoped data, so cite only what your tools returned. ")
 _TOOL_PROMPTS = {
     "scope": "Confirm the bounded scope, exclusions, questions, and coverage from the case metadata; plan which specialist tool should answer each question. "
              + _DELEGATION + " Do not decide execution approval.",
     "evidence": "Drive your own elastic_search and elastic_aggregate: start with aggregations (host.name, event.category, process.name, "
                 "dns.question.name, @timestamp histograms), pivot to specific hosts, processes, users and domains, then fetch the matching events. "
-                "Extract evidence-supported observations. Do not receive or infer another worker's conclusions.",
+                + _BROWSER + "Extract evidence-supported observations. Do not receive or infer another worker's conclusions.",
     "hypotheses": "Drive your own elastic_search and elastic_aggregate to develop and rank competing hypotheses; for each, run at least one query "
-                  "that could disconfirm it and report what it returned. Do not receive another worker's conclusions.",
+                  "that could disconfirm it and report what it returned. " + _BROWSER + "Do not receive another worker's conclusions.",
     "network": "Drive your own arkime_sessions and arkime_unique (hunt_lab_query only as a fallback): profile talkers, destinations, ports, "
                "DNS/HTTP/TLS hosts and timing, pivot on outliers, and narrow to the sessions behind each claim, quoting each Arkime expression. "
-               "No packet capture, pcap download, endpoint, or external access. Return cited observations, limits, and alternatives.",
+               + _BROWSER + "No packet capture, pcap download, endpoint, or external access. Return cited observations, limits, and alternatives.",
     "intel": "Collect candidate domains, IPs and other indicators with your own elastic_aggregate and check them with intel_lookup; report matches "
              "with feed, confidence and first_seen, and list unmatched values. Do not fetch external intelligence or receive other workers' "
              "conclusions. Mark attribution uncertainty.",

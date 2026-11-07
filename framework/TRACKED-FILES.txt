@@ -172,7 +172,9 @@ hermes_temporal/test_practice.py
 hermes_temporal/test_workflows.py
 hermes_temporal/worker.py
 hermes_temporal/workflows.py
+hunt_lab/actionability.py
 hunt_lab/assets.json
+hunt_lab/browser_policy.py
 hunt_lab/case.py
 hunt_lab/desktop/console-provenance.json
 hunt_lab/desktop/licenses/babel-LICENSE.MIT
@@ -200,6 +202,8 @@ hunt_lab/guest/image-lock.json
 hunt_lab/guest/ingest.py
 hunt_lab/guest/lab_server.py
 hunt_lab/__init__.py
+hunt_lab/humanize.py
+hunt_lab/lab_browser.py
 hunt_lab/managed.py
 hunt_lab/plugin.yaml
 hunt_lab/prepare_guest.py
@@ -260,8 +264,10 @@ test_hunt_lab_case.py
 test_hunt_lab_install.py
 test_hunt_lab_managed.py
 test_hunt_lab_runtime.py
+test_humanize.py
 test_hunt_lab_tools.py
 test_imager_import.py
+test_lab_browser.py
 test_lab_server.py
 test_langchain_adapter.py
 test_native_team.py

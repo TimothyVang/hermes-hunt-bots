@@ -76,6 +76,15 @@ def _get(base, path, profile):
         raise QueryFailure('lab_unreachable') from None
 
 
+def endpoint(value):
+    """The `http://127.0.0.1:<port>` origin of a runtime-reported lab URL, or invalid_owned_endpoint."""
+    url = parse.urlsplit(value or '')
+    if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port
+            or url.username or url.password or url.query or url.fragment or url.path not in ('', '/')):
+        raise QueryFailure('invalid_owned_endpoint')
+    return value.rstrip('/')
+
+
 def _lab_base(runtime, state_dir, profile, case_id):
     """Resolve the running analyst VM read-only and confirm the loaded case."""
     if state_dir is None:
@@ -83,16 +92,11 @@ def _lab_base(runtime, state_dir, profile, case_id):
     status = runtime.invoke('status', state_dir=state_dir, profile=LAB_OWNER)
     if status.get('profile') != LAB_OWNER or status.get('state') != 'running':
         raise QueryFailure('owned_vm_not_running')
-    base = status.get('lab_url', '')
-    url = parse.urlsplit(base)
-    if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port
-            or url.username or url.password or url.query or url.fragment or url.path not in ('', '/')):
-        raise QueryFailure('invalid_owned_endpoint')
-    base = base.rstrip('/')
+    base = endpoint(status.get('lab_url'))
     metadata = _get(base, '/case', profile)
     if metadata.get('case_id') != case_id:
         raise QueryFailure('case_mismatch')
-    return base, metadata
+    return base, metadata, status
 
 
 def _failure(profile, exc):
@@ -120,7 +124,7 @@ def query_lab(arguments, *, runtime, state_dir, profile):
             raise QueryFailure('invalid_query')
         if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or not 0 <= offset <= 5000:
             raise QueryFailure('invalid_pagination')
-        base, metadata = _lab_base(runtime, state_dir, profile, case_id)
+        base, metadata, _status = _lab_base(runtime, state_dir, profile, case_id)
         if dataset == 'case':
             evidence = metadata
         else:
@@ -355,7 +359,7 @@ def run_tool(name, arguments, *, runtime, state_dir, profile):
             raise QueryFailure('invalid_arguments')
         case_id = _case_id(arguments)
         path, params = builder(arguments)
-        base, _metadata = _lab_base(runtime, state_dir, profile, case_id)
+        base, _metadata, _status = _lab_base(runtime, state_dir, profile, case_id)
         result = _get(base, path + '?' + parse.urlencode(params), profile)
         if result.pop('case_id', None) != case_id:
             raise QueryFailure('lab_invalid_response')

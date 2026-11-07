@@ -1,6 +1,7 @@
 """Native Hermes CLI controls. Importing/registering never starts a VM."""
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 
@@ -98,13 +99,15 @@ def register(ctx):
     if owner not in adapter.FRAMEWORK_PROFILES:
         return
     runtime = importlib.import_module(f"{__name__}.runtime")
+    browser = importlib.import_module(f"{__name__}.lab_browser")
     state_dir = adapter.lab_state_dir(home, owner)
 
-    def bind(name):
+    def bind(call):
         def handler(arguments, **_kwargs):
-            result = adapter.call(name, arguments, runtime=runtime, state_dir=state_dir, profile=owner)
+            result = call(arguments, runtime=runtime, state_dir=state_dir, profile=owner)
             return json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         return handler
 
     for name, schema in adapter.SCHEMAS.items():
-        ctx.register_tool(name=name, toolset="hunt_lab", schema=schema, handler=bind(name))
+        ctx.register_tool(name=name, toolset="hunt_lab", schema=schema, handler=bind(functools.partial(adapter.call, name)))
+    ctx.register_tool(name="lab_browser", toolset="hunt_lab", schema=browser.SCHEMA, handler=bind(browser.call))

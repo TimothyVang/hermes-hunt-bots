@@ -36,7 +36,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 ## Known gaps (help wanted)
 
 - **Per-bot tool limits are prompt guidance today.** `agent.allowed_tool_names` is configured, but runtime enforcement needs `framework/desktop/native-role-policy.diff` ported to 0.23.0.
-- **Bots do not drive a browser yet.** Planned: DOM-level targeting (accessibility-tree refs and actionability checks, adapted from the MIT omp browser tool), human-like pointer paths and typing cadence over CDP, and a hard lab-origin allowlist enforced inside the browser. Hermes's stock browser has only a blocklist.
+- **Lab browser calls are not on the tool cam yet.** `lab_browser` (Threat Hunter and Network Analyst) drives a real browser on Arkime and the lab console with accessibility-tree refs, actionability checks and human-like input, inside a lab-origin allowlist and Arkime case scoping enforced in the browser (see [framework/README.md](framework/README.md)). Its Arkime requests bypass the guest service, so they are in each bot's `audit.jsonl`, not in `/activity`, and the tool cam does not follow them. A bot's browser closes when its process exits. Hermes's stock browser has only a blocklist and stays off for the bots.
 - **No Kibana in the lab** yet, so Elastic results are shown through the lab console.
 - **Desktop rebrand** (`apps/desktop/product-identity.cjs`) and shipping the Hunting Lab page as a bundled desktop plugin.
 
