@@ -270,9 +270,14 @@ def parse_args(argv=None, prog=None, description=__doc__):
     ap.add_argument('--reset-plateau', metavar='REASON',
                     help='with --resume: zero the no-gain counter after an infrastructure fix; REASON is logged')
     args = ap.parse_args(argv)
-    for truth in (args.dev_truth, args.sealed_truth):
-        if truth and not Path(truth).is_file():
-            ap.error(f'answer key not found: {truth}')
+    # The scorer runs from framework/, so a key path relative to the caller's directory must be
+    # made absolute here; otherwise every round fails to score after its hunt completes.
+    for name in ('dev_truth', 'sealed_truth'):
+        truth = getattr(args, name)
+        if truth:
+            if not Path(truth).is_file():
+                ap.error(f'answer key not found: {truth}')
+            setattr(args, name, str(Path(truth).resolve()))
     return args
 
 
