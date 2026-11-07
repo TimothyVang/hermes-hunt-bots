@@ -269,6 +269,9 @@ def parse_args(argv=None, prog=None, description=__doc__):
     ap.add_argument('--tag', default='', help='suffix for workflow IDs so a restarted series never reuses one')
     ap.add_argument('--reset-plateau', metavar='REASON',
                     help='with --resume: zero the no-gain counter after an infrastructure fix; REASON is logged')
+    ap.add_argument('--sealed', action='store_true',
+                    help='run BEST.json unchanged on dev_case/dev_truth, a case the watcher never saw; no watcher calls. '
+                         'Passes when every round finds >= SEALED_MIN facts, misses no attack fact and blames no decoy')
     args = ap.parse_args(argv)
     # The scorer runs from framework/, so a key path relative to the caller's directory must be
     # made absolute here; otherwise every round fails to score after its hunt completes.
@@ -286,6 +289,8 @@ def main(args):
     RUN_TAG = args.tag
     GATE_ARGS[:] = ['--delegated-by', args.delegated_by, '--reason', args.reason]
     hermes_exe()
+    if args.sealed:
+        return sealed_test(args)
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
     state_path = TOOL_LOOPS / 'state.json'
     forbidden = forbidden_terms(*[p for p in (args.dev_truth, args.sealed_truth) if p])
@@ -376,5 +381,33 @@ def main(args):
     log(f'done: best loop {best["loop"]} mean {best["result"]["mean_found"]:.1f}/18 perfect_on_dev={perfect(best["result"])}')
 
 
+SEALED_MIN = 16
+
+
+def sealed_test(args):
+    """The second half of PERFECT: the best dev config, unchanged, on a different-story case."""
+    best = json.loads((TOOL_LOOPS / 'BEST.json').read_text(encoding='utf-8'))
+    base_path = TOOL_LOOPS / f'base-{args.dev_case}.json'
+    if not base_path.exists():
+        r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
+                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            raise SystemExit('lab-input failed: ' + r.stderr[-300:])
+    base = json.loads(base_path.read_text(encoding='utf-8'))
+    if base['ontology']['case_id'] != args.dev_case:
+        raise SystemExit(f"the lab has {base['ontology']['case_id']} loaded, not {args.dev_case}")
+    res, _calls = run_config(f'sealed{RUN_TAG}', base, best['brief'], best['stage_guidance'], args.dev_case, args.dev_truth)
+    rounds = [{'round': r['round'], 'found': r['found'], 'misattributed': r.get('misattributed', 0),
+               'missed_attack': sorted({m['category'] for m in r.get('missed', []) if m['kind'] == 'attack'}),
+               'passed': bool(r['completed'] and r['found'] >= SEALED_MIN and r.get('misattributed', 0) == 0
+                              and not any(m['kind'] == 'attack' for m in r.get('missed', [])))} for r in res['rounds']]
+    verdict = {'case': args.dev_case, 'best_loop': best['loop'], 'dev_mean_found': best['dev_result']['mean_found'],
+               'sealed_mean_found': res['mean_found'], 'rounds': rounds, 'passed': all(r['passed'] for r in rounds)}
+    (TOOL_LOOPS / f'SEALED-{args.dev_case}.json').write_text(json.dumps(verdict, indent=2), encoding='utf-8')
+    log(f"sealed {args.dev_case}: mean {res['mean_found']:.1f}/18 rounds {[r['found'] for r in rounds]} "
+        f"passed={verdict['passed']} (best loop {best['loop']}, dev mean {verdict['dev_mean_found']:.1f})")
+    return 0 if verdict['passed'] else 1
+
+
 if __name__ == '__main__':
-    main(parse_args())
+    raise SystemExit(main(parse_args()) or 0)
