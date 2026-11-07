@@ -9,10 +9,10 @@ from pathlib import Path
 from .hunt import supplied_evidence_hunt
 
 LAB_TOOLS = {"elastic_search", "elastic_aggregate", "arkime_sessions", "arkime_unique", "hunt_lab_query",
-             "intel_lookup", "detection_test", "delegate_task"}
+             "intel_lookup", "detection_test", "delegate_task", "lab_browser"}
 OWNED_TOOLS = {
-    "framework-researcher": {"elastic_search", "elastic_aggregate"},
-    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query"},
+    "framework-researcher": {"elastic_search", "elastic_aggregate", "lab_browser"},
+    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query", "lab_browser"},
     "framework-librarian": {"intel_lookup", "elastic_aggregate"},
     "framework-builder": {"detection_test", "elastic_aggregate"},
     "framework-reviewer": {"elastic_search", "arkime_sessions", "detection_test"},
