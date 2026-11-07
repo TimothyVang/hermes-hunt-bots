@@ -15,7 +15,7 @@ There is no hosted CI. The gate runs locally, and Greptile reviews every PR.
 2. **Pick the pstack playbook.** Work in `/skill:poteto-mode` and copy the matching playbook's steps into your todo list (Bug fix, Feature, Refactoring, Multi-phase plan, and so on). A project of several PRs uses the Multi-phase or multi-PR plan playbook.
 3. **Branch from `hunt-bots`.** `git fetch origin` then `git switch -c <type>/<short-topic> origin/hunt-bots`. A PR that builds on another one branches from that PR's branch, and its PR targets that branch (a stack).
 4. **Keep to the rules while you work.**
-   - Synthetic data only. Never add credentials, tokens, cookies, session stores, real logs, or CUI/NSS material. Lab state stays in `runtime/`, which is never committed.
+   - Synthetic data only. Never add credentials, tokens, cookies, session stores, real logs, or CUI/NSS material. Lab state stays in `runtime/` next to the clone, never inside it.
    - Bot tools stay read-only and lab-local, and browser automation stays on lab origins.
    - Copied code keeps its license and gets a row in `THIRD-PARTY-NOTICES.md`.
    - A new file under `framework/` gets a line in `framework/TRACKED-FILES.txt`.

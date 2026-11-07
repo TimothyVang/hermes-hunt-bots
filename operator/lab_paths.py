@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNTIME = Path(os.environ.get('HUNT_BOTS_RUNTIME') or ROOT / 'runtime')
+# Next to the clone, never inside it: the lab runtime refuses VM state inside any Git work tree
+# (state_inside_git), even a git-ignored folder, so lab disks and logs cannot be committed.
+RUNTIME = Path(os.environ.get('HUNT_BOTS_RUNTIME') or ROOT.parent / 'runtime')
 FRAMEWORK = ROOT / 'framework'
 LAB_HOME = Path(os.environ.get('HUNT_BOTS_LAB_HOME') or RUNTIME / 'lab-home')
 LAB_STATE = LAB_HOME / 'profiles' / 'framework-network-analyst' / 'hunt-lab-vm'

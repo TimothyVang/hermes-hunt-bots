@@ -11,7 +11,7 @@ Built in the open. This file is the project's rulebook: **every contributor, hum
 | `framework/` | The six-bot team: lab tools, Temporal workflows, hunting lab, scenario generator and scorer, Hunt Board, benchmarks, tests. Start with [framework/README.md](framework/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
 | `operator/` | Operator tools around the hunts: the watcher improvement loop, case switching, the opt-in delegated gate driver, rejection diagnosis, the tool cam and honest video assembly. They read operator-only answer keys, so nothing here feeds bot prompts. See [operator/README.md](operator/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
 | Everything else | Hermes 0.23.0 (upstream commit `2bd378ed`) plus our reviewed desktop fixes | MIT ([LICENSE](LICENSE)) |
-| `runtime/` (never committed) | Your local lab: Hermes environments, the VM, cases, answer keys, runs | — |
+| `../runtime/` (next to the clone, never inside it) | Your local lab: Hermes environments, the VM, cases, answer keys, runs. The lab refuses VM state inside any Git repository. | — |
 
 Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY-NOTICES.md`.
 
@@ -19,7 +19,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 
 **Safety.** These are not negotiable and Greptile reviews every PR against them.
 
-1. **Synthetic data only.** Never commit real logs, packet captures, customer data, credentials, tokens, cookies, session stores, or anything marked CUI/NSS. Generated cases and answer keys stay in `runtime/`.
+1. **Synthetic data only.** Never commit real logs, packet captures, customer data, credentials, tokens, cookies, session stores, or anything marked CUI/NSS. Generated cases and answer keys stay in `runtime/`, next to the clone.
 2. **Tools stay read-only and lab-local.** Bot tools may only read the loaded case through the guest lab service on `127.0.0.1`. No tool may control the VM, capture live traffic, reach other hosts, or read an answer key. Browser automation may only open lab origins (`127.0.0.1` / `localhost` lab ports); a change that lets a bot browse elsewhere is rejected.
 3. **Humans approve.** Execution and review gates stay human decisions. Never fabricate approvals, evidence, model output, scores, or test results. Simulated or scripted runs are labelled as such.
 4. **No real-money trading** and no unattended external actions (messaging, schedules, posting) without explicit opt-in.
