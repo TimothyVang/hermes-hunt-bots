@@ -710,7 +710,11 @@ def browser_args(executable, user_data, scope, window=None):
         '--proxy-bypass-list=<-loopback>;127.0.0.1:%d;127.0.0.1:%d' % (lab, arkime),
     ]
     if window:
-        args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:]]
+        # A visible window that another window covers stops rendering, and Arkime's search box
+        # then ignores the submitted expression; headless has no window to cover.
+        args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:],
+                 '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows',
+                 '--disable-renderer-backgrounding', '--disable-background-timer-throttling']
     else:
         args += ['--window-size=%d,%d' % VIEWPORT, '--headless=new']
     return args + ['about:blank']
