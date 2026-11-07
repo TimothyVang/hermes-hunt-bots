@@ -19,11 +19,11 @@ export function screenPaneId(bot: RosterRow): string {
   return `plugin-workspace:${ID}:screen:${botSelectionKey(bot)}`
 }
 
-export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
+export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): boolean {
   if (typeof host.openWorkspace !== 'function') {
     host.notify({ kind: 'info', message: botsText().screen.openNeedsUpdate })
 
-    return
+    return false
   }
 
   const key = botSelectionKey(bot)
@@ -31,19 +31,24 @@ export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
   if (openTabs.has(key)) {
     host.revealPane(screenPaneId(bot))
 
-    return
+    return true
   }
 
-  const close = host.openWorkspace(`${ID}:screen:${key}`, {
-    title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
-    minWidth: '28rem',
-    render: () => <BotScreenPane bot={bot} />,
-    onClose: () => {
-      openTabs.delete(key)
-      noteScreenTabClosed(bot)
-    }
-  })
+  try {
+    const close = host.openWorkspace(`${ID}:screen:${key}`, {
+      title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
+      minWidth: '28rem',
+      render: () => <BotScreenPane bot={bot} />,
+      onClose: () => {
+        openTabs.delete(key)
+        noteScreenTabClosed(bot)
+      }
+    })
 
-  openTabs.set(key, close)
-  noteScreenTabOpened(bot)
+    openTabs.set(key, close)
+    noteScreenTabOpened(bot)
+    return true
+  } catch {
+    return false
+  }
 }

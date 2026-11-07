@@ -285,6 +285,20 @@ describe('session-gone classification', () => {
     expect(turns.isSessionGoneError(new Error('network blip'))).toBe(false)
   })
 
+  it.each(['runtime_draining', 'profile_mismatch', 'permission_denied', 'invalid_params', 'stale_generation'])(
+    'surfaces authority refusal %s without resuming or resubmitting inference',
+    async reason => {
+      const room = await loadRoom({
+        failFirstSubmitWith: Object.assign(new Error(reason), { code: 4001, data: { reason } }),
+        turn: () => 'unexpected retry'
+      })
+
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(reason)
+      expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
+      expect(room.turns.isSessionGoneError({ code: 4001, data: { reason: 'not_found' } })).toBe(true)
+    }
+  )
+
   it('recovers a 4001 on the first submit via the STORED id and delivers', async () => {
     const room = await loadRoom({
       failFirstSubmitWith: Object.assign(new Error("session-scoped RPC rejected: session_id='rt-1' not in memory"), {

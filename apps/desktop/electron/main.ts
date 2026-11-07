@@ -583,6 +583,7 @@ import { registerStreamWorkClock } from './stream-work-clock'
 import { installSystemCaTrust } from './system-ca'
 import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
+import { confirmQemuVmExit, registerQemuVmIpc } from './qemu-vm-ipc'
 import { applyTitleBarOverlay, isHexColor, nativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
   applyWindowsBackdrop,
@@ -729,7 +730,7 @@ import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileS
 const IDENTITY_APP_NAME: string | null = applyDesktopIdentity(app)
 const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
-if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
+if (!USER_DATA_OVERRIDE && process.env.HERMES_DATA_DIR_SUFFIX) {
   const resolvedUserData: string = resolveDesktopUserData(app.getPath('userData'))
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
@@ -17009,6 +17010,7 @@ registerGitIpc({ resolveGitBinary, resolveGhBinary })
 // Client-side loopback callback for MCP OAuth against remote backends — see
 // mcp-oauth-callback-ipc.ts.
 registerMcpOauthCallbackIpc()
+registerQemuVmIpc(DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString())
 
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
@@ -18016,6 +18018,8 @@ function quitIfNoSurfaceLeft() {
   }
 }
 
+let qemuQuitApproved = false
+let qemuQuitPromptPending = false
 app.on('before-quit', event => {
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was: a held quit is not a quit in progress, and the
@@ -18027,6 +18031,28 @@ app.on('before-quit', event => {
     return
   }
 
+  if (!qemuQuitApproved) {
+    event.preventDefault()
+    if (!qemuQuitPromptPending) {
+      qemuQuitPromptPending = true
+      void confirmQemuVmExit(mainWindow).then(allowQuit => {
+        qemuQuitPromptPending = false
+        if (allowQuit) {
+          qemuQuitApproved = true
+          app.quit()
+        } else {
+          appQuitting = false
+          quitInProgress = false
+        }
+      }).catch(error => {
+        qemuQuitPromptPending = false
+        appQuitting = false
+        quitInProgress = false
+        rememberLog(`[qemu] could not prepare VM for application quit: ${String(error)}`)
+      })
+    }
+    return
+  }
   // Quit is really proceeding: latch both before ANY teardown below closes
   // the pet overlay — its 'closed' handler must not echo pop-in during quit,
   // or the persisted popped-out state is wiped and the overlay never restores

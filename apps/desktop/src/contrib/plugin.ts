@@ -24,6 +24,7 @@ import {
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
+import { registerNativeScreenProvider as registerNativeScreenService, type NativeScreenProvider } from '@/sdk/native-screen'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
@@ -123,6 +124,8 @@ export interface PluginContext {
    *  Removed with the plugin on disable/unload. Feature-detect on older hosts:
    *  `ctx.registerSettingsPage?.(...)`. */
   registerSettingsPage: (page: PluginSettingsPage) => () => void
+  /** First-party Bot Screen service hook; restricted to the bundled Hermes Bots plugin. */
+  registerNativeScreenProvider: (provider: NativeScreenProvider) => () => void
   /** Register an arbitrary cleanup to run on unload/disable — for side effects
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */
@@ -390,6 +393,13 @@ export function createPluginContext(
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
     registerSettingsPage: page => track(registry.register(scope(settingsPageContribution(page)))),
+    registerNativeScreenProvider: provider => {
+      if (pluginId !== 'hermes-bots') {
+        throw new Error('Native Screen provider registration is reserved for Hermes Bots')
+      }
+
+      return track(registerNativeScreenService(provider))
+    },
     onDispose: fn => void track(fn),
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),

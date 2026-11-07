@@ -1760,106 +1760,129 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
 
 
 class TestOrchestratorEndToEnd(unittest.TestCase):
-    """End-to-end: parent -> orchestrator -> two-leaf nested orchestration.
-
-    Covers the acceptance gate: parent delegates to an orchestrator
-    child; the orchestrator delegates to two leaf grandchildren; the
-    role/toolset/depth chain all resolve correctly.
-
-    Mock strategy: a single AIAgent patch with a side_effect factory
-    that keys on the child's ephemeral_system_prompt — orchestrator
-    prompts contain the string "Orchestrator Role" (see
-    _build_child_system_prompt), leaves don't.  The orchestrator
-    mock's run_conversation recursively calls delegate_task with
-    tasks=[{goal:...},{goal:...}] to spawn two leaves.  This keeps
-    the test in one patch context and avoids depth-indexed nesting.
-    """
+    """Exercise nested delegation through the real result and route assembly."""
 
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    @patch("tools.delegate_tool._load_config",
-           return_value={"max_spawn_depth": 2})
-    def test_end_to_end_nested_orchestration(self, mock_cfg, mock_creds):
-        mock_creds.return_value = {
-            "provider": None, "base_url": None,
-            "api_key": None, "api_mode": None, "model": None,
+    @patch("tools.delegate_tool._load_config", return_value={
+        "max_spawn_depth": 2,
+        "fallback_providers": [{"provider": "openrouter", "model": "inherited-backup"}],
+    })
+    def test_nested_results_keep_task_and_route_associations(self, _mock_cfg, mock_creds):
+        from agent.delegation_provider import DelegationProvider
+        from agent.agent_init_fallback import _init_fallback_chain
+        from run_agent import AIAgent
+
+        routes = {
+            "top-level orchestration": {
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "synthetic", "model": "gpt-6-astra", "label": "astra",
+            },
+            "Do worker work for Luna": {
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "synthetic", "model": "gpt-6-luna", "label": "luna",
+            },
+            "Do worker work for Terra": {
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "synthetic", "model": "gpt-6.1-terra", "label": "terra",
+                "fallback_providers": [],
+            },
+        }
+
+        class SyntheticBackend(DelegationProvider):
+            @property
+            def name(self):
+                return "synthetic-success"
+
+            def route_task(self, task, config):
+                return dict(routes[task["goal"]])
+
+        mock_creds.side_effect = lambda route, parent: {
+            "base_url": route["base_url"], "api_key": route["api_key"],
+            "provider": "openai-codex", "model": route["model"],
+            "api_mode": "codex_responses", "request_overrides": {},
+            "fallback_providers": route.get("fallback_providers"),
         }
         parent = _make_mock_parent(depth=0)
         parent.enabled_toolsets = ["terminal", "file", "delegation"]
+        built_agents = []
+        terra_finished = threading.Event()
+        completion_order = []
 
-        # (enabled_toolsets, _delegate_role) for each agent built
-        built_agents: list = []
-        # Keep the orchestrator mock around so the re-entrant delegate_task
-        # can reach it via closure.
-        orch_mock = {}
-
-        def _factory(*a, **kw):
-            prompt = kw.get("ephemeral_system_prompt", "") or ""
-            is_orchestrator = "Orchestrator Role" in prompt
-            m = _make_role_mock_child()
-            built_agents.append({
-                "enabled_toolsets": list(kw.get("enabled_toolsets") or []),
-                "is_orchestrator_prompt": is_orchestrator,
-            })
-
-            if is_orchestrator:
-                # Prepare the orchestrator mock as a parent-capable object
-                # so the nested delegate_task call succeeds.
-                m._delegate_depth = 1
-                m._delegate_role = "orchestrator"
-                m._active_children = []
-                m._active_children_lock = threading.Lock()
-                m._session_db = None
-                m.platform = "cli"
-                m.enabled_toolsets = ["terminal", "file", "delegation"]
-                m.api_key = "***"
-                m.base_url = ""
-                m.provider = None
-                m.api_mode = None
-                m.providers_allowed = None
-                m.providers_ignored = None
-                m.providers_order = None
-                m.provider_sort = None
-                m._print_fn = None
-                m.tool_progress_callback = None
-                m.thinking_callback = None
-                orch_mock["agent"] = m
-
-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
-                    # Re-entrant: orchestrator spawns two leaves
-                    delegate_task(
+        def construct(**kwargs):
+            child = _make_role_mock_child()
+            child.model = kwargs["model"]
+            child.provider = kwargs.get("provider")
+            child.request_overrides = kwargs.get("request_overrides") or {}
+            child._credential_pool = None
+            child.quiet_mode = True
+            _init_fallback_chain(child, kwargs["fallback_model"])
+            built_agents.append(child)
+            if kwargs["model"] == "gpt-6-astra":
+                def orchestrator_run(user_message=None, task_id=None, stream_callback=None):
+                    nested_result = delegate_task(
                         tasks=[
-                            {"goal": "Do leaf work stream A"},
-                            {"goal": "Do leaf work stream B"},
+                            {"goal": "Do worker work for Luna"},
+                            {"goal": "Do worker work for Terra"},
                         ],
-                        parent_agent=m,
+                        parent_agent=child,
                     )
+                    # Scripted agent behavior; assertions below exercise the
+                    # production nested tool result, not a real LLM handoff.
                     return {
-                        "final_response": "orchestrated 2 workers",
-                        "completed": True, "api_calls": 1,
-                        "messages": [],
+                        "final_response": nested_result, "completed": True,
+                        "api_calls": 1, "messages": [],
                     }
-                m.run_conversation.side_effect = _orchestrator_run
+                child.run_conversation.side_effect = orchestrator_run
+            else:
+                def worker_run(user_message=None, task_id=None, stream_callback=None):
+                    if kwargs["model"] == "gpt-6-luna":
+                        self.assertTrue(terra_finished.wait(5), "Workers did not execute concurrently")
+                    completion_order.append(kwargs["model"])
+                    if kwargs["model"] == "gpt-6.1-terra":
+                        terra_finished.set()
+                    return {
+                        "final_response": f"result from {kwargs['model']}",
+                        "completed": True, "api_calls": 1, "messages": [],
+                    }
+                child.run_conversation.side_effect = worker_run
+            return child
 
-            return m
+        with (
+            patch("tools.delegate_tool_routes._active_provider", return_value=SyntheticBackend()),
+            patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None),
+            patch("run_agent.AIAgent", side_effect=construct),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+            patch("tools.delegation_live_log.update_manifest_statuses"),
+        ):
+            outer = json.loads(delegate_task(
+                goal="top-level orchestration", role="orchestrator", parent_agent=parent,
+            ))
 
-        with patch("run_agent.AIAgent", side_effect=_factory) as MockAgent:
-            delegate_task(
-                goal="top-level orchestration",
-                role="orchestrator",
-                parent_agent=parent,
-            )
-
-        # 1 orchestrator + 2 leaf grandchildren = 3 agents
-        self.assertEqual(MockAgent.call_count, 3)
-        # First built = the orchestrator (parent's direct child)
-        self.assertIn("delegation", built_agents[0]["enabled_toolsets"])
-        self.assertTrue(built_agents[0]["is_orchestrator_prompt"])
-        # Next two = leaves (grandchildren)
-        self.assertNotIn("delegation", built_agents[1]["enabled_toolsets"])
-        self.assertFalse(built_agents[1]["is_orchestrator_prompt"])
-        self.assertNotIn("delegation", built_agents[2]["enabled_toolsets"])
-        self.assertFalse(built_agents[2]["is_orchestrator_prompt"])
-
+        self.assertEqual(len(outer["results"]), 1)
+        outer_entry = outer["results"][0]
+        self.assertEqual(outer_entry["status"], "completed")
+        self.assertEqual(outer_entry["route"]["model"], "gpt-6-astra")
+        nested = json.loads(outer_entry["summary"])
+        self.assertEqual(completion_order, ["gpt-6.1-terra", "gpt-6-luna"])
+        self.assertEqual(
+            [(entry["task_index"], entry["summary"], entry["route"]["model"],
+              entry["route"]["label"], entry["status"])
+             for entry in nested["results"]],
+            [
+                (0, "result from gpt-6-luna", "gpt-6-luna", "luna", "completed"),
+                (1, "result from gpt-6.1-terra", "gpt-6.1-terra", "terra", "completed"),
+            ],
+        )
+        self.assertEqual(built_agents[1]._fallback_chain, [
+            {"provider": "openrouter", "model": "inherited-backup"},
+        ])
+        self.assertTrue(AIAgent._has_pending_fallback(built_agents[1]))
+        self.assertFalse(AIAgent._has_pending_fallback(built_agents[2]))
+        self.assertEqual(
+            [(child.model, child._delegate_role) for child in built_agents],
+            [("gpt-6-astra", "orchestrator"), ("gpt-6-luna", "leaf"),
+             ("gpt-6.1-terra", "leaf")],
+        )
 
 class TestSubagentApprovalCallback(unittest.TestCase):
     """Subagent worker threads must have a non-interactive approval callback

@@ -82,6 +82,33 @@ export const BROWSER_BRIDGE_STUBS = {
     reachable: false,
     version: null
   }),
+  // The QEMU console drives a VM on the Electron host; a browser tab has no controller.
+  qemu: {
+    capture: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    inputControl: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    key: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    pointer: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    setPaneVisible: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    start: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    status: async () => {
+      throw browserUnsupported('The native QEMU console')
+    },
+    stop: async () => {
+      throw browserUnsupported('The native QEMU console')
+    }
+  },
   revealLogs: async () => ({
     error: 'Native log reveal is unavailable in browser-hosted Desktop',
     ok: false,

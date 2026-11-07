@@ -108,6 +108,15 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
+it('shows an initial status failure without switching connections', async () => {
+  vi.mocked(displayRequest).mockRejectedValueOnce(new Error('guest backend unavailable'))
+  const view = render(<BotScreenPane bot={bot} />)
+
+  await waitFor(() => expect(view.getByText('guest backend unavailable')).toBeTruthy())
+  expect(view.queryByText('Stopped')).toBeNull()
+  view.unmount()
+})
+
 it('a stopped pane learns of an external start from the pushed display.status event and attaches', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(view.getByText('Stopped')).toBeTruthy())

@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ackComposerInsert } from '@/app/chat/composer/focus'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { host } from '@/sdk'
+import { host, type PluginProfileRoute } from '@/sdk'
 import { $selectedStoredSessionId, setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { registerNativeScreenProvider } from '@/sdk/native-screen'
 
 // The warm path must route through the guarded prewarm resolver (hover dwell,
 // per-profile throttle), not dial the gateway directly: mocking the store's
@@ -206,6 +207,102 @@ describe('host.connections', () => {
     desktopWindow.hermesDesktop = undefined
 
     await expect(host.connections()).rejects.toThrow('This Desktop build has no connection registry')
+  })
+})
+
+describe('host.openScreen routing', () => {
+  const route = {
+    connectionId: 'guest-a',
+    mode: 'remote' as const,
+    profile: 'framework-coordinator',
+    targetProfile: 'framework-coordinator'
+  }
+  let disposeProvider: (() => void) | undefined
+
+  afterEach(() => {
+    disposeProvider?.()
+    disposeProvider = undefined
+    vi.restoreAllMocks()
+  })
+
+  const registry = (routes: PluginProfileRoute[], connectionId = 'guest-a', kind = 'remote') => {
+    vi.spyOn(host, 'profileRoutes').mockResolvedValue(routes)
+    vi.spyOn(host, 'connections').mockResolvedValue([{ id: connectionId, kind }] as never)
+  }
+
+  it('opens only an exact current registered route and passes the true registry kind', async () => {
+    registry([route], 'guest-a', 'cloud')
+    const opened: unknown[] = []
+    disposeProvider = registerNativeScreenProvider((value, connectionKind) => {
+      opened.push([value, connectionKind])
+      return { status: 'opened' }
+    })
+
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'opened' })
+    expect(opened).toEqual([[route, 'cloud']])
+  })
+  it('snapshots the selected route before asynchronous registry validation', async () => {
+    const { promise: routePromise, resolve: resolveRoutes } = Promise.withResolvers<PluginProfileRoute[]>()
+    vi.spyOn(host, 'profileRoutes').mockReturnValue(routePromise)
+    vi.spyOn(host, 'connections').mockResolvedValue([{ id: 'guest-a', kind: 'remote' }] as never)
+    const opened: unknown[] = []
+    disposeProvider = registerNativeScreenProvider(value => {
+      opened.push(value)
+      return { status: 'opened' }
+    })
+    const selected = { ...route }
+    const pending = host.openScreen(selected)
+    selected.connectionId = 'mutated-after-call'
+    resolveRoutes([route])
+
+    await expect(pending).resolves.toEqual({ status: 'opened' })
+    expect(opened).toEqual([route])
+  })
+  it('rejects removed and ambiguous routes without invoking the provider', async () => {
+    const open = vi.fn(() => ({ status: 'opened' as const }))
+    disposeProvider = registerNativeScreenProvider(open)
+    registry([])
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
+    expect(open).not.toHaveBeenCalled()
+
+    registry([route, route])
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_ambiguous' })
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('rejects removed connections and mode mismatches without active/local fallback', async () => {
+    const open = vi.fn(() => ({ status: 'opened' as const }))
+    disposeProvider = registerNativeScreenProvider(open)
+    registry([route], 'other-connection')
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'connection_missing' })
+    expect(open).not.toHaveBeenCalled()
+
+    registry([{ ...route, mode: 'local' }])
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
+    expect(open).not.toHaveBeenCalled()
+
+    registry([route], 'guest-a', 'local')
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'route_not_registered' })
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it.each(['profileRoutes', 'connections'] as const)('reports %s read failures without claiming the API is unsupported', async method => {
+    registry([route])
+    vi.mocked(host[method]).mockRejectedValue(new Error('Synthetic inventory failure'))
+    const open = vi.fn(() => ({ status: 'opened' as const }))
+    disposeProvider = registerNativeScreenProvider(open)
+
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'action_failed' })
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('returns a fixed action failure when native opening throws', async () => {
+    registry([route])
+    disposeProvider = registerNativeScreenProvider(() => {
+      throw new Error('private native error')
+    })
+
+    await expect(host.openScreen(route)).resolves.toEqual({ status: 'action_failed' })
   })
 })
 

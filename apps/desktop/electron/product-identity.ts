@@ -33,13 +33,15 @@ export function applyDesktopIdentity(
     setPath(name: 'userData', value: string): void
     setName(name: string): void
   },
-  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY
+  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY,
+  env: NodeJS.ProcessEnv = process.env
 ): string | null {
   if (!identity.token && identity.appNamePascal === identity.artifactNamePascal) {
     return null
   }
 
-  const userData: string = path.join(app.getPath('appData'), identity.appNamePascal)
+  const override = env.HERMES_DESKTOP_USER_DATA_DIR
+  const userData = override ? path.resolve(override) : path.join(app.getPath('appData'), identity.appNamePascal)
   mkdirSync(userData, { recursive: true })
   app.setPath('userData', userData)
   app.setName(identity.displayName)

@@ -40,6 +40,7 @@ import {
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
 import { bindProfileSync, RoutinesPane } from './cron'
+import { QemuConsolePane } from './qemu-console-pane'
 import {
   $botMeta,
   $lastRoster,
@@ -84,6 +85,7 @@ import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './ro
 import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
+import { openBotScreen } from './screen-open'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
 import { loadBotSections } from './user-sections'
@@ -127,7 +129,22 @@ export default {
     startBotRelay()
     // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
     const stopScreenAutoRaise = startScreenAutoRaise()
+    ctx.registerNativeScreenProvider((route, connectionKind) => {
+      const opened = openBotScreen(
+        {
+          connectionId: route.connectionId,
+          connectionKind,
+          name: route.profile,
+          remoteSource: route.mode === 'remote',
+          route,
+          sourceScoped: true,
+          targetProfile: route.targetProfile
+        },
+        null
+      )
 
+      return opened ? { status: 'opened' } : { status: 'action_failed' }
+    })
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
     if (typeof ctx.onDispose === 'function') {
@@ -441,6 +458,19 @@ export default {
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
+    ctx.register({
+      id: 'qemu-console',
+      area: 'panes',
+      title: 'Local QEMU console',
+      data: {
+        placement: 'main',
+        defaultCollapsed: true,
+        width: '720px',
+        tabTitle: () => 'QEMU',
+        tabTitleText: () => 'Local QEMU console'
+      },
+      render: () => <QemuConsolePane />
     })
     ctx.register({
       id: 'pane',

@@ -198,6 +198,10 @@ class AuthorityConnection:
             # A shared socket holds such a frame until the start ends (``awaits_profile_start``); this
             # answers one whose wait ran out.
             raise RuntimeStoreError('runtime_draining', field='profile', detail='the profile is still starting')
+        from gateway.run_runtime import profile_parked
+        if profile_parked(getattr(self.authority, 'runner', None), profile):
+            from gateway.parked_route_refusal import ParkedProfileRefusal
+            raise ParkedProfileRefusal(profile)
         raise RuntimeStoreError('profile_mismatch')
 
     def awaits_profile_start(self, request, held=()):

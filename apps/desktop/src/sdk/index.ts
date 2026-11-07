@@ -118,6 +118,11 @@ import {
   pluginRouteStillRegistered,
   requestPluginProfile
 } from './profile-request'
+import {
+  openNativeScreen,
+  type NativeScreenConnectionKind,
+  type NativeScreenOpenResult
+} from './native-screen'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
@@ -127,6 +132,7 @@ import { $viewport, type ViewportRect } from './viewport'
 export * from './areas'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
+export type { NativeScreenConnectionKind, NativeScreenOpenResult, NativeScreenProvider } from './native-screen'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -1362,6 +1368,72 @@ export const host = {
     }
 
     return getProfileRoutes(profiles.map(profile => profile.name))
+  },
+
+  /** Open the bundled native Bot Screen for one exact registered route. This
+   *  observes an already-running display; it never starts a screen or chooses
+   *  the active/local route. */
+  openScreen: async (route: PluginProfileRoute): Promise<NativeScreenOpenResult> => {
+    if (
+      !route ||
+      typeof route.connectionId !== 'string' ||
+      typeof route.profile !== 'string' ||
+      typeof route.targetProfile !== 'string' ||
+      (route.mode !== 'local' && route.mode !== 'remote')
+    ) {
+      return { status: 'route_not_registered' }
+    }
+    const selectedRoute = { ...route }
+
+    if (typeof host.openWorkspace !== 'function') {
+      return { status: 'unsupported_version' }
+    }
+
+    let routes: PluginProfileRoute[]
+    let connections: Array<{ id: string; kind: NativeScreenConnectionKind }>
+
+    try {
+      const inventory = await Promise.all([host.profileRoutes(), host.connections()])
+      routes = inventory[0]
+      connections = inventory[1]
+    } catch {
+      return { status: 'action_failed' }
+    }
+
+    const ownerRoutes = routes.filter(
+      candidate =>
+        candidate.connectionId === selectedRoute.connectionId && candidate.profile === selectedRoute.profile
+    )
+
+    if (ownerRoutes.length > 1) {
+      return { status: 'route_ambiguous' }
+    }
+
+    const matchingRoutes = ownerRoutes.filter(
+      candidate => candidate.mode === selectedRoute.mode && candidate.targetProfile === selectedRoute.targetProfile
+    )
+
+    if (matchingRoutes.length === 0) {
+      return { status: 'route_not_registered' }
+    }
+
+    const matchingConnections = connections.filter(connection => connection.id === selectedRoute.connectionId)
+
+    if (matchingConnections.length === 0) {
+      return { status: 'connection_missing' }
+    }
+
+    if (matchingConnections.length > 1) {
+      return { status: 'route_ambiguous' }
+    }
+
+    const connectionKind = matchingConnections[0].kind
+
+    if ((selectedRoute.mode === 'local') !== (connectionKind === 'local')) {
+      return { status: 'route_not_registered' }
+    }
+
+    return openNativeScreen(selectedRoute, connectionKind)
   },
 
   /** Gateway JSON-RPC through a credential-free route descriptor without

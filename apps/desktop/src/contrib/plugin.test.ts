@@ -4,6 +4,7 @@ import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { emitGatewayEvent } from './events'
 import { createPluginContext } from './plugin'
+import { openNativeScreen } from '@/sdk/native-screen'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
 
@@ -24,6 +25,29 @@ describe('createPluginContext.onDispose', () => {
     expect(cleaned).toBe(true)
   })
 })
+describe('native screen provider context', () => {
+  it('limits registration to Hermes Bots and retires the provider on deactivate', () => {
+    const route = {
+      connectionId: 'guest-a',
+      mode: 'remote' as const,
+      profile: 'framework-coordinator',
+      targetProfile: 'framework-coordinator'
+    }
+    const rejected = createPluginContext('demo')
+
+    expect(() => rejected.registerNativeScreenProvider(() => ({ status: 'opened' }))).toThrow(
+      'reserved for Hermes Bots'
+    )
+
+    const disposers: Array<() => void> = []
+    const ctx = createPluginContext('hermes-bots', dispose => disposers.push(dispose))
+    ctx.registerNativeScreenProvider(() => ({ status: 'opened' }))
+    expect(openNativeScreen(route, 'remote')).toEqual({ status: 'opened' })
+    disposers.forEach(dispose => dispose())
+    expect(openNativeScreen(route, 'remote')).toEqual({ status: 'plugin_disabled' })
+  })
+})
+
 
 describe('createPluginContext.onEvent', () => {
   it('retires the gateway listener with the plugin, even when subscribed after register()', () => {

@@ -545,6 +545,12 @@ export function isSessionGoneError(error: GatewayErrorLike | null | undefined): 
     return false
   }
 
+  // Canonical 4001 refusals carry an authoritative reason; a drain or profile
+  // guard is not a lost runtime and must not trigger another inference submit.
+  if (typeof error.data?.reason === 'string') {
+    return error.data.reason === 'not_found'
+  }
+
   if (error.code === 4001) {
     return true
   }

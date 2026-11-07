@@ -124,12 +124,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       const next = await displayRequest<DisplayStatus>(bot, 'display.status')
       setScreenStatus(bot, next, request)
       setError(null)
+      setConn(current => (current === 'error' ? 'idle' : current))
     } catch (err) {
       if (isDisplayUnavailable(err)) {
         setScreenUnavailable(bot)
       }
 
       setError(err instanceof Error ? err.message : String(err))
+      // The first status RPC can fail before there is any pane state to render.
+      // Surface the failure without switching to another connection.
+      setConn(current => (current === 'idle' ? 'error' : current))
     }
   }, [bot])
 

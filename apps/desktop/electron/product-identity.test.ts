@@ -117,6 +117,29 @@ test('nonstable runtime pins userData before the app name can change', async ():
   }
 })
 
+test('nonstable identity preserves an explicit isolated userData directory', async (): Promise<void> => {
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
+  const canary = await identityForVariant('bundled')
+  const runtime = await import('./product-identity')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-isolated-'))
+  const isolated = path.join(root, 'isolated')
+  let selected = ''
+  let displayedName = ''
+  try {
+    assert.equal(runtime.applyDesktopIdentity({
+      getPath: (): string => assert.fail('The default appData path must not be accessed'),
+      setPath: (_name: 'userData', value: string): void => { selected = value },
+      setName: (value: string): void => { displayedName = value }
+    }, canary, { HERMES_DESKTOP_USER_DATA_DIR: isolated }), canary.displayName)
+    assert.equal(selected, isolated)
+    assert.equal(displayedName, canary.displayName)
+    assert.ok(fs.statSync(isolated).isDirectory())
+    assert.deepEqual(fs.readdirSync(root), ['isolated'])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.each([
   [undefined, 'Hermes', 'hermes', 'latest', 'canary'],
   ['bundled', 'Hermes Agent', 'hermes', 'latest', 'canary'],

@@ -1,10 +1,10 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 import { app } from 'electron'
 
-import { resolveDesktopHermesHome } from './data-paths'
+import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { releasePackagedWorkingDirectory } from './packaged-working-directory'
 import { readDesktopLaunchConfig } from './renderer-heap-flags'
 import { restoreUserProxyEnv } from './updater/system-proxy-env'
@@ -91,5 +91,12 @@ if (args) {
     process.once(signal, () => child.kill(signal))
   }
 } else {
+  // Imported modules may resolve cache paths. Establish an explicit isolated
+  // location first, without asking Electron for a possibly unavailable default.
+  if (process.env.HERMES_DESKTOP_USER_DATA_DIR) {
+    const userData = resolveDesktopUserData('')
+    mkdirSync(userData, { recursive: true })
+    app.setPath('userData', userData)
+  }
   await import('./main')
 }

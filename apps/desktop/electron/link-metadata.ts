@@ -315,7 +315,6 @@ function fetchLinkTitle(rawUrl) {
 // the host key means Linear's docs page and Linear's MCP endpoint cost one
 // lookup between them.
 
-const FAVICON_CACHE_PATH = path.join(app.getPath('userData'), 'favicon-cache.json')
 const FAVICON_CACHE_LIMIT = 400
 const FAVICON_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // A miss is cheap to re-check and expensive to be wrong about (a site that
@@ -325,7 +324,11 @@ const FAVICON_TIMEOUT_MS = 6000
 const FAVICON_MAX_BYTES = 256 * 1024
 const FAVICON_WRITE_DEBOUNCE_MS = 3000
 
-let faviconCache: Map<string, { at: number; icon: string }> | null = null
+type FaviconCacheState = {
+  filePath: string
+  icons: Map<string, { at: number; icon: string }>
+}
+let faviconCache: FaviconCacheState | null = null
 let faviconWriteTimer: null | ReturnType<typeof setTimeout> = null
 const faviconInflight = new Map<string, Promise<string>>()
 
@@ -337,22 +340,25 @@ function faviconCacheKey(rawUrl: string): string {
   }
 }
 
-function loadFaviconCache(): Map<string, { at: number; icon: string }> {
+function loadFaviconCache(): FaviconCacheState {
   if (faviconCache) {
     return faviconCache
   }
 
-  faviconCache = new Map()
+  faviconCache = {
+    filePath: path.join(app.getPath('userData'), 'favicon-cache.json'),
+    icons: new Map()
+  }
 
   try {
-    const raw = JSON.parse(fs.readFileSync(FAVICON_CACHE_PATH, 'utf8'))
+    const raw = JSON.parse(fs.readFileSync(faviconCache.filePath, 'utf8'))
 
     for (const [host, entry] of Object.entries(raw?.icons ?? {})) {
       const at = Number((entry as { at?: number })?.at)
       const icon = String((entry as { icon?: string })?.icon ?? '')
 
       if (Number.isFinite(at) && Date.now() - at < (icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-        faviconCache.set(host, { at, icon })
+        faviconCache.icons.set(host, { at, icon })
       }
     }
   } catch {
@@ -371,9 +377,10 @@ function saveFaviconCacheSoon() {
     faviconWriteTimer = null
 
     try {
-      const icons = Object.fromEntries(loadFaviconCache())
+      const cache = loadFaviconCache()
+      const icons = Object.fromEntries(cache.icons)
 
-      fs.writeFileSync(FAVICON_CACHE_PATH, JSON.stringify({ icons }), 'utf8')
+      fs.writeFileSync(cache.filePath, JSON.stringify({ icons }), 'utf8')
     } catch {
       // Cache is an optimization; failing to persist it costs one refetch.
     }
@@ -435,7 +442,7 @@ function resolveFaviconCached(rawUrl: string): Promise<string> {
     return Promise.resolve('')
   }
 
-  const cache = loadFaviconCache()
+  const cache = loadFaviconCache().icons
   const hit = cache.get(key)
 
   if (hit && Date.now() - hit.at < (hit.icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {

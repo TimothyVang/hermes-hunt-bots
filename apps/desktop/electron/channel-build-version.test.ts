@@ -469,6 +469,10 @@ with zipfile.ZipFile(package, 'w') as archive:
     archive.writestr('AppxManifest.xml', (root / 'manifest.xml').read_bytes())
     archive.writestr('app/resources/install-stamp.json', json.dumps({
         'source': 'channel-build', 'channelBuild': request, 'commit': request['commit'], 'tag': None}))
+# This fixture exercises the manifest writer, not a compiled PE resource.
+# Supply the recorder's supported cross-platform version sidecar.
+(root / 'version-info-x64.json').write_text(
+    json.dumps({'productVersion': request['version']}), encoding='utf-8')
 out = root / 'metadata.json'
 record('windows', 'x64', root, '', request['commit'], out, channel_request=request)
 manifest = ET.fromstring((root / 'manifest.xml').read_bytes())

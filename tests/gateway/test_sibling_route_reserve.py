@@ -16,6 +16,9 @@ async def test_sibling_route_rebinds_after_the_profile_is_unserved_and_served_ag
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authorities import authority_for_profile_id, owner_scope
     from gateway.session_controls import AuthorityConnection
+    # This routing fixture uses the test interpreter, not a sealed Desktop payload.
+    # Do not probe a checkout parent's runtime manifest under the operator's home.
+    monkeypatch.setattr('pm.environments._payload_manifest', lambda _root: None)
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     beta_home = homes[2][1]
@@ -43,7 +46,21 @@ async def test_sibling_route_rebinds_after_the_profile_is_unserved_and_served_ag
         assert await unserve_profile_runtime(runner, beta_home) is True
         runner._profile_adapters.pop('beta', None)  # as GatewayRunner._unserve_profile does
         retired.append(old)
+        from gateway.run_runtime import park_profile, unpark_profile
+        park_profile(runner, 'beta', 'synthetic temporary unavailability')
+        reply = await create()
+        assert reply['error']['data']['reason'] == 'runtime_draining', reply
+        # A parked name is not permission to cross a profile-bound connection.
+        connection._identity['profile_scope'] = 'profile'
+        reply = await create()
+        assert reply['error']['data']['reason'] == 'profile_mismatch', reply
+        connection._identity['profile_scope'] = 'host'
+        with owner_scope(launch):
+            unknown = await connection.dispatch({'id': 2, 'method': 'session.create',
+                                                'params': {'profile': 'never-served'}})
+        assert unknown['error']['data']['reason'] == 'profile_mismatch', unknown
         new = await serve_profile_runtime(runner, 'beta', beta_home)
+        unpark_profile(runner, 'beta')
         assert new is not old
         reply = await create()
         assert 'result' in reply, f'the socket still routes beta to its retired authority: {reply}'

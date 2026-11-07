@@ -548,6 +548,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }
   },
+  qemu: {
+    capture: () => ipcRenderer.invoke('hermes:qemu:capture'),
+    inputControl: (enabled: boolean) => ipcRenderer.invoke('hermes:qemu:input-control', enabled),
+    key: (key: string, down: boolean) => ipcRenderer.invoke('hermes:qemu:key', key, down),
+    setPaneVisible: (visible: boolean) => ipcRenderer.invoke('hermes:qemu:visible', visible),
+    pointer: (x: number, y: number, button?: 'left' | 'right', down?: boolean) => ipcRenderer.invoke('hermes:qemu:pointer', x, y, button, down),
+    start: (mode: 'install' | 'boot-existing' | 'firmware-smoke' = 'install') => ipcRenderer.invoke('hermes:qemu:start', mode),
+    status: () => ipcRenderer.invoke('hermes:qemu:status'),
+    stop: (graceful: boolean) => ipcRenderer.invoke('hermes:qemu:stop', graceful)
+  },
   terminal: {
     attach: id => ipcRenderer.invoke('hermes:terminal:attach', id),
     cwd: id => ipcRenderer.invoke('hermes:terminal:cwd', id),
