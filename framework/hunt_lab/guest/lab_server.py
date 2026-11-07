@@ -33,7 +33,8 @@ PROFILES = frozenset({
 })
 BOARD_PROFILE = 'hunt-board'
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
-EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'process', 'source', 'destination', 'network', 'dns', 'winlog', 'message', 'labels']
+EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
+                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'message', 'labels']
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
 ES_TIMEOUT = 15

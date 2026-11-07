@@ -317,6 +317,23 @@ class EndpointTests(ServerCase):
         self.assertIn({'term': {'host.name': 'ws-01'}}, filters)
         self.assertEqual(self.request('/events?q=*evil'), (400, {'error': 'leading_wildcard_not_supported'}))
 
+    def test_identity_web_and_file_fields_show_on_the_console_and_in_events(self):
+        record = {'@timestamp': '2026-03-02T01:00:00.000Z', 'event': {'id': 'evt-000201'},
+                  'user': {'name': 'r.ashgrove', 'domain': 'CORP'}, 'file': {'path': 'C:\\Users\\Public\\a.exe'},
+                  'url': {'full': 'https://x.example/s', 'domain': 'x.example', 'path': '/s'},
+                  'http': {'request': {'method': 'GET'}, 'response': {'status_code': 200}},
+                  'tls': {'server_name': 'x.example'}}
+        self.elastic.response = es_hits([record])
+        _, value = self.request('/events?q=user.name:r.ashgrove')
+        self.assertEqual(value['records'], [record])
+        _, _, body = self.page('/view?q=user.name:r.ashgrove')
+        for shown in ('&quot;name&quot;: &quot;r.ashgrove&quot;', '&quot;server_name&quot;: &quot;x.example&quot;',
+                      '&quot;status_code&quot;: 200', 'https://x.example/s'):
+            self.assertIn(shown, body)
+        for call in self.elastic.calls:
+            self.assertLessEqual({'user', 'group', 'file', 'service', 'url', 'http', 'tls', 'user_agent', 'observer'},
+                                 set(call['body']['_source']))
+
     def test_activity_records_tool_calls_with_display_profile(self):
         self.request('/es/search?q=alice', profile='framework-researcher')
         self.request('/es/search?size=0', profile='framework-reviewer')
