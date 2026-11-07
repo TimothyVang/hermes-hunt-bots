@@ -33,7 +33,7 @@ def main():
         rc, st = sc.lab('status', 180)
         try:
             h = sc.health(st['lab_url'])
-            if h.get('status') == 'ok' and h.get('event_count'):
+            if h.get('ready') is True and h.get('event_count'):
                 break
         except Exception:
             pass

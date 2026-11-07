@@ -23,7 +23,7 @@ Every Python tool answers `--help` without the lab running. When a tool needs He
 
 | Variable | Default | Used for |
 |---|---|---|
-| `HUNT_BOTS_RUNTIME` | `<repo>/runtime` | Root of all local state. Loop state goes to `practice/tool-loops/`, gate outputs to `practice/gate-runs/`. |
+| `HUNT_BOTS_RUNTIME` | `runtime/` next to the clone (`<repo>/../runtime`) | Root of all local state, outside the Git work tree on purpose: the lab refuses VM state inside any Git repository. Loop state goes to `practice/tool-loops/`, gate outputs to `practice/gate-runs/`. |
 | `HUNT_BOTS_LAB_HOME` | `$HUNT_BOTS_RUNTIME/lab-home` | The Hermes home holding the six profiles and the lab VM state. |
 | `LAB_HERMES_EXE` | none (required for lab and watcher calls) | The `hermes` executable for that home. A name on `PATH` or a full path. |
 | `HUNT_BOTS_PYTHON` | the Python running the tool | Interpreter for framework modules (`hermes_temporal.cli`, `hunt_lab.scenario`, `prepare_guest.py`). Needs `framework/hermes_temporal/requirements.txt`. |

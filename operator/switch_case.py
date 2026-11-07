@@ -84,7 +84,7 @@ def main():
         rc, st = lab('status', 180)
         try:
             h = health(st['lab_url'])
-            if h.get('status') == 'ok' and h.get('event_count'):
+            if h.get('ready') is True and h.get('event_count'):
                 break
         except Exception:
             pass
