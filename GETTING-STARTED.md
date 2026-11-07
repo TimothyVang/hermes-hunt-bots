@@ -86,6 +86,10 @@ Use the project skill: point your coding agent at [.agents/skills/hunt-bots-pr/S
 
 Greptile reviews it, and a code owner approves.
 
+## 7. Optional: the operator tools
+
+`operator/` holds the tools that run around the hunts. They include the watcher loop that tunes the bots' instructions and keeps only measured gains, case switching for the lab VM, an opt-in gate driver that labels every approval as delegated, and the tool cam and video assembler. Set `LAB_HERMES_EXE` to the lab's `hermes` executable first. Details and safety notes: [operator/README.md](operator/README.md).
+
 ## Where to help
 
 The open work is listed in [HUNT-BOTS.md, Known gaps](HUNT-BOTS.md#known-gaps-help-wanted). The biggest items are bots that really drive Arkime and Kibana in a browser, runtime enforcement of per-bot tool limits, and connecting the bots to a graph context engine.
