@@ -81,6 +81,42 @@ FETCH_ALL = {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}
 AUTO_ATTACH = {'autoAttach': True, 'waitForDebuggerOnStart': True, 'flatten': True}
 READ_TEXT = ('function () { if (this.type === "password") return ""; '
              'return String(this.innerText || this.value || this.textContent || ""); }')
+DEMO_FILE = 'demo.json'
+DEMO_MAX_BYTES = 1024
+DEMO_WINDOW = (0, 0, 1600, 1000)
+CURSOR_WORLD = 'hunt-lab-cursor'
+# Demo only: draws the CDP pointer, which Chrome never paints. It runs in its own world so page scripts
+# cannot see it, sits in a closed shadow root so page CSS cannot hide or restyle it, and is
+# pointer-events:none so elementFromPoint, the actionability check and real input pass through it.
+CURSOR_OVERLAY = r"""(() => {
+  if (window.top !== window) return;
+  const host = document.createElement('hunt-lab-cursor');
+  host.setAttribute('aria-hidden', 'true');
+  host.style.cssText = 'all:initial!important;display:block!important;position:fixed!important;' +
+    'left:0!important;top:0!important;width:0!important;height:0!important;overflow:visible!important;' +
+    'z-index:2147483647!important;pointer-events:none!important';
+  const shadow = host.attachShadow({mode: 'closed'});
+  shadow.innerHTML = '<style>*{pointer-events:none}i,svg{position:fixed;left:0;top:0;opacity:0}' +
+    'i{width:28px;height:28px;margin:-16px;border:2px solid #f80;border-radius:50%;background:#fc08}</style>' +
+    '<i></i><svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 2v17l4.5-4.5 3 6.5 3-1.4-3-6.4H16z" ' +
+    'fill="#111" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+  const [ring, arrow] = shadow.querySelectorAll('i, svg');
+  const follow = event => {
+    if (!host.isConnected && document.documentElement) {
+      document.documentElement.append(host);
+      try { host.popover = 'manual'; host.showPopover(); } catch (error) {}
+    }
+    arrow.style.opacity = '1';
+    arrow.style.transform = `translate(${event.clientX - 2}px, ${event.clientY - 2}px)`;
+  };
+  addEventListener('mousemove', follow, {capture: true, passive: true});
+  addEventListener('mousedown', event => {
+    follow(event);
+    ring.style.left = event.clientX + 'px';
+    ring.style.top = event.clientY + 'px';
+    ring.animate([{opacity: 1, scale: 0.4}, {opacity: 0, scale: 1.5}], {duration: 450, easing: 'ease-out'});
+  }, {capture: true, passive: true});
+})();"""
 
 SCHEMA = _schema(
     'lab_browser',
@@ -119,6 +155,18 @@ class Command:
     submit: bool = False
     key: str | None = None
     direction: str | None = None
+
+
+@dataclass(frozen=True)
+class Demo:
+    """The operator's demo.json marker as parsed: its audit label, the headed window, the cursor overlay."""
+    marker: str | None = None
+    window: tuple[int, int, int, int] | None = None
+    cursor: bool = False
+
+
+DEMO_OFF = Demo()
+DEMO_INVALID = Demo('invalid_marker')
 
 
 def _plain(value, limit):
@@ -321,9 +369,11 @@ class _WebSocket:
 class BrowserSession:
     """One bot profile's browser: its main page, element refs, pointer, and the Fetch enforcement."""
 
-    def __init__(self, root, scope, transport, *, ws_url, pid, process=None, state=None, rng=None, sleep=time.sleep):
+    def __init__(self, root, scope, transport, *, ws_url, pid, process=None, state=None, rng=None, sleep=time.sleep,
+                 demo=DEMO_OFF):
         state = state or {}
         self.root, self.scope, self.ws_url, self.pid, self.process = root, scope, ws_url, pid, process
+        self.demo = demo
         self.rng = rng or random.Random()
         self.sleep = sleep
         self.lock = threading.Lock()
@@ -365,6 +415,9 @@ class BrowserSession:
         self._page('Fetch.enable', FETCH_ALL)
         self._page('Target.setAutoAttach', AUTO_ATTACH)
         self._page('Page.enable')
+        if self.demo.cursor:
+            self._page('Page.addScriptToEvaluateOnNewDocument',
+                       {'source': CURSOR_OVERLAY, 'worldName': CURSOR_WORLD, 'runImmediately': True})
         if not document_allowed(self.scope, self._evaluate('location.href') or ''):
             self._page('Page.navigate', {'url': 'about:blank'})
 
@@ -599,6 +652,33 @@ class BrowserSession:
                 self.process.kill()
 
 
+def _demo_window(window):
+    return (isinstance(window, list) and len(window) == 4 and all(type(value) is int for value in window)
+            and all(abs(value) <= 32768 for value in window[:2]) and all(200 <= value <= 16384 for value in window[2:]))
+
+
+def read_demo(path):
+    """The operator's demo marker. The tool only ever reads it; a marker that fails validation is ignored whole."""
+    try:
+        with open(path, 'rb') as stream:
+            raw = stream.read(DEMO_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return DEMO_OFF
+    except OSError:
+        return DEMO_INVALID
+    try:
+        marker = json.loads(raw) if len(raw) <= DEMO_MAX_BYTES else None
+    except ValueError:
+        return DEMO_INVALID
+    if not isinstance(marker, dict) or not set(marker) <= {'headed', 'window', 'cursor'}:
+        return DEMO_INVALID
+    headed, cursor = marker.get('headed', True), marker.get('cursor', True)
+    window = marker.get('window', list(DEMO_WINDOW))
+    if type(headed) is not bool or type(cursor) is not bool or not _demo_window(window):
+        return DEMO_INVALID
+    return Demo('on', tuple(window) if headed else None, cursor)
+
+
 def _browser_executable():
     configured = os.environ.get('HUNT_LAB_BROWSER')
     if configured:
@@ -615,7 +695,8 @@ def _browser_executable():
     raise QueryFailure('browser_unavailable')
 
 
-def browser_args(executable, user_data, scope, headed=False):
+def browser_args(executable, user_data, scope, window=None):
+    """Launch flags; `window` (x, y, width, height) opens a visible window there, None runs headless."""
     lab, arkime = (parse.urlsplit(value).port for value in (scope.lab_origin, scope.arkime_origin))
     args = [
         executable, '--user-data-dir=' + str(user_data), '--remote-debugging-port=0',
@@ -623,23 +704,25 @@ def browser_args(executable, user_data, scope, headed=False):
         '--disable-extensions', '--disable-sync', '--disable-background-networking', '--disable-component-update',
         '--disable-default-apps', '--deny-permission-prompts',
         '--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication',
-        '--window-size=%d,%d' % VIEWPORT,
         # A fence that holds even with no CDP client attached: everything goes to a dead proxy
         # except the two lab ports (<-loopback> drops Chrome's implicit loopback bypass).
         '--proxy-server=http://127.0.0.1:1',
         '--proxy-bypass-list=<-loopback>;127.0.0.1:%d;127.0.0.1:%d' % (lab, arkime),
     ]
-    if not headed:
-        args.append('--headless=new')
+    if window:
+        args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:]]
+    else:
+        args += ['--window-size=%d,%d' % VIEWPORT, '--headless=new']
     return args + ['about:blank']
 
 
-def _launch(root, scope):
+def _launch(root, scope, demo):
     user_data = root / 'user-data'
     user_data.mkdir(parents=True, exist_ok=True)
     port_file = user_data / 'DevToolsActivePort'
     port_file.unlink(missing_ok=True)
-    args = browser_args(_browser_executable(), user_data, scope, os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1')
+    window = demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
+    args = browser_args(_browser_executable(), user_data, scope, window)
     process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 30
     while True:
@@ -655,7 +738,7 @@ def _launch(root, scope):
             raise QueryFailure('browser_unavailable')
         time.sleep(0.1)
     ws_url = 'ws://127.0.0.1:%s%s' % (lines[0], lines[1])
-    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process)
+    return BrowserSession(root, scope, _WebSocket(ws_url), ws_url=ws_url, pid=process.pid, process=process, demo=demo)
 
 
 def _owned(ws_url):
@@ -687,17 +770,18 @@ def _write_state(root, value):
 
 def _start(root, scope):
     root.mkdir(parents=True, exist_ok=True)
+    demo = read_demo(root.parent / DEMO_FILE)
     state = _read_state(root)
     if state and _owned(state.get('ws_url')):
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
                  and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin))
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
-                                 pid=state.get('pid'), state=state if fresh else None)
+                                 pid=state.get('pid'), state=state if fresh else None, demo=demo)
         if fresh:
             return session
         session.close()
     (root / STATE_FILE).unlink(missing_ok=True)
-    return _launch(root, scope)
+    return _launch(root, scope, demo)
 
 
 _SESSIONS = {}
@@ -804,7 +888,8 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
                 'page': session.page_name, 'ref': command.ref, 'key': command.key, 'direction': command.direction,
                 'query': command.query or None, 'text': command.text or None, 'submit': command.submit,
                 'url': (outcome.get('result') or {}).get('url'), 'blocked': session.blocked - blocked_before,
-                'requests': list(session.requests)[-20:], 'ok': outcome['ok'], 'error': outcome.get('error')})
+                'requests': list(session.requests)[-20:], 'demo': session.demo.marker,
+                'ok': outcome['ok'], 'error': outcome.get('error')})
         return _bounded(outcome) if outcome['ok'] else outcome
     except QueryFailure as exc:
         return _failure(profile, exc)

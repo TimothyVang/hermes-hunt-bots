@@ -5,6 +5,7 @@ A fake DevTools socket stands in for the browser, so no browser or network is ne
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import queue
 import random
@@ -117,9 +118,9 @@ class FakeBrowser:
         return self.calls(method)
 
 
-def session(fake, lab='http://127.0.0.1:41001', root=None):
+def session(fake, lab='http://127.0.0.1:41001', root=None, demo=lab_browser.DEMO_OFF):
     return lab_browser.BrowserSession(root or Path('.'), scope(lab), fake, ws_url='ws://127.0.0.1:1/devtools/browser/x',
-                                      pid=1, rng=random.Random(7), sleep=lambda _seconds: None)
+                                      pid=1, rng=random.Random(7), sleep=lambda _seconds: None, demo=demo)
 
 
 class LabStub:
@@ -429,7 +430,121 @@ class ToolTests(unittest.TestCase):
         self.assertIn('--user-data-dir=' + str(Path('state') / 'user-data'), args)
         self.assertIn('--remote-debugging-address=127.0.0.1', args)
         self.assertIn('--headless=new', args)
-        self.assertNotIn('--headless=new', lab_browser.browser_args('edge', Path('u'), scope(), headed=True))
+        headed = lab_browser.browser_args('edge', Path('u'), scope(), window=(10, 20, 1280, 900))
+        self.assertNotIn('--headless=new', headed)
+        self.assertEqual(headed[-3:], ['--window-position=10,20', '--window-size=1280,900', 'about:blank'])
+
+
+class FakeProcess:
+    """A launched browser that only announces its DevTools endpoint."""
+    pid = 4242
+
+    def __init__(self, args, **_options):
+        self.args = args
+        user_data = Path(next(arg for arg in args if arg.startswith('--user-data-dir=')).split('=', 1)[1])
+        (user_data / 'DevToolsActivePort').write_text('9222\n/devtools/browser/fake\n', encoding='ascii')
+
+    def poll(self):
+        return None
+
+    def wait(self, _timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+class DemoModeTests(unittest.TestCase):
+    """The operator's demo.json beside the bots' browser profiles decides headed mode and the cursor overlay."""
+
+    def setUp(self):
+        self.lab = LabStub()
+        self.addCleanup(self.lab.close)
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop('HUNT_LAB_BROWSER_HEADED', None)
+
+    def launch(self, marker=None):
+        """One real lab_browser call through the launch path; returns the browser's flags, CDP traffic and audit line."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        browsers = Path(temp.name) / 'hunt-lab-browser'
+        if marker is not None:
+            browsers.mkdir()
+            (browsers / 'demo.json').write_text(marker if isinstance(marker, str) else json.dumps(marker), encoding='utf-8')
+        fake, launched = FakeBrowser(), []
+
+        def popen(args, **options):
+            launched.append(FakeProcess(args, **options))
+            return launched[-1]
+
+        with patch.object(lab_browser, '_browser_executable', return_value='edge'), \
+                patch.object(lab_browser.subprocess, 'Popen', popen), \
+                patch.object(lab_browser, '_WebSocket', lambda _url: fake):
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+                                      state_dir='analyst-state', profile='framework-researcher',
+                                      browser_root=browsers / 'framework-researcher')
+            lab_browser.shutdown()
+        self.assertTrue(result['ok'], result)
+        audit = json.loads((browsers / 'framework-researcher' / 'audit.jsonl').read_text().splitlines()[-1])
+        return launched[0].args, fake.calls('Page.addScriptToEvaluateOnNewDocument'), audit
+
+    def test_without_a_marker_the_browser_is_headless_and_draws_no_cursor(self):
+        args, scripts, audit = self.launch()
+        self.assertIn('--headless=new', args)
+        self.assertFalse(any(arg.startswith('--window-position=') for arg in args))
+        self.assertEqual((scripts, audit['demo']), ([], None))
+        os.environ['HUNT_LAB_BROWSER_HEADED'] = '1'
+        args, scripts, audit = self.launch()
+        self.assertNotIn('--headless=new', args)
+        self.assertIn('--window-position=0,0', args)
+        self.assertEqual((scripts, audit['demo']), ([], None))
+
+    def test_a_valid_marker_opens_a_placed_window_with_the_cursor_overlay(self):
+        args, scripts, audit = self.launch({'headed': True, 'window': [100, -40, 1280, 900], 'cursor': True})
+        self.assertNotIn('--headless=new', args)
+        self.assertIn('--window-position=100,-40', args)
+        self.assertIn('--window-size=1280,900', args)
+        self.assertEqual(audit['demo'], 'on')
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(scripts[0]['sessionId'], 'page')
+        self.assertEqual(scripts[0]['params']['worldName'], 'hunt-lab-cursor')
+        self.assertTrue(scripts[0]['params']['runImmediately'])
+        overlay = scripts[0]['params']['source']
+        self.assertIn('pointer-events:none!important', overlay)
+        self.assertIn("attachShadow({mode: 'closed'})", overlay)
+        self.assertNotRegex(overlay, r'https?:|url\(|@import')
+        args, scripts, _audit = self.launch({})
+        self.assertIn('--window-position=0,0', args)
+        self.assertIn('--window-size=1600,1000', args)
+        self.assertEqual(len(scripts), 1)
+        args, scripts, _audit = self.launch({'headed': False})
+        self.assertIn('--headless=new', args)
+        self.assertEqual(len(scripts), 1)
+
+    def test_an_invalid_marker_is_ignored_whole_and_audited(self):
+        for marker in ({'headed': 'yes'}, {'cursor': 1}, {'headed': True, 'record': True}, {'window': [0, 0, 1600]},
+                       {'window': [0, 0, True, 1000]}, {'window': [0, 0, 1600.0, 1000]}, {'window': [0, 0, 50, 50]},
+                       {'window': '0,0,1600,1000'}, '[]', 'headed', '{"headed": true', ' ' * 2000 + '{}'):
+            with self.subTest(marker=marker):
+                args, scripts, audit = self.launch(marker)
+                self.assertIn('--headless=new', args)
+                self.assertFalse(any(arg.startswith('--window-position=') for arg in args))
+                self.assertEqual((scripts, audit['demo']), ([], 'invalid_marker'))
+
+    def test_the_cursor_overlay_leaves_actionability_and_input_unchanged(self):
+        traffic = []
+        for demo in (lab_browser.DEMO_OFF, lab_browser.Demo('on', None, True)):
+            fake = FakeBrowser()
+            self.addCleanup(fake.close)
+            browser = session(fake, demo=demo)
+            browser.run(lab_browser.parse_command({'action': 'snapshot'}))
+            browser.run(lab_browser.parse_command({'action': 'click', 'ref': 'e3'}))
+            traffic.append([(m['method'], m['params']) for m in fake.sent
+                            if m['method'] in ('Runtime.callFunctionOn', 'Input.dispatchMouseEvent')])
+        self.assertGreater(len(traffic[0]), 12)
+        self.assertEqual(traffic[0], traffic[1])
 
 
 if __name__ == '__main__':
