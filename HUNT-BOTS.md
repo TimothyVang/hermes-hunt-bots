@@ -43,6 +43,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 
 The workflow follows [pstack](https://github.com/cursor/plugins/tree/main/pstack)'s poteto-mode playbooks: small verified units, proof from the real app, honest PR briefings. pstack is vendored in `.agents/` (MIT), and the project skill **`hunt-bots-pr`** (`.agents/skills/hunt-bots-pr/SKILL.md`) walks you or your coding agent through every step below. Agents that read `.agents/skills/` (OMP, Codex and others) find it automatically; in Claude Code or Cursor, point the agent at that file.
 
+0. New here? Follow [GETTING-STARTED.md](GETTING-STARTED.md) first: clone, check, generate a case, install the bots, run a hunt.
 1. Branch from `hunt-bots` and open the PR against `hunt-bots`. Prefer several narrow PRs to one large one; stack dependent PRs on their parent branch. Open PRs ready, not as drafts.
 2. Title in Conventional Commits form, `type(scope): subject`, for example `fix(hunt_lab): report field_not_allowed refusals`.
 3. Prove it works on the real thing (the lab, the desktop app, a live hunt), not only with tests. A bug fix shows the failure before and the pass after.
