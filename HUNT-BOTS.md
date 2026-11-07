@@ -9,6 +9,7 @@ Built in the open. This file is the project's rulebook: **every contributor, hum
 | Path | What it is | License |
 |---|---|---|
 | `framework/` | The six-bot team: lab tools, Temporal workflows, hunting lab, scenario generator and scorer, Hunt Board, benchmarks, tests. Start with [framework/README.md](framework/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
+| `operator/` | Operator tools around the hunts: the watcher improvement loop, case switching, the opt-in delegated gate driver, rejection diagnosis, the tool cam and honest video assembly. They read operator-only answer keys, so nothing here feeds bot prompts. See [operator/README.md](operator/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
 | Everything else | Hermes 0.23.0 (upstream commit `2bd378ed`) plus our reviewed desktop fixes | MIT ([LICENSE](LICENSE)) |
 | `runtime/` (never committed) | Your local lab: Hermes environments, the VM, cases, answer keys, runs | — |
 
