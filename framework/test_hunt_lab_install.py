@@ -73,6 +73,35 @@ class LabInstallTests(unittest.TestCase):
             self.assertTrue((backend / 'plugin.yaml').is_file(), name)
             self.assertFalse((profile / 'hunt-lab-vm').exists(), name)
 
+    def test_installed_backend_imports_and_registers_every_tool(self):
+        # Bots load the installed copy, not the source tree: a module missing from the bundle
+        # makes register() fail and takes every hunt_lab tool down with it.
+        profile = self.profile()
+        lab.install(self.home, sys.executable, runner=Mock(return_value=subprocess.CompletedProcess([], 0)))
+        probe = '\n'.join([
+            'import importlib.util, json, sys, types',
+            'backend, home = sys.argv[1], sys.argv[2]',
+            "constants = types.ModuleType('hermes_constants')",
+            'constants.get_hermes_home = lambda: home',
+            "constants.profile_name_for_home = lambda _home: 'framework-network-analyst'",
+            "sys.modules['hermes_constants'] = constants",
+            "spec = importlib.util.spec_from_file_location('hunt_lab_installed', backend + '/__init__.py',",
+            '                                              submodule_search_locations=[backend])',
+            'module = importlib.util.module_from_spec(spec)',
+            "sys.modules['hunt_lab_installed'] = module",
+            'spec.loader.exec_module(module)',
+            'tools = []',
+            'ctx = types.SimpleNamespace(register_cli_command=lambda **_kw: None,',
+            "                            register_tool=lambda **kw: tools.append(kw['name']))",
+            'module.register(ctx)',
+            'print(json.dumps(sorted(tools)))',
+        ])
+        result = subprocess.run([sys.executable, '-I', '-c', probe, str(profile / 'plugins/hunt-lab'), str(profile)],
+                                cwd=self.temp.name, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr[-1500:])
+        self.assertIn('lab_browser', json.loads(result.stdout))
+        self.assertIn('hunt_lab_query', json.loads(result.stdout))
+
     def test_unregistered_specialists_are_skipped_but_analyst_is_required(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0))
         with self.assertRaises(ValueError):
