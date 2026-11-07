@@ -61,6 +61,9 @@ INTERACTIVE_ROLES = frozenset({
     'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider',
     'spinbutton', 'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'treeitem',
 })
+# Demo mode enters an open's search through the page's own box: Arkime's expression input and the lab
+# console's <input name="q"> both carry the accessible name "Search".
+SEARCH_BOX = ('Search', frozenset({'textbox', 'searchbox', 'combobox'}))
 ICON_GLYPHS = re.compile('[\ue000-\uf8ff]')
 FLAGS = ('disabled', 'focused', 'checked', 'expanded', 'selected')
 REF = re.compile(r'e[1-9][0-9]{0,3}')
@@ -386,6 +389,7 @@ class BrowserSession:
         self.main_session = None
         self.dead = False
         self.blocked = 0
+        self.entered = None
         self.requests = deque(maxlen=40)
         self.last_request = 0.0
         self.last_used = time.time()
@@ -503,24 +507,49 @@ class BrowserSession:
 
     def run(self, command):
         self.last_used = time.time()
+        self.entered = None
         return getattr(self, '_' + command.action)(command)
 
-    def _open(self, command):
-        kind, path = PAGES[command.page]
+    def _url(self, page, query):
+        kind, path = PAGES[page]
         if kind == 'arkime':
             params = {'startTime': self.scope.start, 'stopTime': self.scope.stop}
-            if command.query:
-                params = {'expression': command.query, **params}
-            url = self.scope.arkime_origin + path + '?' + parse.urlencode(params)
-        else:
-            url = self.scope.lab_origin + path + ('?' + parse.urlencode({'q': command.query}) if command.query else '')
-        self.page_name = command.page
+            if query:
+                params = {'expression': query, **params}
+            return self.scope.arkime_origin + path + '?' + parse.urlencode(params)
+        return self.scope.lab_origin + path + ('?' + parse.urlencode({'q': query}) if query else '')
+
+    def _navigate(self, url):
         self.loaded.clear()
         if self._page('Page.navigate', {'url': url}).get('errorText'):
             raise QueryFailure('navigation_failed')
         self.loaded.wait(20)
         self._settle()
+
+    def _open(self, command):
+        self.page_name = command.page
+        self.entered = 'url' if command.query else None
+        if self.demo.marker == 'on' and command.query:
+            try:
+                self._search_in_page(command)
+            except QueryFailure as exc:
+                self.entered = 'fallback:' + str(exc)
+            else:
+                self.entered = 'typed'
+                return self._snapshot(command)
+        self._navigate(self._url(command.page, command.query))
         return self._snapshot(command)
+
+    def _search_in_page(self, command):
+        """Demo only: load the page unfiltered, then type the search into its Search box and press Enter on
+        camera. The search still leaves the page as an ordinary request, so Fetch scopes it like any other."""
+        self._navigate(self._url(command.page, ''))
+        name, roles = SEARCH_BOX
+        box = next((element['ref'] for element in self._snapshot(command)['elements']
+                    if element['role'] in roles and element['name'] == name), None)
+        if box is None:
+            raise QueryFailure('no_search_box')
+        self._enter(box, command.query, submit=True)
 
     def _snapshot(self, _command):
         place = self._location()
@@ -592,22 +621,25 @@ class BrowserSession:
         return self._snapshot(command)
 
     def _type(self, command):
-        self._press_on(self._node(command.ref))
+        self._enter(command.ref, command.text, command.submit)
+        return self._snapshot(command)
+
+    def _enter(self, ref, text, submit):
+        self._press_on(self._node(ref))
         select_all = {'key': 'a', 'code': 'KeyA', 'windowsVirtualKeyCode': 65, 'modifiers': CTRL}
         self._key('rawKeyDown', commands=['selectAll'], **select_all)
         self._key('keyUp', **select_all)
-        for char, delay in zip(command.text, humanize.typing_delays(command.text, self.rng)):
+        for char, delay in zip(text, humanize.typing_delays(text, self.rng)):
             self.sleep(delay / 1000)
             if ' ' <= char <= '~':
                 self._key('keyDown', key=char, text=char, unmodifiedText=char)
                 self._key('keyUp', key=char)
             else:
                 self._page('Input.insertText', {'text': char})
-        if command.submit:
+        if submit:
             self.sleep(self.rng.uniform(0.15, 0.4))
             self._press_key('Enter')
         self._settle()
-        return self._snapshot(command)
 
     def _press(self, command):
         self._press_key(command.key)
@@ -891,6 +923,7 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
                 't': int(time.time() * 1000), 'profile': profile, 'case_id': case_id, 'action': command.action,
                 'page': session.page_name, 'ref': command.ref, 'key': command.key, 'direction': command.direction,
                 'query': command.query or None, 'text': command.text or None, 'submit': command.submit,
+                'entered': session.entered,
                 'url': (outcome.get('result') or {}).get('url'), 'blocked': session.blocked - blocked_before,
                 'requests': list(session.requests)[-20:], 'demo': session.demo.marker,
                 'ok': outcome['ok'], 'error': outcome.get('error')})
