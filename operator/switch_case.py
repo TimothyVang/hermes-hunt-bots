@@ -51,6 +51,12 @@ def main():
     ap.add_argument('evidence_dir', nargs='?', help='case evidence to load; omit to start the current case')
     ap.add_argument('--hold', action='store_true', help='stay alive after READY so the VM keeps running')
     args = ap.parse_args()
+    # The reseed runs from framework/, so resolve a caller-relative evidence path before the VM stops.
+    if args.evidence_dir:
+        evidence = Path(args.evidence_dir).resolve()
+        if not (evidence / 'case.json').is_file():
+            ap.error(f'no case.json in {evidence}')
+        args.evidence_dir = str(evidence)
     hermes_exe()
     if args.evidence_dir:
         lab('stop', 300)
