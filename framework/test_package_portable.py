@@ -222,6 +222,7 @@ APPROVED_FILES = frozenset({
     'hunt_lab/assets.json',
     'hunt_lab/case.py',
     'hunt_lab/scenario.py',
+    'hunt_lab/screencast.py',
     'hunt_lab/test_scenario.py',
     'hunt_lab/guest/compose.yaml',
     'hunt_lab/guest/arkime.ini',
