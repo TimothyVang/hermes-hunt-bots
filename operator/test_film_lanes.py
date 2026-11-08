@@ -15,24 +15,23 @@ from film import lanes
 from film import review
 from lab_paths import DEFAULT_LANE, RUNTIME, Lane
 
-TWO = [{'name': 'l1', 'hermes_home': 'lab-home', 'task_queue': 'hermes-claude-practice', 'region': [0, 0, 1920, 1080]},
-       {'name': 'l2', 'hermes_home': 'lab-home-2', 'task_queue': 'hermes-claude-practice-2', 'region': [1920, 0, 1920, 1080],
+TWO = [{'name': 'l1', 'hermes_home': 'lab-home', 'task_queue': 'hermes-claude-practice'},
+       {'name': 'l2', 'hermes_home': 'lab-home-2', 'task_queue': 'hermes-claude-practice-2',
         'hermes_exe': r'C:\lab2\hermes.exe'}]
 
 
 class LaneConfigTest(unittest.TestCase):
     def test_no_lanes_file_means_the_one_lab_the_environment_names(self):
         self.assertEqual(lanes.load(None), [DEFAULT_LANE])
-        self.assertEqual((DEFAULT_LANE.name, DEFAULT_LANE.region), ('', (0, 0, 1920, 1080)))
+        self.assertEqual(DEFAULT_LANE.name, '')
         self.assertEqual(lanes.problems([DEFAULT_LANE]), [])
 
-    def test_a_lanes_file_gives_each_lane_its_own_home_queue_browser_dir_and_region(self):
+    def test_a_lanes_file_gives_each_lane_its_own_home_queue_and_browser_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'lanes.json'
             path.write_text(json.dumps(TWO), encoding='utf-8')
             l1, l2 = lanes.load(path)
-        self.assertEqual((l1.name, l1.home, l1.task_queue, l1.region), ('l1', (RUNTIME / 'lab-home').resolve(),
-                                                                        'hermes-claude-practice', (0, 0, 1920, 1080)))
+        self.assertEqual((l1.name, l1.home, l1.task_queue), ('l1', (RUNTIME / 'lab-home').resolve(), 'hermes-claude-practice'))
         self.assertEqual(l2.browser_root, (RUNTIME / 'lab-home-2').resolve() / 'profiles' / 'framework-network-analyst'
                          / 'hunt-lab-browser')
         env = l2.env()
@@ -42,20 +41,18 @@ class LaneConfigTest(unittest.TestCase):
         self.assertEqual(lanes.problems([l1, l2]), [])
 
     def test_malformed_lanes_are_refused(self):
-        bad = [[], [{'name': 'l1', 'hermes_home': 'x'}], [{**TWO[0], 'name': 'Lane One'}], [{**TWO[0], 'colour': 'red'}],
-               [{**TWO[0], 'region': [0, 0, 1920]}], [{**TWO[0], 'task_queue': ''}]]
+        bad = [[], [{'name': 'l1'}], [{**TWO[0], 'name': 'Lane One'}], [{**TWO[0], 'colour': 'red'}],
+               [{**TWO[0], 'region': [0, 0, 1920, 1080]}], [{**TWO[0], 'task_queue': ''}]]
         for items in bad:
             with self.subTest(items=items), self.assertRaises(ValueError):
                 lanes.parse(items)
 
     def test_lanes_that_could_interfere_are_refused_at_start(self):
         l1, l2 = lanes.parse(TWO)
-        cases = {'name': Lane('l1', l2.home, l2.task_queue, None, l2.region),
-                 'task_queue': Lane('l2', l2.home, l1.task_queue, None, l2.region),
-                 'hermes_home': Lane('l2', l1.home, l2.task_queue, None, l2.region),
-                 'overlapping': Lane('l2', l2.home, l2.task_queue, None, (960, 0, 1920, 1080)),
-                 'region must be': Lane('l2', l2.home, l2.task_queue, None, (1920, 0, 1280, 720)),
-                 'own task_queue': Lane('l2', l2.home, None, None, l2.region)}
+        cases = {'name': Lane('l1', l2.home, l2.task_queue),
+                 'task_queue': Lane('l2', l2.home, l1.task_queue),
+                 'hermes_home': Lane('l2', l1.home, l2.task_queue),
+                 'own task_queue': Lane('l2', l2.home, None)}
         for needle, other in cases.items():
             with self.subTest(needle=needle):
                 self.assertTrue(any(needle in p for p in lanes.problems([l1, other])), lanes.problems([l1, other]))
@@ -81,7 +78,7 @@ class GatewayPreflightTest(unittest.TestCase):
         home.mkdir()
         if state is not None:
             (home / 'gateway_state.json').write_text(json.dumps(state), encoding='utf-8')
-        return Lane('l2', home, 'q2', None, (1920, 0, 1920, 1080))
+        return Lane('l2', home, 'q2')
 
     def test_only_a_live_persistent_gateway_passes(self):
         running = {'pid': 4242, 'gateway_state': 'running', 'argv': ['main.py', 'gateway', 'run', '--quiet']}
@@ -123,12 +120,14 @@ class LaneScoringTest(unittest.TestCase):
         self.assertEqual(film_loop.best_lane({'l1': lane_out('l1', 18, 1, video=False), 'l2': lane_out('l2', 2, 0)}), 'l2')
         self.assertIsNone(film_loop.best_lane({'l1': lane_out('l1', 18, 1, video=False)}))
 
-    def test_a_state_saved_before_lanes_resumes_as_one_lane(self):
+    def test_a_saved_state_resumes_as_one_lane_without_the_knobs_the_cut_dropped(self):
         old = {'found': 9, 'coverage': 0.3, 'misattributed': 0, 'halts': 0, 'result': {'rounds': []}, 'driving': {},
-               'video': 'v.mp4', 'privacy_abort': None, 'loop': 4}
-        state = film_loop.upgrade({'best': dict(old), 'last': dict(old), 'last_calls': {'researcher': {'calls': 3}}})
+               'video': 'v.mp4', 'loop': 4}
+        state = film_loop.upgrade({'best': dict(old), 'last': dict(old), 'last_calls': {'researcher': {'calls': 3}},
+                                   'knobs': {'speed': 12.0, 'pad_before': 3.0, 'pad_after': 6.0, 'captions': True}})
         self.assertEqual(state['last']['lanes']['default']['found'], 9)
         self.assertEqual((state['best']['best_lane'], state['last_calls']), ('default', {'default': {'researcher': {'calls': 3}}}))
+        self.assertEqual(state['knobs'], {'speed': 12.0, 'captions': True})
         self.assertIs(film_loop.upgrade(state), state)
 
 
@@ -137,11 +136,13 @@ GOOD = {'tools': {'elastic': {'driven': True, 'evidence': 'typed'}, 'arkime': {'
         'dead_time': 'little', 'brief_suggestions': [], 'knobs': {}, 'ready': False, 'summary': 'both lanes drive'}
 
 
-def cut(name, real_seconds, found):
-    seg = {'start': 0, 'end': real_seconds, 'speed': 1.0, 'screencast': 'framework-researcher', 'captions': [{'text': f'{name} cap'}],
-           'out_start': 5, 'out_end': 5 + real_seconds}
-    edit = {'segments': [seg], 'out_seconds': real_seconds + 12, 'capture_seconds': real_seconds, 'screencast_frames': {},
-            'knobs': {}, 't0': 0, 'video': 'video.mp4'}
+def cut(name, screen_seconds, found):
+    seg = {'kind': 'board', 'start': 0, 'end': screen_seconds * 5, 'speed': 5.0, 'captions': [{'text': f'{name} cap'}],
+           'out_start': 5, 'out_end': 5 + screen_seconds}
+    edit = {'segments': [{'kind': 'intro', 'out_start': 0, 'out_end': 5}, seg], 'out_seconds': screen_seconds + 12,
+            'round_seconds': screen_seconds * 5, 'speed': 5.0, 'stages': [], 'longest_board_hold_seconds': 4.0,
+            'browser_active_seconds': {}, 'browser_any_active_seconds': 0, 'board_frames': 9, 'screencast_frames': {},
+            'knobs': {}, 'video': 'video.mp4'}
     return {'lane': name, 'd': Path(name), 'edit': edit, 'actions': [], 'cov': {'coverage': 0.5},
             'result': {'rounds': [{'found': found, 'total': 18}], 'misattributed': 0, 'halts': 0}}
 
@@ -173,14 +174,15 @@ class LaneReviewTest(unittest.TestCase):
         context = json.loads(prompt[len(review.REVIEW_RULES):])
         self.assertEqual(sorted(context['lanes']), ['l1', 'l2'])
         self.assertEqual((context['lanes']['l1']['round']['found'], context['lanes']['l2']['round']['found']), (12, 6))
-        self.assertEqual(context['mean_over_lanes']['real_time_seconds'], 20)
-        self.assertEqual(written['metrics']['lanes']['l2']['real_time_seconds'], 10)
+        self.assertEqual(context['mean_over_lanes']['board_seconds'], 20)
+        self.assertEqual(written['metrics']['lanes']['l2']['board_seconds'], 10)
+        self.assertEqual(written['metrics']['lanes']['l2']['longest_frozen_board_seconds'], 0.8)
         self.assertTrue(out['review']['tools']['arkime']['driven'])
 
     def test_one_lane_sends_its_own_sheet_unstacked(self):
         _, calls, stacked, written, tmp = self.run_review([cut('default', 30, 12)])
         self.assertEqual((len(calls), stacked, calls[0][1]), (1, [], tmp / 'default' / 'review.png'))
-        self.assertEqual(written['metrics']['mean']['real_time_seconds'], 30)
+        self.assertEqual(written['metrics']['mean']['board_seconds'], 30)
 
 
 if __name__ == '__main__':

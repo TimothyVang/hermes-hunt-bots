@@ -1,8 +1,8 @@
 """What the bots did and when, as the film tools read it.
 
 Two real sources: each browser owner's lab_browser audit.jsonl (actions on screen) and the lab's
-/activity feed (every API tool call). Both become one list of Actions; driving coverage, captions
-and the cut's real-time windows are all computed from it.
+/activity feed (every API tool call). Both become one list of Actions; driving coverage, the cut's
+captions and the review's browser moments are all computed from it.
 """
 import json
 from dataclasses import dataclass
