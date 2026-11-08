@@ -1,12 +1,14 @@
-"""Read-only live board for a supplied-evidence practice hunt.
+"""Read-only live board for a supplied-evidence practice hunt: the Hunt Live page.
 
 The board renders only the supplied lab input and the actual Temporal status of a
 practice parent and its current round. It never signals, approves, starts, or stops
-a workflow; it only issues the same status queries as ``cli practice-status``/``status``.
+a workflow; it only issues the same status queries as ``cli practice-status``/``status``,
+plus a read of the round's own history for the real start and end time of each stage.
 For a ``tool_driven`` input it also polls the loopback lab's read-only ``/activity`` ring
 and looks up the events the bots cite by ``event.id``; it never runs any other lab query.
 With ``--hermes-home`` it also shows the two browser owners' lab browsers live, through the
-watch-only screencast client in ``hunt_lab.screencast``; frames stay in memory only.
+watch-only screencast client in ``hunt_lab.screencast`` (frames stay in memory only), and
+reads each owner's newest ``lab_browser`` audit line for the caption under its frame.
 """
 from __future__ import annotations
 
@@ -44,6 +46,14 @@ ROLE_TITLES = {
     "framework-librarian": "Threat Intelligence Analyst",
     "framework-builder": "Detection Engineer",
     "framework-reviewer": "Purple Team Analyst",
+}
+MONOGRAMS = {
+    "framework-coordinator": "IR",
+    "framework-researcher": "TH",
+    "framework-network-analyst": "NA",
+    "framework-librarian": "TI",
+    "framework-builder": "DE",
+    "framework-reviewer": "PT",
 }
 
 # Child stages that leave a step open for a human or the worker; every other
@@ -422,11 +432,170 @@ def _run_summary(parent: dict | None, child: dict | None) -> dict:
     }
 
 
-def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: dict | None = None) -> dict:
+_OPEN_STATES = set(_OPEN_STAGES.values())
+_ACTIVITY_CLOSED = ("activity_task_completed_event_attributes", "activity_task_failed_event_attributes",
+                    "activity_task_timed_out_event_attributes", "activity_task_canceled_event_attributes")
+
+
+def activity_spans(events: Iterable[Any]) -> list[dict]:
+    """Each activity in a round's Temporal history: execution ID, scheduled and closed time (epoch ms).
+
+    ``events`` are ``HistoryEvent`` messages. The execution ID is read from the activity input
+    (the JSON ``ExecutionRequest``); an activity that has not closed yet has ``closed_ms`` None."""
+    spans: dict[int, dict] = {}
+    for event in events:
+        kind = event.WhichOneof("attributes")
+        if kind == "activity_task_scheduled_event_attributes":
+            payloads = event.activity_task_scheduled_event_attributes.input.payloads
+            try:
+                execution_id = json.loads(payloads[0].data).get("execution_id") if payloads else None
+            except (ValueError, AttributeError, RecursionError):
+                execution_id = None
+            spans[event.event_id] = {"execution_id": execution_id if isinstance(execution_id, str) else None,
+                                     "scheduled_ms": event.event_time.ToMilliseconds(), "closed_ms": None}
+        elif kind in _ACTIVITY_CLOSED:
+            span = spans.get(getattr(event, kind).scheduled_event_id)
+            if span is not None:
+                span["closed_ms"] = event.event_time.ToMilliseconds()
+    return list(spans.values())
+
+
+def _stage_timings(round_id: Any, count: int, spans: Any) -> list[dict]:
+    """Per step: its first activity's scheduled time, its latest activity's close time, and attempts.
+
+    Execution IDs are ``<round workflow ID>:<step index>``, with ``:retry`` for the one handoff retry."""
+    timings = [{"started_ms": None, "ended_ms": None, "duration_ms": None, "attempts": 0} for _ in range(count)]
+    if not isinstance(round_id, str) or not isinstance(spans, list):
+        return timings
+    prefix = round_id + ":"
+    ordered = sorted((span for span in spans if isinstance(span, dict) and type(span.get("scheduled_ms")) is int),
+                     key=lambda span: span["scheduled_ms"])
+    for span in ordered:
+        execution_id = span.get("execution_id")
+        if not isinstance(execution_id, str) or not execution_id.startswith(prefix):
+            continue
+        index, _, rest = execution_id[len(prefix):].partition(":")
+        if not (index.isascii() and index.isdigit()) or int(index) >= count or rest not in ("", "retry"):
+            continue
+        timing = timings[int(index)]
+        if timing["started_ms"] is None:
+            timing["started_ms"] = span["scheduled_ms"]
+        timing["attempts"] += 1
+        timing["ended_ms"] = span["closed_ms"] if type(span.get("closed_ms")) is int else None
+    for timing in timings:
+        if timing["started_ms"] is not None and timing["ended_ms"] is not None:
+            timing["duration_ms"] = timing["ended_ms"] - timing["started_ms"]
+    return timings
+
+
+def _round_clock(child: dict | None, timings: list[dict]) -> dict:
+    """The round's real start (Temporal, else its first stage) and end (Temporal close time)."""
+    child = child if isinstance(child, dict) else {}
+    started, source = _epoch_ms(child.get("start_time")), "temporal"
+    if started is None:
+        firsts = [timing["started_ms"] for timing in timings if timing["started_ms"] is not None]
+        started, source = (min(firsts), "first_stage") if firsts else (None, None)
+    return {"started_ms": started, "ended_ms": _epoch_ms(child.get("close_time")) if started is not None else None,
+            "source": source}
+
+
+_AUDIT_TAIL_BYTES = 512 * 1024
+_BROWSER_VERBS = {"click": "clicked", "scroll": "scrolled", "press": "pressed", "read": "read a result",
+                  "snapshot": "read the page"}
+
+
+def _browser_action(entry: dict) -> dict:
+    action = _text(entry.get("action")) or "unknown"
+    query = entry.get("query") if action == "open" else entry.get("text") if action == "type" else None
+    query = query if isinstance(query, str) and query.strip() else None
+    if action == "open":
+        verb = "typed" if query and entry.get("entered") == "typed" else "opened"
+    else:
+        verb = "typed" if action == "type" else _BROWSER_VERBS.get(action, action)
+    detail = (_text(entry.get("key")) if action == "press"
+              else _text(entry.get("direction")) if action == "scroll" else None)
+    return {"t_ms": entry["t"], "action": action, "verb": verb, "query": query, "detail": detail,
+            "submitted": action == "type" and entry.get("submit") is True, "page": _text(entry.get("page")),
+            "ok": entry.get("ok") is True, "error": _text(entry.get("error"))}
+
+
+def newest_browser_action(path: str | Path, profile: str, since_ms: int, case_id: str | None = None) -> dict | None:
+    """The owner's newest ``lab_browser`` audit entry at or after ``since_ms`` (the round start), or None.
+
+    Only the file's tail is read; the audit is append-only, so the scan stops at the first older entry."""
+    try:
+        with open(path, "rb") as handle:
+            start = max(0, handle.seek(0, 2) - _AUDIT_TAIL_BYTES)
+            handle.seek(start)
+            lines = handle.read().split(b"\n")
+    except OSError:
+        return None
+    for line in reversed(lines[1:] if start else lines):
+        try:
+            entry = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(entry, dict) or type(entry.get("t")) is not int:
+            continue
+        if entry["t"] < since_ms:
+            return None
+        if entry.get("profile") == profile and (case_id is None or entry.get("case_id") == case_id):
+            return _browser_action(entry)
+    return None
+
+
+def _norm_query(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _browser_view(profile: str, action: Any, activity: list[dict]) -> dict:
+    """An owner's newest browser action, plus the newest API call it made with the same query (its count)."""
+    action = action if isinstance(action, dict) else None
+    api = None
+    if action and action.get("query"):
+        wanted = _norm_query(action["query"])
+        for entry in activity:
+            params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+            query = _query_text({key: value for key, value in params.items() if isinstance(value, str)})
+            if entry.get("profile") == profile and not entry.get("error") and _norm_query(query) == wanted:
+                api = {"tool": _text(entry.get("tool")) or "unknown", "time": _text(entry.get("time")),
+                       "result_count": entry.get("result_count") if type(entry.get("result_count")) is int else None,
+                       "total": entry.get("total") if type(entry.get("total")) is int else None}
+                break
+    return {"profile": profile, "role": ROLE_TITLES.get(profile, profile), "action": action, "api": api}
+
+
+def _team(step_views: list[dict]) -> list[dict]:
+    team = []
+    for profile, role in ROLE_TITLES.items():
+        owned = [view for view in step_views if view["profile"] == profile]
+        team.append({"profile": profile, "role": role, "monogram": MONOGRAMS[profile],
+                     "steps": [view["index"] for view in owned],
+                     "current": next((view["index"] for view in owned if view["state"] in _OPEN_STATES), None),
+                     "claims": sum(view["claims"] or 0 for view in owned)})
+    return team
+
+
+def _latest_conclusion(step_views: list[dict], handoffs: dict[int, dict]) -> dict | None:
+    """The first claim of the newest done step that made one."""
+    for view in reversed(step_views):
+        claims = (handoffs.get(view["index"]) or {}).get("claims") or []
+        if view["state"] == "done" and claims:
+            claim = claims[0]
+            return {"index": view["index"], "step_id": view["step_id"], "name": view["name"],
+                    "profile": view["profile"], "role": view["role"], "claim_id": claim["claim_id"],
+                    "kind": claim["kind"], "statement": claim["statement"]}
+    return None
+
+
+def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: dict | None = None,
+                browser: dict | None = None) -> dict:
     """Derive the complete board view from the lab input and observed statuses.
 
     ``lab`` is a :meth:`LabObserver.snapshot` for a tool-driven input; it supplies the
     looked-up cited events and the lab's tool activity in place of inline evidence.
+    ``browser`` maps each browser owner to its newest audit action this round (see
+    :func:`newest_browser_action`); it is None when the board shows no live browsers.
     """
     raw = raw_input if isinstance(raw_input, dict) else {}
     input_errors: list[str] = []
@@ -451,6 +620,9 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
     rejections = (child.get("handoff_rejections") if isinstance(child, dict)
                   and isinstance(child.get("handoff_rejections"), list) else [])
     known_events = {event["id"] for event in events}
+    round_id = child.get("workflow_id") if isinstance(child, dict) else None
+    timings = _stage_timings(round_id, len(steps), child.get("activity_spans") if isinstance(child, dict) else None)
+    handoffs: dict[int, dict] = {}
 
     step_views, feed = [], []
     citations: dict[str, list[str]] = {}
@@ -460,8 +632,10 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         state, reason = states[index]
         result = results[index] if index < len(results) and isinstance(results[index], dict) else None
         role = ROLE_TITLES.get(step.profile, step.profile)
-        view = {"index": index, "step_id": step.step_id, "profile": step.profile, "role": role,
-                "state": state, "reason": reason, "result": None,
+        view = {"index": index, "step_id": step.step_id, "name": step.step_id.replace("_", " ").title(),
+                "profile": step.profile, "role": role,
+                "monogram": MONOGRAMS.get(step.profile, step.profile[:2].upper()),
+                "state": state, "reason": reason, "result": None, "claims": None, "timing": timings[index],
                 "handoff_rejections": [{"outcome": item.get("outcome"), "reason": item.get("reason")}
                                        for item in rejections
                                        if isinstance(item, dict) and item.get("step_id") == step.step_id]}
@@ -484,6 +658,8 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         feed.append(item)
         if handoff is None:
             continue
+        view["claims"] = len(handoff["claims"])
+        handoffs[index] = handoff
         step_cited = _cited_ids(*(claim["statement"] for claim in handoff["claims"]),
                                 *(review["rationale"] for review in handoff["reviews"]))
         unresolved = [event_id for event_id in step_cited if event_id not in known_events]
@@ -537,14 +713,21 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
             by_domain[session["domain"]] = by_domain.get(session["domain"], 0) + 1
     pending = sorted({event_id for item in feed for event_id in item["pending_cited_ids"]})
     working = next((step.profile for step, (state, _reason) in zip(steps, states) if state == "working"), None)
+    activity = sorted((entry for entry in lab.get("activity") or () if isinstance(entry, dict)),
+                      key=lambda entry: entry.get("seq") if type(entry.get("seq")) is int else -1, reverse=True)
     return {
-        "board_version": 2,
+        "board_version": 3,
         "mode": "tool_driven" if tool_driven else "inline",
         "case": case,
         "scope": _text(raw.get("scope")),
         "input_errors": input_errors,
         "run": _run_summary(parent, child),
+        "round": _round_clock(child, timings),
         "steps": step_views,
+        "team": _team(step_views),
+        "latest_conclusion": _latest_conclusion(step_views, handoffs),
+        "browsers": ([_browser_view(profile, action, activity if tool_driven else [])
+                      for profile, action in browser.items()] if isinstance(browser, dict) else None),
         "timeline": {"start_ms": start_ms, "end_ms": end_ms, "window_source": window_source,
                      "lanes": lanes, "events": events, "source": "lab" if tool_driven else "input"},
         "graph": graph,
@@ -652,19 +835,23 @@ class ObservationError(Exception):
 
 
 class TemporalObserver:
-    """Query parent and current-child status through one persistent loopback client."""
+    """Query parent and current-child status through one persistent loopback client.
+
+    The child also carries its Temporal start/close time and its history's activity spans
+    (:func:`activity_spans`); history is re-read only when the round's status moved."""
 
     def __init__(self, address: str, workflow_id: str) -> None:
         self._address = validate_loopback_address(address)
         self._workflow_id = workflow_id
         self._client = None
+        self._spans: tuple[tuple, list[dict]] | None = None
         self._loop = asyncio.new_event_loop()
         threading.Thread(target=self._loop.run_forever, name="hunt-board-temporal", daemon=True).start()
 
     def __call__(self) -> tuple[dict, dict | None]:
         future = asyncio.run_coroutine_threadsafe(self._observe(), self._loop)
         try:
-            return future.result(timeout=_QUERY_TIMEOUT_SECONDS * 3)
+            return future.result(timeout=_QUERY_TIMEOUT_SECONDS * 5)
         except ObservationError:
             raise
         except Exception as exc:
@@ -691,10 +878,13 @@ class TemporalObserver:
             raise ObservationError(f"parent status query failed ({type(exc).__name__})", True) from None
         child = None
         if isinstance(parent.get("child_workflow_id"), str):
+            child_id = parent["child_workflow_id"]
             try:
-                child = await self._status(parent["child_workflow_id"], HermesWorkflow.status)
+                child = await self._status(child_id, HermesWorkflow.status)
             except Exception as exc:
                 raise ObservationError(f"round status query failed ({type(exc).__name__})", True) from None
+            child["workflow_id"] = child_id
+            child["activity_spans"] = await self._activity_spans(child_id, child)
         return parent, child
 
     async def _status(self, workflow_id: str, query) -> dict:
@@ -702,7 +892,29 @@ class TemporalObserver:
         state = await asyncio.wait_for(handle.query(query), _QUERY_TIMEOUT_SECONDS)
         execution = await asyncio.wait_for(handle.describe(), _QUERY_TIMEOUT_SECONDS)
         status = execution.status.name if execution.status is not None else None
-        return _plain({**vars(state), "temporal_status": status})
+        times = {key: value.isoformat() if value is not None else None
+                 for key, value in (("start_time", execution.start_time), ("close_time", execution.close_time))}
+        return _plain({**vars(state), "temporal_status": status, **times})
+
+    async def _activity_spans(self, workflow_id: str, child: dict) -> list[dict] | None:
+        """The round's activity spans; None when its history could not be read (timings stay unknown)."""
+        key = (workflow_id, child.get("stage"), child.get("step_id"), child.get("execution_id"),
+               child.get("temporal_status"), len(child.get("results") or ()),
+               len(child.get("handoff_rejections") or ()))
+        cached = self._spans
+        # A query can answer before the new activity's scheduled event is readable; re-read until it is.
+        settled = child.get("stage") != "executing" or any(
+            span["execution_id"] == child.get("execution_id") for span in (cached[1] if cached else ()))
+        if cached and cached[0] == key and settled:
+            return cached[1]
+        try:
+            handle = self._client.get_workflow_handle(workflow_id)
+            history = await asyncio.wait_for(handle.fetch_history(skip_archival=True), _QUERY_TIMEOUT_SECONDS)
+        except Exception:
+            return cached[1] if cached and cached[0][0] == workflow_id else None
+        spans = activity_spans(history.events)
+        self._spans = (key, spans)
+        return spans
 
 
 def cited_event_ids(child: dict | None) -> list[str]:
@@ -831,7 +1043,8 @@ class LabObserver:
 class Board:
     """Cache one observation for ``interval`` seconds and serve the derived state.
 
-    ``live`` adds the browser owners' live status, read fresh on every request."""
+    ``live`` adds the browser owners' live status, read fresh on every request, and their
+    newest audit action of this round, read with each observation."""
 
     def __init__(self, raw_input: dict, observe: Callable[[], tuple[dict, dict | None]],
                  interval: float = POLL_INTERVAL_SECONDS, clock: Callable[[], float] = time.monotonic,
@@ -848,6 +1061,15 @@ class Board:
         self._child: dict | None = None
         self._temporal = {"reachable": None, "error": None, "observed_at": None, "last_success_at": None}
         self._state: dict | None = None
+        self._case_id = _lab_evidence(raw_input if isinstance(raw_input, dict) else {})[0]["case_id"]
+
+    def _browser_actions(self) -> dict | None:
+        if self.live is None:
+            return None
+        since = _epoch_ms(self._child.get("start_time")) if isinstance(self._child, dict) else None
+        return {profile: (newest_browser_action(self.live.root / profile / "audit.jsonl", profile, since,
+                                                self._case_id) if since is not None else None)
+                for profile in self.live.profiles}
 
     def state_bytes(self) -> bytes:
         with self._lock:
@@ -860,7 +1082,7 @@ class Board:
                 self._state = None
             if self._state is None:
                 lab = self._lab.snapshot() if self._lab is not None else None
-                self._state = build_state(self._raw, self._parent, self._child, lab)
+                self._state = build_state(self._raw, self._parent, self._child, lab, self._browser_actions())
                 self._state["temporal"] = dict(self._temporal)
             live = {"owners": self.live.status()} if self.live is not None else None
             return json.dumps({**self._state, "live": live}, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -1034,14 +1256,19 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
             # A client that stops reading must not hold a stream slot forever.
             self.connection.settimeout(_LIVE_WRITE_TIMEOUT_SECONDS)
             seen = 0
+            # Chromium paints a part only once the next part's boundary and headers have arrived, so each frame
+            # is followed by them at once (parts are delimited by the boundary, without Content-Length);
+            # otherwise a page that stopped changing would never show its last frame.
+            part_head = f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\n\r\n".encode("ascii")
             try:
+                self.wfile.write(part_head)
+                self.wfile.flush()
                 while not live.closed:
                     frame = live.next_frame(profile, seen, timeout=1.0)
                     if frame is None:
                         continue
                     jpeg, _, seen = frame
-                    self.wfile.write(f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
-                                     f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii") + jpeg + b"\r\n")
+                    self.wfile.write(jpeg + b"\r\n" + part_head)
                     self.wfile.flush()
             except OSError:
                 pass
@@ -1179,147 +1406,264 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="__CSP__">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hunt board</title>
+<title>Hermes Hunt Live</title>
 <style>
-:root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#d7dde4;--muted:#8b949e;--dim:#4b535d;
---auth:#d2a8ff;--conf:#e3b341;--proc:#58a6ff;--net:#3fb950;--other:#8b949e;--accent:#f0f6fc;
---pending:#6e7681;--approval:#d29922;--working:#388bfd;--review:#a371f7;--done:#2ea043;--stopped:#f85149}
+:root{--paper:#f7f7f5;--ink:#1e211f;--muted:#666c68;--soft:#929993;--line:#dcdedb;--accent:#315c4c;--accent-soft:#e7eeea;
+--live:#b3322d;--done:#8d9a90;--track:#e8ebe7;--hx-side:#f5f6f8;--hx-line:#e3e6ea;--hx-text:#1f2430;--hx-muted:#6b7280;--hx-soft:#9aa1ac;
+--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;--sans:"Inter",-apple-system,"Segoe UI",sans-serif;
+--screen-h:clamp(240px,calc(100vh - 615px),640px)}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--text);font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
-body{padding:10px 14px 0}
-h1{font-size:16px;margin:0}
-h2{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
-.title{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-#case{color:var(--muted)}
-#conn{font-size:12px;color:var(--muted)}
-#conn.bad{color:var(--stopped)}
-#question{margin:4px 0 8px;color:var(--muted);font-size:12px}
-#errors{color:var(--stopped);font-size:12px;margin:0 0 6px}
-section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:10px;min-width:0}
-.sec-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;flex-wrap:wrap}
-.meta{font-size:11px;color:var(--muted)}
-#stage-list{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:6px;list-style:none;margin:0;padding:0}
-.stage{border:1px solid var(--line);border-left:4px solid var(--pending);border-radius:4px;padding:5px 6px;min-width:0}
-.stage .sid{font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.stage .role{font-size:11px;color:var(--muted);min-height:2.8em}
-.stage .st{font-size:11px;font-weight:600}
-.stage .why{font-size:10.5px;color:var(--muted);word-break:break-word}
-.s-pending{border-left-color:var(--pending)}.s-pending .st{color:var(--pending)}
-.s-not_reached{border-left-color:var(--dim);opacity:.6}.s-not_reached .st{color:var(--dim)}
-.s-awaiting_approval{border-left-color:var(--approval)}.s-awaiting_approval .st{color:var(--approval)}
-.s-working{border-left-color:var(--working)}.s-working .st{color:var(--working)}
-.s-awaiting_review{border-left-color:var(--review)}.s-awaiting_review .st{color:var(--review)}
-.s-done{border-left-color:var(--done)}.s-done .st{color:var(--done)}
-.s-stopped{border-left-color:var(--stopped)}.s-stopped .st{color:var(--stopped)}
-main{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,1fr);gap:10px;align-items:start}
-svg{display:block;width:100%}
-svg text{fill:var(--text);font:11px system-ui,-apple-system,"Segoe UI",sans-serif}
-svg .axis{fill:var(--muted);font-size:10px}
-svg .grid{stroke:#21262d}
-svg .lane{fill:#0f141a}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+code{font-family:var(--mono)}
+.ic{width:16px;height:16px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.lbl{font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.none{color:var(--soft)}
+/* status words: red only for LIVE */
+.st{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;color:var(--muted)}
+.st.run{color:var(--accent)}
+.st.wait{color:var(--soft)}
+.st.stop{color:var(--ink)}
+.st.live{color:var(--live)}
+.st.live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--live);animation:breathe 2.4s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.48}}
+.mg{display:inline-grid;place-items:center;flex:0 0 auto;width:30px;height:30px;border-radius:7px;background:#e9ece8;color:#3f4842;font-size:11px;font-weight:700;position:relative}
+.mg.on{background:var(--ink);color:#fff}
+.mg.xl{width:50px;height:50px;border-radius:10px;font-size:17px;border:1.5px solid var(--ink);background:#fff;color:var(--ink)}
+.mg.xl.on{background:var(--ink);color:#fff}
+.mg .scr{position:absolute;right:-4px;top:-4px;width:14px;height:11px;border:1.3px solid var(--accent);background:#fff;border-radius:2px}
+.mg .scr::after{content:"";position:absolute;left:0;right:0;top:2px;border-top:1.3px solid var(--accent)}
+.kind{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap;color:var(--ink)}
+.kind::before{content:"";width:10px;height:10px;display:block;box-sizing:border-box;flex:0 0 auto}
+.kind.k-observed{color:var(--accent)}.kind.k-observed::before{background:var(--accent)}
+.kind.k-hypothesis::before{border:1.5px solid var(--ink)}
+.kind.k-inference::before{background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);border:1.5px solid var(--ink)}
+.kind.k-finding::before{background:var(--ink)}
+.kind.k-other{color:var(--muted)}.kind.k-other::before{border:1.5px dashed var(--soft)}
+
+/* Hunt Live: everything above the fold at 1920x1080 */
+#live{min-height:100vh;display:flex;flex-direction:column;gap:14px;padding:18px 28px 16px}
+.hd{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:40px;align-items:end;border-bottom:1px solid var(--ink);padding-bottom:12px}
+.brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:650;color:var(--muted)}
+.brand-mark{width:24px;height:24px;display:grid;place-items:center;background:var(--ink);color:#fff;border-radius:6px;font-size:12px;font-weight:700}
+.brand b{color:var(--ink);font-weight:650}
+.title{display:flex;align-items:baseline;gap:18px;margin:6px 0 3px;min-width:0}
+h1{font-size:34px;line-height:1.1;letter-spacing:-.04em;font-weight:650;margin:0;white-space:nowrap}
+#round{color:var(--muted);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#question{margin:0;color:#474d49;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clock{text-align:right;min-width:260px}
+.clock .lbl{display:flex;justify-content:flex-end;gap:12px;align-items:center}
+#clock{display:block;font:500 46px/1.05 var(--mono);letter-spacing:-.03em;margin-top:2px}
+#conn{font-size:12px;color:var(--muted);margin-top:4px;white-space:nowrap;max-width:720px;overflow:hidden;text-overflow:ellipsis}
+#conn.bad{color:var(--ink);font-weight:650}
+#errors{margin:0;font-size:13px;font-weight:650}
+.wf-h{display:flex;justify-content:space-between;align-items:baseline;gap:16px;margin-bottom:8px}
+#wf-meta{font-size:13px;color:var(--muted);font-family:var(--mono)}
+.tl-bar,.tl-num{display:flex}
+.tl-bar{height:30px;background:var(--track)}
+.tl-bar>span,.tl-num>span{flex:1 1 0;min-width:0}
+.tl-bar>span{border-right:2px solid var(--paper);background:#d5dad6;position:relative;overflow:hidden}
+.tl-bar>span:last-child,.tl-num>span:last-child{border-right:0}
+.tl-bar>span.done{background:var(--done)}
+.tl-bar>span.stop{background:var(--ink)}
+.tl-bar>span.pend{background:repeating-linear-gradient(90deg,#c3cac5 0 1px,#eef0ed 1px 4px)}
+.tl-bar>span.on{background:var(--accent-soft);box-shadow:inset 0 0 0 2px var(--accent)}
+.tl-bar>span.on>b{position:absolute;left:0;top:0;bottom:0;background:var(--accent)}
+.tl-num{margin-top:5px;font:600 12px var(--mono);color:var(--soft)}
+.tl-num>span{overflow:hidden;white-space:nowrap;padding-left:2px;border-right:2px solid transparent}
+.tl-num>span.on{color:var(--accent)}
+.stages{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:repeat(9,minmax(0,1fr));border-top:1px solid var(--line)}
+.stage{padding:8px 10px 2px 0;min-width:0;border-top:3px solid transparent;margin-top:-2px}
+.stage+.stage{padding-left:10px;border-left:1px solid var(--line)}
+.stage.on{border-top-color:var(--accent)}
+.stage .top{display:flex;align-items:center;gap:8px;min-width:0}
+.stage .n{font:600 13px var(--mono);color:var(--soft)}
+.stage.on .n{color:var(--accent)}
+.stage .nm{font-size:17px;font-weight:650;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.stage .mg{width:28px;height:28px;font-size:10.5px}
+.stage .meta{display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:5px;white-space:nowrap}
+.stage .meta .st{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stage .t{font:500 14px var(--mono);color:var(--ink)}
+#bots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.bot{background:#fff;border:1.5px solid var(--ink);border-radius:14px;padding:14px 16px 16px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.bot-h{display:flex;align-items:center;gap:14px;min-width:0}
+.who{min-width:0}
+.who strong{display:block;font-size:21px;letter-spacing:-.025em;line-height:1.15;white-space:nowrap}
+.who small{display:block;font-size:13.5px;color:var(--muted)}
+.cur{margin-left:auto;text-align:right;min-width:0}
+.cur .v{display:block;font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bot-h>.st{font-size:13px;min-width:150px;justify-content:flex-end}
+.bot-b{display:flex;gap:18px;min-width:0;align-items:flex-start}
+.mc{flex:0 0 auto;max-width:100%;border:1px solid #d7dbe1;border-radius:8px;overflow:hidden;background:#fff;color:var(--hx-text);
+box-shadow:0 14px 40px rgba(24,33,27,.08),0 2px 6px rgba(24,33,27,.04)}
+.mc-bar{height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--hx-side);border-bottom:1px solid var(--hx-line);font-size:13.5px;color:var(--hx-muted)}
+.mc-addr{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--hx-text);font-weight:600}
+.mc-watch{display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-size:12.5px}
+.mc-screen{position:relative;height:var(--screen-h);aspect-ratio:var(--ar,1249 / 954);background:#eef0f2;overflow:hidden}
+.mc-screen img{display:block;width:100%;height:100%;object-fit:contain;object-position:top left}
+.mc-empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;background:repeating-linear-gradient(0deg,#f6f7f9 0 22px,#f1f2f5 22px 23px);color:var(--hx-soft);font-size:15px}
+.mc-empty div{background:#fff;border:1px solid var(--hx-line);border-radius:6px;padding:12px 18px;max-width:80%}
+.mc-empty b{display:block;color:var(--hx-muted);font-weight:650;margin-bottom:2px}
+.mc-foot{height:42px;padding:0 12px;border-top:1px solid var(--hx-line);color:var(--hx-muted);font-size:14.5px;display:flex;gap:8px;align-items:center;white-space:nowrap;overflow:hidden;min-width:0}
+.mc-foot b{color:var(--hx-text);font-weight:650}
+.mc-foot code{color:var(--hx-text);font-size:14px;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+.mc-foot .res{color:var(--hx-text);font-weight:650}
+/* The screen sets the window's width; the bar and caption never widen it. */
+.mc-bar,.mc-foot{width:0;min-width:100%}
+.mc-foot .tm{margin-left:auto;padding-left:8px;font:12.5px var(--mono);color:var(--hx-soft)}
+.side{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
+.side ol{list-style:none;margin:6px 0 0;padding:0;border-top:1px solid var(--line)}
+.side li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:4px 8px;padding:8px 0;border-bottom:1px solid var(--line);align-items:baseline}
+.side li .n{font:600 13px var(--mono);color:var(--soft)}
+.side li .nm{font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side li .t{font:14px var(--mono)}
+.side li .st{grid-column:2}
+.side li .c{font-size:13px;color:var(--muted);text-align:right}
+.side dl{margin:6px 0 0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;font-size:14px;border-top:1px solid var(--line);padding-top:8px}
+.side dt{color:var(--muted)}
+.side dd{margin:0;font-family:var(--mono);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.team{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border-top:1px solid var(--ink)}
+.team>div{display:flex;gap:10px;align-items:flex-start;padding:10px 12px 0 0;min-width:0}
+.team>div+div{padding-left:12px;border-left:1px solid var(--line)}
+.team>div>div{min-width:0}
+.team strong{display:block;font-size:14.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.team small{display:block;font-size:13.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.team small.run{color:var(--accent);font-weight:650}
+#conclusion{display:flex;align-items:baseline;gap:16px;border-top:1px solid var(--line);padding-top:10px;min-width:0}
+#conclusion .src{font-size:14px;color:var(--muted);white-space:nowrap}
+#conclusion p{margin:0;flex:1;min-width:0;font-size:17.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Record: below the fold */
+#record{padding:26px 28px 10px;border-top:1px solid var(--ink)}
+.rec-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px}
+.rec-h h2{font-size:24px;letter-spacing:-.03em;margin:0;font-weight:650}
+section.sec{background:#fff;border:1px solid var(--line);padding:12px 14px;margin-bottom:16px;min-width:0}
+.sec-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.meta{font-size:12px;color:var(--muted)}
+.meta.bad{color:var(--ink);font-weight:650}
+main{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(360px,1fr);gap:16px;align-items:start}
+svg.plot{display:block;width:100%}
+svg.plot text{fill:var(--ink);font:12px var(--sans)}
+svg.plot .axis{fill:var(--muted);font-size:11px}
+svg.plot .grid{stroke:#e6e8e5}
+svg.plot .lane{fill:#f4f5f2}
 .mark{cursor:default}
-.mark circle{opacity:.28}
-.mark.cited circle{opacity:1;stroke:var(--accent);stroke-width:1.2}
-.mark .cnt{font-size:9px;font-weight:700;fill:#0d1117;text-anchor:middle;pointer-events:none}
-.mark.hl circle{opacity:1;stroke:#fff;stroke-width:2.5}
-#legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:4px}
-.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:-1px}
-.node rect{fill:#0f141a;stroke:var(--dim);stroke-width:1}
-.node.cited rect{fill:#1c2a3a;stroke:var(--accent);stroke-width:1.6}
-.node.hl rect{stroke:#fff;stroke-width:2.5}
-.node .nd{fill:var(--muted);font-size:10px}
-.node .kind{font-size:9px;fill:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.edge{fill:none;stroke:var(--dim);stroke-width:1.2}
-.edge.cited{stroke:#8b949e;stroke-width:1.8}
+.mark circle{opacity:.3}
+.mark.cited circle{opacity:1;stroke:var(--ink);stroke-width:1.2}
+.mark .cnt{font-size:9px;font-weight:700;fill:#fff;text-anchor:middle;pointer-events:none}
+.mark.hl circle{opacity:1;stroke:var(--ink);stroke-width:2.5}
+#legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:4px}
+.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.node rect{fill:#fff;stroke:#c9cdc9;stroke-width:1}
+.node.cited rect{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5}
+.node.hl rect{stroke:var(--ink);stroke-width:2.5}
+.node .nd{fill:var(--muted);font-size:10.5px}
+.edge{fill:none;stroke:#c9cdc9;stroke-width:1.2}
+.edge.cited{stroke:var(--muted);stroke-width:1.8}
 .edge.stated{stroke-dasharray:4 3}
-#feed-sec{max-height:calc(100vh - 24px);overflow:auto;position:sticky;top:10px}
-.card{border:1px solid var(--line);border-radius:5px;padding:7px 8px;margin-bottom:8px}
-.card-h{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
-.card-h .sid{font-weight:600}
-.card-h .role{color:var(--muted);font-size:12px}
-.pill{display:inline-block;font-size:10.5px;padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--muted)}
-.pill.st-done{color:var(--done);border-color:var(--done)}
-.pill.st-awaiting_review{color:var(--review);border-color:var(--review)}
-.pill.st-stopped{color:var(--stopped);border-color:var(--stopped)}
-.note{font-size:11.5px;color:var(--muted);margin:2px 0 4px}
-.note.warn{color:var(--approval)}
-.claim{border-top:1px solid #21262d;padding:5px 0 4px}
-.claim:target,.claim.flash{background:#1f2630}
-.claim-h{display:flex;gap:6px;align-items:baseline;font-size:11px;color:var(--muted)}
-.kind{font-size:10px;font-weight:700;text-transform:uppercase;padding:0 5px;border-radius:3px;color:#0d1117}
-.k-observed{background:var(--net)}.k-inference{background:var(--proc)}.k-hypothesis{background:var(--conf)}.k-finding{background:var(--auth)}.k-other{background:var(--other)}
-.stmt{margin:2px 0;white-space:pre-wrap;word-break:break-word}
-.chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:2px}
-.chip{font:10.5px ui-monospace,Consolas,monospace;padding:0 4px;border-radius:3px;background:#21262d;color:var(--text);border:1px solid transparent;cursor:default}
-.chip.unknown{border-color:var(--stopped);color:var(--stopped)}
+#feed-sec{max-height:calc(100vh - 24px);overflow:auto;position:sticky;top:12px}
+.card{border-top:1px solid var(--ink);padding:9px 0 10px}
+.card-h{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.card-h .sid{font-weight:650}
+.card-h .role{color:var(--muted);font-size:13px}
+.note{font-size:12.5px;color:var(--muted);margin:2px 0 4px}
+.note.warn{color:var(--ink);font-weight:600}
+.claim{border-top:1px solid var(--line);padding:7px 0 6px}
+.claim.flash{background:var(--accent-soft)}
+.claim-h{display:flex;gap:10px;align-items:baseline;font-size:12px;color:var(--muted)}
+.stmt{margin:3px 0;white-space:pre-wrap;word-break:break-word;font-size:13.5px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.chip{font:11px var(--mono);padding:0 5px;background:var(--track);color:var(--ink);border:1px solid transparent;cursor:default}
+.chip.unknown{border-color:var(--ink);background:#fff}
+.chip.pending{border-color:var(--line);color:var(--muted);background:#fff}
 .chip:hover{border-color:var(--accent)}
-.links{font-size:11px;margin-top:2px;color:var(--muted)}
-.links button{font:inherit;background:none;border:none;color:var(--proc);cursor:pointer;padding:0 2px;text-decoration:underline}
-.verdict{font-size:11px;margin-top:3px;padding-left:6px;border-left:2px solid var(--review)}
+.links{font-size:12px;margin-top:2px;color:var(--muted)}
+.links button{font:inherit;background:none;border:none;color:var(--accent);cursor:pointer;padding:0 2px;text-decoration:underline}
+.verdict{font-size:12px;margin-top:3px;padding-left:8px;border-left:2px solid var(--accent)}
 .verdict summary{cursor:pointer;color:var(--muted)}
-.verdict .disp{color:var(--review);font-weight:600}
-details.more{margin-top:5px;font-size:11.5px}
+.verdict .disp{color:var(--accent);font-weight:650}
+details.more{margin-top:5px;font-size:12.5px}
 details.more summary{cursor:pointer;color:var(--muted)}
 details.more ul{margin:3px 0;padding-left:16px}
-pre.raw{white-space:pre-wrap;word-break:break-word;font:11px ui-monospace,Consolas,monospace;background:#0f141a;padding:6px;border-radius:4px;max-height:260px;overflow:auto}
-footer{color:var(--muted);font-size:11px;padding:4px 0 10px}
-#tip{position:fixed;z-index:10;max-width:360px;background:#1c2128;border:1px solid var(--line);border-radius:5px;padding:6px 8px;font-size:11.5px;pointer-events:none;white-space:pre-wrap;word-break:break-word}
-#tip[hidden]{display:none}
-.empty{color:var(--muted);font-size:12px;padding:6px 0}
-.chip.pending{border-color:var(--dim);color:var(--muted)}
-.meta.bad{color:var(--stopped)}
-#tool-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
-.lane-col{border:1px solid var(--line);border-top:3px solid var(--dim);border-radius:4px;padding:5px 6px;min-width:0}
-.lane-col.active{border-top-color:var(--review)}
-.lane-col.working{border-color:var(--working);border-top-color:var(--working);box-shadow:0 0 0 1px var(--working)}
+pre.raw{white-space:pre-wrap;word-break:break-word;font:11.5px var(--mono);background:var(--paper);padding:8px;max-height:260px;overflow:auto}
+footer{color:var(--muted);font-size:12px;padding:6px 28px 16px}
+#tip{position:fixed;z-index:10;max-width:380px;background:#fff;border:1px solid var(--ink);padding:7px 9px;font-size:12px;pointer-events:none;white-space:pre-wrap;word-break:break-word}
+.empty{color:var(--muted);font-size:13px;padding:6px 0}
+#tool-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.lane-col{border-top:2px solid var(--line);padding:6px 0 0;min-width:0}
+.lane-col.working{border-top-color:var(--accent)}
 .lane-h{display:flex;justify-content:space-between;gap:6px;align-items:baseline}
-.lane-h .role{font-weight:600;font-size:12px}
-.lane-h .busy{font-size:10.5px;color:var(--working);font-weight:700;text-transform:uppercase}
-.lane-sub{font-size:10.5px;color:var(--muted);margin-bottom:3px}
+.lane-h .role{font-weight:650;font-size:13px}
+.lane-sub{font-size:11.5px;color:var(--muted);margin-bottom:3px}
 ol.calls{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
-.call{border-top:1px solid #21262d;padding:3px 0}
-.call.new{background:#16202b}
-.call-h{display:flex;gap:6px;align-items:baseline;font-size:10.5px;color:var(--muted);flex-wrap:wrap}
-.call-h .tool{color:var(--text);font-weight:600}
-.call-h .err{color:var(--stopped)}
-.call code{display:block;font:10.5px ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text)}
-.call .prm{font:10px ui-monospace,Consolas,monospace;color:var(--muted);word-break:break-all}
+.call{border-top:1px solid var(--line);padding:4px 0}
+.call.new{background:var(--accent-soft)}
+.call-h{display:flex;gap:8px;align-items:baseline;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+.call-h .tool{color:var(--ink);font-weight:650}
+.call-h .err{color:var(--ink);font-weight:650}
+.call code{display:block;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:var(--ink)}
+.call .prm{font:10.5px var(--mono);color:var(--muted);word-break:break-all}
 .ark{display:flex;gap:4px;align-items:center;margin-top:2px}
-.ark input{flex:1;min-width:0;font:10px ui-monospace,Consolas,monospace;background:#0f141a;color:var(--text);border:1px solid var(--line);border-radius:3px;padding:1px 3px}
-.ark button,.ark a{font-size:10.5px;background:none;border:none;color:var(--proc);cursor:pointer;padding:0 2px;text-decoration:underline}
-#live-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px}
-.live-col{border:1px solid var(--line);border-radius:4px;padding:5px 6px;min-width:0}
-.live-col img{display:block;width:100%;aspect-ratio:16/10;object-fit:contain;background:#0f141a;border-radius:3px;margin:3px 0}
-.live-st{font-size:10.5px;color:var(--muted)}
-.live-st.wait{color:var(--stopped)}
-@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}#feed-sec{position:static;max-height:none}#stage-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.ark input{flex:1;min-width:0;font:10.5px var(--mono);background:var(--paper);color:var(--ink);border:1px solid var(--line);padding:1px 4px}
+.ark button,.ark a{font-size:11px;background:none;border:none;color:var(--accent);cursor:pointer;padding:0 2px;text-decoration:underline}
+@media (max-width:1280px){#bots{grid-template-columns:minmax(0,1fr)}.stages{grid-template-columns:repeat(3,minmax(0,1fr))}
+.stage:nth-child(3n+1){padding-left:0;border-left:0}.team{grid-template-columns:repeat(3,minmax(0,1fr))}
+.team>div:nth-child(4){padding-left:0;border-left:0}main{grid-template-columns:minmax(0,1fr)}#feed-sec{position:static;max-height:none}
+:root{--screen-h:clamp(240px,50vh,620px)}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
-<header><div class="title"><h1>Hunt board</h1><span id="case"></span></div><div id="conn">Loading state&hellip;</div></header>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-win" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/></symbol>
+<symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></symbol>
+</svg>
+<div id="live">
+<header class="hd">
+<div style="min-width:0">
+<div class="brand"><span class="brand-mark">H</span><b>Hermes</b><span>/</span><span>Hunt Live</span></div>
+<div class="title"><h1 id="case-id">Loading&hellip;</h1><span id="round"></span></div>
 <p id="question"></p>
+</div>
+<div class="clock"><div class="lbl"><span id="clock-label">Round elapsed</span><span id="round-state" class="st wait"></span></div>
+<span id="clock">--:--</span><div id="conn">Loading state&hellip;</div></div>
+</header>
 <p id="errors" hidden></p>
-<section aria-label="Stage tracker"><div class="sec-h"><h2>Stages</h2><span class="meta" id="round"></span></div><ol id="stage-list"></ol></section>
-<section id="tools-sec" aria-label="Tool activity" hidden><div class="sec-h"><h2>Tool activity</h2><span class="meta" id="tools-meta"></span></div><div id="tool-lanes"></div></section>
-<section id="live-sec" aria-label="Live browsers" hidden><div class="sec-h"><h2>Live browsers</h2><span class="meta">watch only; a frame arrives only when the page changes</span></div><div id="live-panels"></div></section>
+<section aria-label="Workflow">
+<div class="wf-h"><span class="lbl">Workflow &middot; nine stages, sized by real duration</span><span id="wf-meta"></span></div>
+<div id="tl-bar" class="tl-bar" role="img" aria-label="Stages sized by their recorded duration"></div>
+<div id="tl-num" class="tl-num" aria-hidden="true"></div>
+<ol id="stage-list" class="stages"></ol>
+</section>
+<section id="bots" aria-label="Bots driving a lab browser" hidden></section>
+<section id="team" class="team" aria-label="Team"></section>
+<section id="conclusion" aria-label="Latest conclusion"></section>
+</div>
+<div id="record">
+<div class="rec-h"><h2>Round record</h2><span class="meta">Everything below is the same round, in full.</span></div>
+<section id="tools-sec" class="sec" aria-label="Tool activity" hidden><div class="sec-h"><span class="lbl">Tool activity</span><span class="meta" id="tools-meta"></span></div><div id="tool-lanes"></div></section>
 <main>
 <div>
-<section aria-label="Event timeline"><div class="sec-h"><h2>Event timeline</h2><span class="meta" id="tl-meta"></span></div><div id="legend"></div><svg id="timeline" role="img" aria-label="Supplied events by host over the case window"></svg></section>
-<section aria-label="Entity map"><div class="sec-h"><h2>Entity map</h2><span class="meta" id="map-meta"></span></div><svg id="map" role="img" aria-label="Hosts, processes, tasks and domains from supplied events"></svg></section>
+<section class="sec" aria-label="Event timeline"><div class="sec-h"><span class="lbl">Event timeline</span><span class="meta" id="tl-meta"></span></div><div id="legend"></div><svg id="timeline" class="plot" role="img" aria-label="Cited events by host over the case window"></svg></section>
+<section class="sec" aria-label="Entity map"><div class="sec-h"><span class="lbl">Entity map</span><span class="meta" id="map-meta"></span></div><svg id="map" class="plot" role="img" aria-label="Hosts, processes, tasks and domains from cited events"></svg></section>
 </div>
-<section id="feed-sec" aria-label="Claims feed"><div class="sec-h"><h2>Claims feed</h2><span class="meta" id="feed-meta"></span></div><div id="feed"></div></section>
+<section id="feed-sec" class="sec" aria-label="Claims feed"><div class="sec-h"><span class="lbl">Claims feed</span><span class="meta" id="feed-meta"></span></div><div id="feed"></div></section>
 </main>
-<footer>Synthetic lab data. Shows only what the bots wrote; approvals are recorded separately.</footer>
+</div>
+<footer>Synthetic lab data. Shows only what the bots wrote and what their lab browsers showed; watch-only; approvals are recorded separately.</footer>
 <div id="tip" role="tooltip" hidden></div>
 <script>
 "use strict";
 (function(){
 const STATE_URL = new URL("/state.json", location.href).href;
 const SVGNS = "http://www.w3.org/2000/svg";
-const CAT = {authentication:"var(--auth)", configuration:"var(--conf)", process:"var(--proc)", network:"var(--net)"};
-const STATE_LABEL = {pending:"pending", not_reached:"not reached", awaiting_approval:"waiting for approval",
-  working:"bot working", awaiting_review:"waiting review", done:"done", stopped:"stopped"};
+const LIVE_FRESH_MS = 10000;
+const CAT = {process:"#1e211f", network:"#315c4c", authentication:"#666c68", configuration:"#929993"};
+const STATE_LABEL = {pending:"waiting", not_reached:"not reached", awaiting_approval:"waiting \u00b7 approval",
+  working:"running", awaiting_review:"in review", done:"done", stopped:"stopped"};
+const OPEN = new Set(["working", "awaiting_approval", "awaiting_review"]);
+const PAGE_LABEL = {kibana_discover:"Kibana Discover", arkime_sessions:"Arkime Sessions", arkime_spiview:"Arkime SPI View", lab_console:"lab console"};
+const COUNT_NOUN = {elastic_search:"document", arkime_sessions:"session", arkime_unique:"unique value"};
 const $ = (id) => document.getElementById(id);
 let state = null, lastKey = null, fetchError = null;
 
@@ -1335,10 +1679,25 @@ function sv(tag, attrs, text){
   if (text !== undefined && text !== null) node.textContent = String(text);
   return node;
 }
+function icon(id){
+  const s = sv("svg", {class:"ic", "aria-hidden":"true"}); s.appendChild(sv("use", {href:"#" + id})); return s;
+}
 function clear(node){ while (node.firstChild) node.removeChild(node.firstChild); }
-function catColor(c){ return CAT[c] || "var(--other)"; }
+function catColor(c){ return CAT[c] || "#b0b5b1"; }
 function hhmmss(ms){ return new Date(ms).toISOString().slice(11, 19); }
 function fit(text, chars){ text = String(text); return text.length > chars ? text.slice(0, Math.max(chars - 1, 1)) + "\u2026" : text; }
+function pad2(n){ return String(n).padStart(2, "0"); }
+function nn(index){ return pad2(index + 1); }
+function dur(ms){
+  if (ms === null || ms === undefined || ms < 0) return "";
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return (h ? h + ":" + pad2(m) : pad2(m)) + ":" + pad2(s % 60);
+}
+function ago(ms, now){
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
+}
+function kindClass(kind){ return ["observed", "inference", "hypothesis", "finding"].includes(kind) ? kind : "other"; }
 
 const tip = $("tip");
 function showTip(evt, text){
@@ -1362,48 +1721,256 @@ function highlight(ids, on){
   });
 }
 
-function renderHeader(){
-  const t = state.temporal || {}, run = state.run || {}, p = run.parent, c = run.child;
-  $("case").textContent = state.case && state.case.case_id ? "case " + state.case.case_id : "case id not supplied";
-  $("question").textContent = state.case && state.case.question ? state.case.question : "";
-  const errs = state.input_errors || [];
-  $("errors").hidden = errs.length === 0; $("errors").textContent = errs.join(" \u00b7 ");
-  const conn = $("conn"); const parts = [];
-  let bad = false;
-  if (fetchError){ parts.push("board server unreachable (" + fetchError + "); showing last state"); bad = true; }
-  if (t.error){
-    bad = true;
-    parts.push(t.error + (t.last_success_at ? "; showing observation from " + t.last_success_at : "; no workflow status observed yet"));
-  } else if (t.observed_at){ parts.push("Temporal status observed " + t.observed_at); }
-  if (p) parts.push("parent " + (p.stage || "?") + " (" + (p.temporal_status || "?") + ")");
-  if (c) parts.push("round " + (c.stage || "?") + " (" + (c.temporal_status || "?") + ")");
-  conn.textContent = parts.join(" \u00b7 ") || "waiting for first status";
-  conn.className = bad ? "bad" : "";
-  if (p){
-    const bits = ["Round " + (p.round_index || 0) + " of " + (p.rounds || "?"), (p.completed_rounds || 0) + " completed"];
-    if (p.last_result) bits.push("last round result: " + p.last_result);
-    if (p.child_workflow_id) bits.push(p.child_workflow_id);
-    $("round").textContent = bits.join(" \u00b7 ");
-  } else { $("round").textContent = "parent status not observed"; }
+// ---- Hunt Live (re-rendered every second from the last state) ----
+
+function stepWord(s){
+  const rejections = s.handoff_rejections || [];
+  if (rejections.some((r) => r.outcome && r.outcome !== "retried")) return {text:"rejected", cls:"stop"};
+  let text = STATE_LABEL[s.state] || s.state;
+  const cls = s.state === "done" ? "" : OPEN.has(s.state) ? "run" : s.state === "stopped" ? "stop" : "wait";
+  if (rejections.some((r) => r.outcome === "retried")) text = s.state === "done" ? "done \u00b7 1 retry" : "retry 1 of 1 \u00b7 " + text;
+  return {text:text, cls:cls};
+}
+function stepTime(s, now){
+  const t = s.timing || {};
+  if (OPEN.has(s.state)) return t.started_ms === null || t.started_ms === undefined ? null : now - t.started_ms;
+  return t.duration_ms;
+}
+function workingStep(profile){
+  const t = (state.team || []).find((m) => m.profile === profile);
+  return t && t.current !== null ? state.steps[t.current] : null;
 }
 
-function renderStages(){
-  const list = $("stage-list"); clear(list);
-  if (!state.steps.length){ list.appendChild(el("li", {class:"empty"}, "No steps (input could not be read).")); return; }
-  for (const s of state.steps){
-    const li = el("li", {class:"stage s-" + s.state});
-    li.appendChild(el("div", {class:"sid", title:s.step_id}, (s.index + 1) + ". " + s.step_id));
-    li.appendChild(el("div", {class:"role"}, s.role));
-    li.appendChild(el("div", {class:"st"}, STATE_LABEL[s.state] || s.state));
-    const why = [];
-    if (s.reason) why.push(s.reason);
-    if (s.result && s.result.status !== "completed") why.push("result " + s.result.status + (s.result.reason_code ? " / " + s.result.reason_code : ""));
-    for (const r of s.handoff_rejections || []) why.push("handoff " + (r.outcome === "retried" ? "retried" : "rejected, " + r.outcome) + ": " + r.reason);
-    if (s.result && s.result.status === "completed" && !s.result.parsed) why.push("output unparsed");
-    if (why.length) li.appendChild(el("div", {class:"why"}, why.join("; ")));
+function renderHeader(now){
+  const t = state.temporal || {}, run = state.run || {}, p = run.parent, c = run.child, r = state.round || {};
+  $("case-id").textContent = state.case && state.case.case_id ? state.case.case_id : "case id not supplied";
+  const bits = [];
+  if (p) bits.push("Round " + (p.round_index || 0) + " of " + (p.rounds || "?"), p.workflow_id);
+  else bits.push("practice status not observed");
+  $("round").textContent = bits.filter(Boolean).join(" \u00b7 ");
+  $("question").textContent = state.case && state.case.question ? state.case.question : "";
+  $("question").title = $("question").textContent;
+  const errs = state.input_errors || [];
+  $("errors").hidden = errs.length === 0; $("errors").textContent = errs.join(" \u00b7 ");
+  const ended = r.ended_ms !== null && r.ended_ms !== undefined;
+  $("clock").textContent = r.started_ms === null || r.started_ms === undefined ? "--:--" : dur((ended ? r.ended_ms : now) - r.started_ms);
+  $("clock-label").textContent = ended ? "Round time" : r.source === "first_stage" ? "Elapsed since first stage" : "Round elapsed";
+  const rs = $("round-state");
+  if (c){
+    const running = c.temporal_status === "RUNNING";
+    rs.textContent = running ? "running" : (c.stage || "").replace(/_/g, " ") || (c.temporal_status || "").toLowerCase();
+    rs.className = "st " + (running ? "run" : "stop");
+  } else { rs.textContent = "not started"; rs.className = "st wait"; }
+  const conn = $("conn"), parts = [];
+  let bad = false;
+  if (fetchError){ parts.push("board server unreachable (" + fetchError + "); showing last state"); bad = true; }
+  if (t.error){ bad = true; parts.push(t.error + (t.last_success_at ? "; showing observation from " + t.last_success_at : "; no workflow status observed yet")); }
+  else if (t.observed_at) parts.push("Temporal observed " + t.observed_at.slice(11, 19) + " UTC");
+  if (c) parts.push("round " + (c.stage || "?").replace(/_/g, " "));
+  conn.textContent = parts.join(" \u00b7 ") || "waiting for first status";
+  conn.className = bad ? "bad" : "";
+}
+
+function renderWorkflow(now){
+  const bar = $("tl-bar"), nums = $("tl-num"), list = $("stage-list");
+  clear(bar); clear(nums); clear(list);
+  const steps = state.steps;
+  if (!steps.length){ list.appendChild(el("li", {class:"empty"}, "No steps (input could not be read).")); $("wf-meta").textContent = ""; return; }
+  const known = steps.filter((s) => s.state === "done" && s.timing && s.timing.duration_ms !== null).map((s) => s.timing.duration_ms / 1000);
+  const placeholder = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 120;
+  let total = 0;
+  for (const s of steps){
+    const t = s.timing || {}, open = OPEN.has(s.state), word = stepWord(s), time = stepTime(s, now);
+    let grow = placeholder, cls = "pend", fill = null;
+    if (open){
+      const elapsed = t.started_ms === null || t.started_ms === undefined ? 0 : (now - t.started_ms) / 1000;
+      grow = Math.max(elapsed, placeholder); cls = "on"; fill = elapsed / grow;
+    } else if (t.duration_ms !== null && t.duration_ms !== undefined){
+      grow = t.duration_ms / 1000; cls = s.state === "done" ? "done" : "stop";
+    }
+    if (time !== null && time !== undefined) total += time;
+    const seg = el("span", {class:cls, title:nn(s.index) + " " + s.name + ": " + word.text + (time !== null && time !== undefined ? " " + dur(time) : "")});
+    seg.style.flexGrow = String(Math.max(grow, 1));
+    if (fill !== null){ const b = el("b"); b.style.width = (fill * 100).toFixed(2) + "%"; seg.appendChild(b); }
+    bar.appendChild(seg);
+    const num = el("span", {class:open ? "on" : ""}, nn(s.index)); num.style.flexGrow = seg.style.flexGrow; nums.appendChild(num);
+
+    const li = el("li", {class:"stage" + (open ? " on" : "")}), top = el("div", {class:"top"});
+    top.appendChild(el("span", {class:"n"}, nn(s.index)));
+    top.appendChild(el("span", {class:"nm", title:s.step_id}, s.name));
+    top.appendChild(el("span", {class:"mg" + (s.state === "working" ? " on" : ""), title:s.role}, s.monogram));
+    li.appendChild(top);
+    const meta = el("div", {class:"meta"});
+    meta.appendChild(el("span", {class:"st " + word.cls, title:s.reason || word.text}, word.text));
+    meta.appendChild(el("span", {class:"t"}, time === null || time === undefined ? "" : dur(time)));
+    li.appendChild(meta);
     list.appendChild(li);
   }
+  const done = steps.filter((s) => s.state === "done").length;
+  $("wf-meta").textContent = done + " of " + steps.length + " done \u00b7 stage time " + dur(total) + (known.length < steps.length ? " \u00b7 hatched: not reached yet, width is a placeholder" : "");
 }
+
+const frames = {};
+function botFrame(profile){
+  if (frames[profile]) return frames[profile];
+  const art = el("article", {class:"bot"}), h = el("header", {class:"bot-h"});
+  const mg = el("span", {class:"mg xl"}), mgText = document.createTextNode("");
+  mg.appendChild(mgText); mg.appendChild(el("i", {class:"scr"}));
+  const who = el("div", {class:"who"}), name = el("strong");
+  who.appendChild(name); who.appendChild(el("small", null, "powered by Claude"));
+  const cur = el("div", {class:"cur"}), curv = el("span", {class:"v"});
+  cur.appendChild(el("span", {class:"lbl"}, "Current stage")); cur.appendChild(curv);
+  const st = el("span", {class:"st"});
+  h.appendChild(mg); h.appendChild(who); h.appendChild(cur); h.appendChild(st);
+  const body = el("div", {class:"bot-b"}), mc = el("div", {class:"mc"});
+  const bar = el("div", {class:"mc-bar"}), addr = el("span", {class:"mc-addr"}), watch = el("span", {class:"mc-watch"});
+  bar.appendChild(icon("i-win")); bar.appendChild(addr);
+  watch.appendChild(icon("i-eye")); watch.appendChild(document.createTextNode("Watch-only")); bar.appendChild(watch);
+  const screen = el("div", {class:"mc-screen"}), empty = el("div", {class:"mc-empty"}), box = el("div");
+  const emptyB = el("b"), emptyT = el("span");
+  box.appendChild(emptyB); box.appendChild(emptyT); empty.appendChild(box); screen.appendChild(empty);
+  const foot = el("div", {class:"mc-foot"});
+  mc.appendChild(bar); mc.appendChild(screen); mc.appendChild(foot);
+  const side = el("div", {class:"side"});
+  body.appendChild(mc); body.appendChild(side);
+  art.appendChild(h); art.appendChild(body);
+  $("bots").appendChild(art);
+  return frames[profile] = {mg:mg, mgText:mgText, name:name, curv:curv, st:st, addr:addr, screen:screen, empty:empty,
+    emptyB:emptyB, emptyT:emptyT, foot:foot, side:side, img:null};
+}
+function frameImage(f, profile){
+  if (f.img) return;
+  const src = new URL("/live/" + encodeURIComponent(profile) + ".mjpg", location.href).href;
+  const img = el("img", {alt:"", src:src});
+  img.addEventListener("load", () => frameAspect(f));
+  // The stream ends when the board restarts or a slot is busy; reconnect after a pause.
+  img.addEventListener("error", () => setTimeout(() => img.setAttribute("src", src), 5000));
+  f.screen.insertBefore(img, f.empty);
+  f.img = img;
+}
+function frameAspect(f){
+  if (f.img && f.img.naturalWidth && f.img.naturalHeight) f.screen.style.setProperty("--ar", f.img.naturalWidth + " / " + f.img.naturalHeight);
+}
+function countText(api){
+  const n = api.total !== null ? api.total : api.result_count;
+  return n === null ? null : n + " " + (COUNT_NOUN[api.tool] || "result") + (Number(n) === 1 ? "" : "s");
+}
+function renderCaption(f, b){
+  clear(f.foot);
+  const a = b && b.action;
+  if (!a){ f.foot.appendChild(el("span", {class:"none"}, state.browsers ? "No browser action yet this round" : "Browser actions not read")); return; }
+  f.foot.appendChild(el("b", null, a.verb.charAt(0).toUpperCase() + a.verb.slice(1)));
+  if (a.query) f.foot.appendChild(el("code", {title:a.query}, a.query));
+  else if (a.detail) f.foot.appendChild(el("span", null, a.detail));
+  if (a.submitted) f.foot.appendChild(el("span", null, "+ Enter"));
+  if (!a.ok) f.foot.appendChild(el("span", {class:"res"}, "refused" + (a.error ? ": " + a.error : "")));
+  else if (b.api && countText(b.api)){
+    const via = "count from the same query through the lab API " + b.api.tool + (b.api.time ? " at " + b.api.time : "");
+    f.foot.appendChild(el("span", {class:"res", title:via}, "\u2192 " + countText(b.api)));
+    f.foot.appendChild(el("span", {title:via}, "via " + b.api.tool));
+  }
+  f.foot.appendChild(el("span", {class:"tm", title:new Date(a.t_ms).toISOString()}, hhmmss(a.t_ms) + " UTC"));
+}
+function renderSide(f, o, team, now){
+  clear(f.side);
+  const stages = el("div");
+  stages.appendChild(el("span", {class:"lbl"}, "Stages"));
+  const ol = el("ol");
+  for (const i of team ? team.steps : []){
+    const s = state.steps[i], word = stepWord(s), time = stepTime(s, now), li = el("li");
+    li.appendChild(el("span", {class:"n"}, nn(s.index)));
+    li.appendChild(el("span", {class:"nm"}, s.name));
+    li.appendChild(el("span", {class:"t"}, time === null || time === undefined ? "" : dur(time)));
+    li.appendChild(el("span", {class:"st " + word.cls}, word.text));
+    li.appendChild(el("span", {class:"c"}, s.claims === null ? "" : s.claims + " claim" + (s.claims === 1 ? "" : "s")));
+    ol.appendChild(li);
+  }
+  stages.appendChild(ol); f.side.appendChild(stages);
+  const lab = el("div");
+  lab.appendChild(el("span", {class:"lbl"}, "Lab browser"));
+  const dl = el("dl");
+  const row = (k, v) => { dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", {title:v}, v)); };
+  row("Screencast", o.attached ? "attached" : "not attached");
+  row("Frames", String(o.frames));
+  row("Last frame", o.last_frame_at === null ? "none yet" : hhmmss(o.last_frame_at) + " UTC");
+  lab.appendChild(dl); f.side.appendChild(lab);
+}
+function renderBots(now){
+  const live = state.live, sec = $("bots");
+  sec.hidden = !live;
+  if (!live) return;
+  for (const o of live.owners){
+    const f = botFrame(o.profile), team = (state.team || []).find((m) => m.profile === o.profile);
+    const browser = (state.browsers || []).find((b) => b.profile === o.profile);
+    const step = workingStep(o.profile), running = !!step && step.state === "working";
+    const fresh = o.last_frame_at !== null && now - o.last_frame_at < LIVE_FRESH_MS;
+    f.mgText.textContent = team ? team.monogram : o.profile.slice(0, 2).toUpperCase();
+    f.mg.className = "mg xl" + (running ? " on" : "");
+    f.name.textContent = o.role;
+    if (step) f.curv.textContent = nn(step.index) + " " + step.name + " \u00b7 " + stepWord(step).text;
+    else {
+      const owned = team ? team.steps.map((i) => state.steps[i]) : [];
+      const next = owned.find((s) => s.state === "pending"), done = owned.filter((s) => s.state === "done");
+      f.curv.textContent = next ? "next " + nn(next.index) + " " + next.name : done.length ? done.map((s) => nn(s.index)).join(", ") + " done" : owned.length ? nn(owned[0].index) + " " + owned[0].name + " \u00b7 " + stepWord(owned[0]).text : "no stage";
+    }
+    if (o.attached && running && fresh){ f.st.textContent = "Live"; f.st.className = "st live"; }
+    else if (o.last_frame_at !== null){ f.st.textContent = "idle \u00b7 last frame " + ago(o.last_frame_at, now); f.st.className = "st"; }
+    else { f.st.textContent = "waiting for browser"; f.st.className = "st wait"; }
+    const page = o.page ? (PAGE_LABEL[o.page] || o.page) : "page unknown";
+    f.addr.textContent = "lab VM \u00b7 " + page;
+    if (o.frames > 0) frameImage(f, o.profile);
+    if (f.img){ f.img.setAttribute("alt", o.role + " lab browser, " + page); frameAspect(f); }
+    f.empty.hidden = o.frames > 0;
+    f.emptyB.textContent = "Waiting for browser";
+    const waiting = team && team.steps.some((i) => state.steps[i].state === "pending");
+    f.emptyT.textContent = o.attached ? "attached; no frame yet" : step ? "no lab browser open"
+      : waiting ? "not this bot's turn yet" : "no frame since the board started";
+    renderCaption(f, browser);
+    renderSide(f, o, team, now);
+  }
+}
+
+function teamLine(t, now){
+  const owned = t.steps.map((i) => state.steps[i]);
+  const claims = t.claims ? " \u00b7 " + t.claims + " claim" + (t.claims === 1 ? "" : "s") : "";
+  if (!owned.length) return {text:"no stage in this hunt", cls:""};
+  if (t.current !== null){
+    const s = state.steps[t.current], time = stepTime(s, now);
+    return {text:nn(s.index) + " " + s.name + " \u00b7 " + stepWord(s).text + (time ? " " + dur(time) : "") + claims, cls:"run"};
+  }
+  const done = owned.filter((s) => s.state === "done"), next = owned.find((s) => s.state === "pending"), parts = [];
+  if (done.length) parts.push(done.map((s) => nn(s.index)).join(", ") + " done");
+  if (next) parts.push(done.length ? "next " + nn(next.index) : nn(next.index) + " " + next.name + " \u00b7 waiting");
+  if (!parts.length) parts.push(nn(owned[0].index) + " " + owned[0].name + " \u00b7 " + stepWord(owned[0]).text);
+  return {text:parts.join(" \u00b7 ") + claims, cls:""};
+}
+function renderTeam(now){
+  const box = $("team"); clear(box);
+  const browsers = new Set(((state.live && state.live.owners) || []).map((o) => o.profile));
+  for (const t of state.team || []){
+    const cell = el("div"), step = t.current !== null ? state.steps[t.current] : null;
+    const mg = el("span", {class:"mg" + (step && step.state === "working" ? " on" : "")}, t.monogram);
+    if (browsers.has(t.profile)) mg.appendChild(el("i", {class:"scr"}));
+    const line = teamLine(t, now), text = el("div");
+    text.appendChild(el("strong", {title:t.role}, t.role));
+    text.appendChild(el("small", {class:line.cls, title:line.text}, line.text));
+    cell.appendChild(mg); cell.appendChild(text); box.appendChild(cell);
+  }
+}
+function renderConclusion(){
+  const box = $("conclusion"), c = state.latest_conclusion; clear(box);
+  box.appendChild(el("span", {class:"lbl"}, "Latest conclusion"));
+  if (!c){ box.appendChild(el("p", {class:"none"}, "No stage has completed with a claim yet.")); return; }
+  box.appendChild(el("span", {class:"kind k-" + kindClass(c.kind)}, c.kind || "no kind"));
+  box.appendChild(el("span", {class:"src"}, nn(c.index) + " " + c.name + " \u00b7 " + c.role));
+  box.appendChild(el("p", {title:c.statement}, c.statement || "(empty statement)"));
+}
+function renderLive(){
+  const now = Date.now();
+  renderHeader(now); renderWorkflow(now); renderBots(now); renderTeam(now); renderConclusion();
+}
+
+// ---- Round record (re-rendered when the round's content changes) ----
 
 function niceStep(span){
   const steps = [1e3,5e3,15e3,3e4,6e4,12e4,3e5,6e5,9e5,18e5,36e5,72e5,216e5,432e5,864e5];
@@ -1418,7 +1985,7 @@ function renderLegend(){
     const item = el("span"); const sw = el("span", {class:"sw"}); sw.style.background = catColor(c);
     item.appendChild(sw); item.appendChild(document.createTextNode(c)); legend.appendChild(item);
   }
-  legend.appendChild(el("span", null, "bright mark = cited by an accepted or in-review step; number = steps citing it"));
+  legend.appendChild(el("span", null, "solid mark = cited by an accepted or in-review step; number = steps citing it"));
 }
 
 function renderTimeline(){
@@ -1456,7 +2023,7 @@ function renderTimeline(){
     svg.appendChild(sv("text", {x:x(t), y:H - 6, class:"axis", "text-anchor":"middle"}, hhmmss(t)));
   }
   lanes.forEach((lane, i) => {
-    svg.appendChild(sv("rect", {x:LABEL, y:laneTop[i] + 2, width:plotW, height:laneH[i] - 4, class:"lane", rx:3}));
+    svg.appendChild(sv("rect", {x:LABEL, y:laneTop[i] + 2, width:plotW, height:laneH[i] - 4, class:"lane"}));
     svg.appendChild(sv("text", {x:LABEL - 8, y:laneTop[i] + laneH[i] / 2 + 4, "text-anchor":"end"}, fit(lane === null ? "(no host field)" : lane, 18)));
   });
   placed.forEach((marks, i) => {
@@ -1519,11 +2086,11 @@ function renderMap(){
       class:"edge" + (e.cited_event_ids.length ? " cited" : "") + (e.kind === "stated" ? " stated" : "")});
     svg.appendChild(path);
   }
-  const chars = Math.floor((NW - 14) / 6.4);
+  const chars = Math.floor((NW - 14) / 6.6);
   for (const n of nodes){
     const p = pos.get(n.id);
     const grp = sv("g", {class:"node" + (n.cited_event_ids.length ? " cited" : ""), "data-evts":n.event_ids.join(" ")});
-    grp.appendChild(sv("rect", {x:p.x, y:p.y, width:NW, height:NH, rx:5}));
+    grp.appendChild(sv("rect", {x:p.x, y:p.y, width:NW, height:NH}));
     grp.appendChild(sv("text", {x:p.x + 7, y:p.y + 15}, fit(n.label, chars)));
     const detail = nodeDetail(n);
     grp.appendChild(sv("text", {x:p.x + 7, y:p.y + 29, class:"nd"}, fit(detail || n.kind, chars + 4)));
@@ -1570,11 +2137,12 @@ function renderFeed(){
   let claims = 0;
   for (const item of state.feed){
     const card = el("div", {class:"card"}), h = el("div", {class:"card-h"});
-    h.appendChild(el("span", {class:"sid"}, (item.index + 1) + ". " + item.step_id));
+    h.appendChild(el("span", {class:"sid"}, nn(item.index) + " " + item.step_id));
     h.appendChild(el("span", {class:"role"}, item.role));
-    h.appendChild(el("span", {class:"pill st-" + item.state}, STATE_LABEL[item.state] || item.state));
+    const word = item.state === "done" ? "" : item.state === "stopped" ? "stop" : OPEN.has(item.state) ? "run" : "wait";
+    h.appendChild(el("span", {class:"st " + word}, STATE_LABEL[item.state] || item.state));
     const ho = item.handoff;
-    if (ho && ho.disposition) h.appendChild(el("span", {class:"pill", title:"step disposition written by the bot"}, ho.disposition));
+    if (ho && ho.disposition) h.appendChild(el("span", {class:"st", title:"step disposition written by the bot"}, ho.disposition.replace(/_/g, " ")));
     card.appendChild(h);
     if (item.result_status !== "completed") card.appendChild(el("div", {class:"note warn"}, "Result status " + item.result_status + (item.reason_code ? " (" + item.reason_code + ")" : "")));
     if (item.state === "awaiting_review") card.appendChild(el("div", {class:"note"}, "Waiting for human review; not yet accepted."));
@@ -1594,8 +2162,7 @@ function renderFeed(){
     for (const c of ho.claims){
       claims++;
       const div = el("div", {class:"claim", "data-claim":c.claim_id || ""}), ch = el("div", {class:"claim-h"});
-      const kind = ["observed","inference","hypothesis","finding"].includes(c.kind) ? c.kind : "other";
-      ch.appendChild(el("span", {class:"kind k-" + kind}, c.kind || "no kind"));
+      ch.appendChild(el("span", {class:"kind k-" + kindClass(c.kind)}, c.kind || "no kind"));
       ch.appendChild(el("span", null, c.claim_id || "(no claim id)"));
       div.appendChild(ch); div.appendChild(el("div", {class:"stmt"}, c.statement || "(empty statement)"));
       if (c.cited_events.length){ const cs = el("div", {class:"chips"}); for (const id of c.cited_events) cs.appendChild(chip(id, known.has(id))); div.appendChild(cs); }
@@ -1609,17 +2176,15 @@ function renderFeed(){
       }
       card.appendChild(div);
     }
-    if (ho.reviews.length){
-      for (const r of ho.reviews){
-        const div = el("div", {class:"claim"}), rh = el("div", {class:"claim-h"});
-        rh.appendChild(el("span", {class:"kind k-other"}, "review"));
-        rh.appendChild(el("span", null, (r.review_id || "(no review id)") + " \u2192 " + (r.disposition || "no disposition")));
-        div.appendChild(rh);
-        const l = el("div", {class:"links"}, "names "); for (const id of r.claim_ids) l.appendChild(claimLink(id)); div.appendChild(l);
-        div.appendChild(el("div", {class:"stmt"}, r.rationale));
-        if (r.cited_events.length){ const cs = el("div", {class:"chips"}); for (const id of r.cited_events) cs.appendChild(chip(id, known.has(id))); div.appendChild(cs); }
-        card.appendChild(div);
-      }
+    for (const r of ho.reviews){
+      const div = el("div", {class:"claim"}), rh = el("div", {class:"claim-h"});
+      rh.appendChild(el("span", {class:"kind k-other"}, "review"));
+      rh.appendChild(el("span", null, (r.review_id || "(no review id)") + " \u2192 " + (r.disposition || "no disposition")));
+      div.appendChild(rh);
+      const l = el("div", {class:"links"}, "names "); for (const id of r.claim_ids) l.appendChild(claimLink(id)); div.appendChild(l);
+      div.appendChild(el("div", {class:"stmt"}, r.rationale));
+      if (r.cited_events.length){ const cs = el("div", {class:"chips"}); for (const id of r.cited_events) cs.appendChild(chip(id, known.has(id))); div.appendChild(cs); }
+      card.appendChild(div);
     }
     if (ho.limitations.length) card.appendChild(moreList("lim-" + item.step_id, "Limitations", ho.limitations));
     if (ho.requested_decisions.length) card.appendChild(moreList("req-" + item.step_id, "Requested human decisions", ho.requested_decisions));
@@ -1671,10 +2236,10 @@ function renderTools(){
   host.querySelectorAll("[data-lane]").forEach((n) => scrolls.set(n.getAttribute("data-lane"), n.scrollTop));
   clear(host);
   for (const lane of t.lanes){
-    const col = el("div", {class:"lane-col" + (lane.working ? " working" : "") + (lane.active ? " active" : "")});
+    const col = el("div", {class:"lane-col" + (lane.working ? " working" : "")});
     const h = el("div", {class:"lane-h"});
     h.appendChild(el("span", {class:"role"}, lane.role));
-    if (lane.working) h.appendChild(el("span", {class:"busy"}, "working"));
+    if (lane.working) h.appendChild(el("span", {class:"st run"}, "running"));
     col.appendChild(h);
     col.appendChild(el("div", {class:"lane-sub"}, lane.profile + " \u00b7 " + lane.count + " call" + (lane.count === 1 ? "" : "s") + (lane.errors ? " \u00b7 " + lane.errors + " error" + (lane.errors === 1 ? "" : "s") : "")));
     const list = el("ol", {class:"calls", "data-lane":lane.profile});
@@ -1698,45 +2263,8 @@ function renderTools(){
   }
 }
 
-function renderAll(){
-  renderStages(); renderTools(); renderLegend(); renderTimeline(); renderMap(); renderFeed();
-}
-
-const PAGE_LABEL = {kibana_discover:"Kibana Discover", arkime_sessions:"Arkime Sessions", arkime_spiview:"Arkime SPI View", lab_console:"lab console"};
-const livePanels = {};
-function ago(ms){
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  return s < 90 ? s + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : Math.round(s / 3600) + "h ago";
-}
-function livePanel(o){
-  if (livePanels[o.profile]) return livePanels[o.profile];
-  const col = el("div", {class:"live-col"}), h = el("div", {class:"lane-h"});
-  const role = el("span", {class:"role"}), page = el("span", {class:"lane-sub"});
-  h.appendChild(role); h.appendChild(page); col.appendChild(h);
-  const src = new URL("/live/" + encodeURIComponent(o.profile) + ".mjpg", location.href).href;
-  const img = el("img", {alt:"", src:src});
-  // The stream ends when the board restarts or a slot is busy; reconnect after a pause.
-  img.addEventListener("error", () => setTimeout(() => img.setAttribute("src", src), 5000));
-  col.appendChild(img);
-  const st = el("div", {class:"live-st"}); col.appendChild(st);
-  $("live-panels").appendChild(col);
-  return livePanels[o.profile] = {role:role, page:page, img:img, st:st};
-}
-function renderLive(){
-  const live = state.live;
-  $("live-sec").hidden = !live;
-  if (!live) return;
-  for (const o of live.owners){
-    const p = livePanel(o);
-    p.role.textContent = o.role;
-    p.page.textContent = o.page ? (PAGE_LABEL[o.page] || o.page) : "page unknown";
-    p.img.setAttribute("alt", o.role + " lab browser" + (o.page ? ", " + (PAGE_LABEL[o.page] || o.page) : ""));
-    const last = o.last_frame_at === null ? "" : "last frame " + ago(o.last_frame_at);
-    p.st.textContent = o.attached
-      ? "attached \u00b7 " + (last ? last + " \u00b7 " + o.frames + " frame" + (o.frames === 1 ? "" : "s") : "no frame yet")
-      : "waiting for browser" + (last ? " \u00b7 " + last : "");
-    p.st.className = o.attached ? "live-st" : "live-st wait";
-  }
+function renderRecord(){
+  renderTools(); renderLegend(); renderTimeline(); renderMap(); renderFeed();
 }
 
 async function poll(){
@@ -1745,16 +2273,18 @@ async function poll(){
     if (!res.ok) throw new Error("HTTP " + res.status);
     const next = await res.json();
     fetchError = null; state = next;
-    // Observation timestamps change every poll; re-render the panels only when content changes.
+    // Observation timestamps change every poll; re-render the record only when its content changes.
     const tools = next.tools ? Object.assign({}, next.tools, {lab:null}) : null;
     const key = JSON.stringify(Object.assign({}, next, {temporal:null, tools:tools, live:null}));
-    if (key !== lastKey){ lastKey = key; renderAll(); }
+    if (key !== lastKey){ lastKey = key; renderRecord(); }
   } catch (err){
     fetchError = err && err.message ? err.message : "fetch failed";
   }
-  if (state){ renderHeader(); renderToolsMeta(); renderLive(); } else { $("conn").textContent = "board server unreachable (" + fetchError + ")"; $("conn").className = "bad"; }
+  if (state){ renderLive(); renderToolsMeta(); } else { $("conn").textContent = "board server unreachable (" + fetchError + ")"; $("conn").className = "bad"; }
   setTimeout(poll, 2000);
 }
+// The clock, running stage and frame freshness move every second between polls.
+setInterval(() => { if (state) renderLive(); }, 1000);
 let resizeTimer = null;
 addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state){ renderTimeline(); renderMap(); } }, 150); });
 poll();

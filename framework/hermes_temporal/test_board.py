@@ -16,8 +16,8 @@ from urllib import parse
 if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run hunt board tests.")
 
-from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, browser_root,  # noqa: E402
-                    build_state, main, make_server, parse_handoff)
+from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, activity_spans,  # noqa: E402
+                    browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import FakeLab  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
@@ -208,6 +208,175 @@ class BoardDerivationTests(unittest.TestCase):
         self.assertEqual(broken["steps"], [])
 
 
+ROUND = "practice-1:round:001"
+START_ISO, START_MS = "2026-11-08T19:14:33.250000+00:00", 1_794_165_273_250
+
+
+def _history_event(event_id: int, ms: int, kind: str):
+    from temporalio.api.history.v1 import HistoryEvent
+
+    event = HistoryEvent(event_id=event_id)
+    event.event_time.FromMilliseconds(ms)
+    getattr(event, kind).SetInParent()
+    return event
+
+
+def _scheduled(event_id: int, ms: int, execution_id: str):
+    from temporalio.api.common.v1 import Payload
+
+    event = _history_event(event_id, ms, "activity_task_scheduled_event_attributes")
+    event.activity_task_scheduled_event_attributes.input.payloads.append(Payload(
+        metadata={"encoding": b"json/plain"},
+        data=json.dumps({"execution_id": execution_id, "step": {"prompt": "p"}}).encode()))
+    return event
+
+
+def _closed(event_id: int, ms: int, scheduled: int, kind: str = "activity_task_completed_event_attributes"):
+    event = _history_event(event_id, ms, kind)
+    getattr(event, kind).scheduled_event_id = scheduled
+    return event
+
+
+def _claims(child: dict, index: int) -> list[dict]:
+    return json.loads(_unwrap_single_fence(child["results"][index]["output"], allow_leading_prose=True))["claims"]
+
+
+class HuntLiveDerivationTests(unittest.TestCase):
+    """The Hunt Live fields: real stage timings, round clock, team, latest conclusion, browser captions."""
+
+    def setUp(self) -> None:
+        self.raw = _load("lab-input.json")
+        self.parent = _load("parent-status.json")
+        self.child = _load("child-status.json")
+        history = [
+            _history_event(5, 500, "workflow_execution_signaled_event_attributes"),
+            _scheduled(10, 1_000, f"{ROUND}:0"), _closed(12, 22_000, 10),
+            _scheduled(20, 30_000, f"{ROUND}:1"), _closed(22, 90_000, 20),
+            _scheduled(30, 95_000, f"{ROUND}:1:retry"), _closed(32, 150_000, 30),
+            _scheduled(40, 160_000, f"{ROUND}:2"),
+            _scheduled(50, 170_000, "another-round:3"),
+            _closed(52, 171_000, 50, "activity_task_failed_event_attributes"),
+        ]
+        self.spans = activity_spans(history)
+
+    def running(self, **extra) -> dict:
+        child = _mid_run(self.child, 2, "executing", "hypotheses")
+        child.update({"workflow_id": ROUND, "activity_spans": self.spans, "start_time": START_ISO, "close_time": None,
+                      **extra})
+        return child
+
+    def test_activity_spans_read_execution_ids_and_close_times_from_history(self) -> None:
+        self.assertEqual(self.spans, [
+            {"execution_id": f"{ROUND}:0", "scheduled_ms": 1_000, "closed_ms": 22_000},
+            {"execution_id": f"{ROUND}:1", "scheduled_ms": 30_000, "closed_ms": 90_000},
+            {"execution_id": f"{ROUND}:1:retry", "scheduled_ms": 95_000, "closed_ms": 150_000},
+            {"execution_id": f"{ROUND}:2", "scheduled_ms": 160_000, "closed_ms": None},
+            {"execution_id": "another-round:3", "scheduled_ms": 170_000, "closed_ms": 171_000}])
+
+    def test_stage_timings_span_every_attempt_and_leave_open_stages_without_an_end(self) -> None:
+        timings = [step["timing"] for step in build_state(self.raw, self.parent, self.running())["steps"]]
+        self.assertEqual(timings[0], {"started_ms": 1_000, "ended_ms": 22_000, "duration_ms": 21_000, "attempts": 1})
+        self.assertEqual(timings[1], {"started_ms": 30_000, "ended_ms": 150_000, "duration_ms": 120_000, "attempts": 2})
+        self.assertEqual(timings[2], {"started_ms": 160_000, "ended_ms": None, "duration_ms": None, "attempts": 1})
+        unknown = {"started_ms": None, "ended_ms": None, "duration_ms": None, "attempts": 0}
+        self.assertEqual(timings[3:], [unknown] * 6)
+        unread = build_state(self.raw, self.parent, self.running(activity_spans=None))["steps"]
+        self.assertEqual([step["timing"] for step in unread], [unknown] * 9)
+
+    def test_round_clock_is_temporal_start_and_close_else_first_stage(self) -> None:
+        state = build_state(self.raw, self.parent, self.running())
+        self.assertEqual(state["round"], {"started_ms": START_MS, "ended_ms": None, "source": "temporal"})
+        closed = build_state(self.raw, self.parent, self.running(close_time="2026-11-08T19:36:55+00:00"))
+        self.assertEqual(closed["round"]["ended_ms"] - START_MS, (22 * 60 + 21.75) * 1000)
+        fallback = build_state(self.raw, self.parent, self.running(start_time=None))
+        self.assertEqual(fallback["round"], {"started_ms": 1_000, "ended_ms": None, "source": "first_stage"})
+        self.assertEqual(build_state(self.raw, None, None)["round"],
+                         {"started_ms": None, "ended_ms": None, "source": None})
+
+    def test_steps_carry_name_monogram_and_claim_count(self) -> None:
+        steps = build_state(self.raw, self.parent, self.running())["steps"]
+        self.assertEqual([(step["name"], step["monogram"]) for step in steps[:4]],
+                         [("Scope", "IR"), ("Evidence", "TH"), ("Hypotheses", "TH"), ("Network", "NA")])
+        self.assertEqual([step["claims"] for step in steps[:3]],
+                         [len(_claims(self.child, 0)), len(_claims(self.child, 1)), None])
+
+    def test_team_names_each_bots_stages_open_stage_and_claims(self) -> None:
+        team = {member["profile"]: member for member in build_state(self.raw, self.parent, self.running())["team"]}
+        self.assertEqual(list(team), ["framework-coordinator", "framework-researcher", "framework-network-analyst",
+                                      "framework-librarian", "framework-builder", "framework-reviewer"])
+        self.assertEqual([member["monogram"] for member in team.values()], ["IR", "TH", "NA", "TI", "DE", "PT"])
+        self.assertEqual(team["framework-researcher"]["steps"], [1, 2])
+        self.assertEqual(team["framework-researcher"]["current"], 2)
+        self.assertEqual(team["framework-researcher"]["claims"], len(_claims(self.child, 1)))
+        self.assertEqual(team["framework-coordinator"]["steps"], [0, 5, 8])
+        self.assertIsNone(team["framework-coordinator"]["current"])
+        self.assertEqual(team["framework-coordinator"]["claims"], len(_claims(self.child, 0)))
+
+    def test_latest_conclusion_is_the_newest_done_stages_first_claim(self) -> None:
+        mid = build_state(self.raw, self.parent, self.running())["latest_conclusion"]
+        first = _claims(self.child, 1)[0]
+        self.assertEqual(mid, {"index": 1, "step_id": "evidence", "name": "Evidence", "profile": "framework-researcher",
+                               "role": "Threat Hunter", "claim_id": first["claim_id"], "kind": first["kind"],
+                               "statement": first["statement"]})
+        done = build_state(self.raw, self.parent, self.child)["latest_conclusion"]
+        self.assertEqual((done["index"], done["statement"]), (8, _claims(self.child, 8)[0]["statement"]))
+        self.assertIsNone(build_state(self.raw, None, None)["latest_conclusion"])
+
+    def write_audit(self, *entries) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "audit.jsonl"
+        path.write_text("".join((entry if isinstance(entry, str) else json.dumps(entry)) + "\n" for entry in entries),
+                        encoding="utf-8")
+        return path
+
+    def test_newest_browser_action_is_this_rounds_newest_entry_for_the_owner_and_case(self) -> None:
+        base = {"case_id": "lab-med-001", "ok": True, "error": None, "page": "kibana_discover", "entered": "typed"}
+        path = self.write_audit(
+            {**base, "t": 500, "profile": TH, "action": "open", "query": "before the round"},
+            {**base, "t": 2_000, "profile": TH, "action": "open", "query": "process.parent.name:OUTLOOK.EXE"},
+            {**base, "t": 2_500, "profile": NA, "action": "open", "page": "arkime_sessions", "query": "port.dst==3389"},
+            {**base, "t": 2_600, "profile": TH, "case_id": "another-case", "action": "open", "query": "x"},
+            "not json", "")
+        self.assertEqual(newest_browser_action(path, TH, 1_000, "lab-med-001"), {
+            "t_ms": 2_000, "action": "open", "verb": "typed", "query": "process.parent.name:OUTLOOK.EXE",
+            "detail": None, "submitted": False, "page": "kibana_discover", "ok": True, "error": None})
+        self.assertEqual(newest_browser_action(path, NA, 1_000, "lab-med-001")["query"], "port.dst==3389")
+        self.assertIsNone(newest_browser_action(path, TH, 2_100, "lab-med-001"))
+        self.assertIsNone(newest_browser_action(path.with_name("missing.jsonl"), TH, 0))
+
+    def test_browser_action_verbs_and_refusals(self) -> None:
+        cases = [({"action": "type", "text": "event.code:4625", "submit": True},
+                  ("typed", "event.code:4625", None, True)),
+                 ({"action": "open", "query": "q", "entered": "url"}, ("opened", "q", None, False)),
+                 ({"action": "scroll", "direction": "down"}, ("scrolled", None, "down", False)),
+                 ({"action": "press", "key": "Enter"}, ("pressed", None, "Enter", False)),
+                 ({"action": "snapshot"}, ("read the page", None, None, False))]
+        for entry, expected in cases:
+            action = newest_browser_action(self.write_audit({"t": 5, "profile": TH, "ok": True, **entry}), TH, 0)
+            self.assertEqual((action["verb"], action["query"], action["detail"], action["submitted"]), expected)
+        refused = newest_browser_action(self.write_audit(
+            {"t": 5, "profile": TH, "action": "click", "ok": False, "error": "refused_control"}), TH, 0)
+        self.assertEqual((refused["ok"], refused["error"]), (False, "refused_control"))
+
+    def test_browsers_pair_an_action_with_the_owners_api_call_for_the_same_query(self) -> None:
+        lab = {"activity": ACTIVITY, "events": {}, "missing": []}
+        action = {"t_ms": 1, "action": "open", "verb": "typed", "detail": None, "submitted": False,
+                  "page": "kibana_discover", "ok": True, "error": None}
+        browser = {TH: {**action, "query": "  Process.name:beacon.exe "},
+                   NA: {**action, "query": "host.dns == other.test"}}
+        state = build_state(tool_input(), None, None, lab, browser)
+        th, na = state["browsers"]
+        self.assertEqual((th["profile"], th["role"], th["action"]["query"]),
+                         (TH, "Threat Hunter", "  Process.name:beacon.exe "))
+        self.assertEqual(th["api"], {"tool": "elastic_search", "time": "2026-11-06T10:00:05Z", "result_count": 50,
+                                     "total": 120})
+        self.assertIsNone(na["api"])
+        nothing = build_state(tool_input(), None, None, lab, {TH: None, NA: None})["browsers"]
+        self.assertEqual([item["action"] for item in nothing], [None, None])
+        self.assertIsNone(build_state(tool_input(), None, None, lab)["browsers"])
+
+
 class BoardServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _load("lab-input.json")
@@ -333,15 +502,21 @@ class LiveBoardTests(unittest.TestCase):
         connection.request("GET", f"/live/{profile}.mjpg")
         return connection.getresponse()
 
-    def read_part(self, response, boundary: str) -> tuple[dict, bytes]:
-        self.assertEqual(response.readline(), f"--{boundary}\r\n".encode())
+    def read_part(self, response, boundary: str, first: bool = False) -> tuple[dict, bytes]:
+        """One part's headers and body. Its body ends where the next part's boundary is, which the board sends
+        with the frame (Chromium paints a part only then), so this returns without waiting for another frame."""
+        if first:
+            self.assertEqual(response.readline(), f"--{boundary}\r\n".encode())
         headers = {}
         while (line := response.readline()) != b"\r\n":
             name, _, value = line.decode("ascii").partition(":")
             headers[name.strip()] = value.strip()
-        body = response.read(int(headers["Content-Length"]))
-        self.assertEqual(response.readline(), b"\r\n")
-        return headers, body
+        delimiter, body = f"\r\n--{boundary}\r\n".encode(), b""
+        while not body.endswith(delimiter):
+            chunk = response.read(1)
+            self.assertTrue(chunk, "the stream ended inside a part")
+            body += chunk
+        return headers, body[:-len(delimiter)]
 
     def test_board_derives_the_lane_browser_root_like_the_operator_lanes(self) -> None:
         self.assertEqual(browser_root("H"), Path("H", "profiles", "framework-network-analyst", "hunt-lab-browser"))
@@ -375,10 +550,10 @@ class LiveBoardTests(unittest.TestCase):
         boundary = content_type.split("boundary=", 1)[1]
         self.assertIsNone(response.getheader("Content-Length"))
         self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
-        headers, body = self.read_part(response, boundary)
-        self.assertEqual((headers["Content-Type"], body), ("image/jpeg", b"current"))
+        headers, body = self.read_part(response, boundary, first=True)
+        self.assertEqual((headers, body), ({"Content-Type": "image/jpeg"}, b"current"))
         self.live.add(NA, 2.0, b"next")
-        self.assertEqual(self.read_part(response, boundary)[1], b"next")
+        self.assertEqual(self.read_part(response, boundary), ({"Content-Type": "image/jpeg"}, b"next"))
 
     def test_concurrent_streams_are_capped_and_close_ends_them(self) -> None:
         streams = [self.open_stream(TH) for _ in range(LIVE_STREAMS_MAX)]
@@ -386,7 +561,9 @@ class LiveBoardTests(unittest.TestCase):
         self.assertEqual(self.request(f"/live/{TH}.mjpg")[0], 503)
         self.live.close()
         for s in streams:
-            self.assertEqual(s.read(), b"")
+            boundary = s.getheader("Content-Type").split("boundary=", 1)[1]
+            # Only the first part's head went out before the close; no frame ever arrived.
+            self.assertEqual(s.read(), f"--{boundary}\r\nContent-Type: image/jpeg\r\n\r\n".encode())
 
     def test_state_reports_each_owner_live_status_and_page(self) -> None:
         (self.root / NA).mkdir(parents=True)
@@ -413,7 +590,27 @@ class LiveBoardTests(unittest.TestCase):
         csp = headers["Content-Security-Policy"]
         self.assertIn(f"img-src data: http://127.0.0.1:{self.port};", csp)
         self.assertIn(f"connect-src http://127.0.0.1:{self.port};", csp)
-        self.assertIn(b'id="live-sec"', body)
+        self.assertIn(b'id="bots"', body)
+        self.assertIn(b"powered by Claude", body)
+
+    def test_state_carries_each_owners_newest_audit_action_of_this_round(self) -> None:
+        child = _load("child-status.json")
+        child["start_time"] = START_ISO
+        board = Board(_load("lab-input.json"), lambda: (_load("parent-status.json"), child), live=self.live)
+        (self.root / TH).mkdir(parents=True)
+        case = {"case_id": "dns-lab-001", "ok": True}
+        (self.root / TH / "audit.jsonl").write_text("\n".join(json.dumps(entry) for entry in (
+            {**case, "t": START_MS - 1, "profile": TH, "action": "open", "query": "an earlier round"},
+            {**case, "t": START_MS + 5, "profile": TH, "action": "type", "text": "dns.question.name:x", "submit": True},
+            {**case, "t": START_MS + 9, "profile": TH, "case_id": "another-case", "action": "open", "query": "y"},
+        )) + "\n", encoding="utf-8")
+        browsers = json.loads(board.state_bytes())["browsers"]
+        self.assertEqual([item["profile"] for item in browsers], [TH, NA])
+        action = browsers[0]["action"]
+        self.assertEqual((action["query"], action["submitted"]), ("dns.question.name:x", True))
+        self.assertIsNone(browsers[1]["action"])
+        # The fixture round has no Temporal start time: no round, so no caption.
+        self.assertEqual([item["action"] for item in json.loads(self.board.state_bytes())["browsers"]], [None, None])
 
     def test_cli_exits_when_websockets_is_missing(self) -> None:
         real = importlib.util.find_spec
