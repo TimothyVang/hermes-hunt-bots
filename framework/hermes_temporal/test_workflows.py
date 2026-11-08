@@ -3,19 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import base64
 import contextlib
 import io
 import json
 import importlib.util
 import unittest
+from pathlib import Path
 
 if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run Temporal integration tests.")
 
 from temporalio import activity
+from temporalio.client import WorkflowHistory
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import Worker
+from temporalio.worker import Replayer, Worker
 
 from .contracts import (
     ExecutionRequest, ExecutionResult, HermesStep, WorkflowDecision, WorkflowRequest,
@@ -53,6 +56,16 @@ def _handoff(step_id, profile, *, evidence_ids=None, contradicts=None, reviewer=
         }] if reviewer else []),
         "disposition": "review_ready", "limitations": [], "requested_decisions": [],
     }
+
+
+async def _until(handle, predicate):
+    async def observe():
+        while True:
+            state = await handle.query(HermesWorkflow.status)
+            if predicate(state):
+                return state
+            await asyncio.sleep(0.01)
+    return await asyncio.wait_for(observe(), timeout=10)
 
 
 class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -492,37 +505,139 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     ExecutionResult("unknown", execution_id, "", "receipt_unknown")
 
-    async def test_ontology_invalid_handoff_preserves_execution_and_blocks_review_and_dispatch(self) -> None:
-        calls = []
-        invalid = _handoff("first", "framework-coordinator", evidence_ids=["stale-source"])
+    async def test_twice_invalid_handoff_is_retried_once_then_rejected_without_review(self) -> None:
+        dispatched = []
+        invalid = json.dumps(_handoff("first", "framework-coordinator", evidence_ids=["stale-source"]))
 
         @activity.defn(name="execute_hermes_step")
         async def execute(request: ExecutionRequest) -> ExecutionResult:
-            calls.append(request.step.step_id)
-            return ExecutionResult("completed", request.execution_id, json.dumps(invalid), "completed")
+            dispatched.append((request.execution_id, request.step.step_id, request.step.prompt))
+            return ExecutionResult("completed", request.execution_id, invalid, "completed")
 
+        queue = "test-hermes-ontology-invalid"
         async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(env.client, task_queue="test-hermes-ontology-invalid",
-                              workflows=[HermesWorkflow], activities=[execute]):
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
                 handle = await env.client.start_workflow(
                     HermesWorkflow.run,
                     WorkflowRequest([
                         HermesStep("first", "synthetic", hunt_context=_ontology_context()),
                         HermesStep("next", "synthetic", depends_on=("first",), hunt_context=_ontology_context()),
                     ]),
-                    id="test-hermes-ontology-invalid", task_queue="test-hermes-ontology-invalid",
+                    id=queue, task_queue=queue,
                 )
-                while (await handle.query(HermesWorkflow.status)).stage != "awaiting_execution_approval":
-                    await asyncio.sleep(0.01)
+                await _until(handle, lambda state: state.stage == "awaiting_execution_approval")
+                first_approval = WorkflowDecision("first", "execute", "approve", "ontology-invalid-execute")
+                await handle.signal(HermesWorkflow.decision, first_approval)
+                retry_gate = await _until(handle, lambda state: state.stage == "awaiting_execution_approval"
+                                          and state.handoff_rejections)
+                self.assertEqual((retry_gate.step_id, retry_gate.execution_id), ("first", f"{queue}:0:retry"))
+                self.assertEqual(retry_gate.results, [])
+                await handle.signal(HermesWorkflow.decision, first_approval)
+                await asyncio.sleep(0.2)
+                self.assertEqual((await handle.query(HermesWorkflow.status)).stage, "awaiting_execution_approval")
+                self.assertEqual(len(dispatched), 1, "a reused approval must not start the retry")
                 await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "execute", "approve", "ontology-invalid-execute"))
+                                    WorkflowDecision("first", "execute", "approve", "ontology-invalid-retry"))
                 self.assertEqual(await handle.result(), "handoff_validation_rejected")
                 state = await handle.query(HermesWorkflow.status)
-                self.assertEqual(state.stage, "handoff_validation_rejected")
-                self.assertEqual(state.results, [
-                    ExecutionResult("completed", "test-hermes-ontology-invalid:0", json.dumps(invalid), "completed")
-                ])
-        self.assertEqual(calls, ["first"])
+        self.assertEqual(state.stage, "handoff_validation_rejected")
+        self.assertEqual(state.results, [ExecutionResult("completed", f"{queue}:0:retry", invalid, "completed")])
+        self.assertEqual([(item.step_id, item.outcome) for item in state.handoff_rejections],
+                         [("first", "retried"), ("first", "retry_exhausted")])
+        self.assertEqual(state.handoff_rejections[0].result,
+                         ExecutionResult("completed", f"{queue}:0", invalid, "completed"))
+        self.assertEqual([(execution_id, step_id) for execution_id, step_id, _ in dispatched],
+                         [(f"{queue}:0", "first"), (f"{queue}:0:retry", "first")])
+        reason = state.handoff_rejections[0].reason
+        self.assertIn("stale-source", reason)
+        first_prompt, retry_prompt = dispatched[0][2], dispatched[1][2]
+        self.assertTrue(retry_prompt.startswith(first_prompt))
+        self.assertIn(reason, retry_prompt[len(first_prompt):])
+
+    async def test_invalid_then_valid_handoff_reaches_review_and_feeds_the_next_step(self) -> None:
+        dispatched = []
+        invalid = json.dumps(_handoff("first", "framework-coordinator", evidence_ids=["stale-source"]))
+        valid = json.dumps(_handoff("first", "framework-coordinator"))
+        outputs = iter([invalid, valid, json.dumps(_handoff("next", "framework-coordinator"))])
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            dispatched.append((request.step.step_id, request.step.prompt))
+            return ExecutionResult("completed", request.execution_id, next(outputs), "completed")
+
+        queue = "test-hermes-ontology-retry-valid"
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(
+                    HermesWorkflow.run,
+                    WorkflowRequest([
+                        HermesStep("first", "synthetic", hunt_context=_ontology_context()),
+                        HermesStep("next", "synthetic", depends_on=("first",), hunt_context=_ontology_context()),
+                    ]),
+                    id=queue, task_queue=queue,
+                )
+
+                async def decide(stage, step_id, phase, decision_id):
+                    await _until(handle, lambda state: state.stage == stage and state.step_id == step_id)
+                    await handle.signal(HermesWorkflow.decision,
+                                        WorkflowDecision(step_id, phase, "approve", decision_id))
+
+                await decide("awaiting_execution_approval", "first", "execute", "retry-valid-execute")
+                await _until(handle, lambda state: state.handoff_rejections)
+                await decide("awaiting_execution_approval", "first", "execute", "retry-valid-retry")
+                review = await _until(handle, lambda state: state.stage == "awaiting_review")
+                self.assertEqual(review.results, [ExecutionResult("completed", f"{queue}:0:retry", valid, "completed")])
+                self.assertEqual([item.outcome for item in review.handoff_rejections], ["retried"])
+                await handle.signal(HermesWorkflow.decision,
+                                    WorkflowDecision("first", "review", "approve", "retry-valid-review"))
+                await decide("awaiting_execution_approval", "next", "execute", "retry-valid-next-execute")
+                await decide("awaiting_review", "next", "review", "retry-valid-next-review")
+                self.assertEqual(await handle.result(), "completed")
+                state = await handle.query(HermesWorkflow.status)
+        self.assertEqual([result.execution_id for result in state.results], [f"{queue}:0:retry", f"{queue}:1"])
+        self.assertEqual([step_id for step_id, _ in dispatched], ["first", "first", "next"])
+        self.assertIn(valid, dispatched[2][1])
+        self.assertNotIn(invalid, dispatched[2][1])
+
+    async def test_rejection_without_room_for_the_correction_notice_is_not_retried(self) -> None:
+        from .contracts import MAX_PROMPT_BYTES
+        from .workflows import _FINAL_HANDOFF_BYTES, _OUTPUT_CAP_PREFIX, _OUTPUT_CAP_SUFFIX, _disclosed_target
+        prompts = []
+        disclosure = _OUTPUT_CAP_PREFIX + str(_disclosed_target(_FINAL_HANDOFF_BYTES)) + _OUTPUT_CAP_SUFFIX
+        base = "x" * (MAX_PROMPT_BYTES - len(disclosure.encode("utf-8")) - 50)
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            prompts.append(request.step.prompt)
+            return ExecutionResult("completed", request.execution_id, "not a handoff", "completed")
+
+        queue = "test-hermes-retry-no-room"
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(
+                    HermesWorkflow.run,
+                    WorkflowRequest([HermesStep("first", base, hunt_context=_ontology_context())]),
+                    id=queue, task_queue=queue,
+                )
+                await _until(handle, lambda state: state.stage == "awaiting_execution_approval")
+                await handle.signal(HermesWorkflow.decision,
+                                    WorkflowDecision("first", "execute", "approve", "no-room-execute"))
+                self.assertEqual(await handle.result(), "handoff_validation_rejected")
+                state = await handle.query(HermesWorkflow.status)
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(len(prompts[0].encode("utf-8")), MAX_PROMPT_BYTES - 50)
+        self.assertEqual([item.outcome for item in state.handoff_rejections], ["retry_prompt_too_large"])
+        self.assertEqual(state.results, [ExecutionResult("completed", f"{queue}:0", "not a handoff", "completed")])
+
+    async def test_history_from_before_retries_replays_to_its_first_rejection(self) -> None:
+        raw = (Path(__file__).with_name("fixtures") / "replay" / "handoff-rejected-before-retry.json").read_text(
+            encoding="utf-8")
+        events = json.loads(raw)["events"]
+        self.assertEqual(sum("activityTaskScheduledEventAttributes" in event for event in events), 1)
+        completed = events[-1]["workflowExecutionCompletedEventAttributes"]["result"]["payloads"][0]["data"]
+        self.assertEqual(json.loads(base64.b64decode(completed)), "handoff_validation_rejected")
+        history = WorkflowHistory.from_json("test-hermes-pre-retry-history", raw)
+        await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
 
     async def test_ontology_unknown_claim_reference_never_becomes_a_downstream_handoff(self) -> None:
         calls = []
@@ -568,10 +683,14 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 await gate("awaiting_execution_approval", "second")
                 await handle.signal(HermesWorkflow.decision,
                                     WorkflowDecision("second", "execute", "approve", "claim-second-execute"))
+                await _until(handle, lambda state: state.handoff_rejections)
+                await gate("awaiting_execution_approval", "second")
+                await handle.signal(HermesWorkflow.decision,
+                                    WorkflowDecision("second", "execute", "approve", "claim-second-retry"))
                 self.assertEqual(await handle.result(), "handoff_validation_rejected")
                 self.assertEqual((await handle.query(HermesWorkflow.status)).stage,
                                  "handoff_validation_rejected")
-        self.assertEqual(calls, ["first", "second"])
+        self.assertEqual(calls, ["first", "second", "second"])
 
     async def test_valid_ontology_chain_still_requires_execute_and_review_gates(self) -> None:
         calls = []
@@ -659,14 +778,19 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                             )]),
                             id=queue, task_queue=queue,
                         )
-                        while (await handle.query(HermesWorkflow.status)).stage != "awaiting_execution_approval":
-                            await asyncio.sleep(0.01)
+                        await _until(handle, lambda state: state.stage == "awaiting_execution_approval")
                         await handle.signal(HermesWorkflow.decision,
                                             WorkflowDecision("first", "execute", "approve", f"json-{index}"))
+                        await _until(handle, lambda state: state.stage == "awaiting_execution_approval"
+                                     and state.handoff_rejections)
+                        await handle.signal(HermesWorkflow.decision,
+                                            WorkflowDecision("first", "execute", "approve", f"json-{index}-retry"))
                         self.assertEqual(await handle.result(), "handoff_validation_rejected")
                         state = await handle.query(HermesWorkflow.status)
                         self.assertEqual(state.stage, "handoff_validation_rejected")
                         self.assertEqual(state.results[0].output, output)
+                        self.assertEqual([item.result.output for item in state.handoff_rejections], [output, output])
+                        self.assertEqual(len(calls), 2)
 
     async def test_one_handoff_with_surrounding_commentary_reaches_review(self) -> None:
         valid = json.dumps(_handoff("first", "framework-coordinator"))
@@ -987,6 +1111,17 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 while (await handle.query(HermesWorkflow.status)).stage == "awaiting_execution_approval":
                     await asyncio.sleep(0.01)
                 self.assertEqual((await handle.query(HermesWorkflow.status)).stage, "awaiting_review")
+
+    def test_practice_deadline_covers_a_structured_steps_one_retry(self) -> None:
+        from types import SimpleNamespace
+        from .cli import _practice_deadline_seconds
+        hunt = WorkflowRequest([
+            HermesStep("plain", "synthetic", timeout_seconds=30),
+            HermesStep("typed", "synthetic", timeout_seconds=30, hunt_context=_ontology_context()),
+        ], approval_timeout_seconds=10)
+        plain = 3 * 10 + (30 + 140)
+        typed = 4 * 10 + 2 * (30 + 140)
+        self.assertEqual(_practice_deadline_seconds(SimpleNamespace(hunt=hunt, rounds=2)), 2 * (plain + typed))
 
 
     def test_hunt_profile_assignment_dependencies_and_inline_evidence(self) -> None:

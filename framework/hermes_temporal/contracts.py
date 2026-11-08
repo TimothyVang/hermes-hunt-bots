@@ -1,7 +1,7 @@
 """JSON-serializable public contracts for the native Hermes Temporal path."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 
@@ -165,8 +165,26 @@ class WorkflowDecision:
 
 
 @dataclass(frozen=True)
+class HandoffRejection:
+    """One handoff validation rejection of a completed execution and what the workflow did next.
+
+    ``outcome`` is ``retried`` (the same step was offered once more behind a new execute gate),
+    ``retry_exhausted`` (the step had already used its one retry), ``retry_prompt_too_large``
+    (the correction notice did not fit the prompt budget), or ``retry_unavailable`` (a history
+    that started before retries existed). Every outcome except ``retried`` ends the workflow at
+    ``handoff_validation_rejected``. ``result`` is the rejected execution; a retried one is not
+    in ``WorkflowStatus.results``, which holds the latest execution of each reached step.
+    """
+    step_id: str
+    reason: str
+    outcome: str
+    result: ExecutionResult
+
+
+@dataclass(frozen=True)
 class WorkflowStatus:
     stage: str
     step_id: str | None
     execution_id: str | None
     results: list[ExecutionResult]
+    handoff_rejections: list[HandoffRejection] = field(default_factory=list)
