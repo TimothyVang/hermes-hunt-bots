@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 /**
  * Which surface a tool call renders as.
  *
@@ -27,6 +29,8 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `manage_connections` and `manage_catalog` are consent cards; their controls must stay visible.
 //   - `set_theme` shows a picker card while it waits for the user, then a one-line receipt.
 //   - `setup_beat` is the onboarding chat's card for one beat, then a one-line receipt.
+//   - A tool a plugin claimed through `TOOL_CARD_AREA` (lib/tool-card-renderers)
+//     draws the plugin's own card in place of the row, so it is a card too.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -49,8 +53,16 @@ export function isCardToolName(toolName: string): toolName is CardToolName {
 // Name the run splitter uses for a manage_connections part it has classified as a card.
 export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
-export function isCardTool(toolName: string): boolean {
+/** The surfaces core itself draws for a tool; no plugin can claim these names. */
+export function isBuiltInCardTool(toolName: string): boolean {
   return isCardToolName(toolName) || toolName === CONNECTION_CARD_KEY || isFileEditTool(toolName)
+}
+
+/** Tool names a plugin owns a card for. Written only by lib/tool-card-renderers. */
+export const $claimedCardTools = atom<ReadonlySet<string>>(new Set())
+
+export function isCardTool(toolName: string): boolean {
+  return isBuiltInCardTool(toolName) || $claimedCardTools.get().has(toolName)
 }
 
 // Activity tools that render nothing at all: `todo` parts are hoisted to a

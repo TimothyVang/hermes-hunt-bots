@@ -19,6 +19,7 @@ import { SetupBeatTool } from '@/components/assistant-ui/setup-beat/setup-beat-t
 import { setThemeCall } from '@/components/assistant-ui/theme-picker/args'
 import { ThemeTool } from '@/components/assistant-ui/theme-picker/theme-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
+import { PluginToolCard, useToolCardOwner } from '@/components/assistant-ui/thread/plugin-tool-card'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
@@ -144,6 +145,7 @@ const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   const showToolActivity = useStore($showToolActivity)
+  const toolCardOwner = useToolCardOwner(props.toolName)
 
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
@@ -167,6 +169,12 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   // narrating its own tapback. Failures still render so they're debuggable.
   if (props.toolName === 'react_to_message' && !props.isError) {
     return null
+  }
+
+  // A plugin's own card for this tool (TOOL_CARD_AREA). A call sealed without a
+  // result keeps the generic row, as the built-in cards do.
+  if (toolCardOwner && !settledWithoutResult(props)) {
+    return <PluginToolCard contribution={toolCardOwner} {...props} />
   }
 
   if (isCardToolName(props.toolName)) {

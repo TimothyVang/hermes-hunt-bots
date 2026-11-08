@@ -27,6 +27,16 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** Draw the transcript card for one tool call in place of the generic row:
+ *  `{ tool: '<exact name>', render(props) }`, live while it runs and settled.
+ *  One owner per tool name (a later claim is refused with a warning); core's
+ *  own cards are never claimable; a render that throws shows the generic row. */
+export {
+  TOOL_CARD_AREA,
+  type ToolCardContribution,
+  type ToolCardProps,
+  type ToolCardStatus
+} from '@/lib/tool-card-renderers'
 /** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
  *  built-in player (ownership is checked against the backend's tool registry). */
 export {

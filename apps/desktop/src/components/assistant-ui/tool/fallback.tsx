@@ -45,6 +45,7 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { $claimedCardTools } from '@/lib/tool-render-class'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -1098,6 +1099,9 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   startIndex
 }) => {
   const showToolActivity = useStore($showToolActivity)
+  // A plugin claiming a tool's card (TOOL_CARD_AREA) turns its rows into cards:
+  // regroup when the claims change. Splitting a handful of names costs nothing.
+  useStore($claimedCardTools)
 
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
@@ -1109,7 +1113,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .join('\u0000')
   )
 
-  const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
+  const items = splitRunItems(toolNameKey.split('\u0000'))
   const rows = Children.toArray(children)
 
   // The run scaffold ("Explored N files") is part of the tool feed and follows

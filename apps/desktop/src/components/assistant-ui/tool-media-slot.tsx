@@ -213,7 +213,7 @@ function claimsTool(claims: readonly Contribution[], toolName: string): boolean 
 }
 
 /** The chat's owning connection/profile, as the built-in image reads it. */
-function useMediaOwner() {
+export function useMediaOwner() {
   const connection = useStore($connection)
   const scope = useComposerScope()
   const connectionId = scope.connectionId || connection?.connectionId

@@ -27,6 +27,16 @@ Normal `setup_hermes.py install` includes this companion and the Hunting Lab. Th
 
 Use the native **Open cybersecurity workspace** palette entry or sidebar entry. A compatible app watches the desktop plugin directory; if absent, use native **Reload desktop plugins**. Hot-reload availability is not a reason to restart/kill the user's app. Disable through native plugin controls; do not remove profiles or databases. This run does not automatically open Kanban, browser, HUD, memory graph or any sensitive view.
 
+## Desktop core hook: plugin tool cards
+
+The Hunting Lab's "lab VM" card needs one small Desktop core change (`apps/desktop`, branch `feat/desktop-tool-card-hook`), shaped to be upstreamable on its own:
+
+- **API:** `TOOL_CARD_AREA` (`'transcript.toolCard'`) from `@hermes/plugin-sdk`. A plugin registers `ctx.register({ id, area: TOOL_CARD_AREA, data: { tool: '<exact tool name>', render } })`. `render(props)` receives `toolName`, `toolCallId`, `args`, `status` (`running` / `complete` / `error`), `result` (JSON-decoded), `sessionId`, `profile` (the chat's owning profile: a Bot tile's own profile, else the session's known owner route; null when unknown), `resolveImageUrl(path)` (the same authenticated media read the generic row's thumbnail uses) and `fallback` (the generic row). Returning `null` keeps the generic row.
+- **Ownership:** one owner per tool name. The earliest registration holds it until it unregisters; a later claim (whatever its `order`) is refused with a `[tool-card] refused …` console warning. Core's own surfaces (built-in cards, file-edit diffs, silent tools) can never be claimed.
+- **Rendering:** `ChainToolFallback` consults the owner before the built-in card path; `isCardTool` counts claimed tools as cards, so they are never folded into a run summary. The plugin render runs inside an error boundary whose fallback is the generic row. A call sealed without a result keeps the generic row, as the built-in cards do.
+- **Gateway:** no change. `lab_browser`'s `tool.start` / `tool.complete` reach the desktop under the default `display.tool_progress: all`; with `tool_progress: off` the gateway drops them and no card (or row) appears.
+- **Hunting Lab use:** the plugin claims `lab_browser`, reads `TOOL_CARD_AREA` off the SDK namespace (an older Desktop keeps the generic row), shows `http://127.0.0.1:8790/live/<profile>.mjpg` while the call runs, then the call's own final frame (`result.image_path`, written by `lab_browser` under its browser folder) or the board's latest `.jpg`. The profile is `result.profile` once the call returns, else the chat's owning profile; the board's absence is shown as a quiet note.
+
 ## Branding and future white-label work
 
 Cybersecurity semantics are isolated in `desktop/cybersecurity-workspace/` and the six existing bot definitions. The UI uses native theme tokens, no logo, creator artwork, trademark mascot or downloaded pet. Product branding/trademarks are not granted by a source license. Before a future white-label release, separately review the framework's distribution license, Hermes notices/trademarks, dependency license inventory, video attribution and all asset licenses. Keep that decision separate from cybersecurity policy and from any knowledge/memory promotion. The portable kit is a local source artifact, not a release authorization.

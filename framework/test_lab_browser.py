@@ -480,6 +480,39 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(all(len(element['name']) <= 80 for element in page['elements']))
         self.assertLessEqual(len(page['text']), 3001)
 
+    def test_a_successful_action_saves_its_final_frame_and_returns_it_as_image_path(self):
+        jpeg = b'\xff\xd8\xff\xe0final-frame\xff\xd9'
+        fake = FakeBrowser()
+        fake.replies['Page.captureScreenshot'] = {'data': base64.b64encode(jpeg).decode('ascii')}
+        result = self.call(fake, action='open', page='arkime_sessions', expression='protocols == dns')
+        self.assertTrue(result['ok'], result)
+        frame = Path(result['image_path'])
+        self.assertEqual(frame.parent, self.root / lab_browser.FRAMES_DIR)
+        self.assertTrue(frame.name.endswith('-open.jpg'), frame.name)
+        self.assertEqual(frame.read_bytes(), jpeg)
+        self.assertEqual(fake.calls('Page.captureScreenshot')[-1]['params'], {'format': 'jpeg', 'quality': 70})
+        self.assertEqual(fake.calls('Page.captureScreenshot')[-1]['sessionId'], 'page')
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True, separators=(',', ':'))), lab_browser.MAX_RESULT)
+        # Only the newest frames are kept.
+        with patch.object(lab_browser, 'FRAMES_KEPT', 2):
+            for _ in range(3):
+                time.sleep(0.002)
+                self.assertTrue(self.call(fake, action='snapshot')['ok'])
+        self.assertEqual(len(list((self.root / lab_browser.FRAMES_DIR).glob('*.jpg'))), 2)
+        self.assertFalse(frame.exists())
+
+    def test_a_browser_without_a_frame_or_a_failed_action_returns_no_image_path(self):
+        fake = FakeBrowser()  # answers Page.captureScreenshot with no data
+        result = self.call(fake, action='snapshot')
+        self.assertTrue(result['ok'], result)
+        self.assertNotIn('image_path', result)
+        fake.replies['Page.captureScreenshot'] = {'data': base64.b64encode(b'jpeg').decode('ascii')}
+        failed = self.call(fake, action='click', ref='e9')
+        self.assertEqual(failed['error'], 'unknown_ref')
+        self.assertNotIn('image_path', failed)
+        # The failed click never asked for a frame: only the snapshot did.
+        self.assertEqual(len(fake.calls('Page.captureScreenshot')), 1)
+
     def test_an_unexpected_failure_returns_the_fixed_code_and_logs_its_cause(self):
         fake = FakeBrowser()
         self.call(fake, action='snapshot')
