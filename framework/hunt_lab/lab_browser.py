@@ -101,6 +101,10 @@ RISON_SAFE = "!'(),:*@$-._~/"
 _LOG = logging.getLogger(__name__)
 STATE_FILE = 'session.json'
 AUDIT_FILE = 'audit.jsonl'
+# Each successful action's final viewport, kept for the transcript thumbnail; the oldest beyond FRAMES_KEPT are dropped.
+FRAMES_DIR = 'frames'
+FRAMES_KEPT = 200
+FRAME_QUALITY = 70
 FETCH_ALL = {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}
 AUTO_ATTACH = {'autoAttach': True, 'waitForDebuggerOnStart': True, 'flatten': True}
 READ_TEXT = ('function () { if (this.type === "password") return ""; '
@@ -720,6 +724,11 @@ class BrowserSession:
                                                     'returnByValue': True}).get('result', {}).get('value')
         return {**self._location(), 'ref': command.ref, 'text': _excerpt(text, MAX_READ)}
 
+    def screenshot(self):
+        """The main page's current viewport as JPEG bytes."""
+        data = self._page('Page.captureScreenshot', {'format': 'jpeg', 'quality': FRAME_QUALITY})['data']
+        return base64.b64decode(data, validate=True)
+
     def state(self):
         lab, arkime, kibana = self.origins()
         return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
@@ -966,6 +975,22 @@ def _audit(root, entry):
         stream.write(line + '\n')
 
 
+def _final_frame(session, root, action):
+    """Save the page as the action left it under the browser's own folder; None when no frame could be taken, which
+    never fails the action itself."""
+    try:
+        jpeg = session.screenshot()
+        frames = root / FRAMES_DIR
+        frames.mkdir(exist_ok=True)
+        path = frames / ('%013d-%s.jpg' % (int(time.time() * 1000), action))
+        path.write_bytes(jpeg)
+        for old in sorted(frames.glob('*.jpg'))[:-FRAMES_KEPT]:
+            old.unlink(missing_ok=True)
+        return str(path)
+    except (CdpError, OSError, KeyError, TypeError, ValueError):
+        return None
+
+
 def _bounded(envelope):
     result = envelope['result']
     while len(json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))) > MAX_RESULT:
@@ -1003,6 +1028,8 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
                 outcome = {'ok': True, 'profile': profile, 'tool': 'lab_browser', 'case_id': case_id,
                            'result': {'action': command.action, **result,
                                       'blocked_requests': session.blocked - blocked_before}}
+                if image_path := _final_frame(session, root, command.action):
+                    outcome['image_path'] = image_path
             except QueryFailure as exc:
                 outcome = _failure(profile, exc)
             except CdpError:

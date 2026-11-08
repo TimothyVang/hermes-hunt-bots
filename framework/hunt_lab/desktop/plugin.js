@@ -34,7 +34,10 @@ function consoleFrameUrl(wsURL) {
   return createConsoleFrameUrl(CONSOLE_BUNDLE, wsURL);
 }
 import { atom, host, useValue, Button, SandboxedFrame, ROUTES_AREA, SIDEBAR_NAV_AREA, PALETTE_AREA } from '@hermes/plugin-sdk';
-import { jsx } from 'react/jsx-runtime';
+// Read optional SDK members off the namespace: a named import of one an older desktop lacks would fail the whole plugin.
+import * as hermesSdk from '@hermes/plugin-sdk';
+import { useEffect, useState } from 'react';
+import { jsx, jsxs } from 'react/jsx-runtime';
 
 const PROFILES = new Set([
   'framework-network-analyst'
@@ -271,6 +274,130 @@ function HuntBoard() {
   ] });
 }
 
+// Lab VM card: a lab_browser call drawn in its chat as a small window onto that bot's real lab
+// browser. While the call runs it shows the hunt board's live MJPEG stream of the bot's browser;
+// once it finishes, the final frame lab_browser saved (result.image_path), else the board's latest frame.
+const LIVE_URL = 'http://127.0.0.1:8790/live/';
+const LIVE_RETRY_MS = 5000;
+// The board's own /live/<profile> path pattern.
+const LIVE_PROFILE = /^[a-z0-9-]+$/;
+const PAGE_LABELS = {
+  kibana_discover: 'Kibana Discover', arkime_sessions: 'Arkime Sessions',
+  arkime_spiview: 'Arkime SPI View', lab_console: 'Lab console'
+};
+// For actions that name no page: lab_browser's PAGES paths, read off the URL the browser reported.
+const PATH_LABELS = [['/app/discover', 'Kibana Discover'], ['/sessions', 'Arkime Sessions'],
+  ['/spiview', 'Arkime SPI View'], ['/view', 'Lab console']];
+const vm = {
+  window: { maxWidth: '30rem', marginTop: '6px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: '10px',
+    overflow: 'hidden', background: 'var(--ui-bg-card, var(--ui-bg-elevated))', color: 'var(--ui-text-primary)' },
+  bar: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', fontSize: '12px',
+    background: 'var(--ui-bg-tertiary)', borderBottom: '1px solid var(--ui-stroke-tertiary)' },
+  dots: { display: 'flex', gap: '4px' },
+  dot: { width: '7px', height: '7px', borderRadius: '50%', background: 'var(--ui-stroke-secondary)' },
+  title: { flex: '1', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 },
+  state: { display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--ui-text-tertiary)', fontSize: '11px' },
+  live: { width: '6px', height: '6px', borderRadius: '50%', background: 'var(--ui-accent)' },
+  screen: { aspectRatio: '1366 / 860', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'var(--ui-bg-chrome, var(--ui-bg-tertiary))', overflow: 'hidden' },
+  image: { display: 'block', width: '100%', height: '100%', objectFit: 'contain' },
+  quiet: { padding: '0 16px', textAlign: 'center', fontSize: '12px', color: 'var(--ui-text-tertiary)' },
+  footer: { padding: '6px 10px', fontSize: '11px', lineHeight: '1.5', borderTop: '1px solid var(--ui-stroke-tertiary)' },
+  action: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', overflow: 'hidden', textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap', color: 'var(--ui-text-secondary)' },
+  outcome: { color: 'var(--ui-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+};
+const str = value => (typeof value === 'string' ? value : '');
+const quiet = text => jsx('div', { style: vm.quiet, children: text });
+
+function pageLabel(args, page) {
+  if (PAGE_LABELS[args.page]) return PAGE_LABELS[args.page];
+  try {
+    const path = new URL(str(page.url)).pathname;
+    return PATH_LABELS.find(([prefix]) => path.startsWith(prefix))?.[1] ?? 'browser';
+  } catch { return 'browser'; }
+}
+
+function actionLine(args) {
+  const action = str(args.action) || 'browse';
+  const detail = str(args.q) || str(args.expression) || str(args.text) || str(args.key) || str(args.direction) || str(args.ref);
+  return detail ? `${action} · ${detail}${args.submit === true ? ' ↵' : ''}` : action;
+}
+
+function outcomeLine(status, result) {
+  if (status === 'running') return 'Working in the lab browser…';
+  if (status === 'error' || result?.ok === false) {
+    return `Failed: ${str(result?.error) || 'no result'}${str(result?.detail) ? ` (${result.detail})` : ''}`;
+  }
+  const page = result?.result ?? {};
+  const parts = [str(page.title) || str(page.url)];
+  if (Array.isArray(page.elements)) parts.push(`${page.elements.length} elements`);
+  if (typeof page.blocked_requests === 'number' && page.blocked_requests > 0) parts.push(`blocked ${page.blocked_requests}`);
+  return parts.filter(Boolean).join(' · ') || 'Done';
+}
+
+// The call's own profile: lab_browser stamps it on every result; while running, the profile that owns this chat.
+function callProfile(result, chatProfile) {
+  const profile = typeof result?.profile === 'string' ? result.profile : chatProfile;
+  return typeof profile === 'string' && LIVE_PROFILE.test(profile) ? profile : null;
+}
+
+function LiveScreen({ profile }) {
+  const [attempt, setAttempt] = useState(0);
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    if (!down) return undefined;
+    const timer = setTimeout(() => { setDown(false); setAttempt(n => n + 1); }, LIVE_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [down]);
+  if (!profile) return quiet('No live view: this chat names no lab profile.');
+  if (down) return quiet('Live view unavailable: the hunt board is not serving this browser.');
+  return jsx('img', { src: `${LIVE_URL}${profile}.mjpg?attempt=${attempt}`, alt: `Live lab browser of ${profile}`,
+    style: vm.image, onError: () => setDown(true) }, attempt);
+}
+
+function FinalScreen({ imagePath, profile, resolveImageUrl }) {
+  // undefined: resolving; null: no local frame, use the board's.
+  const [local, setLocal] = useState(undefined);
+  const [boardDown, setBoardDown] = useState(false);
+  useEffect(() => {
+    let current = true;
+    setLocal(undefined);
+    if (!imagePath || typeof resolveImageUrl !== 'function') { setLocal(null); return undefined; }
+    resolveImageUrl(imagePath).then(url => { if (current) setLocal(url || null); }, () => { if (current) setLocal(null); });
+    return () => { current = false; };
+  }, [imagePath, resolveImageUrl]);
+  if (local) return jsx('img', { src: local, alt: 'Final lab browser frame', style: vm.image, onError: () => setLocal(null) });
+  if (local === undefined) return quiet('Loading the final frame…');
+  if (profile && !boardDown) {
+    return jsx('img', { src: `${LIVE_URL}${profile}.jpg`, alt: `Latest lab browser frame of ${profile}`, style: vm.image,
+      onError: () => setBoardDown(true) });
+  }
+  return quiet('No final frame was saved for this call.');
+}
+
+function LabVmCard({ args, profile: chatProfile, resolveImageUrl, result, status }) {
+  const call = args && typeof args === 'object' ? args : {};
+  const outcome = result && typeof result === 'object' ? result : null;
+  const profile = callProfile(outcome, chatProfile);
+  const screen = status === 'running' ? jsx(LiveScreen, { profile })
+    : status === 'error' ? quiet('No frame: the action failed.')
+      : jsx(FinalScreen, { imagePath: str(outcome?.image_path), profile, resolveImageUrl });
+  const state = status === 'running' ? [jsx('span', { style: vm.live }), 'live'] : [status === 'error' ? 'failed' : 'done'];
+  return jsxs('div', { style: vm.window, 'data-hunt-lab-vm': status, children: [
+    jsxs('div', { style: vm.bar, children: [
+      jsxs('span', { style: vm.dots, 'aria-hidden': true, children: [jsx('span', { style: vm.dot }), jsx('span', { style: vm.dot }), jsx('span', { style: vm.dot })] }),
+      jsx('span', { style: vm.title, children: `lab VM · ${pageLabel(call, outcome?.result ?? {})}` }),
+      jsxs('span', { style: vm.state, children: state })
+    ] }),
+    jsx('div', { style: vm.screen, children: screen }),
+    jsxs('div', { style: vm.footer, children: [
+      jsx('div', { style: vm.action, title: actionLine(call), children: actionLine(call) }),
+      jsx('div', { style: vm.outcome, children: outcomeLine(status, outcome) })
+    ] })
+  ] });
+}
+
 // Native Desktop's manifest is this default-exported HermesPlugin object.
 // package.json supplies versioned ESM metadata; it is not a dashboard manifest.
 export default {
@@ -282,5 +409,9 @@ export default {
     ctx.register({ id: 'board', area: ROUTES_AREA, data: { path: BOARD }, render: () => jsx(HuntBoard, {}) });
     ctx.register({ id: 'board-sidebar', area: SIDEBAR_NAV_AREA, data: { path: BOARD, label: 'Hunt Board', codicon: 'pulse' } });
     ctx.register({ id: 'board-open', area: PALETTE_AREA, data: { id: 'hunt-lab.board', label: 'Open Hunt Board', run: () => host.navigate(BOARD) } });
+    // Older desktops have no tool-card area; the generic tool row (with its thumbnail) stays.
+    if (hermesSdk.TOOL_CARD_AREA) {
+      ctx.register({ id: 'lab-browser-card', area: hermesSdk.TOOL_CARD_AREA, data: { tool: 'lab_browser', render: props => jsx(LabVmCard, props) } });
+    }
   }
 };
