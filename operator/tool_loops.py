@@ -35,6 +35,7 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ROUNDS, MAX_LOOPS, PLATEAU, KEEP_MARGIN = 2, 8, 3, 1.0
 RUN_TAG = ''
 GATE_ARGS = []
+LOG = TOOL_LOOPS / 'loop.log'
 REQUIRED = ('untrusted', 'no truth, scoring, intent or outcome claims')
 STEPS = ('scope', 'evidence', 'hypotheses', 'network', 'intel', 'analysis', 'detection', 'purple', 'incident')
 GENERIC = {'powershell.exe', 'cmd.exe', 'svchost.exe', 'lsass.exe', 'explorer.exe', 'winword.exe', 'outlook.exe',
@@ -43,7 +44,8 @@ GENERIC = {'powershell.exe', 'cmd.exe', 'svchost.exe', 'lsass.exe', 'explorer.ex
 
 def log(msg):
     line = time.strftime('%H:%M:%S ') + msg
-    with (TOOL_LOOPS / 'loop.log').open('a', encoding='utf-8') as s:
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open('a', encoding='utf-8') as s:
         s.write(line + '\n')
     print(line, flush=True)
 
@@ -140,15 +142,31 @@ def category(fact_id):
     return kind + ':' + rest.split('.')[0] if kind == 'attack' else kind
 
 
-def run_config(name, base, brief, guidance, case_id, truth):
-    """Run ROUNDS rounds; return per-round scores and observations."""
-    d = TOOL_LOOPS / name
+def workflow_id(name, case_id):
+    return f'{name}{RUN_TAG}-{case_id}'
+
+
+def base_input(case_id):
+    """The loaded case's tool-driven hunt input, made once per case and cached in TOOL_LOOPS."""
+    TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
+    base_path = TOOL_LOOPS / f'base-{case_id}.json'
+    if not base_path.exists():
+        r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
+                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            raise SystemExit('lab-input failed: ' + r.stderr[-300:])
+    return json.loads(base_path.read_text(encoding='utf-8'))
+
+
+def run_config(name, base, brief, guidance, case_id, truth, root=TOOL_LOOPS):
+    """Run ROUNDS rounds; return per-round scores and observations. Artifacts go to root/name."""
+    d = root / name
     d.mkdir(parents=True, exist_ok=True)
     raw = build_input(base, brief, guidance, case_id)
     (d / 'input.json').write_text(json.dumps(raw, indent=2), encoding='utf-8')
     url = lab_url()
     seq0 = last_seq(url)
-    wf = f'{name}{RUN_TAG}-{case_id}'
+    wf = workflow_id(name, case_id)
     rc, out, err = tcli('practice', wf, '--input', str(d / 'input.json'), '--rounds', str(ROUNDS))
     if rc:
         raise SystemExit(f'practice start failed: {err[-300:]}')
@@ -240,21 +258,32 @@ WATCHER_RULES = (
     '{"diagnosis": "...", "hypothesis": "...", "brief": "<full new brief>", "stage_guidance": {"<stage>": "<text>", ...}}')
 
 
-def watcher(context, d, attempt_note=''):
-    prompt = WATCHER_RULES + '\n\n' + json.dumps(context, indent=1)[:60000] + attempt_note
-    (d / 'watcher-prompt.txt').write_text(prompt, encoding='utf-8')
-    qf = d / 'watcher-query.txt'
+def opus(prompt, d, stem, image=None):
+    """One Claude Opus turn through the lab home's default Hermes profile, no tools; returns its stdout.
+    The prompt, query file and reply are kept in d as <stem>-*.txt."""
+    (d / f'{stem}-prompt.txt').write_text(prompt, encoding='utf-8')
+    qf = d / f'{stem}-query.txt'
     qf.write_text(prompt, encoding='utf-8')
-    r = subprocess.run([hermes_exe(), '-p', 'default', 'chat', '--query-file', str(qf), '-Q', '--max-turns', '2', '--source', 'tool',
-                        '--provider', 'anthropic', '-m', 'claude-opus-5-5'], env=hermes_env(),
-                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=900)
-    text = r.stdout
-    (d / 'watcher-response.txt').write_text(text + '\n--- stderr tail ---\n' + r.stderr[-800:], encoding='utf-8')
+    cmd = [hermes_exe(), '-p', 'default', 'chat', '--query-file', str(qf), '-Q', '--max-turns', '2', '--source', 'tool',
+           '--provider', 'anthropic', '-m', 'claude-opus-5-5']
+    if image:
+        cmd += ['--image', str(image)]
+    r = subprocess.run(cmd, env=hermes_env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=900)
+    (d / f'{stem}-response.txt').write_text(r.stdout + '\n--- stderr tail ---\n' + r.stderr[-800:], encoding='utf-8')
+    return r.stdout
+
+
+def json_reply(text, who='watcher'):
     start = text.find('{')
     if start < 0:
-        raise ValueError('watcher returned no JSON')
+        raise ValueError(f'{who} returned no JSON')
     obj, _ = json.JSONDecoder().raw_decode(text[start:])
     return obj
+
+
+def watcher(context, d, attempt_note='', rules=WATCHER_RULES):
+    prompt = rules + '\n\n' + json.dumps(context, indent=1)[:60000] + attempt_note
+    return json_reply(opus(prompt, d, 'watcher'))
 
 
 def parse_args(argv=None, prog=None, description=__doc__):
@@ -294,13 +323,7 @@ def main(args):
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
     state_path = TOOL_LOOPS / 'state.json'
     forbidden = forbidden_terms(*[p for p in (args.dev_truth, args.sealed_truth) if p])
-    base_path = TOOL_LOOPS / f'base-{args.dev_case}.json'
-    if not base_path.exists():
-        r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
-                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
-        if r.returncode:
-            raise SystemExit('lab-input failed: ' + r.stderr[-300:])
-    base = json.loads(base_path.read_text(encoding='utf-8'))
+    base = base_input(args.dev_case)
     base_brief = base['scope'].split(' only; ', 1)[1]
     if args.resume and state_path.exists():
         state = json.loads(state_path.read_text(encoding='utf-8'))
@@ -387,13 +410,7 @@ SEALED_MIN = 16
 def sealed_test(args):
     """The second half of PERFECT: the best dev config, unchanged, on a different-story case."""
     best = json.loads((TOOL_LOOPS / 'BEST.json').read_text(encoding='utf-8'))
-    base_path = TOOL_LOOPS / f'base-{args.dev_case}.json'
-    if not base_path.exists():
-        r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
-                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
-        if r.returncode:
-            raise SystemExit('lab-input failed: ' + r.stderr[-300:])
-    base = json.loads(base_path.read_text(encoding='utf-8'))
+    base = base_input(args.dev_case)
     if base['ontology']['case_id'] != args.dev_case:
         raise SystemExit(f"the lab has {base['ontology']['case_id']} loaded, not {args.dev_case}")
     res, _calls = run_config(f'sealed{RUN_TAG}', base, best['brief'], best['stage_guidance'], args.dev_case, args.dev_truth)
