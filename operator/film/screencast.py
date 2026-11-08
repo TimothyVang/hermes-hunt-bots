@@ -21,7 +21,7 @@ from pathlib import Path
 
 import tool_loops as tl
 from film.actions import OWNERS
-from lab_paths import FRAMEWORK, LAB_BROWSER
+from lab_paths import FRAMEWORK
 
 READ_ONLY = frozenset({'Target.getTargets', 'Target.attachToTarget', 'Target.detachFromTarget', 'Page.startScreencast',
                        'Page.stopScreencast', 'Page.screencastFrameAck'})
@@ -205,7 +205,7 @@ class Stream:
 class Watcher:
     """Polls both owners' browser files in a thread until stop(); frames go to Index(out)."""
 
-    def __init__(self, out, root=LAB_BROWSER, profiles=tuple(OWNERS), connect=websocket, poll=0.25):
+    def __init__(self, out, root, profiles=tuple(OWNERS), connect=websocket, poll=0.25):
         self.index = Index(out)
         self.streams = [Stream(p, root, self.index, connect) for p in profiles]
         self.poll = poll

@@ -17,21 +17,21 @@ import time
 import urllib.request
 from pathlib import Path
 
-from lab_paths import FRAMEWORK, LAB_STATE, PYTHON, hermes_env, hermes_exe
+from lab_paths import DEFAULT_LANE, FRAMEWORK, PYTHON
 
 sys.path.insert(0, str(FRAMEWORK))
 from hunt_lab.runtime import _available_memory_mib as avail_mib  # noqa: E402  same probe the lab's start uses
 
 
-def lab(action, timeout=600):
-    r = subprocess.run([hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', action], env=hermes_env(),
+def lab(action, timeout=600, lane=DEFAULT_LANE):
+    r = subprocess.run([lane.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', action], env=lane.env(),
                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout)
     line = next((l for l in r.stdout.splitlines() if l.startswith('{')), '{}')
     return r.returncode, json.loads(line)
 
 
 def start_memory_mib():
-    deployment = LAB_STATE / 'deployment.json'
+    deployment = DEFAULT_LANE.state_dir / 'deployment.json'
     if not deployment.is_file():
         raise SystemExit(f'no lab deployment at {deployment}; prepare the lab VM first (framework/hunt_lab/prepare_guest.py)')
     return json.loads(deployment.read_text(encoding='utf-8'))['memory_mib'] + 1024 + 30
@@ -58,7 +58,7 @@ def main():
         if not (evidence / 'case.json').is_file():
             ap.error(f'no case.json in {evidence}')
         args.evidence_dir = str(evidence)
-    hermes_exe()
+    DEFAULT_LANE.hermes_exe()
     if args.evidence_dir:
         lab('stop', 300)
         for _ in range(60):
@@ -69,7 +69,7 @@ def main():
         else:
             raise SystemExit('VM did not stop')
         say('vm stopped')
-        r = subprocess.run([PYTHON, '-B', str(FRAMEWORK / 'hunt_lab' / 'prepare_guest.py'), 'reseed', '--state-dir', str(LAB_STATE),
+        r = subprocess.run([PYTHON, '-B', str(FRAMEWORK / 'hunt_lab' / 'prepare_guest.py'), 'reseed', '--state-dir', str(DEFAULT_LANE.state_dir),
                             '--evidence-dir', args.evidence_dir, '--profile', 'framework-network-analyst', '--update-deployment'],
                            cwd=FRAMEWORK, capture_output=True, text=True, timeout=1800)
         if r.returncode:

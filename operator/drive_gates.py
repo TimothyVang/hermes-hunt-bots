@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from lab_paths import FRAMEWORK, GATE_RUNS, temporal_cli
+from lab_paths import DEFAULT_LANE, FRAMEWORK, GATE_RUNS
 
 LOG = GATE_RUNS / 'driver.log'
 NOTE_LIMIT_BYTES = 4096  # the workflow silently ignores a decision whose note is larger
@@ -35,7 +35,7 @@ def cli(*args):
     # once its gate has passed, so retrying a slow call cannot double-approve.
     for attempt in range(3):
         try:
-            result = subprocess.run([*temporal_cli(), *args], cwd=FRAMEWORK,
+            result = subprocess.run([*DEFAULT_LANE.temporal_cli(), *args], cwd=FRAMEWORK,
                                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
             break
         except subprocess.TimeoutExpired:
