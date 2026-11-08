@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 from lab_paths import FRAMEWORK, LAB_STATE, PYTHON, hermes_env, hermes_exe
 
