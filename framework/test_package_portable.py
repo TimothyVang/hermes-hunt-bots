@@ -229,6 +229,8 @@ APPROVED_FILES = frozenset({
     'hunt_lab/guest/ingest.py',
     'hunt_lab/guest/lab_server.py',
     'hunt_lab/guest/image-lock.json',
+    'hunt_lab/guest/kibana.yml',
+    'hunt_lab/guest/kibana_setup.py',
     'hunt_lab/fixtures/dns-lab-001/events.jsonl',
     'hunt_lab/fixtures/dns-lab-001/traffic.pcap',
     'hunt_lab/fixtures/dns-lab-001/case.json',

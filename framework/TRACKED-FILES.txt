@@ -201,6 +201,8 @@ hunt_lab/guest/bootstrap_guest.sh
 hunt_lab/guest/compose.yaml
 hunt_lab/guest/image-lock.json
 hunt_lab/guest/ingest.py
+hunt_lab/guest/kibana.yml
+hunt_lab/guest/kibana_setup.py
 hunt_lab/guest/lab_server.py
 hunt_lab/__init__.py
 hunt_lab/humanize.py

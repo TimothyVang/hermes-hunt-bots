@@ -13,7 +13,7 @@ function Fit-Buffer {
 }
 $color = @{ 'framework-researcher' = 'Cyan'; 'framework-network-analyst' = 'Yellow' }
 $who = @{ 'framework-researcher' = 'Hunter'; 'framework-network-analyst' = 'Analyst' }
-$page = @{ 'lab_console' = 'console'; 'arkime_sessions' = 'sessions'; 'arkime_spiview' = 'spiview' }
+$page = @{ 'kibana_discover' = 'discover'; 'lab_console' = 'console'; 'arkime_sessions' = 'sessions'; 'arkime_spiview' = 'spiview' }
 Write-Host 'lab_browser - the bots driving their web tools' -ForegroundColor DarkGray
 while ($true) {
   Fit-Buffer

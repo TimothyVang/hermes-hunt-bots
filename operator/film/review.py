@@ -22,7 +22,7 @@ REVIEW_RULES = (
     "the filming. Each lane is an independent lab that ran the same brief at the same time; the image holds one block "
     "per lane, under its lane name when there are several, and each block stacks two contact sheets. TOP (6 tiles): "
     "the video's left panel at moments when a bot "
-    "acted in its own browser through lab_browser: the Threat Hunter drives the lab console (Elastic search page), the "
+    "acted in its own browser through lab_browser: the Threat Hunter drives Kibana Discover (Elastic), the "
     "Network Analyst drives Arkime (Sessions / SPI View). Each tile's label is its video time and the caption shown "
     "then. BOTTOM (8 tiles): the whole 1920x1080 video at even intervals; left 1280px is the acting bot's browser or, "
     "when no bot drives, the lab activity console; right 640px is the lab_browser audit console (top) and stage "

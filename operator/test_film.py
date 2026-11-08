@@ -20,7 +20,7 @@ from film import record, review, screencast
 T0 = 1_800_000_000.0
 
 
-def audit(t, profile, action='open', page='lab_console', query=None, text=None, entered=None, ok=True, submit=False):
+def audit(t, profile, action='open', page='kibana_discover', query=None, text=None, entered=None, ok=True, submit=False):
     return json.dumps({'t': int(t * 1000), 'profile': profile, 'action': action, 'page': page, 'query': query,
                        'text': text, 'entered': entered, 'ok': ok, 'submit': submit})
 
@@ -58,6 +58,7 @@ class CoverageTest(unittest.TestCase):
     def test_typed_search_on_the_wrong_tool_or_outside_the_round_does_not_count(self):
         actions = acts.from_audit([
             audit(T0 + 5, TH, page='arkime_sessions', query='q1', entered='typed'),
+            audit(T0 + 6, TH, page='lab_console', query='q1', entered='typed'),
             audit(T0 + 500, TH, query='q1', entered='typed'),
         ], T0, T0 + 100) + acts.from_activity([activity(T0 + 1, TH, 'elastic_search', q='q1')])
         self.assertEqual(acts.coverage(actions)['owners'][TH]['coverage'], 0.0)
@@ -202,7 +203,7 @@ class EditPlanTest(unittest.TestCase):
         self.assertEqual([(s.start, s.end, s.speed, s.screencast) for s in segs], [
             (0, 27, 10, None), (27, 39, 1, TH), (39, 77, 10, None), (77, 82, 1, None), (82, 86, 1, NA), (86, 120, 10, None)])
         self.assertEqual(segs[1].captions[0].start, 3.0)
-        self.assertIn('Threat Hunter · lab console (Elastic) · searches "a"', segs[1].captions[0].text)
+        self.assertIn('Threat Hunter · Kibana Discover (Elastic) · searches "a"', segs[1].captions[0].text)
         self.assertTrue(segs[0].captions and 'elastic_search' in segs[0].captions[0].text)
         self.assertEqual(cutter.to_output(segs, 30), cutter.INTRO_SECONDS + 2.7 + 3)
 

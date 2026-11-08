@@ -32,6 +32,7 @@ BACKEND_FILES = (
     'actionability.py', 'plugin.yaml', 'assets.json',
     'guest/compose.yaml', 'guest/arkime.ini', 'guest/bootstrap_guest.sh',
     'guest/ingest.py', 'guest/lab_server.py', 'guest/image-lock.json',
+    'guest/kibana.yml', 'guest/kibana_setup.py',
     'fixtures/dns-lab-001/events.jsonl', 'fixtures/dns-lab-001/traffic.pcap',
     'fixtures/dns-lab-001/case.json',
 )

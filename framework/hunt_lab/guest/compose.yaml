@@ -35,6 +35,19 @@ services:
       elasticsearch:
         condition: service_healthy
     restart: unless-stopped
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.23
+    environment:
+      NODE_OPTIONS: --max-old-space-size=800
+    mem_limit: 1280m
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    # As for Arkime, "host" is this disposable Linux GUEST; the backend network is internal.
+    network_mode: host
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
 volumes:
   elastic-data:
   arkime-pcap:

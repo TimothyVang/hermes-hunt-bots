@@ -16,7 +16,7 @@ def _failure(profile, state, reason):
         "profile": profile, "state": state, "reason": reason,
         "vm_name": None, "pid": None, "console_url": None,
         "console_websocket_url": None, "vnc_port": None, "qmp_port": None,
-        "lab_url": None, "arkime_url": None, "memory_mib": None, "accel": None,
+        "lab_url": None, "arkime_url": None, "kibana_url": None, "memory_mib": None, "accel": None,
     }
 
 

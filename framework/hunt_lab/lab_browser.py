@@ -1,9 +1,9 @@
-"""lab_browser host tool: a dedicated real browser on the lab's own web tools (Arkime, lab console).
+"""lab_browser host tool: a dedicated real browser on the lab's own web tools (Kibana Discover, Arkime, lab console).
 
 Bots address elements by accessibility-tree refs and act through CDP Input events with human-like
 pointer paths and typing cadence. Enforcement runs inside the browser: every request pauses in CDP
 Fetch and browser_policy decides it; launch flags add a CDP-independent proxy fence that admits only
-the two lab ports. Nothing here reads cookies, credentials or answer keys.
+the lab's own ports. Nothing here reads cookies, credentials or answer keys.
 """
 from __future__ import annotations
 
@@ -27,13 +27,32 @@ from urllib import parse, request
 
 from . import humanize
 from .actionability import CLICK_ACTIONABLE
-from .browser_policy import LabScope, Refused, check_expression, decide, document_allowed, origin
+from .browser_policy import (KIBANA_INDEX, LabScope, Refused, check_expression, decide, document_allowed,
+                             kibana_window, origin)
 from .query_adapter import QueryFailure, _case_id, _failure, _lab_base, _schema, endpoint
 
+
+@dataclass(frozen=True)
+class Page:
+    """One page a bot may open: which lab origin serves it, its path, the open argument that carries its search,
+    the accessible name of the search box demo mode types that search into, and, for a page that keeps working
+    after the network goes quiet, a script that is true once it has settled."""
+    origin: str
+    path: str
+    query: str
+    box: str
+    ready: str | None = None
+
+
 PAGES = {
-    'arkime_sessions': ('arkime', '/sessions'),
-    'arkime_spiview': ('arkime', '/spiview'),
-    'lab_console': ('lab', '/view'),
+    # Kibana runs its bundles between requests, so a quiet network alone does not mean Discover has its hits.
+    'kibana_discover': Page('kibana', '/app/discover', 'q', 'Start typing to search and filter the discover page',
+                            "location.pathname !== '/app/discover' || "
+                            "!!document.querySelector('[data-test-subj=globalLoadingIndicator-hidden]') && "
+                            "!!document.querySelector('[data-test-subj=discoverQueryHits],[data-test-subj=discoverNoResults]')"),
+    'arkime_sessions': Page('arkime', '/sessions', 'expression', 'Search'),
+    'arkime_spiview': Page('arkime', '/spiview', 'expression', 'Search'),
+    'lab_console': Page('lab', '/view', 'q', 'Search'),
 }
 KEYS = {
     'Enter': {'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'text': '\r'},
@@ -62,9 +81,7 @@ INTERACTIVE_ROLES = frozenset({
     'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider',
     'spinbutton', 'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'treeitem',
 })
-# Demo mode enters an open's search through the page's own box: Arkime's expression input and the lab
-# console's <input name="q"> both carry the accessible name "Search".
-SEARCH_BOX = ('Search', frozenset({'textbox', 'searchbox', 'combobox'}))
+SEARCH_ROLES = frozenset({'textbox', 'searchbox', 'combobox'})
 ICON_GLYPHS = re.compile('[\ue000-\uf8ff]')
 FLAGS = ('disabled', 'focused', 'checked', 'expanded', 'selected')
 REF = re.compile(r'e[1-9][0-9]{0,3}')
@@ -79,6 +96,8 @@ MAX_QUERY = 500
 IDLE_SECONDS = 600
 VIEWPORT = (1366, 860)
 CTRL = 2
+# Characters Kibana's rison URL state uses unescaped; everything else in it is percent-encoded.
+RISON_SAFE = "!'(),:*@$-._~/"
 _LOG = logging.getLogger(__name__)
 STATE_FILE = 'session.json'
 AUDIT_FILE = 'audit.jsonl'
@@ -125,19 +144,22 @@ CURSOR_OVERLAY = r"""(() => {
 
 SCHEMA = _schema(
     'lab_browser',
-    'Drive a real browser on the lab\'s own web tools: Arkime\'s Sessions and SPI View pages and the lab '
-    'console. open a page, read the returned snapshot of interactive elements (refs e1, e2, ...), then '
-    'click, type into or read an element by ref, press a key, or scroll; the pointer and keyboard move like '
-    'a person\'s. Refs come from the latest snapshot only. type replaces the field\'s text; submit=true '
-    'presses Enter after it. In the browser every Arkime search is scoped to the loaded case (tag case:<id>) '
-    'and its time window, Arkime writes, exports, packets and admin pages are blocked, and requests to any '
-    'other origin fail. Each result has the page title, URL, interactive elements, a visible-text excerpt '
-    'and how many requests were blocked.',
+    'Drive a real browser on the lab\'s own web tools: Kibana Discover over the case\'s events, Arkime\'s '
+    'Sessions and SPI View pages, and the lab console. open a page, read the returned snapshot of interactive '
+    'elements (refs e1, e2, ...), then click, type into or read an element by ref, press a key, or scroll; the '
+    'pointer and keyboard move like a person\'s. Refs come from the latest snapshot only. type replaces the '
+    'field\'s text; submit=true presses Enter after it. In Kibana Discover every search is held to the loaded '
+    'case\'s events and its time window; saving, sharing, alerts, settings, Dev Tools and every other Kibana app '
+    'are blocked. Every Arkime search is scoped to the loaded case (tag case:<id>) and its time window, and '
+    'Arkime writes, exports, packets and admin pages are blocked. Requests to any other origin fail. Each result '
+    'has the page title, URL, interactive elements, a visible-text excerpt and how many requests were blocked.',
     {'action': {'type': 'string', 'enum': list(ACTIONS)},
      'page': {'type': 'string', 'enum': list(PAGES), 'description': 'open only.'},
      'expression': {'type': 'string', 'maxLength': MAX_QUERY,
                     'description': 'open an Arkime page with this search expression already applied.'},
-     'q': {'type': 'string', 'maxLength': MAX_QUERY, 'description': 'open lab_console with this search.'},
+     'q': {'type': 'string', 'maxLength': MAX_QUERY,
+           'description': 'open kibana_discover or lab_console with this Lucene search (the same syntax as '
+                          'elastic_search).'},
      'ref': {'type': 'string', 'pattern': '^e[1-9][0-9]{0,3}$', 'description': 'Element ref from the latest snapshot.'},
      'text': {'type': 'string', 'maxLength': MAX_TYPE, 'description': 'type only.'},
      'submit': {'type': 'boolean', 'description': 'type only: press Enter after typing.'},
@@ -180,6 +202,11 @@ def _plain(value, limit):
     return isinstance(value, str) and len(value) <= limit and not any(ord(c) < 32 or ord(c) == 127 for c in value)
 
 
+def _rison(value):
+    """A rison string literal: quoted, with ! and ' escaped by !."""
+    return "'" + value.replace('!', '!!').replace("'", "!'") + "'"
+
+
 def parse_command(arguments):
     """Validate one tool call's arguments into a Command, before anything touches the lab."""
     if not isinstance(arguments, dict):
@@ -194,7 +221,7 @@ def parse_command(arguments):
     page = given.get('page')
     if page is not None and page not in PAGES:
         raise QueryFailure('invalid_page')
-    query_name = 'q' if page == 'lab_console' else 'expression'
+    query_name = PAGES[page].query if page else 'expression'
     if set(given) & ({'expression', 'q'} - {query_name}):
         raise QueryFailure('invalid_arguments')
     query = given.get(query_name, '')
@@ -442,7 +469,8 @@ class BrowserSession:
         verdict = decide(self.scope, req.get('method', ''), url, _post_data(req))
         self.last_request = time.monotonic()
         record = {'method': str(req.get('method', ''))[:8]}
-        if origin(url) in (self.scope.lab_origin, self.scope.arkime_origin):
+        source = origin(url)
+        if source is not None and source in self.scope.origins:
             record['path'] = parse.urlsplit(url).path[:120]
         if verdict.block:
             self.blocked += 1
@@ -488,7 +516,7 @@ class BrowserSession:
         return not self.dead and not self.cdp.closed.is_set()
 
     def origins(self):
-        return self.scope.lab_origin, self.scope.arkime_origin
+        return self.scope.origins
 
     def _page(self, method, params=None, timeout=20):
         return self.cdp.call(method, params, self.main_session, timeout)
@@ -499,7 +527,10 @@ class BrowserSession:
     def _settle(self, quiet=0.8, limit=10.0):
         self.sleep(0.25)
         deadline = time.monotonic() + limit
-        while time.monotonic() < deadline and time.monotonic() - self.last_request < quiet:
+        ready = PAGES[self.page_name].ready if self.page_name in PAGES else None
+        while time.monotonic() < deadline:
+            if time.monotonic() - self.last_request >= quiet and (ready is None or self._evaluate(ready) is True):
+                return
             self.sleep(0.05)
 
     def _location(self):
@@ -517,22 +548,40 @@ class BrowserSession:
         return getattr(self, '_' + command.action)(command)
 
     def _url(self, page, query):
-        kind, path = PAGES[page]
-        if kind == 'arkime':
+        spec = PAGES[page]
+        if spec.origin == 'arkime':
             params = {'startTime': self.scope.start, 'stopTime': self.scope.stop}
             if query:
                 params = {'expression': query, **params}
-            return self.scope.arkime_origin + path + '?' + parse.urlencode(params)
-        return self.scope.lab_origin + path + ('?' + parse.urlencode({'q': query}) if query else '')
+            return self.scope.arkime_origin + spec.path + '?' + parse.urlencode(params)
+        if spec.origin == 'kibana':
+            return self._discover_url(query)
+        return self.scope.lab_origin + spec.path + ('?' + parse.urlencode({'q': query}) if query else '')
+
+    def _discover_url(self, query):
+        """Discover on the case data view and window with only this Lucene query: no filters or columns carried
+        over from an earlier search (Discover would otherwise restore them)."""
+        start, stop = kibana_window(self.scope)
+        globals_ = '(filters:!(),refreshInterval:(pause:!t,value:60000),time:(from:%s,to:%s))' % (_rison(start), _rison(stop))
+        app = ('(columns:!(),dataSource:(dataViewId:%s,type:dataView),filters:!(),interval:auto,'
+               "query:(language:lucene,query:%s),sort:!(!('@timestamp',desc)))") % (_rison(KIBANA_INDEX), _rison(query))
+        return '%s%s#/?_g=%s&_a=%s' % (self.scope.kibana_origin, PAGES['kibana_discover'].path,
+                                      parse.quote(globals_, safe=RISON_SAFE), parse.quote(app, safe=RISON_SAFE))
 
     def _navigate(self, url):
         self.loaded.clear()
-        if self._page('Page.navigate', {'url': url}).get('errorText'):
+        result = self._page('Page.navigate', {'url': url})
+        if result.get('errorText'):
             raise QueryFailure('navigation_failed')
+        if not result.get('loaderId'):
+            # Only the fragment changed, where Kibana keeps its state: reload so the page starts from the new URL.
+            self._page('Page.reload')
         self.loaded.wait(20)
         self._settle()
 
     def _open(self, command):
+        if PAGES[command.page].origin == 'kibana' and self.scope.kibana_origin is None:
+            raise QueryFailure('kibana_unavailable')
         self.page_name = command.page
         self.entered = 'url' if command.query else None
         if self.demo.marker == 'on' and command.query:
@@ -547,12 +596,12 @@ class BrowserSession:
         return self._snapshot(command)
 
     def _search_in_page(self, command):
-        """Demo only: load the page unfiltered, then type the search into its Search box and press Enter on
+        """Demo only: load the page unfiltered, then type the search into its search box and press Enter on
         camera. The search still leaves the page as an ordinary request, so Fetch scopes it like any other."""
         self._navigate(self._url(command.page, ''))
-        name, roles = SEARCH_BOX
+        name = PAGES[command.page].box
         box = next((element['ref'] for element in self._snapshot(command)['elements']
-                    if element['role'] in roles and element['name'] == name), None)
+                    if element['role'] in SEARCH_ROLES and element['name'] == name), None)
         if box is None:
             raise QueryFailure('no_search_box')
         self._enter(box, command.query, submit=True)
@@ -672,8 +721,8 @@ class BrowserSession:
         return {**self._location(), 'ref': command.ref, 'text': _excerpt(text, MAX_READ)}
 
     def state(self):
-        lab, arkime = self.origins()
-        return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime,
+        lab, arkime, kibana = self.origins()
+        return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
                 'pointer': list(self.pointer), 'last_used': self.last_used, **_shape(self.window, self.demo)}
 
@@ -742,7 +791,7 @@ def _browser_executable():
 def browser_args(executable, user_data, scope, window=None, scale=None):
     """Launch flags; `window` (x, y, width, height) opens a visible window there, None runs headless. `scale` forces
     that device scale factor and keeps the window's size in screen pixels, so pages render larger in the same window."""
-    lab, arkime = (parse.urlsplit(value).port for value in (scope.lab_origin, scope.arkime_origin))
+    ports = [parse.urlsplit(value).port for value in scope.origins if value]
     args = [
         executable, '--user-data-dir=' + str(user_data), '--remote-debugging-port=0',
         '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check',
@@ -750,9 +799,9 @@ def browser_args(executable, user_data, scope, window=None, scale=None):
         '--disable-default-apps', '--deny-permission-prompts',
         '--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication',
         # A fence that holds even with no CDP client attached: everything goes to a dead proxy
-        # except the two lab ports (<-loopback> drops Chrome's implicit loopback bypass).
+        # except the lab's own ports (<-loopback> drops Chrome's implicit loopback bypass).
         '--proxy-server=http://127.0.0.1:1',
-        '--proxy-bypass-list=<-loopback>;127.0.0.1:%d;127.0.0.1:%d' % (lab, arkime),
+        '--proxy-bypass-list=<-loopback>;' + ';'.join('127.0.0.1:%d' % port for port in ports),
     ]
     if scale:
         args.append('--force-device-scale-factor=%g' % scale)
@@ -845,7 +894,7 @@ def _start(root, scope):
         window = _wanted_window(demo)
         wanted = _shape(window, demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
-                 and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin)
+                 and (state.get('lab_origin'), state.get('arkime_origin'), state.get('kibana_origin')) == scope.origins
                  and {key: state.get(key) for key in wanted} == wanted)
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
                                  pid=state.get('pid'), state=state if fresh else None, demo=demo, window=window)
@@ -888,7 +937,7 @@ def _session(root, scope):
         # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
         # the operator's marker still asks for the mode it was launched in.
         demo = read_demo(Path(root).parent / DEMO_FILE)
-        if (session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin)
+        if (session is not None and session.alive() and session.origins() == scope.origins
                 and _shape(session.window, session.demo) == _shape(_wanted_window(demo), demo)):
             session.scope = scope
             return session
@@ -940,7 +989,8 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
         case_id = _case_id(arguments)
         base, metadata, status = _lab_base(runtime, state_dir, profile, case_id)
         try:
-            scope = LabScope.from_case(metadata, base, endpoint(status.get('arkime_url')))
+            kibana = endpoint(status['kibana_url']) if status.get('kibana_url') else None
+            scope = LabScope.from_case(metadata, base, endpoint(status.get('arkime_url')), kibana)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise QueryFailure('lab_invalid_response') from None
         root = Path(browser_root) if browser_root else Path(state_dir).parent / 'hunt-lab-browser' / profile

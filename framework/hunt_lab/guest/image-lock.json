@@ -10,6 +10,11 @@
       "tag": "ghcr.io/arkime/arkime/arkime:v6.9.1",
       "manifest_digest": "sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0",
       "config_digest": "sha256:df567a6acbd82b44777ef0d4fa90b56c297f48299c75c5763f0f7995a7ce5251"
+    },
+    {
+      "tag": "docker.elastic.co/kibana/kibana:8.19.23",
+      "manifest_digest": "sha256:920b24f689833d34205f426f5359864378a572e829c53016073f0a6837c2e995",
+      "config_digest": "sha256:ab278894eef59657381be56ac8f4fc2526d3b9059e3b04adae5a204df2fcbd27"
     }
   ]
 }

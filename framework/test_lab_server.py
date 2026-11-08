@@ -366,15 +366,58 @@ class EndpointTests(ServerCase):
 
     def test_health_reports_case_counts_with_tagged_network_scope(self):
         self.elastic.response = es_hits([{}], total=5)
-        viewer = mock.MagicMock()
-        viewer.__enter__.return_value.status = 200
-        with mock.patch.object(lab_server, 'urlopen', return_value=viewer):
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
             status, value = self.request('/health')
         self.assertEqual(status, 200)
         self.assertEqual({key: value[key] for key in ('case_id', 'event_count', 'network_session_count', 'intel_count')},
                          {'case_id': 'lab-med-001', 'event_count': 5, 'network_session_count': 5, 'intel_count': 5})
         network = next(call for call in self.elastic.calls if call['index'] == 'arkime_sessions3-*')
         self.assertIn({'term': {'tags': 'case:lab-med-001'}}, network['body']['query']['bool']['filter'])
+
+    def test_health_is_not_ready_until_kibanas_data_view_names_the_loaded_case(self):
+        self.elastic.response = es_hits([{}], total=5)
+        view = mock.MagicMock()
+        view.__enter__.return_value = io.BytesIO(json.dumps({'data_view': {'name': 'dns-lab-001 events'}}).encode())
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'urlopen', return_value=view):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['ready'], value['kibana_ready']), (503, False, False))
+        view.__enter__.return_value = io.BytesIO(json.dumps({'data_view': {'name': 'lab-med-001 events'}}).encode())
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'urlopen', return_value=view):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['ready'], value['kibana_ready']), (200, True, True))
+
+
+class KibanaGuestTests(unittest.TestCase):
+    def test_discover_parses_lucene_with_the_same_query_string_options_as_elastic_search(self):
+        config = (GUEST / 'kibana.yml').read_text(encoding='utf-8')
+        options = json.loads(next(line for line in config.splitlines()
+                                  if line.strip().startswith('query:queryString:options:')).split(': ', 1)[1].strip("'"))
+        self.assertEqual(options, {key: value for key, value in lab_server.lucene('x')['query_string'].items() if key != 'query'})
+        self.assertIn('search:queryLanguage: lucene', config)
+
+    def test_setup_points_the_case_alias_data_view_and_window_at_the_loaded_case(self):
+        setup = load('kibana_setup')
+        calls = []
+
+        def call(base, path, method='GET', data=None, kibana=False):
+            calls.append((base, method, path, data))
+            if path.startswith('/api/data_views/data_view/'):
+                return {'data_view': {'title': setup.CASE_ALIAS, 'timeFieldName': '@timestamp'}}
+            return {'count': 7} if path.endswith('/_count') else {}
+
+        self.assertEqual(setup.configure('http://es', 'http://kb', CASE, call=call), 7)
+        alias = calls[0][3]['actions'][0]['add']
+        self.assertEqual((alias['alias'], alias['filter']), ('hunt-lab-case-events', {'term': {'event.dataset': 'lab-med-001'}}))
+        view = next(data for _, _, path, data in calls if path == '/api/data_views/data_view')['data_view']
+        self.assertEqual((view['id'], view['title'], view['timeFieldName'], view['name']),
+                         ('hunt-lab-case-events', 'hunt-lab-case-events', '@timestamp', 'lab-med-001 events'))
+        settings = next(data for _, _, path, data in calls if path == '/api/kibana/settings')['changes']
+        self.assertEqual(json.loads(settings['timepicker:timeDefaults']),
+                         {'from': '2026-03-02T00:00:00.000Z', 'to': '2026-03-04T23:59:59.999Z'})
+        self.assertEqual(lab_server.KIBANA_DATA_VIEW, setup.DATA_VIEW_ID)
 
 
 class LegacyWindowScopeTests(ServerCase):

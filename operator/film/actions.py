@@ -18,15 +18,17 @@ class Owner:
 
 
 # The two bots that own a browser: the web tool each drives and the API searches it should show there.
+# The Threat Hunter's Elastic web tool is Kibana Discover; the lab console no longer counts.
 OWNERS = {
-    'framework-researcher': Owner('Threat Hunter', 'Elastic', frozenset({'elastic_search'}), frozenset({'lab_console'})),
+    'framework-researcher': Owner('Threat Hunter', 'Elastic', frozenset({'elastic_search'}), frozenset({'kibana_discover'})),
     'framework-network-analyst': Owner('Network Analyst', 'Arkime', frozenset({'arkime_sessions', 'arkime_unique'}),
                                        frozenset({'arkime_sessions', 'arkime_spiview'})),
 }
 ROLES = {'framework-coordinator': 'IR Lead', 'framework-researcher': 'Threat Hunter',
          'framework-network-analyst': 'Network Analyst', 'framework-librarian': 'Threat Intel',
          'framework-builder': 'Detection Engineer', 'framework-reviewer': 'Purple Team'}
-PAGES = {'lab_console': 'lab console (Elastic)', 'arkime_sessions': 'Arkime Sessions', 'arkime_spiview': 'Arkime SPI View'}
+PAGES = {'kibana_discover': 'Kibana Discover (Elastic)', 'lab_console': 'lab console', 'arkime_sessions': 'Arkime Sessions',
+         'arkime_spiview': 'Arkime SPI View'}
 CAPTION_MAX = 110
 
 

@@ -1,0 +1,28 @@
+# Kibana for the synthetic lab case: a read-only analyst surface over the case's events.
+# kibana_setup.py adds the per-case data view and time range; lab_browser fences what a bot's
+# browser may request. Settings fixed here are read-only in Kibana's UI.
+server.host: 0.0.0.0
+server.port: 5601
+server.name: hermes-hunt-lab
+elasticsearch.hosts: [http://172.30.91.2:9200]
+telemetry.optIn: false
+telemetry.allowChangingOptInStatus: false
+telemetry.banner: false
+newsfeed.enabled: false
+home.disableWelcomeScreen: true
+console.ui.enabled: false
+console.ui.embeddedEnabled: false
+monitoring.ui.enabled: false
+xpack.security.showInsecureClusterWarning: false
+uiSettings.overrides:
+  defaultRoute: /app/discover
+  search:queryLanguage: lucene
+  # The same query_string options as the lab's elastic_search (guest/lab_server.py lucene()), so a
+  # query typed into Discover finds the same events; test_lab_server checks they stay equal.
+  query:queryString:options: '{"fields":["message","event.id","event.action","host.name","user.name","process.name","process.parent.name","process.command_line.text","process.parent.command_line.text","dns.question.name","url.domain","url.full.text","tls.server_name","file.path.text"],"default_operator":"AND","allow_leading_wildcard":false,"analyze_wildcard":false,"lenient":true}'
+  query:allowLeadingWildcards: false
+  dateFormat:tz: UTC
+  # terms_enum reads the whole index, past the case filter on the data view's alias; an aggregation does not.
+  autocomplete:valueSuggestionMethod: terms_agg
+  hideAnnouncements: true
+  enableESQL: false

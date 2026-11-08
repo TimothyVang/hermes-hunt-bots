@@ -45,16 +45,20 @@ _DELEGATION = (
     "specialist owning the needed tool (" + "; ".join(f"{profile}: {tools}" for profile, tools in _TOOLS_BY_PROFILE.items())
     + "), the case_id, and the exact question. Cite every returned finding you use with its evt- IDs and answering profile."
 )
-_BROWSER = ("lab_browser shows a query in a real browser on the lab console or Arkime's own pages (open, snapshot, then "
+_BROWSER = ("lab_browser shows a query in a real browser on Arkime's own pages or the lab console (open, snapshot, then "
             "click or type by ref); it reads the same case-scoped data, so cite only what your tools returned. ")
+_KIBANA = ("lab_browser shows your Elastic hunt on screen in real Kibana Discover: open page kibana_discover with q (the "
+           "same Lucene query as elastic_search, typed into Kibana's query bar), then expand a document (Toggle dialog with "
+           "details) or add a field filter or column by ref. It reads the same case-scoped events, so cite only what your "
+           "tools returned. ")
 _TOOL_PROMPTS = {
     "scope": "Confirm the bounded scope, exclusions, questions, and coverage from the case metadata; plan which specialist tool should answer each question. "
              + _DELEGATION + " Do not decide execution approval.",
     "evidence": "Drive your own elastic_search and elastic_aggregate: start with aggregations (host.name, event.category, process.name, "
                 "dns.question.name, @timestamp histograms), pivot to specific hosts, processes, users and domains, then fetch the matching events. "
-                + _BROWSER + "Extract evidence-supported observations. Do not receive or infer another worker's conclusions.",
+                + _KIBANA + "Extract evidence-supported observations. Do not receive or infer another worker's conclusions.",
     "hypotheses": "Drive your own elastic_search and elastic_aggregate to develop and rank competing hypotheses; for each, run at least one query "
-                  "that could disconfirm it and report what it returned. " + _BROWSER + "Do not receive another worker's conclusions.",
+                  "that could disconfirm it and report what it returned. " + _KIBANA + "Do not receive another worker's conclusions.",
     "network": "Drive your own arkime_sessions and arkime_unique (hunt_lab_query only as a fallback): profile talkers, destinations, ports, "
                "DNS/HTTP/TLS hosts and timing, pivot on outliers, and narrow to the sessions behind each claim, quoting each Arkime expression. "
                + _BROWSER + "No packet capture, pcap download, endpoint, or external access. Return cited observations, limits, and alternatives.",

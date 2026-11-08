@@ -36,7 +36,7 @@ DISK_BYTES = 32 * 1024**3
 HEADROOM_BYTES = 1024**3
 PAYLOAD_FILES = (
     "compose.yaml", "arkime.ini", "bootstrap_guest.sh", "lab_server.py",
-    "ingest.py", "image-lock.json",
+    "ingest.py", "image-lock.json", "kibana.yml", "kibana_setup.py",
 )
 EVIDENCE_FILES = ("events.jsonl", "traffic.pcap", "case.json")
 # Optional per-case evidence; never truth/answer-key material.

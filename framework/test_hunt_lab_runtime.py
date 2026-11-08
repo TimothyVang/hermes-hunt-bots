@@ -12,7 +12,7 @@ from unittest import mock
 from hunt_lab import runtime
 
 PORTS = dict(qmp_port=31001, vnc_port=31002, console_websocket_port=31003,
-             lab_port=31004, arkime_port=31005)
+             lab_port=31004, arkime_port=31005, kibana_port=31006)
 
 
 class ScriptedSocket:
@@ -202,6 +202,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["console_websocket_url"], "ws://127.0.0.1:31003")
         self.assertEqual(result["lab_url"], "http://127.0.0.1:31004")
         self.assertEqual(result["arkime_url"], "http://127.0.0.1:31005")
+        self.assertEqual(result["kibana_url"], "http://127.0.0.1:31006")
+
+    def test_a_vm_launched_before_the_kibana_forward_stays_manageable_without_a_kibana_url(self):
+        home, _, record = self.record()
+        legacy = {key: value for key, value in record.items() if key not in ("kibana_port", "kibana_url")}
+        (home / "state.json").write_text(json.dumps(legacy))
+        with mock.patch.object(runtime, "_owned", side_effect=runtime.QMPUnavailable), \
+             mock.patch.object(runtime, "_process_alive", return_value=False):
+            result = runtime.invoke("status", state_dir=self.state_dir)
+        self.assertEqual((result["lab_url"], result["kibana_url"], result["kibana_port"]), ("http://127.0.0.1:31004", None, None))
+        self.assertNotEqual(result["reason"], "invalid_state")
 
     def test_qmp_prelaunch_is_starting_not_fake_running(self):
         with contextlib.ExitStack() as stack:
@@ -333,7 +344,8 @@ class RuntimeTests(unittest.TestCase):
         for prohibited in ("bridge", "tap,", "hostfwd=tcp::", "0.0.0.0", "[::]", "9200", "-:22", "usb-host", "vfio", "clipboard"):
             self.assertNotIn(prohibited, joined)
         net = argv[argv.index("-netdev") + 1]
-        self.assertEqual(net, "user,id=net0,hostfwd=tcp:127.0.0.1:31004-:8765,hostfwd=tcp:127.0.0.1:31005-:8005")
+        self.assertEqual(net, "user,id=net0,hostfwd=tcp:127.0.0.1:31004-:8765,hostfwd=tcp:127.0.0.1:31005-:8005,"
+                              "hostfwd=tcp:127.0.0.1:31006-:5601")
         self.assertEqual(argv[argv.index("-vnc") + 1], "127.0.0.1:25102,websocket=127.0.0.1:31003")
         self.assertEqual(argv[argv.index("-qmp") + 1], "tcp:127.0.0.1:31001,server=on,wait=off")
         self.assertEqual(argv[argv.index("-accel") + 1], "tcg")
