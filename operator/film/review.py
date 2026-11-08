@@ -100,7 +100,17 @@ def browser_moments(edit, actions, n=BROWSER_TILES):
     typed = [a for a in acts if a.typed]
     pick = _spread(typed, n)
     pick += _spread([a for a in acts if a not in pick], n - len(pick))
-    return [(cutter.to_output(segs, max(0.0, a.t - t0 - 0.5)), a.caption) for a in sorted(pick, key=lambda a: a.t)]
+    return [(cutter.to_output(segs, _on_page(segs, a.profile, max(0.0, a.t - t0 - 0.5))), a.caption)
+            for a in sorted(pick, key=lambda a: a.t)]
+
+
+def _on_page(segs, profile, r):
+    """r, or the start of the actor's own page later in the same real-time stretch when r falls before it."""
+    for seg, nxt in zip(segs, segs[1:]):
+        if (seg.start <= r < seg.end and seg.speed == 1.0 and seg.screencast != profile
+                and nxt.speed == 1.0 and nxt.screencast == profile):
+            return nxt.start + 0.5
+    return r
 
 
 def _spread(items, n):

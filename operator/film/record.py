@@ -142,7 +142,7 @@ def start_consoles(titles, workflow, lab_url):
             'audit': ['-Root', str(LAB_BROWSER)],
             'stages': ['-Workflow', workflow, '-Python', PYTHON, '-Framework', str(FRAMEWORK),
                        '-Address', TEMPORAL_ADDRESS or '', '-Queue', TEMPORAL_TASK_QUEUE or '']}
-    return [subprocess.Popen(['conhost.exe', 'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File',
+    return [subprocess.Popen(['conhost.exe', 'powershell', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File',
                               str(HERE / 'consoles' / c.script), '-Title', titles[k], *args[k]])
             for k, c in CONSOLES.items()]
 

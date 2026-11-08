@@ -127,6 +127,12 @@ class ReviewValidationTest(unittest.TestCase):
                 self.assertIsNone(rv)
                 self.assertTrue(problems)
 
+    def test_a_browser_moment_shows_the_actor_page_once_it_is_on_screen(self):
+        segs = [cutter.Segment(0, 27, 10), cutter.Segment(27, 31, 1), cutter.Segment(31, 36, 1, TH), cutter.Segment(36, 120, 10)]
+        edit = {'t0': T0, 'capture_seconds': 120, 'segments': [{**vars(s), 'captions': []} for s in segs]}
+        typed = acts.from_audit([audit(T0 + 30, TH, query='a', entered='typed')], T0, T0 + 120)
+        self.assertEqual([t for t, _ in review.browser_moments(edit, typed)], [cutter.to_output(segs, 31.5)])
+
     def test_bad_json_is_retried_once_and_never_more(self):
         replies = iter(['I think it is fine.', json.dumps(good_review())])
         calls = []
@@ -182,6 +188,18 @@ class EditPlanTest(unittest.TestCase):
         frames = [(10, 'a'), (20, 'b'), (25, 'c'), (40, 'd')]
         self.assertEqual(cutter.frame_schedule(frames, 15, 30), [('a', 5), ('b', 5), ('c', 5)])
 
+    def test_blank_screencast_frames_are_never_shown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blank, page = Path(tmp) / 'blank.jpg', Path(tmp) / 'page.jpg'
+            blank.write_bytes(b'\0' * 7_000)
+            page.write_bytes(b'\0' * 90_000)
+            shown = cutter.shown_frames({TH: [(T0 + 20, blank), (T0 + 31, page), (T0 + 33, blank)], NA: [(T0 + 40, blank)]})
+            self.assertEqual(shown, {TH: [(T0 + 31, page)]})
+            segs = self.plan([audit(T0 + 30, TH, query='a', entered='typed')],
+                             frames={p: [t for t, _ in v] for p, v in shown.items()})
+            self.assertEqual([(s.start, s.end, s.screencast) for s in segs if s.speed == 1], [(27, 31, None), (31, 36, TH)])
+            self.assertEqual(cutter.frame_schedule([(t - T0, f) for t, f in shown[TH]], 31, 36), [(page, 5)])
+
 
 class PrivacyCoverageTest(unittest.TestCase):
     TITLES = {k: f'{c.title} [wf]' for k, c in record.CONSOLES.items()}
@@ -205,14 +223,17 @@ class PrivacyCoverageTest(unittest.TestCase):
 class FakeBrowser:
     """A DevTools browser endpoint: answers attach and screencast commands and emits frames."""
 
-    def __init__(self, frames):
-        self.inbox, self.sent, self.frames = queue.Queue(), [], frames
+    def __init__(self, frames, targets=('T1',)):
+        self.inbox, self.sent, self.frames, self.targets = queue.Queue(), [], frames, targets
 
     def send(self, text):
         m = json.loads(text)
         self.sent.append(m)
         method, sid = m['method'], m.get('sessionId')
-        if method == 'Target.attachToTarget':
+        if method == 'Target.getTargets':
+            self.push({'id': m['id'], 'result': {'targetInfos': [{'targetId': 'W1', 'type': 'service_worker'}]
+                                                + [{'targetId': t, 'type': 'page'} for t in self.targets]}})
+        elif method == 'Target.attachToTarget':
             self.session = 'S-' + m['params']['targetId']
             self.push({'method': 'Target.attachedToTarget', 'params': {'sessionId': self.session}})
             self.push({'id': m['id'], 'result': {'sessionId': self.session}})
@@ -286,6 +307,32 @@ class ScreencastTest(unittest.TestCase):
         self.assertIn('Page.stopScreencast', [m['method'] for m in browsers['ws://b2'].sent])
         sent = {m['method'] for b in browsers.values() for m in b.sent}
         self.assertLessEqual(sent, screencast.READ_ONLY)
+
+    def test_a_freshly_launched_browser_is_filmed_before_lab_browser_writes_session_json(self):
+        live = 'ws://127.0.0.1:9222/devtools/browser/new'
+        browser = FakeBrowser([(T0 + 0.5, b'typing the first search')], targets=('T1', 'T9'))
+        connected = []
+
+        def connect(url):
+            connected.append(url)
+            if url != live:
+                raise ConnectionRefusedError(url)
+            return browser
+        self.point_at('ws://127.0.0.1:9100/devtools/browser/old', 'T0')
+        port = self.root / 'browsers' / TH / 'user-data'
+        port.mkdir()
+        (port / 'DevToolsActivePort').write_text('9222\n/devtools/browser/new\n')
+        out = self.root / 'screencast'
+        watcher = screencast.Watcher(out, root=self.root / 'browsers', profiles=(TH,), connect=connect, poll=0.05).start()
+        try:
+            self.wait_for(lambda: len(screencast.read_index(out).get(TH, [])) == 1)
+            self.point_at(live, 'T1')
+            time.sleep(0.3)
+        finally:
+            watcher.stop()
+        self.assertEqual(connected, [live])
+        self.assertEqual([m['params']['targetId'] for m in browser.sent if m['method'] == 'Target.attachToTarget'], ['T1'])
+        self.assertEqual(screencast.read_index(out)[TH][0][1].read_bytes(), b'typing the first search')
 
     def test_the_client_refuses_any_command_that_could_drive_the_page(self):
         client = screencast.ReadOnlyCdp(FakeBrowser([]), lambda m: None)

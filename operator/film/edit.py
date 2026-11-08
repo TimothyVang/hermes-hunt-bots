@@ -25,6 +25,8 @@ MIN_CAPTION = 0.4
 INTRO_SECONDS, OUTRO_SECONDS = 5, 7
 BAR = 104
 BACKGROUND = '0x0b1220'
+# A blank page (about:blank, a page mid-load) encodes to ~7 KB at 1280x960; lab pages with content were 86 KB+.
+MIN_FRAME_BYTES = 16_000
 
 
 @dataclass(frozen=True)
@@ -250,8 +252,9 @@ class Renderer:
                       f'pad=1280:1080:(ow-iw)/2:0:color={BACKGROUND},setsar=1,fps=30,setpts=PTS-STARTPTS[l];')
         else:
             panels = '[0:v]fps=30,split[a][b];[a]crop=1280:1080:0:0[l];[b]crop=640:1080:1280:0[r];'
-        label, color = (('REAL TIME · bot driving its browser', '0x22c55e') if seg.speed == 1.0 else
-                        (f'{seg.speed:g}x FASTER · every frame is real', '0xf59e0b'))
+        label, color = ((f'{seg.speed:g}x FASTER · every frame is real', '0xf59e0b') if seg.speed != 1.0 else
+                        ('REAL TIME · bot driving its browser', '0x22c55e') if seg.screencast else
+                        ('REAL TIME · lab activity', '0x22c55e'))
         draws = [f'drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=black@0.72:t=fill',
                  self.text(label, 24, f'h-{BAR}+12', 28, color)]
         draws += [self.text(c.text, 24, f'h-{BAR}+56', 30, 'white', (c.start, c.end)) for c in seg.captions]
@@ -265,16 +268,24 @@ def duration_of(video):
     return float(r.stdout.strip())
 
 
-def cut(d, rec, actions, knobs, cov):
-    """Render d/video.mp4 from film.json's captures; returns (and writes) d/edit.json."""
+def shown_frames(frames):
+    """Screencast frames worth showing: a blank or empty page is skipped, so the frame before it stays on screen
+    (or the backdrop, before an owner's first page with content)."""
+    return {p: kept for p, v in frames.items() if (kept := [(t, f) for t, f in v if f.stat().st_size >= MIN_FRAME_BYTES])}
+
+
+def cut(d, rec, actions, knobs, cov, out_dir=None):
+    """Render video.mp4 from film.json's captures in d; returns (and writes) edit.json. Outputs go to out_dir
+    (default d), so a capture can be re-cut without touching an earlier cut."""
     d = Path(d)
+    out_dir = Path(out_dir or d)
     raw = d / rec['raw']
     duration = duration_of(raw)
-    frames = screencast.read_index(d / rec['screencast'])
+    frames = shown_frames(screencast.read_index(d / rec['screencast']))
     segments = plan(duration, rec['t0'], actions, {p: [t for t, _ in v] for p, v in frames.items()}, knobs)
     rel = {p: [(t - rec['t0'], path) for t, path in v] for p, v in frames.items()}
     intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'])
-    work = d / 'edit-work'
+    work = out_dir / 'edit-work'
     r = Renderer(work)
     parts = [work / 'intro.mp4']
     r.card(intro, INTRO_SECONDS, parts[0])
@@ -285,7 +296,7 @@ def cut(d, rec, actions, knobs, cov):
     r.card(outro, OUTRO_SECONDS, parts[-1])
     listing = work / 'parts.ffconcat'
     listing.write_text('ffconcat version 1.0\n' + ''.join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding='utf-8')
-    video = d / 'video.mp4'
+    video = out_dir / 'video.mp4'
     subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(listing),
                     '-c', 'copy', '-movflags', '+faststart', str(video)], check=True)
     out, timeline = float(INTRO_SECONDS), []
@@ -295,7 +306,7 @@ def cut(d, rec, actions, knobs, cov):
     edit = {'video': video.name, 'knobs': asdict(knobs), 'capture_seconds': round(duration, 3), 't0': rec['t0'],
             'out_seconds': round(out + OUTRO_SECONDS, 3), 'intro': intro, 'outro': outro, 'segments': timeline,
             'screencast_frames': {p: len(v) for p, v in frames.items()}}
-    (d / 'edit.json').write_text(json.dumps(edit, indent=1), encoding='utf-8')
+    (out_dir / 'edit.json').write_text(json.dumps(edit, indent=1), encoding='utf-8')
     return edit
 
 
