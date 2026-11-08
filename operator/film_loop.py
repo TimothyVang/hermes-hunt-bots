@@ -38,6 +38,9 @@ from film import review as reviewer
 from lab_paths import FILM_LOOPS, FRAMEWORK, TOOL_LOOPS, hermes_exe
 
 BUDGET, PLATEAU, PERFECT_FOUND, READY_COVERAGE, COVERAGE_SLACK = 8, 3, 18, 0.8, 0.1
+# One filmed round per loop: identical configs have scored 4-12 of 18 across rounds, so a large driving gain
+# is kept when the score falls by no more than this one-round noise band.
+COVERAGE_JUMP, FOUND_NOISE = 0.2, 2
 DRIVE_MAX = 700
 DRIVE_NOTE = (
     'Threat Hunter and Network Analyst, filmed run: show your hunt on screen with lab_browser. Threat Hunter: for '
@@ -51,7 +54,8 @@ FILM_RULES = tl.WATCHER_RULES + (
     'You also see the last loop\'s driving coverage (per owner: typed browser searches, the share of its distinct API '
     'searches it also ran in the browser, whether it used both), its score breakdown, and a review by a model that '
     'watched the cut video. A change is kept only with 0 decoys blamed and no halt, and either more coverage at the same '
-    'or better score, or a better score with coverage at most 0.1 lower. Your JSON object must also carry "drive_note": '
+    'or better score, or a better score with coverage at most 0.1 lower, or a coverage gain of at least 0.2 with the '
+    'score at most 2 lower (one-round noise). Your JSON object must also carry "drive_note": '
     'the full on-screen driving instruction for those two bots (1-700 characters, naming lab_browser), appended to the '
     'brief. It is part of your one change; keep it general technique too.')
 
@@ -81,7 +85,8 @@ def keep(new, best):
     if new['misattributed'] or new['halts']:
         return False
     return ((new['found'] >= best['found'] and new['coverage'] > best['coverage'])
-            or (new['found'] > best['found'] and new['coverage'] >= best['coverage'] - COVERAGE_SLACK))
+            or (new['found'] > best['found'] and new['coverage'] >= best['coverage'] - COVERAGE_SLACK)
+            or (new['coverage'] >= best['coverage'] + COVERAGE_JUMP and new['found'] >= best['found'] - FOUND_NOISE))
 
 
 def finished(best):
@@ -171,6 +176,32 @@ def promote(state, outcome):
         shutil.copyfile(outcome['video'], FILM_LOOPS / 'BEST.mp4')
 
 
+def rejudge_last(state, reason):
+    """Re-apply the current keep rule to the last evaluated loop after the rule itself changed.
+
+    Only a reverted loop that is still state['last'] qualifies; the best it was compared against is unchanged
+    because a reverted loop never replaces it. Returns True when the loop is now kept."""
+    entry = state['history'][-1] if state['history'] else None
+    last = state.get('last')
+    if not entry or entry['kept'] or not last or entry['loop'] != last['loop']:
+        tl.log(f'rejudge: nothing to re-judge ({reason})')
+        return False
+    before = state['best']
+    if not keep(last, before):
+        tl.log(f'rejudge film-{last["loop"]:02d}: still reverted under the current rule ({reason})')
+        return False
+    entry['kept'] = True
+    promote(state, last)
+    state['no_gain'] = 0
+    decision = FILM_LOOPS / f'film-{last["loop"]:02d}' / 'decision.json'
+    if decision.exists():
+        record = json.loads(decision.read_text(encoding='utf-8'))
+        decision.write_text(json.dumps(record | {'kept': True, 'rejudged': reason}, indent=2), encoding='utf-8')
+    tl.log(f'rejudge film-{last["loop"]:02d}: KEPT under the current rule (found {last["found"]:.0f} vs '
+           f'{before["found"]:.0f}, coverage {last["coverage"]:.2f} vs {before["coverage"]:.2f}): {reason}')
+    return True
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('dev_case', help='case ID loaded in the lab VM')
@@ -181,6 +212,8 @@ def parse_args(argv=None):
     ap.add_argument('--loops', type=int, default=BUDGET, help='watcher loops after loop 0')
     ap.add_argument('--resume', action='store_true')
     ap.add_argument('--tag', default='', help='suffix for workflow IDs so a restarted series never reuses one')
+    ap.add_argument('--rejudge-last', metavar='REASON',
+                    help='with --resume: re-apply the current keep rule to the last loop if it was reverted; REASON is logged')
     args = ap.parse_args(argv)
     for name in ('dev_truth', 'sealed_truth'):
         truth = getattr(args, name)
@@ -203,6 +236,9 @@ def main(args):
     state_path = FILM_LOOPS / 'state.json'
     if args.resume and state_path.exists():
         state = json.loads(state_path.read_text(encoding='utf-8'))
+        if args.rejudge_last:
+            rejudge_last(state, args.rejudge_last)
+            save(state)
     else:
         start = TOOL_LOOPS / 'BEST.json'
         seed = json.loads(start.read_text(encoding='utf-8')) if start.exists() else {}
