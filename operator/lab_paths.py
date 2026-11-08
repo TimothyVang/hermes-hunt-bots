@@ -18,6 +18,10 @@ LAB_STATE = LAB_HOME / 'profiles' / 'framework-network-analyst' / 'hunt-lab-vm'
 # lab_browser keeps each bot's session.json and audit.jsonl in <profile>/ here, next to the operator's demo.json.
 LAB_BROWSER = LAB_STATE.parent / 'hunt-lab-browser'
 PYTHON = os.environ.get('HUNT_BOTS_PYTHON') or sys.executable
+# Every Python child these tools start (the Temporal CLI, scorers, the gate driver) writes its piped
+# output as UTF-8, which is how the tools read it. Without this a Windows child uses the locale code
+# page, and one arrow in a stage output crashed the gate driver and halted a filmed round.
+os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 TEMPORAL_ADDRESS = os.environ.get('HUNT_BOTS_TEMPORAL_ADDRESS')
 TEMPORAL_TASK_QUEUE = os.environ.get('HUNT_BOTS_TASK_QUEUE')
 PRACTICE = RUNTIME / 'practice'
