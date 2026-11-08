@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
-from lab_paths import FRAMEWORK, GATE_RUNS, LAB_STATE, PYTHON, TOOL_LOOPS, hermes_env, hermes_exe, temporal_cli
+from lab_paths import DEFAULT_LANE, FRAMEWORK, GATE_RUNS, PYTHON, TOOL_LOOPS
 from switch_case import lab
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -50,14 +50,14 @@ def log(msg):
     print(line, flush=True)
 
 
-def tcli(*args, timeout=180):
-    r = subprocess.run([*temporal_cli(), *args], cwd=FRAMEWORK, capture_output=True,
+def tcli(*args, lane=DEFAULT_LANE, timeout=180):
+    r = subprocess.run([*lane.temporal_cli(), *args], cwd=FRAMEWORK, capture_output=True,
                        text=True, encoding='utf-8', errors='replace', timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
 
-def lab_url():
-    _, st = lab('status', 180)
+def lab_url(lane=DEFAULT_LANE):
+    _, st = lab('status', 180, lane)
     if st.get('state') != 'running':
         raise SystemExit(f'lab not running: {st.get("state")} {st.get("reason")}')
     return st['lab_url']
@@ -142,16 +142,16 @@ def category(fact_id):
     return kind + ':' + rest.split('.')[0] if kind == 'attack' else kind
 
 
-def workflow_id(name, case_id):
-    return f'{name}{RUN_TAG}-{case_id}'
+def workflow_id(name, case_id, lane=DEFAULT_LANE):
+    return f'{name}{RUN_TAG}-{lane.name + "-" if lane.name else ""}{case_id}'
 
 
-def base_input(case_id):
-    """The loaded case's tool-driven hunt input, made once per case and cached in TOOL_LOOPS."""
+def base_input(case_id, lane=DEFAULT_LANE):
+    """The case loaded in this lane's lab as a tool-driven hunt input, made once per case and lane and cached in TOOL_LOOPS."""
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
-    base_path = TOOL_LOOPS / f'base-{case_id}.json'
+    base_path = TOOL_LOOPS / f'base-{case_id}{"-" + lane.name if lane.name else ""}.json'
     if not base_path.exists():
-        r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
+        r = subprocess.run([*lane.temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(lane.state_dir),
                             '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True,
                            encoding='utf-8', errors='replace', timeout=120)
         if r.returncode:
@@ -159,26 +159,27 @@ def base_input(case_id):
     return json.loads(base_path.read_text(encoding='utf-8'))
 
 
-def run_config(name, base, brief, guidance, case_id, truth, root=TOOL_LOOPS):
-    """Run ROUNDS rounds; return per-round scores and observations. Artifacts go to root/name."""
-    d = root / name
+def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT_LANE):
+    """Run ROUNDS rounds on this lane's lab and queue; return per-round scores and observations.
+    Artifacts go to d (default TOOL_LOOPS/name)."""
+    d = d or TOOL_LOOPS / name
     d.mkdir(parents=True, exist_ok=True)
     raw = build_input(base, brief, guidance, case_id)
     (d / 'input.json').write_text(json.dumps(raw, indent=2), encoding='utf-8')
-    url = lab_url()
+    url = lab_url(lane)
     seq0 = last_seq(url)
-    wf = workflow_id(name, case_id)
-    rc, out, err = tcli('practice', wf, '--input', str(d / 'input.json'), '--rounds', str(ROUNDS))
+    wf = workflow_id(name, case_id, lane)
+    rc, out, err = tcli('practice', wf, '--input', str(d / 'input.json'), '--rounds', str(ROUNDS), lane=lane)
     if rc:
         raise SystemExit(f'practice start failed: {err[-300:]}')
     t0 = time.time()
     drv = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('drive_gates.py')), wf, *GATE_ARGS],
-                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=4 * 3600)
-    calls = activity_since(lab_url(), seq0)
+                         env=lane.env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=4 * 3600)
+    calls = activity_since(lab_url(lane), seq0)
     (d / 'activity.json').write_text(json.dumps(calls, indent=1), encoding='utf-8')
     rounds = []
     for n in range(1, ROUNDS + 1):
-        rc, out, _ = tcli('status', f'{wf}:round:{n:03d}')
+        rc, out, _ = tcli('status', f'{wf}:round:{n:03d}', lane=lane)
         if rc:
             rounds.append({'round': n, 'completed': False, 'stage': 'not_started', 'found': 0})
             continue
@@ -270,11 +271,11 @@ def opus(prompt, d, stem, image=None):
     (d / f'{stem}-prompt.txt').write_text(prompt, encoding='utf-8')
     qf = d / f'{stem}-query.txt'
     qf.write_text(prompt, encoding='utf-8')
-    cmd = [hermes_exe(), '-p', 'default', 'chat', '--query-file', str(qf), '-Q', '--max-turns', '2', '--source', 'tool',
+    cmd = [DEFAULT_LANE.hermes_exe(), '-p', 'default', 'chat', '--query-file', str(qf), '-Q', '--max-turns', '2', '--source', 'tool',
            '--provider', 'anthropic', '-m', 'claude-opus-5-5']
     if image:
         cmd += ['--image', str(image)]
-    r = subprocess.run(cmd, env=hermes_env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=900)
+    r = subprocess.run(cmd, env=DEFAULT_LANE.env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=900)
     (d / f'{stem}-response.txt').write_text(r.stdout + '\n--- stderr tail ---\n' + r.stderr[-800:], encoding='utf-8')
     return r.stdout
 
@@ -323,7 +324,7 @@ def main(args):
     global RUN_TAG
     RUN_TAG = args.tag
     GATE_ARGS[:] = ['--delegated-by', args.delegated_by, '--reason', args.reason]
-    hermes_exe()
+    DEFAULT_LANE.hermes_exe()
     if args.sealed:
         return sealed_test(args)
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)

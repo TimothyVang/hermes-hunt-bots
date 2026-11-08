@@ -1,8 +1,9 @@
-"""Have Claude Opus watch a cut: contact sheets plus measured metrics in, one strict JSON review out.
+"""Have Claude Opus watch a loop's cuts: contact sheets plus measured metrics in, one strict JSON review out.
 
-Hermes one-shot takes one image, so the browser-moment sheet (the left panel at the bots' typed
-searches and other lab_browser actions) and the whole-video overview are stacked into review.png.
-One call; one retry if the reply is not valid JSON in the schema; never more than two calls.
+Hermes one-shot takes one image, so each lane's browser-moment sheet (the left panel at the bots' typed
+searches and other lab_browser actions) and whole-video overview are stacked into its review.png, and
+the lanes' sheets are stacked again, each under its lane's name, into the loop's review.png. One call;
+one retry if the reply is not valid JSON in the schema; never more than two calls.
 """
 import json
 import subprocess
@@ -17,14 +18,17 @@ TEXT_MAX = 600
 SUGGESTIONS_MAX, SUGGESTION_MAX = 5, 400
 
 REVIEW_RULES = (
-    "You review a short video of a six-bot AI threat hunt in a synthetic lab, for an operator tuning both the hunt and "
-    "the filming. The image stacks two contact sheets. TOP (6 tiles): the video's left panel at moments when a bot "
+    "You review short videos of a six-bot AI threat hunt in a synthetic lab, for an operator tuning both the hunt and "
+    "the filming. Each lane is an independent lab that ran the same brief at the same time; the image holds one block "
+    "per lane, under its lane name when there are several, and each block stacks two contact sheets. TOP (6 tiles): "
+    "the video's left panel at moments when a bot "
     "acted in its own browser through lab_browser: the Threat Hunter drives the lab console (Elastic search page), the "
     "Network Analyst drives Arkime (Sessions / SPI View). Each tile's label is its video time and the caption shown "
     "then. BOTTOM (8 tiles): the whole 1920x1080 video at even intervals; left 1280px is the acting bot's browser or, "
     "when no bot drives, the lab activity console; right 640px is the lab_browser audit console (top) and stage "
     "progress (bottom). A bottom bar labels 1x real-time stretches and sped-up ones. All frames are real captures. "
-    "The metrics below are measured from the edit and the logs; trust them over guesses from small tiles.\n"
+    "The metrics below are measured from the edits and the logs, per lane and as the mean over lanes; trust them over "
+    "guesses from small tiles. Judge all lanes together.\n"
     "Judge: is each web tool visibly being driven (a search typed into its Search box, results on screen); are typing "
     "and the in-page cursor visible; is text readable at 1080p; how much dead time is there. Then suggest (a) changes "
     "to the bots' brief or stage guidance that would make them drive their tools on screen more and better, as general "
@@ -180,15 +184,42 @@ def consult(prompt, d, png, ask=tl.opus):
     return out
 
 
-def review(d, edit, actions, cov, result):
-    """Writes and returns d/review.json: consult()'s result plus the metrics and the sheet's name."""
+def mean_metrics(per_lane):
+    """Each numeric metric averaged over lanes."""
+    keys = [k for k, v in next(iter(per_lane.values())).items() if type(v) in (int, float)]
+    return {k: round(sum(m[k] for m in per_lane.values()) / len(per_lane), 2) for k in keys}
+
+
+def stack(d, sheets):
+    """d/review.png: the lanes' review sheets one under another, each under its lane's name."""
+    r = cutter.Renderer(Path(d) / 'review-work')
+    inputs, graph = [], []
+    for i, (name, png) in enumerate(sheets.items()):
+        inputs += ['-i', str(png)]
+        graph.append(f'[{i}:v]pad=1920:ih+56:0:56:color=0x1e293b,{r.text(f"LANE {name}", 12, 10, 36, "0xfbbf24")}[l{i}]')
+    png = Path(d) / 'review.png'
+    _ffmpeg([*inputs, '-filter_complex', ';'.join(graph) + ';' + ''.join(f'[l{i}]' for i in range(len(sheets)))
+             + f'vstack=inputs={len(sheets)}[v]', '-map', '[v]', '-frames:v', '1'], png)
+    return png
+
+
+def review(d, cuts, ask=tl.opus):
+    """Writes and returns d/review.json: consult()'s result plus per-lane and mean metrics and the image's name.
+    cuts: one {'lane', 'd', 'edit', 'actions', 'cov', 'result'} per lane that has a cut."""
     d = Path(d)
-    png = sheet(d, edit, actions)
-    m = metrics(edit, cov)
-    first = result['rounds'][0] if result.get('rounds') else {}
-    context = {'metrics': m, 'round': {'found': first.get('found', 0), 'total': first.get('total', 18),
-                                       'misattributed_decoys': result.get('misattributed', 0), 'halts': result.get('halts', 0)},
-               'captions_sample': [c['text'] for s in edit['segments'] for c in s['captions']][:30]}
-    out = {**consult(REVIEW_RULES + '\n\n' + json.dumps(context, indent=1), d, png), 'metrics': m, 'sheet': png.name}
+    sheets = {c['lane']: sheet(c['d'], c['edit'], c['actions']) for c in cuts}
+    png = next(iter(sheets.values())) if len(sheets) == 1 else stack(d, sheets)
+    per = {c['lane']: metrics(c['edit'], c['cov']) for c in cuts}
+    lanes = {}
+    for c in cuts:
+        result, first = c['result'], (c['result'].get('rounds') or [{}])[0]
+        lanes[c['lane']] = {'metrics': per[c['lane']],
+                            'round': {'found': first.get('found', 0), 'total': first.get('total', 18),
+                                      'misattributed_decoys': result.get('misattributed', 0), 'halts': result.get('halts', 0)},
+                            'captions_sample': [x['text'] for s in c['edit']['segments'] for x in s['captions']][:20]}
+    m = {'lanes': per, 'mean': mean_metrics(per)}
+    context = {'lanes': lanes, 'mean_over_lanes': m['mean']}
+    out = {**consult(REVIEW_RULES + '\n\n' + json.dumps(context, indent=1), d, png, ask), 'metrics': m,
+           'sheet': str(png.relative_to(d))}
     (d / 'review.json').write_text(json.dumps(out, indent=1), encoding='utf-8')
     return out

@@ -229,21 +229,34 @@ class EditPlanTest(unittest.TestCase):
 
 class PrivacyCoverageTest(unittest.TestCase):
     TITLES = {k: f'{c.title} [wf]' for k, c in record.CONSOLES.items()}
+    LEFT, RIGHT = record.Rect(0, 0, 1920, 1080), record.Rect(1920, 0, 1920, 1080)
 
-    def ours(self, **over):
-        return [record.Win(self.TITLES[k], over.get(k, c.rect), True, True) for k, c in record.CONSOLES.items()]
+    def ours(self, region=LEFT, titles=TITLES, **over):
+        return [record.Win(titles[k], over.get(k, record.tile(region, k)), True, True) for k in record.CONSOLES]
 
-    def test_consoles_tile_the_capture_region_exactly(self):
-        self.assertTrue(record.tiles(record.REGION, [c.rect for c in record.CONSOLES.values()]))
-        self.assertFalse(record.tiles(record.REGION, [c.rect for c in record.CONSOLES.values()][:2]))
+    def test_consoles_tile_each_lane_region_exactly(self):
+        for region in (self.LEFT, self.RIGHT):
+            with self.subTest(region=region):
+                self.assertTrue(record.tiles(region, [record.tile(region, k) for k in record.CONSOLES]))
+                self.assertFalse(record.tiles(region, [record.tile(region, k) for k in list(record.CONSOLES)[:2]]))
 
     def test_any_foreign_window_above_a_console_or_a_misplaced_console_is_reported(self):
         browser = record.Win('My personal browser', record.Rect(100, 100, 800, 600), True, False)
         far = record.Win('Elsewhere', record.Rect(2000, 1200, 800, 600), True, True)
-        self.assertEqual(record.uncovered([far, *self.ours(), browser], self.TITLES), [])
-        self.assertTrue(any('My personal browser' in p for p in record.uncovered([browser, *self.ours()], self.TITLES)))
-        self.assertTrue(record.uncovered(self.ours(audit=record.Rect(1280, 0, 640, 500)), self.TITLES))
-        self.assertTrue(record.uncovered(self.ours()[:2], self.TITLES))
+        self.assertEqual(record.uncovered([far, *self.ours(), browser], self.TITLES, self.LEFT), [])
+        self.assertTrue(any('My personal browser' in p for p in record.uncovered([browser, *self.ours()], self.TITLES, self.LEFT)))
+        self.assertTrue(record.uncovered(self.ours(audit=record.Rect(1280, 0, 640, 500)), self.TITLES, self.LEFT))
+        self.assertTrue(record.uncovered(self.ours()[:2], self.TITLES, self.LEFT))
+
+    def test_two_lanes_side_by_side_each_count_only_their_own_region(self):
+        other = {k: f'{c.title} [wf-l2]' for k, c in record.CONSOLES.items()}
+        lane2 = self.ours(self.RIGHT, other)
+        windows = [*lane2, *self.ours()]
+        self.assertEqual(record.uncovered(windows, self.TITLES, self.LEFT), [])
+        self.assertEqual(record.uncovered(windows, other, self.RIGHT), [])
+        intruder = record.Win('Notification', record.Rect(3000, 900, 400, 120), True, True)
+        self.assertEqual(record.uncovered([intruder, *windows], self.TITLES, self.LEFT), [])
+        self.assertTrue(any('Notification' in p for p in record.uncovered([intruder, *windows], other, self.RIGHT)))
 
 
 class FakeBrowser:

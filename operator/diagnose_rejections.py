@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lab_paths import FRAMEWORK, temporal_cli
+from lab_paths import DEFAULT_LANE, FRAMEWORK
 
 
 def pair(text):
@@ -22,7 +22,7 @@ def pair(text):
 
 
 def status(wid):
-    r = subprocess.run([*temporal_cli(), 'status', wid], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
+    r = subprocess.run([*DEFAULT_LANE.temporal_cli(), 'status', wid], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
     if r.returncode:
         raise SystemExit(f'status {wid} failed: {r.stderr.strip()[-300:]}')
     return json.loads(r.stdout)

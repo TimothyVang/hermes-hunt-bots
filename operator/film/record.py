@@ -1,12 +1,13 @@
-"""Record one real hunt round: three pinned consoles on the desktop, the bots' browsers by screencast.
+"""Record one real hunt round on one lane: three pinned consoles on the desktop, the bots' browsers by screencast.
 
-PRIVACY: the desktop capture covers REGION only, and REGION is tiled exactly by our three topmost
-console windows. Recording starts only after every console sits on its tile, topmost, with no other
-window above it; a guard re-pins them every second while recording. If coverage ever fails, the
-capture is stopped and the whole desktop file deleted, because its last second may hold foreign
-pixels. The bots' browsers are never captured from the desktop; screencast.py films them.
+PRIVACY: the desktop capture covers the lane's 1920x1080 region only, and that region is tiled exactly by
+the lane's three topmost console windows. Recording starts only after every console sits on its tile,
+topmost, with no other window above it; a guard re-pins them every second while recording. If coverage
+ever fails, the capture is stopped and the whole desktop file deleted, because its last second may hold
+foreign pixels. The bots' browsers are never captured from the desktop; screencast.py films them. Lanes
+recording at the same time use disjoint regions, so each lane's consoles stay outside the others' captures.
 
-Output in the loop directory d: desktop.mp4 (the 1920x1080 region), screencast/, audit.jsonl (the
+Output in the lane directory d: desktop.mp4 (the 1920x1080 region), screencast/, audit.jsonl (the
 owners' lab_browser actions during the round), run_config's input.json, activity.json and
 result.json, and film.json tying them together. film.json's t0 is the epoch second at which the
 capture process was started; frames may begin up to a fraction of a second later.
@@ -24,7 +25,7 @@ from pathlib import Path
 import tool_loops as tl
 from film import screencast
 from film.actions import OWNERS
-from lab_paths import FFMPEG, FRAMEWORK, LAB_BROWSER, PYTHON, TEMPORAL_ADDRESS, TEMPORAL_TASK_QUEUE
+from lab_paths import DEFAULT_LANE, FFMPEG, FRAMEWORK, PYTHON, TEMPORAL_ADDRESS
 
 HERE = Path(__file__).parent
 
@@ -50,13 +51,22 @@ class Console:
     rect: Rect
 
 
-REGION = Rect(0, 0, 1920, 1080)
-# The left tile is the backdrop the cut shows while no bot drives a browser; the right strip is kept whole.
+# Tiles inside a lane's 1920x1080 region: the left tile is the backdrop the cut shows while no bot drives a
+# browser; the right strip is kept whole.
 CONSOLES = {
     'activity': Console('watch-activity.ps1', 'lab activity - bot tool calls', Rect(0, 0, 1280, 1080)),
     'audit': Console('watch-browser.ps1', 'lab_browser audit - bot actions', Rect(1280, 0, 640, 540)),
     'stages': Console('watch-hunt.ps1', 'stage progress', Rect(1280, 540, 640, 540)),
 }
+
+
+def region_of(lane):
+    return Rect(*lane.region)
+
+
+def tile(region, key):
+    r = CONSOLES[key].rect
+    return Rect(region.x + r.x, region.y + r.y, r.w, r.h)
 
 
 def tiles(region, rects):
@@ -75,7 +85,7 @@ class Win:
     topmost: bool
 
 
-def uncovered(windows, titles):
+def uncovered(windows, titles, region):
     """Why the capture region is not fully covered by our consoles, from top-level windows listed top
     of the z-order first; [] when it is. titles maps each CONSOLES key to its window's exact title."""
     problems, found, above = [], set(), []
@@ -83,11 +93,11 @@ def uncovered(windows, titles):
     for w in windows:
         key = keys.get(w.title)
         if key is None:
-            if w.shown and w.rect.intersects(REGION):
+            if w.shown and w.rect.intersects(region):
                 above.append(w)
             continue
         found.add(key)
-        want = CONSOLES[key].rect
+        want = tile(region, key)
         if not w.shown:
             problems.append(f'{key} console is hidden or minimized')
         if w.rect != want:
@@ -127,21 +137,21 @@ class Desktop:
         u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)(cb), 0)
         return out
 
-    def pin(self, titles):
-        """Re-pin every console topmost on its tile, then report what still leaves the region uncovered."""
+    def pin(self, titles, region):
+        """Re-pin every console topmost on its tile of region, then report what still leaves region uncovered."""
         keys = {t: k for k, t in titles.items()}
         for h, w in self.windows():
             if w.title in keys:
-                r = CONSOLES[keys[w.title]].rect
+                r = tile(region, keys[w.title])
                 self.u.SetWindowPos(h, self.wt.HWND(self.TOPMOST), r.x, r.y, r.w, r.h, self.NOACTIVATE_SHOW)
-        return uncovered([w for _, w in self.windows()], titles)
+        return uncovered([w for _, w in self.windows()], titles, region)
 
 
-def start_consoles(titles, workflow, lab_url):
+def start_consoles(titles, workflow, lab_url, lane):
     args = {'activity': ['-LabUrl', lab_url],
-            'audit': ['-Root', str(LAB_BROWSER)],
+            'audit': ['-Root', str(lane.browser_root)],
             'stages': ['-Workflow', workflow, '-Python', PYTHON, '-Framework', str(FRAMEWORK),
-                       '-Address', TEMPORAL_ADDRESS or '', '-Queue', TEMPORAL_TASK_QUEUE or '']}
+                       '-Address', TEMPORAL_ADDRESS or '', '-Queue', lane.task_queue or '']}
     return [subprocess.Popen(['conhost.exe', 'powershell', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File',
                               str(HERE / 'consoles' / c.script), '-Title', titles[k], *args[k]])
             for k, c in CONSOLES.items()]
@@ -152,10 +162,10 @@ def stop_consoles(procs):
         subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'], capture_output=True)
 
 
-def demo_marker_problem():
+def demo_marker_problem(lane):
     sys.path.insert(0, str(FRAMEWORK))
     from hunt_lab.lab_browser import DEMO_FILE, read_demo
-    path = LAB_BROWSER / DEMO_FILE
+    path = lane.browser_root / DEMO_FILE
     demo = read_demo(path)
     if demo.marker != 'on' or not demo.cursor:
         return (f'lab_browser demo marker {path} is missing or invalid (state: {demo.marker}, cursor: {demo.cursor}); '
@@ -176,15 +186,15 @@ def screencast_problem():
 class Guard:
     """Keeps the consoles pinned while recording; on the first coverage failure stops the capture."""
 
-    def __init__(self, desktop, titles, ffmpeg):
-        self.desktop, self.titles, self.ffmpeg = desktop, titles, ffmpeg
+    def __init__(self, desktop, titles, region, ffmpeg):
+        self.desktop, self.titles, self.region, self.ffmpeg = desktop, titles, region, ffmpeg
         self.abort = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name='film-privacy-guard')
 
     def _run(self):
         while not self._stop.wait(1.0):
-            problems = self.desktop.pin(self.titles)
+            problems = self.desktop.pin(self.titles, self.region)
             if problems and self.ffmpeg.poll() is None:
                 self.ffmpeg.kill()
                 self.abort = '; '.join(problems)
@@ -200,11 +210,11 @@ class Guard:
         self._thread.join(timeout=10)
 
 
-def wait_covered(desktop, titles, seconds=30):
+def wait_covered(desktop, titles, region, seconds=30):
     """Pin until coverage holds on three checks in a row; the last problems if it never does."""
     ok, problems, deadline = 0, ['not checked'], time.monotonic() + seconds
     while time.monotonic() < deadline:
-        problems = desktop.pin(titles)
+        problems = desktop.pin(titles, region)
         ok = 0 if problems else ok + 1
         if ok >= 3:
             return []
@@ -212,10 +222,10 @@ def wait_covered(desktop, titles, seconds=30):
     return problems
 
 
-def copy_audit(dest, start, end):
+def copy_audit(dest, browser_root, start, end):
     lines = []
     for profile in OWNERS:
-        p = LAB_BROWSER / profile / 'audit.jsonl'
+        p = browser_root / profile / 'audit.jsonl'
         if not p.exists():
             continue
         for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
@@ -228,34 +238,35 @@ def copy_audit(dest, start, end):
     dest.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
 
 
-def film(d, name, base, brief, guidance, case_id, truth):
-    """Record one round of the hunt with this brief and guidance; returns film.json's content."""
-    problem = demo_marker_problem() or screencast_problem()
+def film(d, name, base, brief, guidance, case_id, truth, lane=DEFAULT_LANE):
+    """Record one round of the hunt with this brief and guidance on this lane's lab; returns film.json's content."""
+    problem = demo_marker_problem(lane) or screencast_problem()
     if problem:
         raise SystemExit(problem)
     d.mkdir(parents=True, exist_ok=True)
-    workflow = tl.workflow_id(name, case_id)
+    workflow = tl.workflow_id(name, case_id, lane)
     titles = {k: f'{c.title} [{workflow}]' for k, c in CONSOLES.items()}
+    region = region_of(lane)
     desktop = Desktop()
-    consoles = start_consoles(titles, workflow, tl.lab_url())
+    consoles = start_consoles(titles, workflow, tl.lab_url(lane), lane)
     raw = d / 'desktop.mp4'
-    rec = {'name': name, 'workflow': workflow, 'case_id': case_id, 'raw': None, 'privacy_abort': None,
+    rec = {'name': name, 'lane': lane.name, 'workflow': workflow, 'case_id': case_id, 'raw': None, 'privacy_abort': None,
            'screencast': 'screencast', 'audit': 'audit.jsonl', 'activity': 'activity.json'}
     try:
-        problems = wait_covered(desktop, titles)
+        problems = wait_covered(desktop, titles, region)
         if problems:
-            raise SystemExit('refusing to record, the capture region is not fully covered: ' + '; '.join(problems))
+            raise SystemExit(f'{workflow}: refusing to record, the capture region is not fully covered: ' + '; '.join(problems))
         ff = subprocess.Popen([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'gdigrab', '-framerate', '15',
-                               '-offset_x', str(REGION.x), '-offset_y', str(REGION.y), '-video_size', f'{REGION.w}x{REGION.h}',
+                               '-offset_x', str(region.x), '-offset_y', str(region.y), '-video_size', f'{region.w}x{region.h}',
                                '-draw_mouse', '0', '-i', 'desktop', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
                                '-pix_fmt', 'yuv420p', str(raw)], stdin=subprocess.PIPE)
         rec['t0'] = time.time()
-        guard = Guard(desktop, titles, ff).start()
+        guard = Guard(desktop, titles, region, ff).start()
         shutil.rmtree(d / 'screencast', ignore_errors=True)
-        watcher = screencast.Watcher(d / 'screencast').start()
+        watcher = screencast.Watcher(d / 'screencast', root=lane.browser_root).start()
         try:
             rec['round_start'] = time.time()
-            result, _calls = tl.run_config(name, base, brief, guidance, case_id, truth, root=d.parent)
+            result, _calls = tl.run_config(name, base, brief, guidance, case_id, truth, d=d, lane=lane)
             rec['round_end'] = time.time()
             rec['result'] = result
             time.sleep(3)
@@ -276,8 +287,8 @@ def film(d, name, base, brief, guidance, case_id, truth):
                 rec['raw'] = raw.name
     finally:
         stop_consoles(consoles)
-    copy_audit(d / 'audit.jsonl', rec['round_start'], rec['round_end'])
+    copy_audit(d / 'audit.jsonl', lane.browser_root, rec['round_start'], rec['round_end'])
     (d / 'film.json').write_text(json.dumps(rec, indent=1), encoding='utf-8')
-    tl.log(f'{name}: filmed {rec["t_end"] - rec["t0"]:.0f}s, desktop capture '
+    tl.log(f'{workflow}: filmed {rec["t_end"] - rec["t0"]:.0f}s, desktop capture '
            f'{"DELETED (privacy)" if rec["privacy_abort"] else rec["raw"]}')
     return rec
