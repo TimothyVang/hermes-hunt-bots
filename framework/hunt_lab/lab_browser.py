@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import itertools
 import json
+import logging
 import os
 from pathlib import Path
 import random
@@ -78,6 +79,7 @@ MAX_QUERY = 500
 IDLE_SECONDS = 600
 VIEWPORT = (1366, 860)
 CTRL = 2
+_LOG = logging.getLogger(__name__)
 STATE_FILE = 'session.json'
 AUDIT_FILE = 'audit.jsonl'
 FETCH_ALL = {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}
@@ -971,4 +973,7 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
     except (OSError, CdpError):
         return {'ok': False, 'profile': profile, 'error': 'browser_unavailable'}
     except Exception:
+        # The bot only ever sees the fixed code; the operator needs the cause, which was invisible
+        # when a filmed lane failed most of its browser calls inside the gateway.
+        _LOG.exception('lab_browser %s failed for %s', getattr(command, 'action', None), profile)
         return {'ok': False, 'profile': profile, 'error': 'lab_browser_failed'}

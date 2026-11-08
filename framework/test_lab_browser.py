@@ -467,6 +467,15 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(all(len(element['name']) <= 80 for element in page['elements']))
         self.assertLessEqual(len(page['text']), 3001)
 
+    def test_an_unexpected_failure_returns_the_fixed_code_and_logs_its_cause(self):
+        fake = FakeBrowser()
+        self.call(fake, action='snapshot')
+        with patch.object(lab_browser.BrowserSession, 'run', side_effect=RuntimeError('screencast race')), \
+                self.assertLogs(lab_browser.__name__, level='ERROR') as logs:
+            result = self.call(fake, action='snapshot')
+        self.assertEqual(result, {'ok': False, 'profile': 'framework-researcher', 'error': 'lab_browser_failed'})
+        self.assertIn('screencast race', '\n'.join(logs.output))
+
     def test_a_page_that_left_the_lab_is_blanked_and_reported(self):
         fake = FakeBrowser()
         self.call(fake, action='snapshot')
