@@ -1,46 +1,52 @@
-"""Cut a filmed round into a 1920x1080 video without staging anything.
+"""Cut a filmed round into two 1920x1080 videos of the Hunt Live board, without staging anything.
 
-Left 1280x1080: the acting bot's own browser (its screencast frames, letterboxed) while it drives
-lab_browser, otherwise the desktop capture's activity console. Right 640x1080: the captured audit and
-stage consoles. Browser stretches (each lab_browser action from pad_before before to pad_after after,
-from the audit timestamps) play at 1x; everything else plays speed times faster under a label saying
-so. A caption names the bot and tool acting. Intro and outro cards carry the round's real numbers.
-Every video frame comes from desktop.mp4 or a screencast JPEG; a screencast frame stays on screen
-until the next one, because Chromium sends frames only when the page changes.
+Option A, video-full.mp4: the whole round at 1x. Option B, video.mp4: the whole round at one constant
+speed (knob speed, default 5x), the cut the film loop reviews. Both are the board's own screencast frames,
+each held until the next one (the board repaints at least every 2 s), with a bar along the bottom that
+carries a permanent label ("5x speed · every frame is real") and, when the captions knob is on, the bot and
+tool acting, from the lab_browser audit and the lab's /activity log. A chapter card (CHAPTER_SECONDS) is
+inserted wherever a stage really started, from the board's step states sampled during the round: stage
+number and name, owner bot, wall-clock range and duration. Intro and outro cards carry the round's real
+numbers. Cards add video time but never consume round time, so the board footage of Option A lasts exactly
+as long as the round.
+
+Every video is rendered in one ffmpeg pass from an ffconcat list of JPEG stills, each listed for its screen
+time: board frames for their real hold divided by the speed, cards for their own seconds. The label is
+drawn over every frame of that list.
 """
 import bisect
 import json
 import subprocess
+import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from film import screencast
-from lab_paths import FFMPEG, FFPROBE, TOOLCAM_FONT
+from lab_paths import FFMPEG, TOOLCAM_FONT
 
-MERGE_GAP = 8.0
-MIN_GAP = 1.0
-BROWSER_HOLD = 8.0
-API_HOLD = 60.0
+BOARD = 'board'
+INTRO_SECONDS, OUTRO_SECONDS, CHAPTER_SECONDS = 5.0, 7.0, 2.5
+CAPTION_HOLD = 3.0  # screen seconds a caption stays at most
 MIN_CAPTION = 0.4
-INTRO_SECONDS, OUTRO_SECONDS = 5, 7
-BAR = 104
+BROWSER_HOLD = 8.0  # real seconds a bot's browser counts as live on the board after one of its frames
+BAR = 64
 BACKGROUND = '0x0b1220'
+SIZE = (1920, 1080)
+WAITING = {'pending', 'not_reached'}
+ENDED = {'done', 'stopped'}
 # A blank page (about:blank, a page mid-load) encodes to ~7 KB at 1280x960; lab pages with content were 86 KB+.
 MIN_FRAME_BYTES = 16_000
 
 
 @dataclass(frozen=True)
 class Knobs:
-    speed: float = 12.0
-    pad_before: float = 3.0
-    pad_after: float = 6.0
+    speed: float = 5.0
     captions: bool = True
     intro_title: str = 'Six AI hunting bots, one real hunt'
 
 
 # name: (type, low, high). Only these can be tuned; a title carries no digits so no number on a card is invented.
-KNOB_RULES = {'speed': (float, 2, 30), 'pad_before': (float, 0, 10), 'pad_after': (float, 0, 15),
-              'captions': (bool, None, None), 'intro_title': (str, 1, 80)}
+KNOB_RULES = {'speed': (float, 2, 30), 'captions': (bool, None, None), 'intro_title': (str, 1, 80)}
 
 
 def check_knobs(obj):
@@ -76,6 +82,10 @@ def apply_knobs(knobs, changes):
     return replace(knobs, **changes)
 
 
+def label(speed):
+    return 'Real time · every frame is real' if speed == 1 else f'{speed:g}x speed · every frame is real'
+
+
 @dataclass(frozen=True)
 class Caption:
     start: float
@@ -84,11 +94,27 @@ class Caption:
 
 
 @dataclass(frozen=True)
+class Stage:
+    """One stage as the board showed it: number (1-based), step, owner bot, epoch start and end, and whether it
+    ended inside the round (else end is the round's end)."""
+    number: int
+    step_id: str
+    role: str
+    start: float
+    end: float
+    finished: bool
+
+    @property
+    def seconds(self):
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
 class Segment:
+    """Round seconds [start, end] of board footage at speed; captions in screen seconds from its own start."""
     start: float
     end: float
     speed: float
-    screencast: str | None = None
     captions: tuple = field(default=())
 
     @property
@@ -96,28 +122,76 @@ class Segment:
         return (self.end - self.start) / self.speed
 
 
-def _windows(duration, browser, knobs):
-    """Merged real-time windows [start, end, profile, last action] from (time, profile) browser actions."""
-    windows = []
-    for r, profile in browser:
-        s, e = max(0.0, r - knobs.pad_before), min(duration, r + knobs.pad_after)
-        if windows and windows[-1][2] == profile and s <= windows[-1][1] + MERGE_GAP:
-            windows[-1][1], windows[-1][3] = max(windows[-1][1], e), r
+@dataclass(frozen=True)
+class Chapter:
+    at: float
+    stage: Stage
+    total: int
+
+    out_seconds = CHAPTER_SECONDS
+
+
+def read_states(path):
+    """[(t, steps)] from a board-state.jsonl, in time order; unreadable lines are skipped."""
+    out = []
+    p = Path(path)
+    if not p.exists():
+        return out
+    for line in p.read_text(encoding='utf-8').splitlines():
+        try:
+            e = json.loads(line)
+            out.append((float(e['t']), list(e['steps'])))
+        except (ValueError, KeyError, TypeError):
             continue
-        if windows and s < windows[-1][1]:
-            s = max(s, windows[-1][3])
-            windows[-1][1] = s
-            if windows[-1][1] <= windows[-1][0]:
-                windows.pop()
-        windows.append([s, e, profile, r])
-    for prev, nxt in zip(windows, windows[1:]):
-        if nxt[0] - prev[1] < MIN_GAP:
-            prev[1] = nxt[0]
-    if windows and windows[0][0] < MIN_GAP:
-        windows[0][0] = 0.0
-    if windows and duration - windows[-1][1] < MIN_GAP:
-        windows[-1][1] = duration
-    return windows
+    return sorted(out, key=lambda x: x[0])
+
+
+def stage_timings(samples, start, end):
+    """Stages the board showed starting within [start, end] epoch seconds, in start order.
+
+    A stage starts at the first sample showing it past pending (its gate open, running, under review or over)
+    after a sample showing it pending; one already under way at the first sample has no observed start and is
+    left out. It ends at the first later sample showing it done or stopped."""
+    waited, starts, ends, info = set(), {}, {}, {}
+    for t, steps in samples:
+        for s in steps:
+            key = s.get('index')
+            info[key] = s
+            if s.get('state') in WAITING:
+                waited.add(key)
+                continue
+            if key in waited and key not in starts:
+                starts[key] = t
+            if key in starts and key not in ends and s.get('state') in ENDED:
+                ends[key] = t
+    out = []
+    for key, t in sorted(starts.items(), key=lambda kv: kv[1]):
+        if not start <= t <= end:
+            continue
+        e = ends.get(key)
+        finished = e is not None and e <= end
+        out.append(Stage(int(key) + 1, str(info[key].get('step_id')), str(info[key].get('role')), round(t, 3),
+                         round(e if finished else end, 3), finished))
+    return out
+
+
+def stage_count(samples):
+    return len(samples[-1][1]) if samples else 0
+
+
+def _clock(t):
+    return time.strftime('%H:%M:%S', time.localtime(t))
+
+
+def _span(seconds):
+    m, s = divmod(int(round(seconds)), 60)
+    return f'{m} min {s:02d} s' if m else f'{s} s'
+
+
+def chapter_lines(stage, total):
+    end = f'{_clock(stage.end)}' if stage.finished else f'{_clock(stage.end)} (round end, stage not finished)'
+    return [f'Stage {stage.number} of {total} · {stage.step_id.capitalize()}', stage.role,
+            f'{_clock(stage.start)} – {end}', _span(stage.seconds)]
 
 
 def _caption_spans(times_texts, hold, duration):
@@ -138,34 +212,45 @@ def _clip_captions(spans, s, e, speed):
     return tuple(out)
 
 
-def plan(duration, t0, actions, frames, knobs):
-    """Segments covering [0, duration] seconds of the desktop capture that starts at epoch t0.
-    frames maps each profile to its screencast frame epoch times."""
-    rel = sorted((a.t - t0, a) for a in actions if 0 <= a.t - t0 <= duration)
-    browser = [(r, a.profile) for r, a in rel if a.browser]
-    browser_spans = _caption_spans([(r, a.caption) for r, a in rel if a.browser], BROWSER_HOLD, duration)
-    api_spans = _caption_spans([(r, a.caption) for r, a in rel if not a.browser], API_HOLD, duration)
-    first = {p: min(ts) - t0 for p, ts in frames.items() if ts}
-    parts, pos = [], 0.0
-    for s, e, profile, _ in _windows(duration, browser, knobs):
-        if s > pos:
-            parts.append((pos, s, knobs.speed, None))
-        f0 = first.get(profile)
-        if f0 is None or f0 >= e:
-            parts.append((s, e, 1.0, None))
-        elif f0 <= s:
-            parts.append((s, e, 1.0, profile))
-        else:
-            parts += [(s, f0, 1.0, None), (f0, e, 1.0, profile)]
-        pos = e
+def plan(duration, start, stages, actions, knobs, speed, total=9):
+    """The round's [0, duration] seconds (epoch start) as board Segments at one constant speed, with a Chapter
+    before the footage at each stage's real start."""
+    rel = sorted((a.t - start, a.caption) for a in actions if 0 <= a.t - start <= duration)
+    spans = _caption_spans(rel, CAPTION_HOLD * speed, duration) if knobs.captions else []
+    items, pos = [], 0.0
+    for stage in sorted(stages, key=lambda s: s.start):
+        at = round(min(max(stage.start - start, 0.0), duration), 3)
+        if at > pos:
+            items.append(Segment(round(pos, 3), at, speed, _clip_captions(spans, pos, at, speed)))
+            pos = at
+        items.append(Chapter(at, stage, total))
     if duration > pos:
-        parts.append((pos, duration, knobs.speed, None))
-    segments = []
-    for s, e, speed, profile in parts:
-        spans = browser_spans if speed == 1.0 else api_spans
-        segments.append(Segment(round(s, 3), round(e, 3), speed, profile,
-                                _clip_captions(spans, s, e, speed) if knobs.captions else ()))
-    return segments
+        items.append(Segment(round(pos, 3), round(duration, 3), speed, _clip_captions(spans, pos, duration, speed)))
+    return items
+
+
+def timeline(items):
+    """Each item as a dict with its output seconds, between the intro and the outro."""
+    out, pos = [{'kind': 'intro', 'out_start': 0.0, 'out_end': INTRO_SECONDS}], INTRO_SECONDS
+    for item in items:
+        end = pos + item.out_seconds
+        if isinstance(item, Chapter):
+            out.append({'kind': 'chapter', 'at': item.at, 'stage': item.stage.number, 'step_id': item.stage.step_id,
+                        'lines': chapter_lines(item.stage, item.total), 'out_start': round(pos, 3), 'out_end': round(end, 3)})
+        else:
+            out.append({'kind': 'board', **asdict(item), 'out_start': round(pos, 3), 'out_end': round(end, 3)})
+        pos = end
+    out.append({'kind': 'outro', 'out_start': round(pos, 3), 'out_end': round(pos + OUTRO_SECONDS, 3)})
+    return out
+
+
+def to_output(segments, r):
+    """Output-video second at which round second r is shown, from timeline() entries."""
+    board = [s for s in segments if s['kind'] == 'board']
+    for s in board:
+        if r < s['end']:
+            return s['out_start'] + max(0.0, r - s['start']) / s['speed']
+    return board[-1]['out_end'] if board else INTRO_SECONDS
 
 
 def frame_schedule(frames, s, e):
@@ -182,23 +267,34 @@ def frame_schedule(frames, s, e):
     return out
 
 
-def to_output(segments, r):
-    """Output-video second at which capture second r is shown (cards included)."""
-    out = float(INTRO_SECONDS)
-    for seg in segments:
-        if r < seg.end:
-            return out + max(0.0, r - seg.start) / seg.speed
-        out += seg.out_seconds
-    return out
+def listing(items, frames, cards, speed):
+    """[(path, screen seconds)] for the whole video: intro, board frames and chapter cards, outro. frames is
+    [(round second, path)]; cards maps 'intro', 'outro' and each Chapter to its still. Board frames are held
+    for their real hold divided by speed."""
+    out = [(cards['intro'], INTRO_SECONDS)]
+    for item in items:
+        if isinstance(item, Chapter):
+            out.append((cards[item], CHAPTER_SECONDS))
+        else:
+            out += [(p, s / speed) for p, s in frame_schedule(frames, item.start, item.end)]
+    return out + [(cards['outro'], OUTRO_SECONDS)]
+
+
+def overlay(segments, speed):
+    """(label, [(caption, out_start, out_end)]) for timeline() entries: what the bottom bar shows, the label on
+    every frame."""
+    captions = [(c['text'], s['out_start'] + c['start'], s['out_start'] + c['end'])
+                for s in segments if s['kind'] == 'board' for c in s['captions']]
+    return label(speed), captions
 
 
 def card_lines(result, cov, knobs, case_id):
     first = result['rounds'][0] if result.get('rounds') else {}
     owners = cov['owners']
     typed = sum(o['typed_searches'] for o in owners.values())
-    intro = [knobs.intro_title, f'Case {case_id} · one real round of the six-bot hunt',
+    intro = [knobs.intro_title, f'Case {case_id} · one real round of the six-bot hunt on the Hunt Live board',
              'Threat Hunter drives Kibana Discover (Elastic) · Network Analyst drives Arkime',
-             'Every frame is a real capture · sped-up stretches are labelled']
+             'Every frame is a real capture of the board · the speed is on screen throughout']
     outro = [f'Found {first.get("found", 0)}/{first.get("total", 18)} facts · {result.get("misattributed", 0)} decoys blamed · '
              f'{result.get("halts", 0)} halted rounds',
              f'{result.get("minutes", 0)} min · {result.get("tool_calls", 0)} API tool calls · {typed} searches typed on screen',
@@ -224,92 +320,105 @@ class Renderer:
         on = f":enable='between(t,{enable[0]:.3f},{enable[1]:.3f})'" if enable else ''
         return f'drawtext={font}textfile={_q(f)}:expansion=none:x={x}:y={y}:fontsize={size}:fontcolor={color}{on}'
 
-    def run(self, inputs, graph, out):
-        script = out.with_suffix('.filter.txt')
-        script.write_text(graph, encoding='utf-8')
-        subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', *inputs, '-filter_complex_script', str(script),
-                        '-map', '[v]', '-an', '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-                        '-pix_fmt', 'yuv420p', str(out)], check=True)
-
-    def card(self, lines, seconds, out):
+    def card(self, lines, out):
+        """One 1920x1080 JPEG still: the first line large, the rest under it."""
         draws = ','.join(self.text(line, '(w-text_w)/2', f'(h/2)-{(len(lines) - 1) * 34}+{k * 68}', 52 if k == 0 else 34,
                                    'white' if k == 0 else '0xcbd5e1') for k, line in enumerate(lines))
-        self.run(['-f', 'lavfi', '-i', f'color=c={BACKGROUND}:s=1920x1080:r=30:d={seconds}'], f'[0:v]{draws}[v]', out)
+        subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                        f'color=c={BACKGROUND}:s={SIZE[0]}x{SIZE[1]}:d=1', '-frames:v', '1', '-vf', draws,
+                        '-pix_fmt', 'yuvj420p', '-q:v', '2', str(out)], check=True)
 
-    def segment(self, raw, seg, frames, out):
-        inputs = ['-ss', f'{seg.start:.3f}', '-t', f'{seg.end - seg.start:.3f}', '-i', str(raw)]
-        if seg.screencast:
-            listing = out.with_suffix('.ffconcat')
-            lines = ['ffconcat version 1.0']
-            sched = frame_schedule(frames, seg.start, seg.end)
-            for path, seconds in sched:
-                lines += [f"file '{Path(path).resolve().as_posix()}'", f'duration {seconds}']
-            lines.append(f"file '{Path(sched[-1][0]).resolve().as_posix()}'")
-            listing.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-            inputs += ['-f', 'concat', '-safe', '0', '-i', str(listing)]
-            panels = ('[0:v]fps=30,crop=640:1080:1280:0[r];'
-                      '[1:v]scale=1280:1080:force_original_aspect_ratio=decrease,'
-                      f'pad=1280:1080:(ow-iw)/2:0:color={BACKGROUND},setsar=1,fps=30,setpts=PTS-STARTPTS[l];')
-        else:
-            panels = '[0:v]fps=30,split[a][b];[a]crop=1280:1080:0:0[l];[b]crop=640:1080:1280:0[r];'
-        label, color = ((f'{seg.speed:g}x FASTER · every frame is real', '0xf59e0b') if seg.speed != 1.0 else
-                        ('REAL TIME · bot driving its browser', '0x22c55e') if seg.screencast else
-                        ('REAL TIME · lab activity', '0x22c55e'))
-        draws = [f'drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=black@0.72:t=fill',
-                 self.text(label, 24, f'h-{BAR}+12', 28, color)]
-        draws += [self.text(c.text, 24, f'h-{BAR}+56', 30, 'white', (c.start, c.end)) for c in seg.captions]
-        self.run(inputs, panels + f'[l][r]hstack=inputs=2:shortest=1,setpts=(PTS-STARTPTS)/{seg.speed},fps=30,'
-                 + ','.join(draws) + '[v]', out)
-
-
-def duration_of(video):
-    r = subprocess.run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(video)],
-                       capture_output=True, text=True, check=True)
-    return float(r.stdout.strip())
+    def video(self, entries, speed, bar, out):
+        """Play the still list at 30 fps under the bar: its label always, captions when on."""
+        text, captions = bar
+        concat = out.with_suffix('.ffconcat')
+        lines = ['ffconcat version 1.0']
+        for path, seconds in entries:
+            lines += [f"file '{Path(path).resolve().as_posix()}'", f'duration {seconds:.6f}']
+        # The concat demuxer plays the last listed still for one frame only: list it twice, then trim to the total.
+        lines.append(f"file '{Path(entries[-1][0]).resolve().as_posix()}'")
+        concat.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        total = sum(seconds for _, seconds in entries)
+        draws = [f'drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=black@0.78:t=fill',
+                 self.text(text, 24, f'h-{BAR}+16', 30, '0xf59e0b' if speed != 1 else '0x22c55e')]
+        draws += [self.text(c, 620, f'h-{BAR}+18', 26, 'white', (a, b)) for c, a, b in captions]
+        graph = (f'[0:v]scale={SIZE[0]}:{SIZE[1]}:force_original_aspect_ratio=decrease,'
+                 f'pad={SIZE[0]}:{SIZE[1]}:(ow-iw)/2:(oh-ih)/2:color={BACKGROUND},setsar=1,'
+                 f'fps=30,trim=duration={total:.6f},' + ','.join(draws) + '[v]')
+        script = out.with_suffix('.filter.txt')
+        script.write_text(graph, encoding='utf-8')
+        subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat),
+                        '-filter_complex_script', str(script), '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'veryfast',
+                        '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(out)], check=True)
 
 
 def shown_frames(frames):
-    """Screencast frames worth showing: a blank or empty page is skipped, so the frame before it stays on screen
-    (or the backdrop, before an owner's first page with content)."""
+    """Screencast frames worth showing: a blank or empty page is skipped, so the frame before it stays on screen."""
     return {p: kept for p, v in frames.items() if (kept := [(t, f) for t, f in v if f.stat().st_size >= MIN_FRAME_BYTES])}
 
 
+def active_seconds(times, start, end, hold=BROWSER_HOLD):
+    """Real seconds of [start, end] within hold seconds after one of times: how long a browser was live."""
+    total, reach = 0.0, start
+    for t in sorted(times):
+        a, b = max(t, reach, start), min(t + hold, end)
+        if b > a:
+            total += b - a
+            reach = b
+    return round(total, 3)
+
+
+def longest_hold(times, start, end):
+    """Longest real stretch of [start, end] in which the board sent no new frame."""
+    inside = [t for t in times if start < t < end]
+    edges = [start, *inside, end]
+    return round(max(b - a for a, b in zip(edges, edges[1:])), 3)
+
+
+def render(r, name, items, frames, intro, outro, speed, out):
+    cards = {'intro': r.work / f'{name}-intro.jpg', 'outro': r.work / f'{name}-outro.jpg'}
+    r.card(intro, cards['intro'])
+    r.card(outro, cards['outro'])
+    for i, item in enumerate(x for x in items if isinstance(x, Chapter)):
+        cards[item] = r.work / f'{name}-chapter-{i:02d}.jpg'
+        r.card(chapter_lines(item.stage, item.total), cards[item])
+    segs = timeline(items)
+    r.video(listing(items, frames, cards, speed), speed, overlay(segs, speed), out)
+    return segs
+
+
 def cut(d, rec, actions, knobs, cov, out_dir=None):
-    """Render video.mp4 from film.json's captures in d; returns (and writes) edit.json. Outputs go to out_dir
-    (default d), so a capture can be re-cut without touching an earlier cut."""
+    """Render video-full.mp4 (Option A, 1x) and video.mp4 (Option B, knobs.speed) from film.json's board capture
+    in d; returns (and writes) edit.json. Outputs go to out_dir (default d), so a capture can be re-cut without
+    touching an earlier cut."""
     d = Path(d)
     out_dir = Path(out_dir or d)
-    raw = d / rec['raw']
-    duration = duration_of(raw)
-    frames = shown_frames(screencast.read_index(d / rec['screencast']))
-    segments = plan(duration, rec['t0'], actions, {p: [t for t, _ in v] for p, v in frames.items()}, knobs)
-    rel = {p: [(t - rec['t0'], path) for t, path in v] for p, v in frames.items()}
+    frames = screencast.read_index(d, rec['board_index']).get(BOARD, [])
+    if not frames:
+        raise ValueError(f'{d}: no board frames to cut')
+    start, end = max(rec['round_start'], frames[0][0]), rec['round_end']
+    duration = round(end - start, 3)
+    samples = read_states(d / rec['board_state'])
+    stages, total = stage_timings(samples, start, end), stage_count(samples)
+    rel = [(t - start, p) for t, p in frames]
     intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'])
-    work = out_dir / 'edit-work'
-    r = Renderer(work)
-    parts = [work / 'intro.mp4']
-    r.card(intro, INTRO_SECONDS, parts[0])
-    for i, seg in enumerate(segments):
-        parts.append(work / f'seg-{i:03d}.mp4')
-        r.segment(raw, seg, rel.get(seg.screencast, []), parts[-1])
-    parts.append(work / 'outro.mp4')
-    r.card(outro, OUTRO_SECONDS, parts[-1])
-    listing = work / 'parts.ffconcat'
-    listing.write_text('ffconcat version 1.0\n' + ''.join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding='utf-8')
-    video = out_dir / 'video.mp4'
-    subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(listing),
-                    '-c', 'copy', '-movflags', '+faststart', str(video)], check=True)
-    out, timeline = float(INTRO_SECONDS), []
-    for seg in segments:
-        timeline.append({**asdict(seg), 'out_start': round(out, 3), 'out_end': round(out + seg.out_seconds, 3)})
-        out += seg.out_seconds
-    edit = {'video': video.name, 'knobs': asdict(knobs), 'capture_seconds': round(duration, 3), 't0': rec['t0'],
-            'out_seconds': round(out + OUTRO_SECONDS, 3), 'intro': intro, 'outro': outro, 'segments': timeline,
-            'screencast_frames': {p: len(v) for p, v in frames.items()}}
+    r = Renderer(out_dir / 'edit-work')
+    cuts = {}
+    for name, speed, video in (('full', 1.0, 'video-full.mp4'), ('reviewed', knobs.speed, 'video.mp4')):
+        items = plan(duration, start, stages, actions, knobs, speed, total)
+        cuts[name] = {'video': video, 'speed': speed, 'label': label(speed),
+                      'segments': render(r, name, items, rel, intro, outro, speed, out_dir / video)}
+        cuts[name]['out_seconds'] = cuts[name]['segments'][-1]['out_end']
+    browsers = shown_frames(screencast.read_index(d / rec['screencast']))
+    times = [t for t, _ in frames]
+    edit = {'video': 'video.mp4', 'video_full': 'video-full.mp4', 'knobs': asdict(knobs), 'speed': knobs.speed,
+            'label': label(knobs.speed), 't0': rec['t0'], 'round_start': start, 'round_end': end,
+            'round_seconds': duration, 'out_seconds': cuts['reviewed']['out_seconds'], 'intro': intro, 'outro': outro,
+            'segments': cuts['reviewed']['segments'], 'full': cuts['full'],
+            'stages': [asdict(s) | {'seconds': round(s.seconds, 3)} for s in stages], 'stage_count': total,
+            'board_frames': len(frames), 'longest_board_hold_seconds': longest_hold(times, start, end),
+            'screencast_frames': {p: len(v) for p, v in browsers.items()},
+            'browser_active_seconds': {p: active_seconds([t for t, _ in v], start, end) for p, v in browsers.items()},
+            'browser_any_active_seconds': active_seconds([t for v in browsers.values() for t, _ in v], start, end)}
     (out_dir / 'edit.json').write_text(json.dumps(edit, indent=1), encoding='utf-8')
     return edit
-
-
-def segments_of(edit):
-    return [Segment(s['start'], s['end'], s['speed'], s['screencast'],
-                    tuple(Caption(**c) for c in s['captions'])) for s in edit['segments']]

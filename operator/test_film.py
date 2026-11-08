@@ -17,6 +17,7 @@ from film import actions as acts
 from film import edit as cutter
 from film import record, review, screencast
 from hunt_lab import screencast as core  # importable once film.screencast has put the framework on sys.path
+from lab_paths import Lane
 
 T0 = 1_800_000_000.0
 
@@ -165,11 +166,14 @@ class ReviewValidationTest(unittest.TestCase):
                 self.assertIsNone(rv)
                 self.assertTrue(problems)
 
-    def test_a_browser_moment_shows_the_actor_page_once_it_is_on_screen(self):
-        segs = [cutter.Segment(0, 27, 10), cutter.Segment(27, 31, 1), cutter.Segment(31, 36, 1, TH), cutter.Segment(36, 120, 10)]
-        edit = {'t0': T0, 'capture_seconds': 120, 'segments': [{**vars(s), 'captions': []} for s in segs]}
-        typed = acts.from_audit([audit(T0 + 30, TH, query='a', entered='typed')], T0, T0 + 120)
-        self.assertEqual([t for t, _ in review.browser_moments(edit, typed)], [cutter.to_output(segs, 31.5)])
+    def test_a_browser_moment_shows_the_actor_screencast_frame_at_its_place_in_the_cut(self):
+        segs = cutter.timeline(stage_plan(speed=5))
+        edit = {'round_start': T0, 'round_end': T0 + 120, 'segments': segs}
+        typed = acts.from_audit([audit(T0 + 30, TH, query='a', entered='typed'),
+                                 audit(T0 + 60, NA, page='arkime_sessions', query='b', entered='typed')], T0, T0 + 120)
+        browsers = {TH: [(T0 + 29, 'th-1.jpg'), (T0 + 31, 'th-2.jpg'), (T0 + 50, 'th-3.jpg')]}
+        self.assertEqual(review.browser_moments(edit, typed, browsers),
+                         [(cutter.to_output(segs, 30), typed[0].caption, 'th-2.jpg')])
 
     def test_bad_json_is_retried_once_and_never_more(self):
         replies = iter(['I think it is fine.', json.dumps(good_review())])
@@ -189,86 +193,133 @@ class ReviewValidationTest(unittest.TestCase):
         self.assertTrue(out['problems'])
 
 
+def steps(*states):
+    states = states + ('pending',) * (len(tl.STEPS) - len(states))
+    return [{'index': i, 'step_id': tl.STEPS[i], 'role': f'Role {i}', 'profile': 'p', 'state': s} for i, s in enumerate(states)]
+
+
+# The board as the recorder sampled it: scope's gate opens 2 s into the round, evidence starts at 40 s,
+# hypotheses at 90 s and is still running when the round's footage ends at 120 s.
+SAMPLES = [(T0 - 5, steps()), (T0 + 2, steps('awaiting_approval')), (T0 + 10, steps('working')),
+           (T0 + 40, steps('done', 'working')), (T0 + 90, steps('done', 'done', 'working'))]
+
+
+def stage_plan(speed, actions=(), captions=False):
+    stages = cutter.stage_timings(SAMPLES, T0, T0 + 120)
+    return cutter.plan(120, T0, stages, list(actions), cutter.Knobs(speed=speed, captions=captions), speed,
+                       cutter.stage_count(SAMPLES))
+
+
+class StageTimingTest(unittest.TestCase):
+    def test_each_stage_starts_when_the_board_first_shows_it_past_pending(self):
+        stages = cutter.stage_timings(SAMPLES, T0, T0 + 120)
+        self.assertEqual([(s.number, s.step_id, s.start - T0, s.end - T0, s.finished) for s in stages],
+                         [(1, 'scope', 2, 40, True), (2, 'evidence', 40, 90, True), (3, 'hypotheses', 90, 120, False)])
+        self.assertEqual(cutter.stage_count(SAMPLES), 9)
+
+    def test_a_stage_already_under_way_when_filming_began_gets_no_chapter(self):
+        stages = cutter.stage_timings(SAMPLES[2:], T0, T0 + 120)
+        self.assertEqual([s.step_id for s in stages], ['evidence', 'hypotheses'])
+
+    def test_the_recorder_samples_only_changes_of_the_board_steps(self):
+        states = iter([{'steps': steps()}, {'steps': steps()}, None, {'steps': steps('working')}])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'board-state.jsonl'
+            poller = record.StatePoller('http://127.0.0.1:1/', path, fetch=lambda url: next(states))
+            for _ in range(4):
+                poller.sample()
+            samples = cutter.read_states(path)
+        self.assertEqual(poller.samples, 2)
+        self.assertEqual([s[1][0]['state'] for s in samples], ['pending', 'working'])
+        self.assertEqual(set(samples[0][1][0]), {'index', 'step_id', 'role', 'profile', 'state'})
+
+    def test_the_board_is_started_for_the_round_lane_and_its_live_browsers(self):
+        lane = Lane('l2', Path('home2'), 'q2')
+        cmd = record.board_command(8123, 'film-01-l2-c', Path('d/input.json'), lane, 41)
+        self.assertEqual(cmd[1:4], ['-B', '-m', 'hermes_temporal.board'])
+        args = dict(zip(cmd[4::2], cmd[5::2]))
+        self.assertEqual({k: args[k] for k in ('--workflow-id', '--input', '--port', '--lab-state-dir', '--hermes-home',
+                                               '--activity-after')},
+                         {'--workflow-id': 'film-01-l2-c', '--input': str(Path('d/input.json')), '--port': '8123',
+                          '--lab-state-dir': str(lane.state_dir), '--hermes-home': 'home2', '--activity-after': '41'})
+
+
 class EditPlanTest(unittest.TestCase):
-    KNOBS = cutter.Knobs(speed=10, pad_before=3, pad_after=6)
+    def test_the_reviewed_cut_plays_the_whole_round_at_one_constant_speed(self):
+        items = stage_plan(speed=5)
+        board = [i for i in items if isinstance(i, cutter.Segment)]
+        self.assertEqual({s.speed for s in board}, {5})
+        self.assertEqual([(s.start, s.end) for s in board], [(0, 2), (2, 40), (40, 90), (90, 120)])
+        segs = cutter.timeline(items)
+        self.assertAlmostEqual(sum(s['out_end'] - s['out_start'] for s in segs if s['kind'] == 'board'), 120 / 5)
+        # Round second 50 is 2+38+10 s of footage at 5x after the intro and two chapter cards.
+        self.assertAlmostEqual(cutter.to_output(segs, 50), cutter.INTRO_SECONDS + 50 / 5 + 2 * cutter.CHAPTER_SECONDS)
+        self.assertAlmostEqual(cutter.to_output(segs, 100) - cutter.to_output(segs, 95), 1.0)
 
-    def plan(self, audit_lines, activity_entries=(), frames=None, duration=120):
-        actions = acts.from_audit(audit_lines, T0, T0 + duration) + acts.from_activity(list(activity_entries))
-        return cutter.plan(duration, T0, actions, frames or {}, self.KNOBS)
+    def test_a_chapter_card_opens_each_real_stage_start(self):
+        items = stage_plan(speed=5)
+        chapters = [(k, i) for k, i in enumerate(items) if isinstance(i, cutter.Chapter)]
+        self.assertEqual([i.at for _, i in chapters], [2, 40, 90])
+        for k, chapter in chapters:
+            self.assertEqual(items[k + 1].start, chapter.at)
+        first = cutter.chapter_lines(chapters[0][1].stage, chapters[0][1].total)
+        self.assertEqual((first[0], first[1], first[3]), ('Stage 1 of 9 · Scope', 'Role 0', '38 s'))
+        self.assertIn('not finished', cutter.chapter_lines(chapters[2][1].stage, 9)[2])
 
-    def test_browser_stretches_play_real_time_on_the_actor_screencast(self):
-        segs = self.plan([audit(T0 + 30, TH, query='a', entered='typed'), audit(T0 + 33, TH, action='click'),
-                          audit(T0 + 80, NA, page='arkime_sessions', query='b', entered='typed')],
-                         [activity(T0 + 10, TH, 'elastic_search', q='a')],
-                         frames={TH: [T0 + 20, T0 + 31], NA: [T0 + 82]})
-        self.assertEqual([(s.start, s.end, s.speed, s.screencast) for s in segs], [
-            (0, 27, 10, None), (27, 39, 1, TH), (39, 77, 10, None), (77, 82, 1, None), (82, 86, 1, NA), (86, 120, 10, None)])
-        self.assertEqual(segs[1].captions[0].start, 3.0)
-        self.assertIn('Threat Hunter · Kibana Discover (Elastic) · searches "a"', segs[1].captions[0].text)
-        self.assertTrue(segs[0].captions and 'elastic_search' in segs[0].captions[0].text)
-        self.assertEqual(cutter.to_output(segs, 30), cutter.INTRO_SECONDS + 2.7 + 3)
+    def test_option_a_footage_lasts_exactly_as_long_as_the_round(self):
+        segs = cutter.timeline(stage_plan(speed=1))
+        self.assertEqual(sum(s['out_end'] - s['out_start'] for s in segs if s['kind'] == 'board'), 120)
+        self.assertEqual(segs[-1]['out_end'], cutter.INTRO_SECONDS + 120 + 3 * cutter.CHAPTER_SECONDS + cutter.OUTRO_SECONDS)
 
-    def test_overlapping_bots_split_without_overlap_and_tiny_gaps_stay_real_time(self):
-        segs = self.plan([audit(T0 + 50, TH, query='a', entered='typed'), audit(T0 + 52, NA, page='arkime_sessions')])
-        real = [(s.start, s.end) for s in segs if s.speed == 1]
-        self.assertEqual(real, [(47, 50), (50, 58)])
-        self.assertEqual(segs[0].start, 0)
-        self.assertEqual(segs[-1].end, 120)
-        for a, b in zip(segs, segs[1:]):
-            self.assertEqual(a.end, b.start)
+    def test_every_option_b_frame_carries_the_speed_label(self):
+        items = stage_plan(speed=5, actions=acts.from_activity([activity(T0 + 30, TH, 'elastic_search', q='a')]),
+                           captions=True)
+        segs = cutter.timeline(items)
+        cards = {'intro': 'intro.jpg', 'outro': 'outro.jpg'} | {i: f'ch-{i.stage.number}.jpg' for i in items
+                                                              if isinstance(i, cutter.Chapter)}
+        entries = cutter.listing(items, [(-1, 'f0.jpg'), (10, 'f1.jpg'), (70, 'f2.jpg')], cards, 5)
+        self.assertEqual((entries[0][0], entries[-1][0]), ('intro.jpg', 'outro.jpg'))
+        self.assertAlmostEqual(sum(s for _, s in entries), segs[-1]['out_end'])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cutter.subprocess, 'run') as run:
+            r = cutter.Renderer(Path(tmp))
+            r.video(entries, 5, cutter.overlay(segs, 5), Path(tmp) / 'video.mp4')
+            graph = (Path(tmp) / 'video.filter.txt').read_text(encoding='utf-8')
+            texts = {f.read_text(encoding='utf-8'): f for f in Path(tmp).glob('text-*.txt')}
+        self.assertEqual(run.call_count, 1)
+        self.assertIn(f'trim=duration={segs[-1]["out_end"]:.6f}', graph)
+        draws = graph.split(',drawtext=')
+        label = next(d for d in draws if texts['5x speed · every frame is real'].name in d)
+        self.assertNotIn('enable=', label)
+        caption = next(d for d in draws if any(texts[t].name in d for t in texts if 'elastic_search' in t))
+        self.assertIn('enable=', caption)
 
-    def test_captions_off_and_no_browser_action_means_one_sped_up_backdrop(self):
-        segs = cutter.plan(60, T0, acts.from_activity([activity(T0 + 5, TH, 'elastic_search', q='a')]), {},
-                           cutter.Knobs(captions=False))
-        self.assertEqual([(s.start, s.end, s.speed, s.screencast, s.captions) for s in segs], [(0, 60, 12.0, None, ())])
+    def test_captions_follow_the_bots_and_can_be_turned_off(self):
+        actions = acts.from_activity([activity(T0 + 30, TH, 'elastic_search', q='a')])
+        on = [i for i in stage_plan(speed=5, actions=actions, captions=True) if isinstance(i, cutter.Segment)]
+        self.assertEqual([(c.start, c.end) for c in on[1].captions], [(5.6, 7.6)])
+        self.assertIn('elastic_search', on[1].captions[0].text)
+        off = stage_plan(speed=5, actions=actions)
+        self.assertFalse(any(i.captions for i in off if isinstance(i, cutter.Segment)))
 
     def test_frame_schedule_holds_each_frame_until_the_next(self):
         frames = [(10, 'a'), (20, 'b'), (25, 'c'), (40, 'd')]
         self.assertEqual(cutter.frame_schedule(frames, 15, 30), [('a', 5), ('b', 5), ('c', 5)])
 
-    def test_blank_screencast_frames_are_never_shown(self):
+    def test_blank_screencast_frames_are_never_counted_as_shown(self):
         with tempfile.TemporaryDirectory() as tmp:
             blank, page = Path(tmp) / 'blank.jpg', Path(tmp) / 'page.jpg'
             blank.write_bytes(b'\0' * 7_000)
             page.write_bytes(b'\0' * 90_000)
             shown = cutter.shown_frames({TH: [(T0 + 20, blank), (T0 + 31, page), (T0 + 33, blank)], NA: [(T0 + 40, blank)]})
             self.assertEqual(shown, {TH: [(T0 + 31, page)]})
-            segs = self.plan([audit(T0 + 30, TH, query='a', entered='typed')],
-                             frames={p: [t for t, _ in v] for p, v in shown.items()})
-            self.assertEqual([(s.start, s.end, s.screencast) for s in segs if s.speed == 1], [(27, 31, None), (31, 36, TH)])
-            self.assertEqual(cutter.frame_schedule([(t - T0, f) for t, f in shown[TH]], 31, 36), [(page, 5)])
 
+    def test_browser_live_time_and_the_longest_frozen_board(self):
+        self.assertEqual(cutter.active_seconds([T0 + 1, T0 + 3, T0 + 50], T0, T0 + 55, hold=8), 10 + 5)
+        self.assertEqual(cutter.longest_hold([T0 - 2, T0 + 10, T0 + 12], T0, T0 + 40), 28)
 
-class PrivacyCoverageTest(unittest.TestCase):
-    TITLES = {k: f'{c.title} [wf]' for k, c in record.CONSOLES.items()}
-    LEFT, RIGHT = record.Rect(0, 0, 1920, 1080), record.Rect(1920, 0, 1920, 1080)
-
-    def ours(self, region=LEFT, titles=TITLES, **over):
-        return [record.Win(titles[k], over.get(k, record.tile(region, k)), True, True) for k in record.CONSOLES]
-
-    def test_consoles_tile_each_lane_region_exactly(self):
-        for region in (self.LEFT, self.RIGHT):
-            with self.subTest(region=region):
-                self.assertTrue(record.tiles(region, [record.tile(region, k) for k in record.CONSOLES]))
-                self.assertFalse(record.tiles(region, [record.tile(region, k) for k in list(record.CONSOLES)[:2]]))
-
-    def test_any_foreign_window_above_a_console_or_a_misplaced_console_is_reported(self):
-        browser = record.Win('My personal browser', record.Rect(100, 100, 800, 600), True, False)
-        far = record.Win('Elsewhere', record.Rect(2000, 1200, 800, 600), True, True)
-        self.assertEqual(record.uncovered([far, *self.ours(), browser], self.TITLES, self.LEFT), [])
-        self.assertTrue(any('My personal browser' in p for p in record.uncovered([browser, *self.ours()], self.TITLES, self.LEFT)))
-        self.assertTrue(record.uncovered(self.ours(audit=record.Rect(1280, 0, 640, 500)), self.TITLES, self.LEFT))
-        self.assertTrue(record.uncovered(self.ours()[:2], self.TITLES, self.LEFT))
-
-    def test_two_lanes_side_by_side_each_count_only_their_own_region(self):
-        other = {k: f'{c.title} [wf-l2]' for k, c in record.CONSOLES.items()}
-        lane2 = self.ours(self.RIGHT, other)
-        windows = [*lane2, *self.ours()]
-        self.assertEqual(record.uncovered(windows, self.TITLES, self.LEFT), [])
-        self.assertEqual(record.uncovered(windows, other, self.RIGHT), [])
-        intruder = record.Win('Notification', record.Rect(3000, 900, 400, 120), True, True)
-        self.assertEqual(record.uncovered([intruder, *windows], self.TITLES, self.LEFT), [])
-        self.assertTrue(any('Notification' in p for p in record.uncovered([intruder, *windows], other, self.RIGHT)))
+    def test_removed_knobs_are_refused(self):
+        self.assertEqual(cutter.check_knobs({'pad_before': 3})[1], ['unknown knob pad_before'])
+        self.assertEqual(cutter.Knobs().speed, 5.0)
 
 
 class FakeBrowser:

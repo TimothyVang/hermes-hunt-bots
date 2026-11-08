@@ -1,16 +1,16 @@
 """Filmed full-mode watcher loop (operator-only; reads answer keys).
 
 Each loop runs one real round of the six-bot hunt with the Threat Hunter driving Kibana Discover
-(Elastic) and the Network Analyst driving Arkime through lab_browser, films it (film/record.py),
-scores it against the operator-only key (tool_loops.score), measures driving coverage from the
-lab_browser audit and the lab's /activity log (film/actions.py), cuts a video (film/edit.py) and has
-Claude Opus review the video (film/review.py). A watcher (tool_loops.watcher, Opus) then proposes
-the next brief, stage guidance and drive note, seeing the score breakdown, the coverage and the
-video review, never the key.
+(Elastic) and the Network Analyst driving Arkime through lab_browser, films the round's Hunt Live board
+page and the bots' browsers (film/record.py), scores it against the operator-only key (tool_loops.score),
+measures driving coverage from the lab_browser audit and the lab's /activity log (film/actions.py), cuts
+the board footage into a 1x master and a constant-speed cut (film/edit.py) and has Claude Opus review the
+constant-speed cut (film/review.py). A watcher (tool_loops.watcher, Opus) then proposes the next brief,
+stage guidance and drive note, seeing the score breakdown, the coverage and the video review, never the key.
 
 LANES (--lanes, see film/lanes.py): each loop runs the same round on every lane at the same time. A lane
 is a fully separate lab (Hermes home, lab VM, lab_browser state, Temporal task queue and worker) filmed
-in its own 1920x1080 screen region. The loop's found and coverage are the means over lanes; halts and
+from its own board. The loop's found and coverage are the means over lanes; halts and
 blamed decoys are summed, so a halt or blamed decoy in any lane fails the keep rule. Without --lanes
 there is one lane, the lab the environment names, with the folders and workflow IDs of a single run.
 
@@ -24,8 +24,9 @@ STOP: the best loop found 18/18 with coverage >= 0.8 and its review says ready; 
 Loop 0 films the best tool-loops config (tool-loops/BEST.json, else the base brief) with the
 default drive note. Gates are approved by drive_gates.py on --delegated-by's behalf, as in
 tool_loops.py, one driver per lane. State goes to runtime/practice/film-loops/: state.json, BEST.json,
-BEST.mp4 (the kept loop's best lane's cut) and one film-NN directory per loop (review.png, review.json,
-decision.json, and each lane's captures and video.mp4 in film-NN/<lane>/, or in film-NN/ for one unnamed lane).
+BEST.mp4 (the kept loop's best lane's reviewed cut) and one film-NN directory per loop (review.png, review.json,
+decision.json, and each lane's captures, video.mp4 and video-full.mp4 in film-NN/<lane>/, or in film-NN/ for one
+unnamed lane).
 
 Usage: python operator/film_loop.py <case> <truth> --delegated-by "<person>" --reason "<text>" [--loops 8] [--tag=-a]
        [--lanes lanes.json] [--resume]
@@ -126,11 +127,11 @@ def film_lane(n, lane, args, base, cfg, knobs):
     result = rec['result']
     actions, activity = load_actions(d, rec)
     cov = acts.coverage(actions)
-    edit = cutter.cut(d, rec, actions, knobs, cov) if rec['raw'] else None
+    edit = cutter.cut(d, rec, actions, knobs, cov) if rec['board_frames'] else None
     who = film_lanes.label(lane)
     out = {'lane': who, 'found': result['mean_found'], 'coverage': cov['coverage'], 'misattributed': result['misattributed'],
            'halts': result['halts'], 'result': result, 'driving': cov,
-           'video': str(d / edit['video']) if edit else None, 'privacy_abort': rec['privacy_abort']}
+           'video': str(d / edit['video']) if edit else None, 'video_full': str(d / edit['video_full']) if edit else None}
     cut = {'lane': who, 'd': d, 'edit': edit, 'actions': actions, 'cov': cov, 'result': result} if edit else None
     return out, cut, tl.tool_digest(activity)
 
@@ -163,7 +164,7 @@ def run_loop(n, args, bases, cfg, knobs, lanes):
     lane_outs = {o['lane']: o for o, _, _ in done}
     cuts = [c for _, c, _ in done if c]
     rv = (reviewer.review(FILM_LOOPS / name, cuts) if cuts
-          else {'review': None, 'problems': ['no desktop capture to cut'], 'metrics': None})
+          else {'review': None, 'problems': ['no board frames to cut'], 'metrics': None})
     top = best_lane(lane_outs)
     out = {'loop': n, 'name': name, **cfg, **aggregate(lane_outs), 'lanes': lane_outs, 'best_lane': top,
            'review': rv['review'], 'review_problems': rv['problems'], 'video_metrics': rv['metrics'],
@@ -234,20 +235,22 @@ def adopt(state, outcome, digests):
 
 
 def promote(state, outcome):
-    """Make the loop the best; BEST.mp4 becomes its best lane's cut (a side-by-side would halve each lane's size)."""
+    """Make the loop the best; BEST.mp4 becomes its best lane's reviewed cut (a side-by-side would halve each lane's size)."""
     state['best'] = outcome
     if outcome['video']:
         shutil.copyfile(outcome['video'], FILM_LOOPS / 'BEST.mp4')
 
 
 def upgrade(state):
-    """Give a state saved before lanes existed its one lane, so a resumed single-lane series carries on."""
+    """Bring a saved state up to date so a resumed series carries on: knobs the cut no longer has are dropped, and
+    a state saved before lanes existed gets its one lane."""
+    state['knobs'] = {k: v for k, v in state.get('knobs', {}).items() if k in cutter.KNOB_RULES}
     if 'lanes' in state['last']:
         return state
     for key in ('best', 'last'):
         o = state[key]
         o['lanes'] = {'default': {'lane': 'default', **{k: o.get(k) for k in (
-            'found', 'coverage', 'misattributed', 'halts', 'result', 'driving', 'video', 'privacy_abort')}}}
+            'found', 'coverage', 'misattributed', 'halts', 'result', 'driving', 'video')}}}
         o['best_lane'] = 'default' if o.get('video') else None
     state['last_calls'] = {'default': state['last_calls']}
     return state
@@ -344,7 +347,7 @@ def main(args):
     forbidden = tl.forbidden_terms(*[p for p in (args.dev_truth, args.sealed_truth) if p])
     lanes, bases = start_lanes(args)
     base = bases[film_lanes.label(lanes[0])]
-    tl.log('lanes: ' + ', '.join(f'{film_lanes.label(x)} home={x.home} queue={x.task_queue} region={x.region}' for x in lanes))
+    tl.log('lanes: ' + ', '.join(f'{film_lanes.label(x)} home={x.home} queue={x.task_queue}' for x in lanes))
     state_path = FILM_LOOPS / 'state.json'
     if args.resume and state_path.exists():
         state = upgrade(json.loads(state_path.read_text(encoding='utf-8')))

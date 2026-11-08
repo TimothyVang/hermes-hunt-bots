@@ -1,13 +1,12 @@
 """Film each browser owner's own lab_browser page with Page.startScreencast.
 
-Chromium will not keep its windows topmost, so a desktop capture cannot show the bots' browsers.
-Instead the watch-only DevTools client in framework/hunt_lab/screencast.py attaches to each owner's
-browser under hunt-lab-browser/<profile>/ and this module saves every screencast frame as a JPEG with
-the frame's own timestamp.
+The watch-only DevTools client in framework/hunt_lab/screencast.py attaches to each owner's browser under
+hunt-lab-browser/<profile>/ and this module saves every screencast frame as a JPEG with the frame's own
+timestamp. film/record.py stores the Hunt Live board's frames through the same Index.
 
-Output: <out>/<profile>/000001.jpg ... and <out>/index.jsonl, one {"t", "profile", "file"} line
-per frame (t in epoch seconds, file relative to <out>). A page that does not change sends no frames,
-so a frame stays on screen until the next one.
+Output: <out>/<profile>/000001.jpg ... and <out>/index.jsonl (or the index name given), one
+{"t", "profile", "file"} line per frame (t in epoch seconds, file relative to <out>). A page that does not
+change sends no frames, so a frame stays on screen until the next one.
 """
 import json
 import sys
@@ -23,11 +22,12 @@ from hunt_lab import screencast as core  # noqa: E402
 
 
 class Index:
-    """Frame files and their jsonl index, shared by every owner's stream."""
+    """Frame files and their jsonl index, shared by every stream that writes to it."""
 
-    def __init__(self, out):
+    def __init__(self, out, name='index.jsonl'):
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
+        self.name = name
         self._lock = threading.Lock()
         self._counts = {}
 
@@ -37,14 +37,14 @@ class Index:
             rel = f'{profile}/{n:06d}.jpg'
             (self.out / profile).mkdir(exist_ok=True)
             (self.out / rel).write_bytes(jpeg)
-            with (self.out / 'index.jsonl').open('a', encoding='utf-8') as s:
+            with (self.out / self.name).open('a', encoding='utf-8') as s:
                 s.write(json.dumps({'t': t, 'profile': profile, 'file': rel}) + '\n')
 
 
-def read_index(out):
+def read_index(out, name='index.jsonl'):
     """{profile: [(t, path)]} sorted by time; unreadable lines are skipped."""
     frames = {}
-    p = Path(out) / 'index.jsonl'
+    p = Path(out) / name
     if not p.exists():
         return frames
     for line in p.read_text(encoding='utf-8').splitlines():

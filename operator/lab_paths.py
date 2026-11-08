@@ -28,9 +28,10 @@ TOOL_LOOPS = PRACTICE / 'tool-loops'
 FILM_LOOPS = PRACTICE / 'film-loops'
 GATE_RUNS = PRACTICE / 'gate-runs'
 FFMPEG = os.environ.get('FFMPEG') or 'ffmpeg'
-FFPROBE = os.environ.get('FFPROBE') or str(Path(FFMPEG).with_name(Path(FFMPEG).name.replace('ffmpeg', 'ffprobe')))
 TOOLCAM_BROWSER = os.environ.get('TOOLCAM_BROWSER') or (
     r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' if os.name == 'nt' else 'chromium')
+# The headless browser film/record.py opens the Hunt Live board in, with its own temporary profile.
+FILM_BROWSER = os.environ.get('HUNT_LAB_BROWSER') or TOOLCAM_BROWSER
 TOOLCAM_FONT = os.environ.get('TOOLCAM_FONT') or (
     str(Path(os.environ.get('WINDIR', '')) / 'Fonts' / 'segoeuib.ttf') if os.name == 'nt' else '')
 
@@ -38,13 +39,12 @@ TOOLCAM_FONT = os.environ.get('TOOLCAM_FONT') or (
 @dataclass(frozen=True)
 class Lane:
     """One complete lab: a Hermes home (its six profiles, lab VM and lab_browser state), the Temporal task
-    queue its worker polls, the Hermes executable serving it, and the 1920x1080 desktop region its consoles
-    are filmed in. Every tool that touches a lab takes its Lane, so two lanes can run side by side."""
+    queue its worker polls, and the Hermes executable serving it. Every tool that touches a lab takes its
+    Lane, so two lanes can run side by side."""
     name: str = ''
     home: Path = LAB_HOME
     task_queue: str | None = os.environ.get('HUNT_BOTS_TASK_QUEUE')
     exe: str | None = None
-    region: tuple = (0, 0, 1920, 1080)
 
     @property
     def state_dir(self):

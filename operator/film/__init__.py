@@ -1,1 +1,1 @@
-"""Filmed hunt rounds: screencast the bots' browsers, record the consoles, cut the video, review it with Opus."""
+"""Filmed hunt rounds: screencast the Hunt Live board and the bots' browsers, cut the video, review it with Opus."""
