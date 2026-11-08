@@ -390,6 +390,17 @@ class EndpointTests(ServerCase):
         self.assertEqual((status, value['ready'], value['kibana_ready']), (200, True, True))
 
 
+class InstanceIdTests(unittest.TestCase):
+    def test_the_cloud_init_instance_id_is_read_and_junk_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'instance-id'
+            path.write_text('hermes-framework-network-analyst-case-lab-med-001-6873a567-load2\n', encoding='ascii')
+            self.assertEqual(lab_server.instance_id(path), 'hermes-framework-network-analyst-case-lab-med-001-6873a567-load2')
+            path.write_text('bad id; rm -rf /', encoding='ascii')
+            self.assertIsNone(lab_server.instance_id(path))
+            self.assertIsNone(lab_server.instance_id(Path(temp) / 'missing'))
+
+
 class KibanaGuestTests(unittest.TestCase):
     def test_discover_parses_lucene_with_the_same_query_string_options_as_elastic_search(self):
         config = (GUEST / 'kibana.yml').read_text(encoding='utf-8')
