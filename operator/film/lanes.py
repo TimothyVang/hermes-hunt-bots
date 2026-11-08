@@ -8,6 +8,7 @@ name, filmed at the top-left of the screen, with today's workflow IDs and folder
 """
 import json
 import re
+import sys
 from pathlib import Path
 
 from lab_paths import DEFAULT_LANE, RUNTIME, Lane
@@ -69,6 +70,44 @@ def problems(lanes):
                     out.append(f'{pair} share their {what}')
             if _overlap(a.region, b.region):
                 out.append(f'{pair} have overlapping screen regions')
+    return out
+
+
+def _pid_alive(pid):
+    """True while process pid runs (Windows OpenProcess; elsewhere /proc)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform == 'win32':
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    return Path(f'/proc/{pid}').exists()
+
+
+def gateway_problems(lanes, alive=_pid_alive):
+    """Why a lane's bots would run without a persistent gateway. The bots' tools, browsers included, run
+    inside the home's Hermes gateway; one a worker auto-starts inherits the worker's stripped environment
+    and exits when idle, and lab_browser failed most calls under it, so each home needs one started
+    the normal way and kept running."""
+    out = []
+    for lane in lanes:
+        name, path = lane.name or 'default', lane.home / 'gateway_state.json'
+        start = f'start one with HERMES_HOME={lane.home} hermes gateway run'
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            out.append(f'lane {name}: no Hermes gateway for {lane.home}; {start}')
+            continue
+        if state.get('gateway_state') != 'running' or not alive(state.get('pid')):
+            out.append(f'lane {name}: the Hermes gateway for {lane.home} is not running; {start}')
+        elif '--idle-exit' in (state.get('argv') or []):
+            out.append(f'lane {name}: the Hermes gateway for {lane.home} was auto-started and exits when idle; stop it and {start}')
     return out
 
 
