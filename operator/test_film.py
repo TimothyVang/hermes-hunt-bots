@@ -113,6 +113,16 @@ class KeepRuleTest(unittest.TestCase):
             self.assertFalse(film_loop.rejudge_last(blamed, 'decoy'))
             self.assertIs(blamed['best'], best)
 
+    def test_seed_config_reads_film_and_tool_loop_best_files(self):
+        base = {'scope': 'Synthetic lab-med-001 only; case brief'}
+        film = {'brief': 'b', 'guidance': {'evidence': 'g'}, 'drive_note': 'use lab_browser'}
+        self.assertEqual(film_loop.seed_config(film, base), {'brief': 'b', 'guidance': {'evidence': 'g'},
+                                                             'drive_note': 'use lab_browser'})
+        tool = {'brief': 't', 'stage_guidance': {'network': 'n'}}
+        self.assertEqual(film_loop.seed_config(tool, base), {'brief': 't', 'guidance': {'network': 'n'},
+                                                             'drive_note': film_loop.DRIVE_NOTE})
+        self.assertEqual(film_loop.seed_config({}, base)['brief'], 'case brief')
+
     def test_finished_needs_all_facts_coverage_and_a_ready_review(self):
         best = {'found': 18, 'coverage': 0.8, 'review': {'ready': True}}
         self.assertTrue(film_loop.finished(best))

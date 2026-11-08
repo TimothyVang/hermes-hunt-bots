@@ -296,6 +296,9 @@ def parse_args(argv=None):
                     help='with --resume: re-apply the current keep rule to the last loop if it was reverted; REASON is logged')
     ap.add_argument('--reset-plateau', metavar='REASON',
                     help='with --resume: zero the no-gain counter after an infrastructure fix; REASON is logged')
+    ap.add_argument('--seed', metavar='BEST_JSON',
+                    help='new series only: start loop 0 from this BEST.json (a film-loop one with brief, guidance and '
+                         'drive_note, or a tool-loop one with brief and stage_guidance); default the tool-loop BEST.json')
     args = ap.parse_args(argv)
     for name in ('dev_truth', 'sealed_truth'):
         truth = getattr(args, name)
@@ -305,7 +308,16 @@ def parse_args(argv=None):
             setattr(args, name, str(Path(truth).resolve()))
     if args.lanes and not Path(args.lanes).is_file():
         ap.error(f'lanes file not found: {args.lanes}')
+    if args.seed and not Path(args.seed).is_file():
+        ap.error(f'seed not found: {args.seed}')
     return args
+
+
+def seed_config(seed, base):
+    """Loop 0's config from a film-loop or tool-loop BEST.json (an empty dict means the case's own brief)."""
+    return {'brief': seed.get('brief') or base['scope'].split(' only; ', 1)[1],
+            'guidance': seed.get('guidance') or seed.get('stage_guidance') or {},
+            'drive_note': seed.get('drive_note') or DRIVE_NOTE}
 
 
 def start_lanes(args):
@@ -343,10 +355,10 @@ def main(args):
             state['no_gain'] = 0
         save(state)
     else:
-        start = TOOL_LOOPS / 'BEST.json'
+        start = Path(args.seed) if args.seed else TOOL_LOOPS / 'BEST.json'
         seed = json.loads(start.read_text(encoding='utf-8')) if start.exists() else {}
-        cfg = {'brief': seed.get('brief') or base['scope'].split(' only; ', 1)[1],
-               'guidance': seed.get('stage_guidance') or {}, 'drive_note': DRIVE_NOTE}
+        cfg = seed_config(seed, base)
+        tl.log(f'loop 0 config from {start if seed else "the case brief"}')
         problems = check_config(base, cfg['brief'], cfg['guidance'], cfg['drive_note'], args.dev_case, forbidden)
         if problems:
             raise SystemExit('starting config rejected: ' + '; '.join(problems))
