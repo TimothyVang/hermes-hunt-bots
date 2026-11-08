@@ -163,6 +163,16 @@ def demo_marker_problem():
     return None
 
 
+def screencast_problem():
+    """The browser is filmed only through the screencast client, which needs websockets in this Python."""
+    try:
+        import websockets.sync.client  # noqa: F401
+    except ImportError:
+        return (f'{sys.executable} cannot import websockets, so the bots\' browsers cannot be filmed; '
+                'install it into this interpreter (python -m pip install websockets)')
+    return None
+
+
 class Guard:
     """Keeps the consoles pinned while recording; on the first coverage failure stops the capture."""
 
@@ -220,7 +230,7 @@ def copy_audit(dest, start, end):
 
 def film(d, name, base, brief, guidance, case_id, truth):
     """Record one round of the hunt with this brief and guidance; returns film.json's content."""
-    problem = demo_marker_problem()
+    problem = demo_marker_problem() or screencast_problem()
     if problem:
         raise SystemExit(problem)
     d.mkdir(parents=True, exist_ok=True)

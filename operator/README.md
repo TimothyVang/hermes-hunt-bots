@@ -63,7 +63,7 @@ python operator\tool_loops.py lab-med-001 runtime\operator-only\lab-med-001\trut
 
 # Filmed full-mode loop (needs the demo marker, see below); FFMPEG must point at ffmpeg.exe
 $env:FFMPEG = "$PWD\..\runtime\tools\ffmpeg\bin\ffmpeg.exe"
-python operator\film_loop.py lab-med-001 runtime\operator-only\lab-med-001\truth.json --delegated-by "Ada Lovelace" --reason "unattended synthetic film loop" --loops 8 --tag -f1
+python operator\film_loop.py lab-med-001 runtime\operator-only\lab-med-001\truth.json --delegated-by "Ada Lovelace" --reason "unattended synthetic film loop" --loops 8 --tag=-f1
 
 # Same, but start the VM first whenever memory allows
 python -u operator\auto_run.py lab-med-001 runtime\operator-only\lab-med-001\truth.json --delegated-by "Ada Lovelace" --reason "unattended synthetic watcher loop"

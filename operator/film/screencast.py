@@ -100,6 +100,7 @@ class Stream:
         self.key = self.client = self.session = None
         self.lost = threading.Event()
         self.failed_key = None
+        self.failed_logged = 0.0
 
     def _wanted(self):
         """(ws_url, main_target) named by session.json; None when it is gone or incomplete. A read that races
@@ -130,8 +131,13 @@ class Stream:
             self.session = client.call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
             client.call('Page.startScreencast', SCREENCAST, self.session)
         except Exception as exc:
-            if self.failed_key != key:
-                tl.log(f'screencast {self.profile}: cannot attach ({type(exc).__name__}); retrying')
+            # Log the first failure for a browser, then every 30 s while it keeps failing, with its detail.
+            now = time.monotonic()
+            if self.failed_key != key or now - self.failed_logged >= 30:
+                cause = exc.__cause__ or exc.__context__
+                tl.log(f'screencast {self.profile}: cannot attach ({type(exc).__name__}: {exc}'
+                       + (f' <- {type(cause).__name__}: {cause}' if cause else '') + '); retrying')
+                self.failed_logged = now
             self.failed_key = key
             if client:
                 client.close()
