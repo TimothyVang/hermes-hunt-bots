@@ -386,7 +386,9 @@ SCHEMA = {
         'properties': {
             'case_id': {'type': 'string', 'description': 'Exact human-approved case ID.'},
             'dataset': {'type': 'string', 'enum': ['case', 'events', 'network']},
-            'q': {'type': 'string', 'maxLength': 300, 'description': 'Bounded simple-query-string, not raw DSL.'},
+            'q': {'type': 'string', 'maxLength': 300, 'description': (
+                'events: Lucene query_string, as in elastic_search (no leading wildcards); '
+                'network: simple-query-string over dns.host and network.protocol. Not raw DSL.')},
             'host': {'type': 'string', 'maxLength': 100, 'description': 'Exact event hostname or network IP.'},
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
             'offset': {'type': 'integer', 'minimum': 0, 'maximum': 5000},

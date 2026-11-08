@@ -33,7 +33,8 @@ PROFILES = frozenset({
 })
 BOARD_PROFILE = 'hunt-board'
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
-EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'process', 'source', 'destination', 'network', 'dns', 'winlog', 'message', 'labels']
+EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
+                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'message', 'labels']
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
 ES_TIMEOUT = 15
@@ -276,22 +277,20 @@ def query(server, dataset, params):
     host = text(values.get('host'), 100)
     case = server.case
     if dataset == 'events':
-        filters = [{'term': {'event.dataset': case['case_id']}}]
+        search = event_query(case, q)
         if host:
-            filters.append({'term': {'host.name': host}})
-        index, fields, timefield = EVENT_INDEX, EVENT_FIELDS, '@timestamp'
-        if q:
-            filters.append({'simple_query_string': {'query': q, 'fields': ['message', 'host.name', 'process.name', 'dns.question.name', 'event.id'], 'default_operator': 'and'}})
+            search['bool']['filter'].append({'term': {'host.name': host}})
+        index, fields, sort = EVENT_INDEX, EVENT_FIELDS, [{'@timestamp': 'asc'}, {'event.id': 'asc'}]
     else:
         filters = network_filters(server)
         if host:
             filters.append({'bool': {'should': [{'term': {'source.ip': host}}, {'term': {'destination.ip': host}}], 'minimum_should_match': 1}})
-        index, fields, timefield = NETWORK_INDEX, NETWORK_FIELDS, 'firstPacket'
         if q:
             filters.append({'simple_query_string': {'query': q, 'fields': ['dns.host', 'network.protocol'], 'default_operator': 'and'}})
-    response = es_search(server.elastic, index, {'query': {'bool': {'filter': filters}}, 'size': limit, 'from': offset,
-                                                 'sort': [{timefield: 'asc'}], '_source': fields, 'track_total_hits': True,
-                                                 'timeout': '10s'})
+        search = {'bool': {'filter': filters}}
+        index, fields, sort = NETWORK_INDEX, NETWORK_FIELDS, [{'firstPacket': 'asc'}]
+    response = es_search(server.elastic, index, {'query': search, 'size': limit, 'from': offset, 'sort': sort,
+                                                 '_source': fields, 'track_total_hits': True, 'timeout': '10s'})
     hits = response['hits']
     return {'case_id': case['case_id'], 'dataset': dataset, 'total': hits['total']['value'],
             'total_relation': hits['total']['relation'], 'offset': offset, 'limit': limit,
@@ -510,6 +509,34 @@ def network_endpoint(server, params):
     return query(server, 'network', params)
 
 
+def console_page(server, params):
+    """The lab console: the events search as HTML. A refused query shows only its fixed code."""
+    try:
+        result = query(server, 'events', params)
+    except BackendQueryError as exc:
+        status, summary, rows = 400, '<p role="alert">Query refused: %s</p>' % html.escape(exc.args[0]), ''
+    except (ValueError, TypeError):
+        status, summary, rows = 400, '<p role="alert">Query refused: invalid_query</p>', ''
+    else:
+        status = 200
+        summary = '<p role="status"><strong>%d of %d events</strong>%s</p>' % (
+            result['returned'], result['total'], ' from offset %d' % result['offset'] if result['offset'] else '')
+        rows = ''.join('<tr><td>' + html.escape(str(row.get('@timestamp', ''))) + '</td><td><pre>' +
+                       html.escape(json.dumps(row, indent=2)) + '</pre></td></tr>' for row in result['records'])
+    shown = {key: html.escape(params.get(key, [''])[-1]) for key in ('q', 'host')}
+    case = server.case
+    return status, (
+        '<!doctype html><html><head><meta charset="utf-8"><title>Hermes hunting lab</title>'
+        '<style>body{font:16px system-ui;margin:24px}td{vertical-align:top;border-bottom:1px solid #999}pre{white-space:pre-wrap}input{margin:6px}</style></head><body>'
+        '<h1>Hermes supplied-evidence lab</h1><p>Synthetic data only. Read-only. No live capture.</p>'
+        '<p>Case: ' + html.escape(case['case_id']) + '</p><p>' + html.escape(case['question']) + '</p>'
+        '<form action="/view" method="get"><label for="q">Search</label><input id="q" name="q" size="60" value="' + shown['q'] + '">'
+        '<label for="host">Host</label><input id="host" name="host" value="' + shown['host'] + '"><button>Search logs</button></form>'
+        '<p>Lucene query_string, as in elastic_search; no leading wildcards.</p>'
+        '<p><a href="/events">JSON events</a> · <a href="/network">Network metadata</a> · <a href="/case">Source coverage</a> · <a href="/health">Readiness</a></p>'
+        + summary + '<table>' + rows + '</table></body></html>')
+
+
 # path -> (tool name shown on the board, handler, (result_count key, total key))
 TOOL_ROUTES = {
     '/es/search': ('elastic_search', es_search_endpoint, ('returned', 'total')),
@@ -633,17 +660,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('No case parameters supported')
                 self.send(200, self.server.case)
             elif target.path in ('/', '/view'):
-                result = query(self.server, 'events', params)
-                records = ''.join('<tr><td>' + html.escape(str(row.get('@timestamp', ''))) + '</td><td><pre>' +
-                                  html.escape(json.dumps(row, indent=2)) + '</pre></td></tr>' for row in result['records'])
-                body = ('<!doctype html><html><head><meta charset="utf-8"><title>Hermes hunting lab</title>'
-                        '<style>body{font:16px system-ui;margin:24px}td{vertical-align:top;border-bottom:1px solid #999}pre{white-space:pre-wrap}input{margin:6px}</style></head><body>'
-                        '<h1>Hermes supplied-evidence lab</h1><p>Synthetic data only. Read-only. No live capture.</p>'
-                        '<p>Case: ' + html.escape(self.server.case['case_id']) + '</p><p>' + html.escape(self.server.case['question']) + '</p>'
-                        '<form action="/view" method="get"><label>Search <input name="q"></label><label>Host <input name="host"></label><button>Search logs</button></form>'
-                        '<p><a href="/events">JSON events</a> · <a href="/network">Network metadata</a> · <a href="/case">Source coverage</a> · <a href="/health">Readiness</a></p>'
-                        '<p>Showing %d of %d events; additional pages are available through the bounded API.</p><table>%s</table></body></html>' % (result['returned'], result['total'], records))
-                self.send(200, body, 'text/html')
+                self.send(*console_page(self.server, params), 'text/html')
             else:
                 self.send(404, {'error': 'not_found'})
         except (ValueError, TypeError, BackendQueryError):
