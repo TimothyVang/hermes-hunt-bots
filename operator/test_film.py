@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import film_loop
 import tool_loops as tl
@@ -79,13 +80,38 @@ class KeepRuleTest(unittest.TestCase):
             (self.outcome(12, 0.5), False),
             (self.outcome(14, 0.4), True),
             (self.outcome(14, 0.39), False),
-            (self.outcome(11, 0.9), False),
+            # A coverage gain of at least 0.2 survives a score drop within the one-round noise band (2).
+            (self.outcome(11, 0.9), True),
+            (self.outcome(10, 0.71), True),
+            (self.outcome(9, 0.9), False),
+            (self.outcome(11, 0.69), False),
             (self.outcome(18, 1.0, misattributed=1), False),
             (self.outcome(18, 1.0, halts=1), False),
         ]
         for new, kept in cases:
             with self.subTest(new=new):
                 self.assertEqual(film_loop.keep(new, self.BEST), kept)
+
+    def test_rejudge_last_keeps_a_loop_the_old_rule_reverted_and_only_that_loop(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(film_loop, 'FILM_LOOPS', Path(temp)), \
+                patch.object(film_loop.tl, 'log'):
+            (Path(temp) / 'film-01').mkdir()
+            (Path(temp) / 'film-01' / 'decision.json').write_text(json.dumps({'kept': False}), encoding='utf-8')
+            best = {'loop': 0, 'found': 7, 'coverage': 0.05, 'video': None}
+            last = {'loop': 1, 'found': 5, 'coverage': 0.64, 'misattributed': 0, 'halts': 0, 'video': None}
+            state = {'best': best, 'last': last, 'no_gain': 1,
+                     'history': [{'loop': 1, 'found': 5, 'coverage': 0.64, 'kept': False}]}
+            self.assertTrue(film_loop.rejudge_last(state, 'keep rule gained a noise band'))
+            self.assertIs(state['best'], last)
+            self.assertEqual((state['history'][-1]['kept'], state['no_gain']), (True, 0))
+            record = json.loads((Path(temp) / 'film-01' / 'decision.json').read_text(encoding='utf-8'))
+            self.assertEqual(record, {'kept': True, 'rejudged': 'keep rule gained a noise band'})
+            # Already kept, or a decoy blamed: nothing changes.
+            self.assertFalse(film_loop.rejudge_last(state, 'again'))
+            blamed = {'best': best, 'last': {**last, 'misattributed': 1}, 'no_gain': 1,
+                      'history': [{'loop': 1, 'found': 5, 'coverage': 0.64, 'kept': False}]}
+            self.assertFalse(film_loop.rejudge_last(blamed, 'decoy'))
+            self.assertIs(blamed['best'], best)
 
     def test_finished_needs_all_facts_coverage_and_a_ready_review(self):
         best = {'found': 18, 'coverage': 0.8, 'review': {'ready': True}}
