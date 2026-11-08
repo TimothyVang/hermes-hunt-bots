@@ -323,7 +323,7 @@ def seed_config(seed, base):
 def start_lanes(args):
     """The lanes to run and each lane's hunt input, after checking they cannot interfere and all hold dev_case."""
     lanes = film_lanes.load(args.lanes)
-    problems = film_lanes.problems(lanes)
+    problems = film_lanes.problems(lanes) + film_lanes.gateway_problems(lanes)
     if problems:
         raise SystemExit('lanes rejected: ' + '; '.join(problems))
     bases = {}

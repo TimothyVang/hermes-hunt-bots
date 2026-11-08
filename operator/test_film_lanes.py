@@ -75,6 +75,33 @@ def lane_out(name, found, coverage, halts=0, misattributed=0, video=True):
             'video': f'{name}.mp4' if video else None}
 
 
+class GatewayPreflightTest(unittest.TestCase):
+    def lane_with(self, temp, state):
+        home = Path(temp) / 'home'
+        home.mkdir()
+        if state is not None:
+            (home / 'gateway_state.json').write_text(json.dumps(state), encoding='utf-8')
+        return Lane('l2', home, 'q2', None, (1920, 0, 1920, 1080))
+
+    def test_only_a_live_persistent_gateway_passes(self):
+        running = {'pid': 4242, 'gateway_state': 'running', 'argv': ['main.py', 'gateway', 'run', '--quiet']}
+        cases = [
+            (running, True, []),
+            (None, True, ['no Hermes gateway']),
+            (running, False, ['is not running']),
+            ({**running, 'gateway_state': 'stopped'}, True, ['is not running']),
+            ({**running, 'argv': running['argv'] + ['--idle-exit']}, True, ['auto-started']),
+        ]
+        for state, alive, expected in cases:
+            with self.subTest(state=state, alive=alive), tempfile.TemporaryDirectory() as temp:
+                lane = self.lane_with(temp, state)
+                found = lanes.gateway_problems([lane], alive=lambda pid, alive=alive: alive and pid == 4242)
+                self.assertEqual(len(found), len(expected))
+                for problem, phrase in zip(found, expected):
+                    self.assertIn(phrase, problem)
+                    self.assertIn('hermes gateway run', problem)
+
+
 class LaneScoringTest(unittest.TestCase):
     def test_the_loop_scores_the_mean_and_any_lane_halting_fails_the_keep_rule(self):
         outs = {'l1': lane_out('l1', 14, 0.6), 'l2': lane_out('l2', 0, 0.2, halts=1)}
