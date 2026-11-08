@@ -511,7 +511,7 @@ class FakeProcess:
 
 
 class DemoModeTests(unittest.TestCase):
-    """The operator's demo.json beside the bots' browser profiles decides headed mode and the cursor overlay."""
+    """The operator's demo.json beside the bots' browser profiles decides headed mode, the cursor overlay and the page scale."""
 
     def setUp(self):
         self.lab = LabStub()
@@ -574,13 +574,53 @@ class DemoModeTests(unittest.TestCase):
             self.assertEqual(len(launched), 1)
             (browsers / 'demo.json').write_text(json.dumps({'headed': True, 'window': [0, 0, 1280, 1080]}), encoding='utf-8')
             snapshot()
+            (browsers / 'demo.json').write_text(json.dumps({'window': [0, 0, 1280, 1080], 'scale': 1.5}), encoding='utf-8')
+            snapshot()
+            snapshot()
             (browsers / 'demo.json').unlink()
             snapshot()
             lab_browser.shutdown()
-        self.assertEqual(len(launched), 3)
+        self.assertEqual(len(launched), 4)
         self.assertIn('--headless=new', launched[0].args)
         self.assertIn('--window-position=0,0', launched[1].args)
-        self.assertIn('--headless=new', launched[2].args)
+        self.assertNotIn('--force-device-scale-factor=1.5', launched[1].args)
+        self.assertIn('--force-device-scale-factor=1.5', launched[2].args)
+        self.assertIn('--headless=new', launched[3].args)
+
+    def test_a_browser_left_by_a_restarted_host_is_reused_only_at_the_marker_scale(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        browsers = Path(temp.name) / 'hunt-lab-browser'
+        browsers.mkdir()
+        sockets, launched = [], []
+
+        def socket(_url):
+            sockets.append(FakeBrowser())
+            self.addCleanup(sockets[-1].close)
+            return sockets[-1]
+
+        def popen(args, **options):
+            launched.append(FakeProcess(args, **options))
+            return launched[-1]
+
+        def snapshot_after_host_restart(scale):
+            (browsers / 'demo.json').write_text(json.dumps({'scale': scale}), encoding='utf-8')
+            lab_browser._SESSIONS.clear()
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+                                      state_dir='analyst-state', profile='framework-researcher',
+                                      browser_root=browsers / 'framework-researcher')
+            self.assertTrue(result['ok'], result)
+
+        with patch.object(lab_browser, '_browser_executable', return_value='edge'), \
+                patch.object(lab_browser.subprocess, 'Popen', popen), \
+                patch.object(lab_browser, '_WebSocket', socket), patch.object(lab_browser, '_owned', return_value=True):
+            self.addCleanup(lab_browser.shutdown)
+            snapshot_after_host_restart(1.5)
+            snapshot_after_host_restart(1.5)
+            self.assertEqual(len(launched), 1)
+            snapshot_after_host_restart(1.25)
+        self.assertEqual(len(launched), 2)
+        self.assertIn('--force-device-scale-factor=1.25', launched[1].args)
 
     def test_without_a_marker_the_browser_is_headless_and_draws_no_cursor(self):
         args, scripts, audit = self.launch()
@@ -598,6 +638,7 @@ class DemoModeTests(unittest.TestCase):
         self.assertNotIn('--headless=new', args)
         self.assertIn('--window-position=100,-40', args)
         self.assertIn('--window-size=1280,900', args)
+        self.assertFalse(any(arg.startswith('--force-device-scale-factor') for arg in args))
         self.assertEqual(audit['demo'], 'on')
         self.assertEqual(len(scripts), 1)
         self.assertEqual(scripts[0]['sessionId'], 'page')
@@ -615,19 +656,36 @@ class DemoModeTests(unittest.TestCase):
         self.assertIn('--headless=new', args)
         self.assertEqual(len(scripts), 1)
 
+    def test_a_marker_scale_renders_pages_larger_in_a_window_of_the_same_screen_size(self):
+        # Chromium sizes windows in device-independent pixels, so a forced scale factor divides them.
+        args, scripts, audit = self.launch({'window': [200, 100, 1280, 1080], 'scale': 1.5})
+        self.assertEqual((audit['demo'], len(scripts)), ('on', 1))
+        self.assertNotIn('--headless=new', args)
+        for flag in ('--force-device-scale-factor=1.5', '--window-position=133,67', '--window-size=853,720'):
+            self.assertIn(flag, args)
+        args, _scripts, _audit = self.launch({'headed': False, 'scale': 2})
+        for flag in ('--headless=new', '--force-device-scale-factor=2', '--window-size=683,430'):
+            self.assertIn(flag, args)
+        args, _scripts, _audit = self.launch({'scale': 1})
+        for flag in ('--force-device-scale-factor=1', '--window-size=1600,1000'):
+            self.assertIn(flag, args)
+
     def test_an_invalid_marker_is_ignored_whole_and_audited(self):
         for marker in ({'headed': 'yes'}, {'cursor': 1}, {'headed': True, 'record': True}, {'window': [0, 0, 1600]},
                        {'window': [0, 0, True, 1000]}, {'window': [0, 0, 1600.0, 1000]}, {'window': [0, 0, 50, 50]},
-                       {'window': '0,0,1600,1000'}, '[]', 'headed', '{"headed": true', ' ' * 2000 + '{}'):
+                       {'window': '0,0,1600,1000'}, {'scale': 0.99}, {'scale': 2.01}, {'scale': '1.5'},
+                       {'scale': True}, {'scale': None}, {'scale': [1.5]}, '{"scale": NaN}', '{"scale": Infinity}',
+                       '[]', 'headed', '{"headed": true', ' ' * 2000 + '{}'):
             with self.subTest(marker=marker):
                 args, scripts, audit = self.launch(marker)
                 self.assertIn('--headless=new', args)
-                self.assertFalse(any(arg.startswith('--window-position=') for arg in args))
+                self.assertFalse(any(arg.startswith(('--window-position=', '--force-device-scale-factor')) for arg in args))
                 self.assertEqual((scripts, audit['demo']), ([], 'invalid_marker'))
 
-    def test_the_cursor_overlay_leaves_actionability_and_input_unchanged(self):
+    def test_the_cursor_overlay_and_page_scale_leave_actionability_and_input_unchanged(self):
+        # Input, hit tests and the overlay all work in CSS pixels, which a device scale factor leaves alone.
         traffic = []
-        for demo in (lab_browser.DEMO_OFF, lab_browser.Demo('on', None, True)):
+        for demo in (lab_browser.DEMO_OFF, lab_browser.Demo('on', None, True), lab_browser.Demo('on', None, True, 1.5)):
             fake = FakeBrowser()
             self.addCleanup(fake.close)
             browser = session(fake, demo=demo)
@@ -637,6 +695,7 @@ class DemoModeTests(unittest.TestCase):
                             if m['method'] in ('Runtime.callFunctionOn', 'Input.dispatchMouseEvent')])
         self.assertGreater(len(traffic[0]), 12)
         self.assertEqual(traffic[0], traffic[1])
+        self.assertEqual(traffic[0], traffic[2])
 
 
 if __name__ == '__main__':

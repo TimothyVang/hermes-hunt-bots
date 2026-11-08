@@ -162,10 +162,12 @@ class Command:
 
 @dataclass(frozen=True)
 class Demo:
-    """The operator's demo.json marker as parsed: its audit label, the headed window, the cursor overlay."""
+    """The operator's demo.json marker as parsed: its audit label, the headed window, the cursor overlay, and the
+    forced device scale factor (None keeps the system's)."""
     marker: str | None = None
     window: tuple[int, int, int, int] | None = None
     cursor: bool = False
+    scale: float | None = None
 
 
 DEMO_OFF = Demo()
@@ -671,8 +673,7 @@ class BrowserSession:
         lab, arkime = self.origins()
         return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
-                'pointer': list(self.pointer), 'last_used': self.last_used,
-                'window': list(self.window) if self.window else None, 'cursor': bool(self.demo.cursor)}
+                'pointer': list(self.pointer), 'last_used': self.last_used, **_shape(self.window, self.demo)}
 
     def close(self):
         try:
@@ -692,6 +693,10 @@ def _demo_window(window):
             and all(abs(value) <= 32768 for value in window[:2]) and all(200 <= value <= 16384 for value in window[2:]))
 
 
+def _demo_scale(scale):
+    return type(scale) in (int, float) and 1.0 <= scale <= 2.0
+
+
 def read_demo(path):
     """The operator's demo marker. The tool only ever reads it; a marker that fails validation is ignored whole."""
     try:
@@ -705,13 +710,15 @@ def read_demo(path):
         marker = json.loads(raw) if len(raw) <= DEMO_MAX_BYTES else None
     except ValueError:
         return DEMO_INVALID
-    if not isinstance(marker, dict) or not set(marker) <= {'headed', 'window', 'cursor'}:
+    if not isinstance(marker, dict) or not set(marker) <= {'headed', 'window', 'cursor', 'scale'}:
         return DEMO_INVALID
     headed, cursor = marker.get('headed', True), marker.get('cursor', True)
     window = marker.get('window', list(DEMO_WINDOW))
-    if type(headed) is not bool or type(cursor) is not bool or not _demo_window(window):
+    if (type(headed) is not bool or type(cursor) is not bool or not _demo_window(window)
+            or ('scale' in marker and not _demo_scale(marker['scale']))):
         return DEMO_INVALID
-    return Demo('on', tuple(window) if headed else None, cursor)
+    scale = float(marker['scale']) if 'scale' in marker else None
+    return Demo('on', tuple(window) if headed else None, cursor, scale)
 
 
 def _browser_executable():
@@ -730,8 +737,9 @@ def _browser_executable():
     raise QueryFailure('browser_unavailable')
 
 
-def browser_args(executable, user_data, scope, window=None):
-    """Launch flags; `window` (x, y, width, height) opens a visible window there, None runs headless."""
+def browser_args(executable, user_data, scope, window=None, scale=None):
+    """Launch flags; `window` (x, y, width, height) opens a visible window there, None runs headless. `scale` forces
+    that device scale factor and keeps the window's size in screen pixels, so pages render larger in the same window."""
     lab, arkime = (parse.urlsplit(value).port for value in (scope.lab_origin, scope.arkime_origin))
     args = [
         executable, '--user-data-dir=' + str(user_data), '--remote-debugging-port=0',
@@ -744,16 +752,23 @@ def browser_args(executable, user_data, scope, window=None):
         '--proxy-server=http://127.0.0.1:1',
         '--proxy-bypass-list=<-loopback>;127.0.0.1:%d;127.0.0.1:%d' % (lab, arkime),
     ]
+    if scale:
+        args.append('--force-device-scale-factor=%g' % scale)
     if window:
         # A visible window that another window covers stops rendering, and Arkime's search box
         # then ignores the submitted expression; headless has no window to cover.
-        args += ['--window-position=%d,%d' % window[:2], '--window-size=%d,%d' % window[2:],
+        args += ['--window-position=%d,%d' % _dips(window[:2], scale), '--window-size=%d,%d' % _dips(window[2:], scale),
                  '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows',
                  '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
                  '--hide-crash-restore-bubble']
     else:
-        args += ['--window-size=%d,%d' % VIEWPORT, '--headless=new']
+        args += ['--window-size=%d,%d' % _dips(VIEWPORT, scale), '--headless=new']
     return args + ['about:blank']
+
+
+def _dips(pixels, scale):
+    # Chromium reads window flags in device-independent pixels, which a forced scale factor multiplies.
+    return tuple(round(value / (scale or 1)) for value in pixels)
 
 
 def _launch(root, scope, demo):
@@ -762,7 +777,7 @@ def _launch(root, scope, demo):
     port_file = user_data / 'DevToolsActivePort'
     port_file.unlink(missing_ok=True)
     window = _wanted_window(demo)
-    args = browser_args(_browser_executable(), user_data, scope, window)
+    args = browser_args(_browser_executable(), user_data, scope, window, demo.scale)
     process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 30
     while True:
@@ -784,6 +799,11 @@ def _launch(root, scope, demo):
 
 def _wanted_window(demo):
     return demo.window or (DEMO_WINDOW if os.environ.get('HUNT_LAB_BROWSER_HEADED') == '1' else None)
+
+
+def _shape(window, demo):
+    """How a browser was launched; one is reused only while the marker asks for the same shape."""
+    return {'window': list(window) if window else None, 'cursor': demo.cursor, 'scale': demo.scale}
 
 
 def _owned(ws_url):
@@ -820,13 +840,13 @@ def _start(root, scope):
     if state and _owned(state.get('ws_url')):
         # Reuse only a browser launched the way the marker asks for now: a headless browser reattached
         # under a demo marker would be invisible while its audit lines claimed demo mode.
-        wanted = _wanted_window(demo)
+        window = _wanted_window(demo)
+        wanted = _shape(window, demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
                  and (state.get('lab_origin'), state.get('arkime_origin')) == (scope.lab_origin, scope.arkime_origin)
-                 and (state.get('window') or None) == (list(wanted) if wanted else None)
-                 and state.get('cursor') == bool(demo.cursor))
+                 and {key: state.get(key) for key in wanted} == wanted)
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
-                                 pid=state.get('pid'), state=state if fresh else None, demo=demo, window=wanted)
+                                 pid=state.get('pid'), state=state if fresh else None, demo=demo, window=window)
         if fresh:
             return session
         session.close()
@@ -866,9 +886,8 @@ def _session(root, scope):
         # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
         # the operator's marker still asks for the mode it was launched in.
         demo = read_demo(Path(root).parent / DEMO_FILE)
-        wanted = _wanted_window(demo)
         if (session is not None and session.alive() and session.origins() == (scope.lab_origin, scope.arkime_origin)
-                and session.window == (tuple(wanted) if wanted else None) and bool(session.demo.cursor) == bool(demo.cursor)):
+                and _shape(session.window, session.demo) == _shape(_wanted_window(demo), demo)):
             session.scope = scope
             return session
         if session is not None:
