@@ -204,7 +204,7 @@ FILES = (
     'hunt_lab/lab_browser.py', 'hunt_lab/browser_policy.py', 'hunt_lab/humanize.py',
     'hunt_lab/actionability.py',
     'hunt_lab/plugin.yaml', 'hunt_lab/assets.json', 'hunt_lab/case.py',
-    'hunt_lab/scenario.py', 'hunt_lab/test_scenario.py',
+    'hunt_lab/scenario.py', 'hunt_lab/screencast.py', 'hunt_lab/test_scenario.py',
     'hunt_lab/guest/compose.yaml', 'hunt_lab/guest/arkime.ini',
     'hunt_lab/guest/bootstrap_guest.sh', 'hunt_lab/guest/ingest.py',
     'hunt_lab/guest/lab_server.py', 'hunt_lab/guest/image-lock.json',

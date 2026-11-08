@@ -5,11 +5,14 @@ practice parent and its current round. It never signals, approves, starts, or st
 a workflow; it only issues the same status queries as ``cli practice-status``/``status``.
 For a ``tool_driven`` input it also polls the loopback lab's read-only ``/activity`` ring
 and looks up the events the bots cite by ``event.id``; it never runs any other lab query.
+With ``--hermes-home`` it also shows the two browser owners' lab browsers live, through the
+watch-only screencast client in ``hunt_lab.screencast``; frames stay in memory only.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import re
 import sys
@@ -17,8 +20,11 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib import parse
+
+from hunt_lab import screencast
 
 from .contracts import validate_loopback_address
 from .hunt import supplied_evidence_hunt
@@ -823,22 +829,25 @@ class LabObserver:
 
 
 class Board:
-    """Cache one observation for ``interval`` seconds and serve the derived state."""
+    """Cache one observation for ``interval`` seconds and serve the derived state.
+
+    ``live`` adds the browser owners' live status, read fresh on every request."""
 
     def __init__(self, raw_input: dict, observe: Callable[[], tuple[dict, dict | None]],
                  interval: float = POLL_INTERVAL_SECONDS, clock: Callable[[], float] = time.monotonic,
-                 lab: LabObserver | None = None) -> None:
+                 lab: LabObserver | None = None, live: LiveBrowsers | None = None) -> None:
         self._raw = raw_input
         self._observe = observe
         self._interval = interval
         self._clock = clock
         self._lab = lab
+        self.live = live
         self._lock = threading.Lock()
         self._polled_at: float | None = None
         self._parent: dict | None = None
         self._child: dict | None = None
         self._temporal = {"reachable": None, "error": None, "observed_at": None, "last_success_at": None}
-        self._body: bytes | None = None
+        self._state: dict | None = None
 
     def state_bytes(self) -> bytes:
         with self._lock:
@@ -848,13 +857,13 @@ class Board:
                 self._poll()
                 if self._lab is not None:
                     self._lab.refresh(cited_event_ids(self._child))
-                self._body = None
-            if self._body is None:
+                self._state = None
+            if self._state is None:
                 lab = self._lab.snapshot() if self._lab is not None else None
-                state = build_state(self._raw, self._parent, self._child, lab)
-                state["temporal"] = dict(self._temporal)
-                self._body = json.dumps(state, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            return self._body
+                self._state = build_state(self._raw, self._parent, self._child, lab)
+                self._state["temporal"] = dict(self._temporal)
+            live = {"owners": self.live.status()} if self.live is not None else None
+            return json.dumps({**self._state, "live": live}, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
     def _poll(self) -> None:
         observed_at = _utc_now()
@@ -872,11 +881,92 @@ class Board:
 
 
 # ---------------------------------------------------------------------------
+# Live browsers
+
+# The two bots that drive a lab browser, as operator/film/actions.py OWNERS names them.
+LIVE_PROFILES = ("framework-researcher", "framework-network-analyst")
+LIVE_STREAMS_MAX = 4
+_LIVE_WRITE_TIMEOUT_SECONDS = 10.0
+_LIVE_PATH = re.compile(r"/live/([a-z0-9-]+)\.(jpg|mjpg)")
+_MJPEG_BOUNDARY = "huntboardframe"
+
+
+def browser_root(hermes_home: str | Path) -> Path:
+    """The lane's lab_browser folder, as operator/lab_paths.py Lane.browser_root derives it."""
+    return Path(hermes_home) / "profiles" / "framework-network-analyst" / "hunt-lab-browser"
+
+
+class LiveBrowsers:
+    """The latest screencast frame of each browser owner, in memory only.
+
+    :meth:`add` is the frame sink; :meth:`start` runs the watch-only screencast client on ``root``.
+    Each profile keeps one ``(jpeg, frame time, count)``; waiters wake on every new frame."""
+
+    def __init__(self, root: str | Path, profiles: Iterable[str] = LIVE_PROFILES) -> None:
+        self.root = Path(root)
+        self.profiles = tuple(profiles)
+        self._cond = threading.Condition()
+        self._frames: dict[str, tuple[bytes, float, int]] = {}
+        self._closed = False
+        self._watcher: Any = None
+        self.streams = threading.BoundedSemaphore(LIVE_STREAMS_MAX)
+
+    def add(self, profile: str, t: float, jpeg: bytes) -> None:
+        with self._cond:
+            if profile not in self.profiles:
+                return
+            count = self._frames[profile][2] + 1 if profile in self._frames else 1
+            self._frames[profile] = (jpeg, t, count)
+            self._cond.notify_all()
+
+    def latest(self, profile: str) -> tuple[bytes, float, int] | None:
+        with self._cond:
+            return self._frames.get(profile)
+
+    def next_frame(self, profile: str, seen: int, timeout: float) -> tuple[bytes, float, int] | None:
+        """The current frame once its count exceeds ``seen``; None on timeout or after :meth:`close`."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._closed or self._frames.get(profile, (b"", 0.0, 0))[2] > seen, timeout)
+            frame = self._frames.get(profile)
+            return frame if not self._closed and frame and frame[2] > seen else None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def status(self) -> list[dict]:
+        owners = []
+        for profile in self.profiles:
+            frame = self.latest(profile)
+            owners.append({
+                "profile": profile,
+                "role": ROLE_TITLES.get(profile, profile),
+                "attached": bool(self._watcher and self._watcher.attached(profile)),
+                "frames": frame[2] if frame else 0,
+                "last_frame_at": int(frame[1] * 1000) if frame else None,
+                "page": screencast.shown_page(self.root, profile),
+            })
+        return owners
+
+    def start(self, connect: Callable[[str], Any] = screencast.websocket) -> "LiveBrowsers":
+        self._watcher = screencast.Watcher(self.root, self.add, self.profiles, connect=connect,
+                                           name="board-screencast").start()
+        return self
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+        if self._watcher is not None:
+            self._watcher.stop()
+
+# ---------------------------------------------------------------------------
 # HTTP server
 
 
 def content_security_policy(port: int) -> str:
-    return ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; "
+    return ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            f"img-src data: http://127.0.0.1:{port}; "
             f"connect-src http://127.0.0.1:{port}; base-uri 'none'; form-action 'none'")
 
 
@@ -909,8 +999,52 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
                 if self.headers.get("Origin") == "null":
                     headers["Access-Control-Allow-Origin"] = "null"
                 self._send(200, board.state_bytes(), "application/json; charset=utf-8", headers)
+            elif live_path := _LIVE_PATH.fullmatch(path):
+                self._live(*live_path.groups())
             else:
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+        def _live(self, profile: str, kind: str) -> None:
+            live = board.live
+            if live is None or profile not in live.profiles:
+                self._send(404, b"not found\n", "text/plain; charset=utf-8")
+            elif kind == "jpg":
+                frame = live.latest(profile)
+                if frame is None:
+                    self._send(404, b"no frame yet\n", "text/plain; charset=utf-8")
+                else:
+                    self._send(200, frame[0], "image/jpeg")
+            elif not live.streams.acquire(blocking=False):
+                self._send(503, b"too many live streams\n", "text/plain; charset=utf-8", {"Retry-After": "5"})
+            else:
+                try:
+                    self._stream(live, profile)
+                finally:
+                    live.streams.release()
+
+        def _stream(self, live: LiveBrowsers, profile: str) -> None:
+            """multipart/x-mixed-replace: the current frame, then each new one until close or disconnect."""
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            # A client that stops reading must not hold a stream slot forever.
+            self.connection.settimeout(_LIVE_WRITE_TIMEOUT_SECONDS)
+            seen = 0
+            try:
+                while not live.closed:
+                    frame = live.next_frame(profile, seen, timeout=1.0)
+                    if frame is None:
+                        continue
+                    jpeg, _, seen = frame
+                    self.wfile.write(f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                                     f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii") + jpeg + b"\r\n")
+                    self.wfile.flush()
+            except OSError:
+                pass
 
         def _send(self, code: int, body: bytes, content_type: str, headers: dict | None = None) -> None:
             self.send_response(code)
@@ -969,6 +1103,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--activity-after", type=int, default=0,
                         help="tool-driven input: show only lab tool calls after this /activity sequence "
                              "(the lab's current 'next' value when the hunt starts)")
+    parser.add_argument("--hermes-home",
+                        help="show the Threat Hunter's and Network Analyst's lab browsers live (watch only): the lane's "
+                             "Hermes home; frames are read from <home>/profiles/framework-network-analyst/"
+                             "hunt-lab-browser/<profile>/ (needs websockets)")
     return parser
 
 
@@ -1001,19 +1139,33 @@ def main(argv: list[str] | None = None) -> int:
     if initial["mode"] != "tool_driven" and (has_lab or args.arkime_url):
         print("error: lab options apply only to a tool-driven input", file=sys.stderr)
         return 2
+    live = None
+    if args.hermes_home:
+        if importlib.util.find_spec("websockets") is None:
+            print("error: --hermes-home needs the websockets package; install hermes_temporal/requirements.txt "
+                  f"into {sys.executable}", file=sys.stderr)
+            return 2
+        if not Path(args.hermes_home).is_dir():
+            print("error: --hermes-home is not a directory", file=sys.stderr)
+            return 2
+        live = LiveBrowsers(browser_root(args.hermes_home))
     lab = _lab_observer(args, initial["case"]["case_id"]) if has_lab else None
-    board = Board(raw, TemporalObserver(args.address, args.workflow_id), lab=lab)
+    board = Board(raw, TemporalObserver(args.address, args.workflow_id), lab=lab, live=live)
     try:
         server = make_server(board, args.port)
     except OSError as exc:
         print(f"error: cannot bind {BIND_HOST}:{args.port} ({type(exc).__name__})", file=sys.stderr)
         return 2
+    if live is not None:
+        live.start()
     print(json.dumps({"url": f"http://{BIND_HOST}:{server.server_address[1]}/", "status": "serving"}), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if live is not None:
+            live.close()
         server.server_close()
     return 0
 
@@ -1136,6 +1288,11 @@ ol.calls{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
 .ark{display:flex;gap:4px;align-items:center;margin-top:2px}
 .ark input{flex:1;min-width:0;font:10px ui-monospace,Consolas,monospace;background:#0f141a;color:var(--text);border:1px solid var(--line);border-radius:3px;padding:1px 3px}
 .ark button,.ark a{font-size:10.5px;background:none;border:none;color:var(--proc);cursor:pointer;padding:0 2px;text-decoration:underline}
+#live-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px}
+.live-col{border:1px solid var(--line);border-radius:4px;padding:5px 6px;min-width:0}
+.live-col img{display:block;width:100%;aspect-ratio:16/10;object-fit:contain;background:#0f141a;border-radius:3px;margin:3px 0}
+.live-st{font-size:10.5px;color:var(--muted)}
+.live-st.wait{color:var(--stopped)}
 @media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}#feed-sec{position:static;max-height:none}#stage-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
 </style>
 </head>
@@ -1145,6 +1302,7 @@ ol.calls{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
 <p id="errors" hidden></p>
 <section aria-label="Stage tracker"><div class="sec-h"><h2>Stages</h2><span class="meta" id="round"></span></div><ol id="stage-list"></ol></section>
 <section id="tools-sec" aria-label="Tool activity" hidden><div class="sec-h"><h2>Tool activity</h2><span class="meta" id="tools-meta"></span></div><div id="tool-lanes"></div></section>
+<section id="live-sec" aria-label="Live browsers" hidden><div class="sec-h"><h2>Live browsers</h2><span class="meta">watch only; a frame arrives only when the page changes</span></div><div id="live-panels"></div></section>
 <main>
 <div>
 <section aria-label="Event timeline"><div class="sec-h"><h2>Event timeline</h2><span class="meta" id="tl-meta"></span></div><div id="legend"></div><svg id="timeline" role="img" aria-label="Supplied events by host over the case window"></svg></section>
@@ -1544,6 +1702,43 @@ function renderAll(){
   renderStages(); renderTools(); renderLegend(); renderTimeline(); renderMap(); renderFeed();
 }
 
+const PAGE_LABEL = {kibana_discover:"Kibana Discover", arkime_sessions:"Arkime Sessions", arkime_spiview:"Arkime SPI View", lab_console:"lab console"};
+const livePanels = {};
+function ago(ms){
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 90 ? s + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : Math.round(s / 3600) + "h ago";
+}
+function livePanel(o){
+  if (livePanels[o.profile]) return livePanels[o.profile];
+  const col = el("div", {class:"live-col"}), h = el("div", {class:"lane-h"});
+  const role = el("span", {class:"role"}), page = el("span", {class:"lane-sub"});
+  h.appendChild(role); h.appendChild(page); col.appendChild(h);
+  const src = new URL("/live/" + encodeURIComponent(o.profile) + ".mjpg", location.href).href;
+  const img = el("img", {alt:"", src:src});
+  // The stream ends when the board restarts or a slot is busy; reconnect after a pause.
+  img.addEventListener("error", () => setTimeout(() => img.setAttribute("src", src), 5000));
+  col.appendChild(img);
+  const st = el("div", {class:"live-st"}); col.appendChild(st);
+  $("live-panels").appendChild(col);
+  return livePanels[o.profile] = {role:role, page:page, img:img, st:st};
+}
+function renderLive(){
+  const live = state.live;
+  $("live-sec").hidden = !live;
+  if (!live) return;
+  for (const o of live.owners){
+    const p = livePanel(o);
+    p.role.textContent = o.role;
+    p.page.textContent = o.page ? (PAGE_LABEL[o.page] || o.page) : "page unknown";
+    p.img.setAttribute("alt", o.role + " lab browser" + (o.page ? ", " + (PAGE_LABEL[o.page] || o.page) : ""));
+    const last = o.last_frame_at === null ? "" : "last frame " + ago(o.last_frame_at);
+    p.st.textContent = o.attached
+      ? "attached \u00b7 " + (last ? last + " \u00b7 " + o.frames + " frame" + (o.frames === 1 ? "" : "s") : "no frame yet")
+      : "waiting for browser" + (last ? " \u00b7 " + last : "");
+    p.st.className = o.attached ? "live-st" : "live-st wait";
+  }
+}
+
 async function poll(){
   try {
     const res = await fetch(STATE_URL, {cache:"no-store", credentials:"omit"});
@@ -1552,12 +1747,12 @@ async function poll(){
     fetchError = null; state = next;
     // Observation timestamps change every poll; re-render the panels only when content changes.
     const tools = next.tools ? Object.assign({}, next.tools, {lab:null}) : null;
-    const key = JSON.stringify(Object.assign({}, next, {temporal:null, tools:tools}));
+    const key = JSON.stringify(Object.assign({}, next, {temporal:null, tools:tools, live:null}));
     if (key !== lastKey){ lastKey = key; renderAll(); }
   } catch (err){
     fetchError = err && err.message ? err.message : "fetch failed";
   }
-  if (state){ renderHeader(); renderToolsMeta(); } else { $("conn").textContent = "board server unreachable (" + fetchError + ")"; $("conn").className = "bad"; }
+  if (state){ renderHeader(); renderToolsMeta(); renderLive(); } else { $("conn").textContent = "board server unreachable (" + fetchError + ")"; $("conn").className = "bad"; }
   setTimeout(poll, 2000);
 }
 let resizeTimer = null;

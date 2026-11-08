@@ -213,6 +213,7 @@ hunt_lab/prepare_guest.py
 hunt_lab/query_adapter.py
 hunt_lab/runtime.py
 hunt_lab/scenario.py
+hunt_lab/screencast.py
 hunt_lab/test_scenario.py
 imager_import.py
 install_desktop.py

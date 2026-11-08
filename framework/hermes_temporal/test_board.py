@@ -10,12 +10,14 @@ import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 from urllib import parse
 
 if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run hunt board tests.")
 
-from .board import Board, LabObserver, ObservationError, build_state, main, make_server, parse_handoff  # noqa: E402
+from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, browser_root,  # noqa: E402
+                    build_state, main, make_server, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import FakeLab  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
@@ -252,6 +254,8 @@ class BoardServerTests(unittest.TestCase):
         state = json.loads(body)
         self.assertEqual(len(state["steps"]), 9)
         self.assertTrue(state["temporal"]["reachable"])
+        self.assertIsNone(state["live"])
+        self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
 
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
@@ -288,6 +292,139 @@ class BoardServerTests(unittest.TestCase):
         self.assertFalse(state["temporal"]["reachable"])
         self.assertIsNone(state["temporal"]["last_success_at"])
         self.assertEqual(_states(state), ["pending"] * 9)
+
+
+TH, NA = "framework-researcher", "framework-network-analyst"
+
+
+class LiveBoardTests(unittest.TestCase):
+    """Live browser frames through a fake frame sink; no browser or screencast client runs."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = browser_root(self.tmp.name)
+        self.live = LiveBrowsers(self.root)
+        self.board = Board(_load("lab-input.json"), lambda: (_load("parent-status.json"), _load("child-status.json")),
+                           live=self.live)
+        self.server = make_server(self.board, 0)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.live.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+
+    def request(self, path: str, headers: dict | None = None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            connection.request("GET", path, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def open_stream(self, profile: str):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(connection.close)
+        connection.request("GET", f"/live/{profile}.mjpg")
+        return connection.getresponse()
+
+    def read_part(self, response, boundary: str) -> tuple[dict, bytes]:
+        self.assertEqual(response.readline(), f"--{boundary}\r\n".encode())
+        headers = {}
+        while (line := response.readline()) != b"\r\n":
+            name, _, value = line.decode("ascii").partition(":")
+            headers[name.strip()] = value.strip()
+        body = response.read(int(headers["Content-Length"]))
+        self.assertEqual(response.readline(), b"\r\n")
+        return headers, body
+
+    def test_board_derives_the_lane_browser_root_like_the_operator_lanes(self) -> None:
+        self.assertEqual(browser_root("H"), Path("H", "profiles", "framework-network-analyst", "hunt-lab-browser"))
+
+    def test_live_paths_refuse_other_hosts_and_unknown_profiles(self) -> None:
+        self.live.add(TH, 1.0, b"jpeg")
+        for path in (f"/live/{TH}.jpg", f"/live/{TH}.mjpg"):
+            self.assertEqual(self.request(path, {"Host": f"rebind.test:{self.port}"})[0], 404)
+            self.assertEqual(self.request(path, {"Host": f"localhost:{self.port}"})[0], 404)
+        for path in ("/live/framework-coordinator.jpg", "/live/framework-coordinator.mjpg", "/live/../state.json",
+                     f"/live/{TH}.png", f"/live/{TH}", "/live/"):
+            self.assertEqual(self.request(path)[0], 404, path)
+        self.live.add("framework-coordinator", 1.0, b"other")
+        self.assertIsNone(self.live.latest("framework-coordinator"))
+
+    def test_latest_jpg_is_404_until_a_frame_then_the_newest_frame(self) -> None:
+        self.assertEqual(self.request(f"/live/{TH}.jpg")[0], 404)
+        self.live.add(TH, 1.0, b"frame-1")
+        self.live.add(TH, 2.0, b"frame-2")
+        status, headers, body = self.request(f"/live/{TH}.jpg")
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/jpeg", b"frame-2"))
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(self.request(f"/live/{NA}.jpg")[0], 404)
+
+    def test_mjpeg_stream_sends_the_current_frame_then_each_new_one(self) -> None:
+        self.live.add(NA, 1.0, b"current")
+        response = self.open_stream(NA)
+        self.assertEqual(response.status, 200)
+        content_type = response.getheader("Content-Type")
+        self.assertTrue(content_type.startswith("multipart/x-mixed-replace; boundary="), content_type)
+        boundary = content_type.split("boundary=", 1)[1]
+        self.assertIsNone(response.getheader("Content-Length"))
+        self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
+        headers, body = self.read_part(response, boundary)
+        self.assertEqual((headers["Content-Type"], body), ("image/jpeg", b"current"))
+        self.live.add(NA, 2.0, b"next")
+        self.assertEqual(self.read_part(response, boundary)[1], b"next")
+
+    def test_concurrent_streams_are_capped_and_close_ends_them(self) -> None:
+        streams = [self.open_stream(TH) for _ in range(LIVE_STREAMS_MAX)]
+        self.assertTrue(all(s.status == 200 for s in streams))
+        self.assertEqual(self.request(f"/live/{TH}.mjpg")[0], 503)
+        self.live.close()
+        for s in streams:
+            self.assertEqual(s.read(), b"")
+
+    def test_state_reports_each_owner_live_status_and_page(self) -> None:
+        (self.root / NA).mkdir(parents=True)
+        (self.root / NA / "session.json").write_text(json.dumps(
+            {"ws_url": "ws://127.0.0.1:9/devtools/browser/x", "main_target": "T", "page": "arkime_sessions",
+             "refs": {"e1": "secret"}}), encoding="utf-8")
+        self.live.add(NA, 1_800_000_000.25, b"jpeg")
+        self.live.add(NA, 1_800_000_001.5, b"jpeg")
+        state = json.loads(self.request("/state.json")[2])
+        self.assertEqual(state["live"], {"owners": [
+            {"profile": TH, "role": "Threat Hunter", "attached": False, "frames": 0, "last_frame_at": None, "page": None},
+            {"profile": NA, "role": "Network Analyst", "attached": False, "frames": 2,
+             "last_frame_at": 1_800_000_001_500, "page": "arkime_sessions"}]})
+
+    def test_page_falls_back_to_a_loopback_url_path_only(self) -> None:
+        (self.root / TH).mkdir(parents=True)
+        for url, page in (("http://127.0.0.1:5601/app/discover?_g=x", "/app/discover"),
+                          ("https://127.0.0.1:5601/app/discover", None), ("http://evil.test/app", None)):
+            (self.root / TH / "session.json").write_text(json.dumps({"page": "unknown", "url": url}), encoding="utf-8")
+            self.assertEqual(self.live.status()[0]["page"], page, url)
+
+    def test_page_csp_allows_live_images_from_the_board_only(self) -> None:
+        _, headers, body = self.request("/")
+        csp = headers["Content-Security-Policy"]
+        self.assertIn(f"img-src data: http://127.0.0.1:{self.port};", csp)
+        self.assertIn(f"connect-src http://127.0.0.1:{self.port};", csp)
+        self.assertIn(b'id="live-sec"', body)
+
+    def test_cli_exits_when_websockets_is_missing(self) -> None:
+        real = importlib.util.find_spec
+        with mock.patch("importlib.util.find_spec", lambda name, *a: None if name == "websockets" else real(name, *a)), \
+                mock.patch("sys.stderr") as stderr:
+            code = main(["--workflow-id", "w", "--input", str(FIXTURES / "lab-input.json"),
+                         "--hermes-home", self.tmp.name])
+        self.assertEqual(code, 2)
+        message = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("websockets", message)
+        self.assertIn("hermes_temporal/requirements.txt", message)
 
 
 ARKIME = "http://127.0.0.1:8005"

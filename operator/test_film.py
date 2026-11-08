@@ -16,6 +16,7 @@ import tool_loops as tl
 from film import actions as acts
 from film import edit as cutter
 from film import record, review, screencast
+from hunt_lab import screencast as core  # importable once film.screencast has put the framework on sys.path
 
 T0 = 1_800_000_000.0
 
@@ -356,7 +357,7 @@ class ScreencastTest(unittest.TestCase):
         self.assertEqual([m['params']['sessionId'] for m in b1 if m['method'] == 'Page.screencastFrameAck'], [100, 101])
         self.assertIn('Page.stopScreencast', [m['method'] for m in browsers['ws://b2'].sent])
         sent = {m['method'] for b in browsers.values() for m in b.sent}
-        self.assertLessEqual(sent, screencast.READ_ONLY)
+        self.assertLessEqual(sent, core.READ_ONLY)
 
     def test_a_freshly_launched_browser_is_filmed_before_lab_browser_writes_session_json(self):
         live = 'ws://127.0.0.1:9222/devtools/browser/new'
@@ -385,7 +386,7 @@ class ScreencastTest(unittest.TestCase):
         self.assertEqual(screencast.read_index(out)[TH][0][1].read_bytes(), b'typing the first search')
 
     def test_the_client_refuses_any_command_that_could_drive_the_page(self):
-        client = screencast.ReadOnlyCdp(FakeBrowser([]), lambda m: None)
+        client = core.ReadOnlyCdp(FakeBrowser([]), lambda m: None)
         try:
             for method in ('Input.dispatchMouseEvent', 'Runtime.evaluate', 'Fetch.enable', 'Page.navigate'):
                 with self.assertRaises(PermissionError):
