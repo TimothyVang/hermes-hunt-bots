@@ -197,7 +197,7 @@ def card_lines(result, cov, knobs, case_id):
     owners = cov['owners']
     typed = sum(o['typed_searches'] for o in owners.values())
     intro = [knobs.intro_title, f'Case {case_id} · one real round of the six-bot hunt',
-             'Threat Hunter drives the lab console (Elastic) · Network Analyst drives Arkime',
+             'Threat Hunter drives Kibana Discover (Elastic) · Network Analyst drives Arkime',
              'Every frame is a real capture · sped-up stretches are labelled']
     outro = [f'Found {first.get("found", 0)}/{first.get("total", 18)} facts · {result.get("misattributed", 0)} decoys blamed · '
              f'{result.get("halts", 0)} halted rounds',

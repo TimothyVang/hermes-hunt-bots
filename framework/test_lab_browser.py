@@ -18,19 +18,20 @@ from unittest.mock import patch
 from urllib import parse
 
 from hunt_lab import lab_browser
-from hunt_lab.browser_policy import LabScope, decide, document_allowed
+from hunt_lab.browser_policy import KIBANA_INDEX, LabScope, decide, document_allowed
 
 CASE = 'lab-med-001'
 ANALYST = 'framework-network-analyst'
 ARKIME = 'http://127.0.0.1:41002'
+KIBANA = 'http://127.0.0.1:41003'
 START, STOP = 1760416200, 1760423400  # 2025-10-14T04:30:00Z .. 06:30:00Z
 TAG = 'tags == "case:%s"' % CASE
 WINDOW = {'start_inclusive': '2025-10-14T04:30:00Z', 'end_exclusive': '2025-10-14T06:30:00Z'}
 BOX = {'ok': True, 'x': 150, 'y': 120, 'left': 100, 'top': 110, 'right': 200, 'bottom': 130}
 
 
-def scope(lab='http://127.0.0.1:41001'):
-    return LabScope(CASE, lab, ARKIME, START, STOP)
+def scope(lab='http://127.0.0.1:41001', kibana=KIBANA):
+    return LabScope(CASE, lab, ARKIME, START, STOP, kibana)
 
 
 def ax(node_id, role, name='', backend=None, children=(), parent=None, value=None, ignored=False, **flags):
@@ -71,10 +72,13 @@ class FakeBrowser:
             'Accessibility.getFullAXTree': lambda _m: {'nodes': self.tree},
             'DOM.resolveNode': lambda m: {'object': {'objectId': 'obj-%d' % m['params']['backendNodeId']}},
             'Page.navigate': self.navigate,
+            'Page.reload': self.reload,
         }
 
     def evaluate(self, message):
         expression = message['params']['expression']
+        if expression == lab_browser.PAGES['kibana_discover'].ready:
+            return {'result': {'value': True}}
         value = {'location.href': self.url, '[document.title, location.href]': ['Sessions', self.url],
                  '[innerWidth, innerHeight]': [1366, 860]}.get(expression, self.text)
         return {'result': {'value': value}}
@@ -86,9 +90,17 @@ class FakeBrowser:
         return {'result': {'value': dict(BOX, x=point[0], y=point[1]) if point else BOX}}
 
     def navigate(self, message):
+        # Chrome reports a loaderId only for a new document; a fragment-only change stays in the page.
+        same_document = self.url.split('#')[0] == message['params']['url'].split('#')[0] and '#' in message['params']['url']
         self.url = message['params']['url']
+        if same_document:
+            return {'frameId': 'frame'}
         self.emit('Page.loadEventFired', {}, 'page')
-        return {'frameId': 'frame'}
+        return {'frameId': 'frame', 'loaderId': 'loader'}
+
+    def reload(self, _message):
+        self.emit('Page.loadEventFired', {}, 'page')
+        return {}
 
     def send(self, text):
         message = json.loads(text)
@@ -156,7 +168,8 @@ class Runtime:
 
     def invoke(self, action, *, state_dir, profile):
         self.calls.append((action, state_dir, profile))
-        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url, 'arkime_url': ARKIME}
+        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url, 'arkime_url': ARKIME,
+                'kibana_url': KIBANA}
 
 
 def query(url):
@@ -167,7 +180,7 @@ class PolicyTests(unittest.TestCase):
     def test_only_the_two_exact_lab_origins_are_reachable(self):
         lab = scope()
         for url in ('http://example.com/', 'https://127.0.0.1:41001/', 'http://localhost:41001/view',
-                    'http://127.0.0.1:41003/', 'http://user:pw@127.0.0.1:41001/', 'ftp://127.0.0.1:41001/',
+                    'http://127.0.0.1:41004/', 'http://user:pw@127.0.0.1:41001/', 'ftp://127.0.0.1:41001/',
                     'http://10.0.0.5:41002/api/sessions', 'data:text/html,hi'):
             self.assertEqual(decide(lab, 'GET', url).block, 'origin_not_lab', url)
         self.assertIsNone(decide(lab, 'GET', 'http://127.0.0.1:41001/view?q=powershell').block)
@@ -487,7 +500,7 @@ class ToolTests(unittest.TestCase):
     def test_launch_flags_fence_the_browser_to_the_lab_ports_and_a_private_profile(self):
         args = lab_browser.browser_args('edge', Path('state') / 'user-data', scope())
         self.assertIn('--proxy-server=http://127.0.0.1:1', args)
-        self.assertIn('--proxy-bypass-list=<-loopback>;127.0.0.1:41001;127.0.0.1:41002', args)
+        self.assertIn('--proxy-bypass-list=<-loopback>;127.0.0.1:41001;127.0.0.1:41002;127.0.0.1:41003', args)
         self.assertIn('--user-data-dir=' + str(Path('state') / 'user-data'), args)
         self.assertIn('--remote-debugging-address=127.0.0.1', args)
         self.assertIn('--headless=new', args)
@@ -498,6 +511,119 @@ class ToolTests(unittest.TestCase):
         for flag in ('--window-position=10,20', '--window-size=1280,900',
                      '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows'):
             self.assertIn(flag, headed)
+
+
+def bsearch(index=KIBANA_INDEX, query=None, strategy='ese', **extra):
+    body = dict({'size': 0, 'track_total_hits': True}, **extra)
+    if query is not None:
+        body['query'] = query
+    return json.dumps({'batch': [{'request': {'params': {'index': index, 'body': body}}, 'options': {'strategy': strategy}}]})
+
+
+class KibanaPolicyTests(unittest.TestCase):
+    def test_discover_page_bundles_and_its_reads_pass(self):
+        for method, path in (('GET', '/app/discover'), ('GET', '/bootstrap.js'),
+                             ('GET', '/bb0fffbaf841/bundles/plugin/discover/1.0.0/discover.plugin.js'),
+                             ('GET', '/bb0fffbaf841/ui/fonts/roboto_mono/RobotoMono-Bold.ttf'),
+                             ('GET', '/translations/a399c2baef20/en.json'), ('GET', '/api/licensing/info'),
+                             ('GET', '/internal/security/me'), ('GET', '/api/alerting/rule_types'),
+                             ('POST', '/api/core/capabilities')):
+            self.assertIsNone(decide(scope(), method, KIBANA + path, '{}').block, (method, path))
+        fields = KIBANA + '/internal/data_views/fields?pattern=%s&meta_fields=_id' % KIBANA_INDEX
+        self.assertIsNone(decide(scope(), 'GET', fields).block)
+        view = json.dumps({'contentTypeId': 'index-pattern', 'id': KIBANA_INDEX, 'version': 1})
+        self.assertIsNone(decide(scope(), 'POST', KIBANA + '/api/content_management/rpc/get', view).block)
+
+    def test_writes_admin_proxy_and_other_apps_fail(self):
+        for method, path, body in (
+                ('POST', '/api/console/proxy?path=_cat%2Findices&method=GET', ''),
+                ('GET', '/app/dev_tools', None), ('GET', '/app/management/kibana/settings', None),
+                ('POST', '/api/saved_objects/index-pattern/x', '{"attributes": {}}'),
+                ('PUT', '/api/saved_objects/search/x', '{}'), ('DELETE', '/api/saved_objects/search/x', None),
+                ('POST', '/api/saved_objects/_import', ''),
+                ('POST', '/api/content_management/rpc/create', '{"contentTypeId": "search"}'),
+                ('POST', '/api/content_management/rpc/search', '{"contentTypeId": "search"}'),
+                ('POST', '/internal/kibana/settings', '{"changes": {}}'),
+                ('POST', '/api/kibana/settings', '{"changes": {}}'),
+                ('POST', '/internal/kibana/global_settings', '{"changes": {}}'),
+                ('GET', '/api/index_management/indices', None), ('POST', '/api/alerting/rule', '{}'),
+                ('POST', '/api/data_views/data_view', '{}'), ('POST', '/api/short_url', '{}'),
+                ('GET', '/api/status', None), ('GET', '/internal/data_views/fields?pattern=*', None),
+                ('GET', '/internal/data_views/fields?pattern=hunt-lab-events', None)):
+            self.assertTrue(decide(scope(), method, KIBANA + path, body).block, (method, path))
+
+    def test_searches_stay_on_the_case_alias_with_discover_strategies(self):
+        for body in (bsearch(index='hunt-lab-events'), bsearch(index='*'), bsearch(index=[KIBANA_INDEX]),
+                     bsearch(strategy='esql'), bsearch(strategy='sql'), bsearch(suggest={'s': {}}),
+                     bsearch(knn={}), '{"batch": []}', 'not json', None):
+            self.assertTrue(decide(scope(), 'POST', KIBANA + '/internal/bsearch?compress=true', body).block, body)
+
+    def test_every_search_is_pinned_to_the_case_window(self):
+        typed = {'bool': {'must': [{'query_string': {'query': 'process.name:x'}}], 'filter': [
+            {'range': {'@timestamp': {'gte': '2020-01-01T00:00:00.000Z', 'lte': '2030-01-01T00:00:00.000Z'}}}]}}
+        window = {'range': {'@timestamp': {'gte': START * 1000, 'lt': STOP * 1000, 'format': 'epoch_millis'}}}
+        for query, kept in ((typed, [typed]), (None, [])):
+            verdict = decide(scope(), 'POST', KIBANA + '/internal/bsearch?compress=true', bsearch(query=query))
+            self.assertIsNone(verdict.block)
+            search = json.loads(verdict.body)['batch'][0]['request']['params']['body']
+            self.assertEqual(search['query'], {'bool': {'must': kept, 'filter': [window]}})
+            self.assertEqual(search['size'], 0)
+
+    def test_value_suggestions_run_as_an_aggregation_on_the_case_alias_only(self):
+        body = '{"field": "process.name", "query": "pow", "method": "terms_enum"}'
+        verdict = decide(scope(), 'POST', KIBANA + '/internal/kibana/suggestions/values/' + KIBANA_INDEX, body)
+        self.assertEqual(json.loads(verdict.body)['method'], 'terms_agg')
+        other = decide(scope(), 'POST', KIBANA + '/internal/kibana/suggestions/values/hunt-lab-events', body)
+        self.assertEqual(other.block, 'kibana_route_denied')
+
+    def test_kibana_documents_are_discover_only_and_absent_without_a_kibana_port(self):
+        self.assertTrue(document_allowed(scope(), KIBANA + "/app/discover#/?_a=(query:(query:'x'))"))
+        for path in ('/app/dev_tools#/console', '/app/management', '/app/dashboards', '/', '/app/discoverx'):
+            self.assertFalse(document_allowed(scope(), KIBANA + path), path)
+        self.assertFalse(document_allowed(scope(kibana=None), KIBANA + '/app/discover'))
+        self.assertEqual(decide(scope(kibana=None), 'GET', KIBANA + '/app/discover').block, 'origin_not_lab')
+
+
+class KibanaPageTests(unittest.TestCase):
+    def open(self, demo=lab_browser.DEMO_OFF, q='process.parent.name:w3wp.exe'):
+        fake = FakeBrowser(tree=[ax('1', 'RootWebArea', 'Discover', 1, children=['2']),
+                                 ax('2', 'textbox', lab_browser.PAGES['kibana_discover'].box, 12, parent='1')])
+        browser = session(fake, demo=demo)
+        return fake, browser, browser.run(lab_browser.parse_command({'action': 'open', 'page': 'kibana_discover', 'q': q}))
+
+    def test_open_loads_discover_on_the_case_data_view_window_and_only_this_query(self):
+        fake, browser, result = self.open(q="host.name:it's!")
+        url = fake.calls('Page.navigate')[-1]['params']['url']
+        self.assertTrue(url.startswith(KIBANA + '/app/discover#/?_g='))
+        state = parse.unquote(url)
+        self.assertIn("time:(from:'2025-10-14T04:30:00.000Z',to:'2025-10-14T06:29:59.999Z')", state)
+        self.assertIn("dataSource:(dataViewId:'hunt-lab-case-events',type:dataView),filters:!()", state)
+        self.assertIn("query:(language:lucene,query:'host.name:it!'s!!')", state)
+        self.assertEqual((browser.entered, fake.calls('Input.dispatchKeyEvent')), ('url', []))
+        self.assertTrue(document_allowed(browser.scope, result['url']))
+
+    def test_a_second_open_reloads_because_only_the_fragment_changed(self):
+        fake, browser, _ = self.open()
+        browser.run(lab_browser.parse_command({'action': 'open', 'page': 'kibana_discover', 'q': 'x'}))
+        self.assertEqual(len(fake.calls('Page.reload')), 1)
+
+    def test_demo_open_types_the_query_into_kibanas_query_bar(self):
+        fake, browser, _ = self.open(demo=lab_browser.Demo('on'), q='process.parent.name:w3wp.exe')
+        self.assertEqual(browser.entered, 'typed')
+        self.assertNotIn('w3wp', parse.unquote(fake.calls('Page.navigate')[-1]['params']['url']))
+        self.assertEqual(fake.calls('DOM.resolveNode')[-1]['params'], {'backendNodeId': 12})
+        keys = [m['params'].get('text') for m in fake.calls('Input.dispatchKeyEvent') if m['params']['type'] == 'keyDown']
+        self.assertEqual(''.join(key for key in keys if key and key != '\r'), 'process.parent.name:w3wp.exe')
+        self.assertEqual(keys[-1], '\r')
+
+    def test_open_without_a_kibana_port_fails_before_touching_the_browser(self):
+        fake = FakeBrowser()
+        browser = lab_browser.BrowserSession(Path('.'), scope(kibana=None), fake, ws_url='ws://127.0.0.1:1/x', pid=1,
+                                             rng=random.Random(7), sleep=lambda _s: None)
+        with self.assertRaises(lab_browser.QueryFailure) as caught:
+            browser.run(lab_browser.parse_command({'action': 'open', 'page': 'kibana_discover', 'q': 'x'}))
+        self.assertEqual(str(caught.exception), 'kibana_unavailable')
+        self.assertEqual(fake.calls('Page.navigate'), [])
 
 
 class FakeProcess:

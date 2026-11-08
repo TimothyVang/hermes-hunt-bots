@@ -38,7 +38,9 @@ STOP_WAIT_SECONDS = 5.0
 QMP_TIMEOUT_SECONDS = 1.0
 POLL_SECONDS = 0.2
 STATE_VERSION = 1
-PORT_KEYS = ("qmp_port", "vnc_port", "console_websocket_port", "lab_port", "arkime_port")
+PORT_KEYS = ("qmp_port", "vnc_port", "console_websocket_port", "lab_port", "arkime_port", "kibana_port")
+# A VM launched before the Kibana forward existed has no kibana_port; it stays manageable without one.
+OPTIONAL_PORT_KEYS = ("kibana_port",)
 
 
 class RuntimeFailure(Exception):
@@ -58,9 +60,9 @@ def _base(profile=PROFILE):
         "profile": PROFILE if profile == PROFILE else None,
         "state": "stopped", "reason": "not_started", "vm_name": None,
         "pid": None, "console_websocket_url": None, "vnc_port": None,
-        "qmp_port": None, "lab_url": None, "arkime_url": None,
+        "qmp_port": None, "lab_url": None, "arkime_url": None, "kibana_url": None,
         "memory_mib": None, "accel": None, "cpus": None,
-        "console_websocket_port": None, "lab_port": None, "arkime_port": None,
+        "console_websocket_port": None, "lab_port": None, "arkime_port": None, "kibana_port": None,
     }
 
 
@@ -202,7 +204,7 @@ def _load(home, name):
             raise ValueError
         if record.get("pid") is not None and record["pid"] <= 0:
             raise ValueError
-        ports = [record.get(key) for key in PORT_KEYS]
+        ports = [record.get(key) for key in PORT_KEYS if key in record or key not in OPTIONAL_PORT_KEYS]
         if any(type(port) is not int or not 1024 <= port <= 65535 for port in ports):
             raise ValueError
         if len(set(ports)) != len(ports) or record["vnc_port"] < 5900:
@@ -426,6 +428,7 @@ def _urls(record):
     record["console_websocket_url"] = "ws://127.0.0.1:" + str(record["console_websocket_port"])
     record["lab_url"] = "http://127.0.0.1:" + str(record["lab_port"])
     record["arkime_url"] = "http://127.0.0.1:" + str(record["arkime_port"])
+    record["kibana_url"] = "http://127.0.0.1:" + str(record["kibana_port"]) if "kibana_port" in record else None
 
 
 @contextlib.contextmanager
@@ -467,8 +470,9 @@ def build_argv(executable, disk, seed, record, serial_log):
         "-blockdev", block(driver="file", filename=str(seed), **{"node-name": "seed-file", "read-only": True}),
         "-blockdev", block(driver="raw", file="seed-file", **{"node-name": "seed", "read-only": True}),
         "-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-cd,drive=seed,bus=scsi0.0",
-        "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:{lab}-:8765,hostfwd=tcp:127.0.0.1:{arkime}-:8005".format(
-            lab=record["lab_port"], arkime=record["arkime_port"]),
+        "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:{lab}-:8765,hostfwd=tcp:127.0.0.1:{arkime}-:8005,"
+                   "hostfwd=tcp:127.0.0.1:{kibana}-:5601".format(
+            lab=record["lab_port"], arkime=record["arkime_port"], kibana=record["kibana_port"]),
         "-device", "virtio-net-pci,netdev=net0", "-device", "virtio-vga",
         "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet,bus=xhci.0",
         "-display", "none", "-vnc", "127.0.0.1:{display},websocket=127.0.0.1:{websocket}".format(

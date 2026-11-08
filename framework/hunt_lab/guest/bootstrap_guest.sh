@@ -70,6 +70,9 @@ for n in $(seq 1 120); do
     if [ "$n" -eq 120 ]; then echo 'stage=failed_elasticsearch_start'; exit 1; fi
     sleep 2
 done
+# Kibana boots (and migrates its saved objects) while the case loads; kibana_setup.py waits for it.
+printf 'stage=starting_kibana\n'
+docker-compose -p hermes-hunt-lab up -d kibana
 ARKIME=ghcr.io/arkime/arkime/arkime:v6.9.1
 printf 'stage=initializing_arkime\n'
 docker run --rm --network hermes-hunt-lab_backend "$ARKIME" /opt/arkime/db/db.pl http://elasticsearch:9200 init --ifneeded --shards 1 --replicas 0
@@ -171,3 +174,5 @@ systemctl enable hermes-hunt-lab-api
 # Restart (not just start): a reseeded instance must serve the new case.
 systemctl restart hermes-hunt-lab-api
 printf 'stage=lab_services_started case_id=%s network_scope=%s\n' "$CASE_ID" "$SCOPE"
+# Kibana last: the lab API serves the case even while Kibana is still coming up.
+python3 "$ROOT/kibana_setup.py" --elasticsearch "$ELASTIC" --kibana http://127.0.0.1:5601 --case "$ROOT/evidence/case.json"

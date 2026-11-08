@@ -118,7 +118,7 @@ class ManagedTests(unittest.TestCase):
                 names = set(archive.getnames())
         self.assertEqual(names, {
             'compose.yaml', 'arkime.ini', 'bootstrap_guest.sh', 'lab_server.py',
-            'ingest.py', 'image-lock.json', 'evidence/events.jsonl',
+            'ingest.py', 'image-lock.json', 'kibana.yml', 'kibana_setup.py', 'evidence/events.jsonl',
             'evidence/traffic.pcap', 'evidence/case.json',
         })
         self.assertFalse(any('key' in name or 'truth' in name or 'test' in name or name == 'case.py' for name in names))

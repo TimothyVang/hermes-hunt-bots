@@ -1,6 +1,6 @@
 """Filmed full-mode watcher loop (operator-only; reads answer keys).
 
-Each loop runs one real round of the six-bot hunt with the Threat Hunter driving the lab console
+Each loop runs one real round of the six-bot hunt with the Threat Hunter driving Kibana Discover
 (Elastic) and the Network Analyst driving Arkime through lab_browser, films it (film/record.py),
 scores it against the operator-only key (tool_loops.score), measures driving coverage from the
 lab_browser audit and the lab's /activity log (film/actions.py), cuts a video (film/edit.py) and has
@@ -54,13 +54,13 @@ COVERAGE_JUMP, FOUND_NOISE = 0.2, 2
 DRIVE_MAX = 700
 DRIVE_NOTE = (
     'Threat Hunter and Network Analyst, filmed run: show your hunt on screen with lab_browser. Threat Hunter: for '
-    'each elastic_search that matters, also open the lab_console page with the same q (it is typed into the page '
-    'Search box), then read the result. Network Analyst: do the same on arkime_sessions or arkime_spiview for your '
-    'Arkime expressions. Choose the searches yourself; cite only what your tools returned.')
+    'each elastic_search that matters, also open the kibana_discover page with the same q (it is typed into Kibana\'s '
+    'query bar), then expand a document or add a field filter. Network Analyst: do the same on arkime_sessions or '
+    'arkime_spiview for your Arkime expressions. Choose the searches yourself; cite only what your tools returned.')
 FILM_RULES = tl.WATCHER_RULES + (
-    '\nTHIS LOOP IS FILMED IN FULL MODE. The Threat Hunter must run its Elastic hunt on screen in the lab console and '
+    '\nTHIS LOOP IS FILMED IN FULL MODE. The Threat Hunter must run its Elastic hunt on screen in Kibana Discover and '
     'the Network Analyst its Arkime hunt in Arkime, both with lab_browser (open with a search types it into the page; '
-    'type/click/scroll/read act on the page). The lab console search box takes the same query string as elastic_search. '
+    'type/click/scroll/read act on the page). Kibana\'s query bar takes the same Lucene query string as elastic_search. '
     'You also see the last loop\'s driving coverage (per owner: typed browser searches, the share of its distinct API '
     'searches it also ran in the browser, whether it used both), its score breakdown, and a review by a model that '
     'watched the cut video. Each loop runs the same configuration on one or more independent labs (lanes) at the same '
@@ -185,7 +185,7 @@ def context_for(state):
              for k, o in last['lanes'].items()}
     return {'goal': 'find every attack step, decoy, benign pattern and coverage gap with full event.id citations; never '
                     'blame a decoy; complete all 9 stages; and show the hunt on screen: the Threat Hunter runs its key '
-                    'Elastic searches in the lab console and the Network Analyst its Arkime searches in Arkime',
+                    'Elastic searches in Kibana Discover and the Network Analyst its Arkime searches in Arkime',
             'best_so_far': {'loop': best['loop'], 'found_of_18_mean': best['found'], 'driving_coverage_mean': best['coverage'],
                             'lanes': lane_numbers(best), 'brief': best['brief'], 'stage_guidance': best['guidance'],
                             'drive_note': best['drive_note']},

@@ -25,6 +25,8 @@ EVENT_INDEX = 'hunt-lab-events'
 INTEL_INDEX = 'hunt-lab-intel'
 NETWORK_INDEX = 'arkime_sessions3-*'
 ARKIME = 'http://127.0.0.1:8005'
+KIBANA = 'http://127.0.0.1:5601'
+KIBANA_DATA_VIEW = 'hunt-lab-case-events'
 # Anonymous Arkime is superAdmin: only these read routes are ever requested.
 ARKIME_ROUTES = frozenset({'/api/sessions', '/api/unique'})
 PROFILES = frozenset({
@@ -585,16 +587,30 @@ def health(server):
     intel = es_search(server.elastic, INTEL_INDEX, {
         'query': {'bool': {'filter': [{'term': {'case_id': server.case['case_id']}}]}},
         'size': 0, 'track_total_hits': True, 'timeout': '10s'}, ignore_unavailable=True)
-    try:
-        with urlopen(ARKIME + '/', timeout=5) as viewer:
-            viewer_ready = viewer.status == 200
-    except (OSError, HTTPError, URLError):
-        viewer_ready = False
-    ready = events['total'] > 0 and network['total'] > 0 and viewer_ready
+    viewer_ready = answers(ARKIME + '/')
+    kibana_ready = kibana_case_ready(server.case['case_id'])
+    ready = events['total'] > 0 and network['total'] > 0 and viewer_ready and kibana_ready
     return ready, {'ready': ready, 'case_id': server.case['case_id'],
                    'event_count': events['total'], 'network_session_count': network['total'],
                    'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
-                   'arkime_viewer_ready': viewer_ready, 'read_only': True}
+                   'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True}
+
+
+def answers(url):
+    try:
+        with urlopen(url, timeout=5) as response:
+            return response.status == 200
+    except (OSError, HTTPError, URLError):
+        return False
+
+
+def kibana_case_ready(case_id):
+    """Kibana answers and kibana_setup.py has pointed its data view at this case."""
+    try:
+        with urlopen(KIBANA + '/api/data_views/data_view/' + KIBANA_DATA_VIEW, timeout=5) as response:
+            return json.load(response)['data_view'].get('name') == case_id + ' events'
+    except (OSError, HTTPError, URLError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
