@@ -35,6 +35,9 @@ PROFILES = frozenset({
 })
 BOARD_PROFILE = 'hunt-board'
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
+# cloud-init's record of the instance this boot belongs to; prepare_guest reseed makes a new ID per load.
+INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
+INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
 EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
                 'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'message', 'labels']
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
@@ -593,7 +596,8 @@ def health(server):
     return ready, {'ready': ready, 'case_id': server.case['case_id'],
                    'event_count': events['total'], 'network_session_count': network['total'],
                    'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
-                   'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True}
+                   'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True,
+                   'instance_id': server.instance_id}
 
 
 def answers(url):
@@ -706,7 +710,16 @@ def load_case(path):
     return case
 
 
-def make_server(bind, port, case, elastic, network_scope='tag'):
+def instance_id(path=INSTANCE_ID_FILE):
+    """The cloud-init instance this server was started for; every reseed makes a new one."""
+    try:
+        value = Path(path).read_text(encoding='ascii').strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return value if INSTANCE_ID.fullmatch(value) else None
+
+
+def make_server(bind, port, case, elastic, network_scope='tag', instance=None):
     if network_scope not in ('tag', 'window'):
         raise ValueError('network_scope must be tag or window')
     server = ThreadingHTTPServer((bind, port), Handler)
@@ -714,6 +727,7 @@ def make_server(bind, port, case, elastic, network_scope='tag'):
     server.elastic = elastic
     server.case = case
     server.network_scope = network_scope
+    server.instance_id = instance
     server.activity = Activity()
     return server
 
@@ -727,7 +741,8 @@ def main():
     parser.add_argument('--network-scope', choices=('tag', 'window'), default='tag')
     args = parser.parse_args()
     server = make_server(args.bind, args.port, load_case(args.case),
-                         os.environ.get('LAB_ELASTICSEARCH', 'http://elasticsearch:9200'), args.network_scope)
+                         os.environ.get('LAB_ELASTICSEARCH', 'http://elasticsearch:9200'), args.network_scope,
+                         instance=instance_id())
     server.serve_forever()
 
 
