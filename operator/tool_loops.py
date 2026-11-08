@@ -133,7 +133,7 @@ def forbidden_terms(*truth_paths):
 
 def score(truth, report):
     r = subprocess.run([PYTHON, '-B', '-m', 'hunt_lab.scenario', 'score', '--truth', str(truth), str(report)],
-                       cwd=FRAMEWORK, capture_output=True, text=True, timeout=180)
+                       cwd=FRAMEWORK, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
     return json.loads(r.stdout)['reports'][0]
 
 
@@ -152,7 +152,8 @@ def base_input(case_id):
     base_path = TOOL_LOOPS / f'base-{case_id}.json'
     if not base_path.exists():
         r = subprocess.run([*temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(LAB_STATE),
-                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True, timeout=120)
+                            '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=120)
         if r.returncode:
             raise SystemExit('lab-input failed: ' + r.stderr[-300:])
     return json.loads(base_path.read_text(encoding='utf-8'))

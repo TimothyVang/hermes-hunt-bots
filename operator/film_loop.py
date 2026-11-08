@@ -214,6 +214,8 @@ def parse_args(argv=None):
     ap.add_argument('--tag', default='', help='suffix for workflow IDs so a restarted series never reuses one')
     ap.add_argument('--rejudge-last', metavar='REASON',
                     help='with --resume: re-apply the current keep rule to the last loop if it was reverted; REASON is logged')
+    ap.add_argument('--reset-plateau', metavar='REASON',
+                    help='with --resume: zero the no-gain counter after an infrastructure fix; REASON is logged')
     args = ap.parse_args(argv)
     for name in ('dev_truth', 'sealed_truth'):
         truth = getattr(args, name)
@@ -238,7 +240,10 @@ def main(args):
         state = json.loads(state_path.read_text(encoding='utf-8'))
         if args.rejudge_last:
             rejudge_last(state, args.rejudge_last)
-            save(state)
+        if args.reset_plateau:
+            tl.log(f'plateau counter reset from {state["no_gain"]}: {args.reset_plateau}')
+            state['no_gain'] = 0
+        save(state)
     else:
         start = TOOL_LOOPS / 'BEST.json'
         seed = json.loads(start.read_text(encoding='utf-8')) if start.exists() else {}
