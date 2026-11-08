@@ -2,8 +2,10 @@
 
 Opt-in only: it refuses to run without --delegated-by and --reason. Every approval it records
 says it is a delegated approval by that person and not a human review of the content. It never
-retries and stops on the first non-completed outcome. Stage outputs are saved under
-runtime/practice/gate-runs/outputs/<workflow_id>/.
+retries on its own and stops on the first non-completed outcome. When the workflow re-offers a
+step once after handoff validation rejected its output, that new execute gate is approved like
+any other, under its own decision ID and a note that names it a retry approval. Stage outputs
+are saved under runtime/practice/gate-runs/outputs/<workflow_id>/.
 
 Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<person>" --reason "<text>"
 """
@@ -17,6 +19,8 @@ from lab_paths import FRAMEWORK, GATE_RUNS, temporal_cli
 
 LOG = GATE_RUNS / 'driver.log'
 NOTE_LIMIT_BYTES = 4096  # the workflow silently ignores a decision whose note is larger
+RETRY_NOTE = ('Retry approval: the workflow re-offered this step once because handoff validation rejected '
+              'its previous output. ')
 
 
 def log(message):
@@ -43,10 +47,12 @@ def cli(*args):
     return json.loads(result.stdout)
 
 
-def decide(child, step, phase, note):
+def decide(child, step, phase, note, retry=0):
+    # The workflow ignores a reused decision ID, so the retry's gate needs its own.
+    suffix, prefix = (f':retry{retry}', RETRY_NOTE) if retry else ('', '')
     cli('decision', child, '--step-id', step, '--phase', phase, '--choice', 'approve',
-        '--decision-id', f'{child}:{step}:{phase}', '--evidence-note', note)
-    log(f'{child} {step} {phase} approved (delegated)')
+        '--decision-id', f'{child}:{step}:{phase}{suffix}', '--evidence-note', prefix + note)
+    log(f'{child} {step} {phase} approved (delegated{", retry " + str(retry) if retry else ""})')
 
 
 def parse_args():
@@ -60,7 +66,7 @@ def parse_args():
         ap.error('--delegated-by and --reason must not be blank')
     args.note = (f'Delegated approval by {args.delegated_by}: {args.reason}. Recorded automatically by '
                  'operator/drive_gates.py on their behalf; this is not a human review of the content.')
-    if len(args.note.encode('utf-8')) > NOTE_LIMIT_BYTES:
+    if len((RETRY_NOTE + args.note).encode('utf-8')) > NOTE_LIMIT_BYTES:
         ap.error(f'the approval note must fit in {NOTE_LIMIT_BYTES} bytes; shorten --reason')
     return args
 
@@ -82,12 +88,16 @@ def main(args):
             continue
         state = cli('status', child)
         stage, step = state['stage'], state['step_id']
-        key = (child, step, stage)
+        rejections = [item for item in state.get('handoff_rejections', []) if item['step_id'] == step]
+        retry = sum(item['outcome'] == 'retried' for item in rejections)
+        key = (child, step, stage, retry)
         if key in handled:
             time.sleep(3)
             continue
         if stage == 'awaiting_execution_approval':
-            decide(child, step, 'execute', args.note)
+            if retry:
+                log(f'{child} {step} handoff rejected; the workflow offers one retry: {rejections[-1]["reason"]}')
+            decide(child, step, 'execute', args.note, retry)
             handled.add(key)
         elif stage == 'awaiting_review':
             result = state['results'][-1]

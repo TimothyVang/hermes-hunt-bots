@@ -186,7 +186,9 @@ def run_config(name, base, brief, guidance, case_id, truth, root=TOOL_LOOPS):
         sizes = [(STEPS[i], r['status'], r['reason_code'], len(r['output'].encode())) for i, r in enumerate(st['results'])]
         rep = GATE_RUNS / 'outputs' / wf / f'{n:03d}-incident.txt'
         entry = {'round': n, 'stage': st['stage'], 'halted_at': None if st['stage'] == 'completed' else st['step_id'],
-                 'completed': st['stage'] == 'completed' and rep.exists(), 'sizes': sizes}
+                 'completed': st['stage'] == 'completed' and rep.exists(), 'sizes': sizes,
+                 'handoff_rejections': [{key: item[key] for key in ('step_id', 'outcome', 'reason')}
+                                        for item in st.get('handoff_rejections', [])]}
         if entry['completed']:
             s = score(truth, rep)
             entry.update(found=s['found'], total=s['total'], misattributed=len(s['misattributed_decoys']),
@@ -200,11 +202,14 @@ def run_config(name, base, brief, guidance, case_id, truth, root=TOOL_LOOPS):
     result = {'name': name, 'workflow': wf, 'minutes': minutes, 'rounds': rounds, 'tool_calls': len(calls),
               'mean_found': sum(r['found'] for r in rounds) / ROUNDS,
               'halts': sum(1 for r in rounds if not r['completed']),
+              'handoff_retries': sum(item['outcome'] == 'retried'
+                                     for r in rounds for item in r.get('handoff_rejections', [])),
               'misattributed': sum(r.get('misattributed', 0) for r in rounds),
               'driver_tail': drv.stdout[-600:]}
     (d / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     log(f'{name}: mean {result["mean_found"]:.1f}/18 rounds {[r["found"] for r in rounds]} halts {result["halts"]} '
-        f'misattributed {result["misattributed"]} calls {len(calls)} in {minutes} min')
+        f'handoff retries {result["handoff_retries"]} misattributed {result["misattributed"]} calls {len(calls)} '
+        f'in {minutes} min')
     return result, calls
 
 

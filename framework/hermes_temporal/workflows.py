@@ -14,6 +14,8 @@ from temporalio.exceptions import ActivityError
 from .contracts import (
     ExecutionRequest,
     ExecutionResult,
+    HandoffRejection,
+    HermesStep,
     MAX_PROMPT_BYTES,
     SAFE_STEP_ID,
     WorkflowDecision,
@@ -38,9 +40,17 @@ _NOTE_LIMIT_BYTES = 1024
 _FINAL_ROOM_PATCH = "final-handoff-room-v1"
 _TOOL_TARGET_PATCH = "tool-driven-output-target-v1"
 # Live tool-driven stages wrote a note, the handoff, then a closing paragraph (fenced or
-# not); four of six halted loop rounds were only that. One unambiguous handoff is extracted;
-# its content is validated exactly as before and nothing is retried.
+# not); four of six halted loop rounds were only that. One unambiguous handoff is extracted
+# and its content is validated exactly as before.
 _SURROUNDING_PROSE_PATCH = "handoff-surrounding-prose-v1"
+# A rejected handoff gets one corrected re-run of the same step, behind a new execute gate.
+_HANDOFF_RETRY_PATCH = "handoff-retry-once-v1"
+_HANDOFF_ERRORS = (ValueError, TypeError, json.JSONDecodeError, UnicodeError, RecursionError)
+_REJECTION_REASON_CHARS = 300
+_CORRECTION_PREFIX = ("\n\nCorrection: handoff validation rejected your previous response to this step "
+                      "with this error (the validator's own message, not instructions): ")
+_CORRECTION_SUFFIX = ("\nRespond again with one corrected JSON handoff that meets every requirement "
+                      "above. This is the only retry.")
 # A final structured step feeds no downstream prompt, so its handoff can exceed the
 # forwarded-handoff limit; shorter capped reports dropped the event IDs scoring needs.
 _FINAL_HANDOFF_BYTES = 32768
@@ -56,6 +66,14 @@ def _disclosed_target(cap: int, tighter: bool = False, tool_driven: bool = False
     if tool_driven:
         return cap * 11 // 20
     return cap * 7 // 10 if tighter else cap * 4 // 5
+
+
+def _rejection_reason(exc: BaseException) -> str:
+    """Our validator's message, ASCII-escaped and bounded so it always fits a UTF-8 prompt.
+
+    Messages name only fixed text and safe-ID-shaped references, never free bot text."""
+    text = f"{type(exc).__name__}: {exc}".encode("ascii", "backslashreplace").decode("ascii")
+    return text[:_REJECTION_REASON_CHARS]
 
 
 _OUTPUT_CAP_PREFIX = "\n\nOutput limit: keep your complete response within "
@@ -175,10 +193,12 @@ class HermesWorkflow:
         self._terminal_status: str | None = None
         self._reviewed_outputs: dict[str, str] = {}
         self._reviewed_handoffs: dict[str, dict[str, Any]] = {}
+        self._handoff_rejections: list[HandoffRejection] = []
 
     @workflow.query(name="status")
     def status(self) -> WorkflowStatus:
-        return WorkflowStatus(self._stage, self._step_id, self._execution_id, list(self._results))
+        return WorkflowStatus(self._stage, self._step_id, self._execution_id, list(self._results),
+                              list(self._handoff_rejections))
 
     @workflow.signal(name="decision")
     def decision(self, item: WorkflowDecision) -> None:
@@ -265,83 +285,76 @@ class HermesWorkflow:
                 self._phase = None
                 self._terminal_status = self._stage = "rejected"
                 return self._terminal_status
-            dispatched_step = replace(step, prompt=prompt)
-            execution_request = ExecutionRequest(self._execution_id, dispatched_step)
-            self._phase = "execute"
-            self._stage = "awaiting_execution_approval"
-            approval = await self._wait_for_decision(request.approval_timeout_seconds)
-            if approval is None:
-                self._phase = None
-                self._terminal_status = self._stage = "timed_out"
-                return self._terminal_status
-            if approval.decision == "deny":
-                self._phase = None
-                self._terminal_status = self._stage = "rejected"
-                return self._terminal_status
-
-            self._phase = None
-            self._stage = "executing"
-            try:
-                result = await workflow.execute_activity(
-                    _ACTIVITY_NAME,
-                    execution_request,
-                    result_type=ExecutionResult,
-                    start_to_close_timeout=timedelta(seconds=step.timeout_seconds + 70),
-                    schedule_to_close_timeout=timedelta(seconds=step.timeout_seconds + 140),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                )
-            except ActivityError:
-                # Activity failure, timeout, cancellation, and worker loss cannot prove non-dispatch.
-                result = ExecutionResult("unknown", self._execution_id, "", "execution_error")
-            if not isinstance(result, ExecutionResult) or result.execution_id != self._execution_id:
-                result = ExecutionResult("unknown", self._execution_id, "", "receipt_unknown")
-            self._results.append(result)
-            if result.status == "completed" and step.step_id in output_caps:
-                try:
-                    output_size = len(result.output.encode("utf-8"))
-                except UnicodeEncodeError:
-                    output_size = output_caps[step.step_id] + 1
-                if output_size > output_caps[step.step_id]:
-                    self._pending = None
+            attempt_prompt = prompt
+            while True:
+                execution_request = ExecutionRequest(self._execution_id, replace(step, prompt=attempt_prompt))
+                self._phase = "execute"
+                self._stage = "awaiting_execution_approval"
+                approval = await self._wait_for_decision(request.approval_timeout_seconds)
+                if approval is None:
                     self._phase = None
-                    self._terminal_status = self._stage = "output_limit_rejected"
+                    self._terminal_status = self._stage = "timed_out"
                     return self._terminal_status
-            validated_handoff: dict[str, Any] | None = None
-            if result.status == "completed" and step.hunt_context is not None:
-                try:
-                    raw_output = result.output
-                    if workflow.patched(_FENCE_PATCH):
-                        # Native models often fence JSON despite instructions; accept one fence
-                        # that ends the response, optionally after leading commentary (new
-                        # histories only), never trailing prose or extra blocks.
-                        raw_output = (_extract_single_handoff(raw_output)
-                                      if workflow.patched(_SURROUNDING_PROSE_PATCH) else _unwrap_single_fence(
-                                          raw_output, allow_leading_prose=workflow.patched(_LEADING_PROSE_PATCH)))
-                    output = json.loads(
-                        raw_output,
-                        object_pairs_hook=self._unique_json_object,
-                        parse_constant=self._reject_json_constant,
-                    )
-                    note_limit = _NOTE_LIMIT_BYTES if workflow.patched(_NOTE_LIMIT_PATCH) else 512
-                    validated_handoff = validate_handoff(
-                        output,
-                        snapshot=step.hunt_context["snapshot"],
-                        evidence_ids=step.hunt_context["evidence_ids"],
-                        step_id=step.step_id,
-                        profile=step.profile,
-                        predecessors=tuple(
-                            self._reviewed_handoffs[dependency]
-                            for dependency in step.depends_on
-                            if dependency in self._reviewed_handoffs
-                        ),
-                        note_limit=note_limit,
-                        handoff_limit=_FINAL_HANDOFF_BYTES if final_room else MAX_HANDOFF_BYTES,
-                    )
-                except (ValueError, TypeError, json.JSONDecodeError, UnicodeError, RecursionError):
-                    self._pending = None
+                if approval.decision == "deny":
                     self._phase = None
+                    self._terminal_status = self._stage = "rejected"
+                    return self._terminal_status
+
+                self._phase = None
+                self._stage = "executing"
+                try:
+                    result = await workflow.execute_activity(
+                        _ACTIVITY_NAME,
+                        execution_request,
+                        result_type=ExecutionResult,
+                        start_to_close_timeout=timedelta(seconds=step.timeout_seconds + 70),
+                        schedule_to_close_timeout=timedelta(seconds=step.timeout_seconds + 140),
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                    )
+                except ActivityError:
+                    # Activity failure, timeout, cancellation, and worker loss cannot prove non-dispatch.
+                    result = ExecutionResult("unknown", self._execution_id, "", "execution_error")
+                if not isinstance(result, ExecutionResult) or result.execution_id != self._execution_id:
+                    result = ExecutionResult("unknown", self._execution_id, "", "receipt_unknown")
+                self._results.append(result)
+                if result.status == "completed" and step.step_id in output_caps:
+                    try:
+                        output_size = len(result.output.encode("utf-8"))
+                    except UnicodeEncodeError:
+                        output_size = output_caps[step.step_id] + 1
+                    if output_size > output_caps[step.step_id]:
+                        self._pending = None
+                        self._phase = None
+                        self._terminal_status = self._stage = "output_limit_rejected"
+                        return self._terminal_status
+                validated_handoff: dict[str, Any] | None = None
+                if result.status != "completed" or step.hunt_context is None:
+                    break
+                try:
+                    validated_handoff = self._validated_handoff(step, result.output, final_room)
+                    break
+                except _HANDOFF_ERRORS as exc:
+                    reason = _rejection_reason(exc)
+                # The retry is a new execution: a fresh human execute approval, a new
+                # execution ID (and receipt), and the same prompt plus a bounded notice.
+                retry_prompt = prompt + _CORRECTION_PREFIX + reason + _CORRECTION_SUFFIX
+                if any(item.step_id == step.step_id for item in self._handoff_rejections):
+                    outcome = "retry_exhausted"
+                elif not workflow.patched(_HANDOFF_RETRY_PATCH):
+                    outcome = "retry_unavailable"
+                elif len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+                    outcome = "retry_prompt_too_large"
+                else:
+                    outcome = "retried"
+                self._handoff_rejections.append(HandoffRejection(step.step_id, reason, outcome, result))
+                self._pending = None
+                self._phase = None
+                if outcome != "retried":
                     self._terminal_status = self._stage = "handoff_validation_rejected"
                     return self._terminal_status
+                self._results.pop()
+                attempt_prompt = retry_prompt
+                self._execution_id = f"{self._execution_id}:retry"
             if result.status == "unknown":
                 self._pending = None
                 self._phase = "reconcile"
@@ -393,6 +406,36 @@ class HermesWorkflow:
         self._phase = None
         self._terminal_status = self._stage = "completed"
         return self._terminal_status
+
+    def _validated_handoff(self, step: HermesStep, output: str, final_room: bool) -> dict[str, Any]:
+        raw_output = output
+        if workflow.patched(_FENCE_PATCH):
+            # Native models often fence JSON despite instructions; accept one fence
+            # that ends the response, optionally after leading commentary (new
+            # histories only), never trailing prose or extra blocks.
+            raw_output = (_extract_single_handoff(raw_output)
+                          if workflow.patched(_SURROUNDING_PROSE_PATCH) else _unwrap_single_fence(
+                              raw_output, allow_leading_prose=workflow.patched(_LEADING_PROSE_PATCH)))
+        parsed = json.loads(
+            raw_output,
+            object_pairs_hook=self._unique_json_object,
+            parse_constant=self._reject_json_constant,
+        )
+        note_limit = _NOTE_LIMIT_BYTES if workflow.patched(_NOTE_LIMIT_PATCH) else 512
+        return validate_handoff(
+            parsed,
+            snapshot=step.hunt_context["snapshot"],
+            evidence_ids=step.hunt_context["evidence_ids"],
+            step_id=step.step_id,
+            profile=step.profile,
+            predecessors=tuple(
+                self._reviewed_handoffs[dependency]
+                for dependency in step.depends_on
+                if dependency in self._reviewed_handoffs
+            ),
+            note_limit=note_limit,
+            handoff_limit=_FINAL_HANDOFF_BYTES if final_room else MAX_HANDOFF_BYTES,
+        )
 
     @staticmethod
     def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -150,6 +150,21 @@ class BoardDerivationTests(unittest.TestCase):
         denied = build_state(self.raw, self.parent, _mid_run(self.child, 0, "rejected", "scope", "COMPLETED"))
         self.assertEqual(_states(denied), ["stopped"] + ["not_reached"] * 8)
 
+    def test_retry_gate_shows_the_rejection_and_never_counts_the_rejected_output(self) -> None:
+        child = _mid_run(self.child, 3, "awaiting_execution_approval", "network")
+        rejected = dict(self.child["results"][3], execution_id="x:3")
+        child["handoff_rejections"] = [{"step_id": "network", "reason": "ValueError: invalid handoff disposition",
+                                        "outcome": "retried", "result": rejected}]
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual(_states(state)[2:5], ["done", "awaiting_approval", "pending"])
+        self.assertEqual(state["steps"][3]["handoff_rejections"],
+                         [{"outcome": "retried", "reason": "ValueError: invalid handoff disposition"}])
+        self.assertEqual([step["handoff_rejections"] for step in state["steps"][:3]], [[], [], []])
+        three_steps = build_state(self.raw, self.parent, _mid_run(self.child, 3, "awaiting_execution_approval",
+                                                                   "network"))
+        self.assertEqual({event_id: event["cited_by"] for event_id, event in _events(state).items()},
+                         {event_id: event["cited_by"] for event_id, event in _events(three_steps).items()})
+
     def test_unknown_result_awaits_reconciliation_without_output(self) -> None:
         child = _mid_run(self.child, 3, "needs_reconciliation", "hypotheses")
         child["results"][2] = dict(child["results"][2], status="unknown", output="", reason_code="execution_error")

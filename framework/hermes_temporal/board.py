@@ -442,6 +442,8 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
     step_ids = [step.step_id for step in steps]
     states = _step_states(len(steps), step_ids, child)
     results = child.get("results") if isinstance(child, dict) and isinstance(child.get("results"), list) else []
+    rejections = (child.get("handoff_rejections") if isinstance(child, dict)
+                  and isinstance(child.get("handoff_rejections"), list) else [])
     known_events = {event["id"] for event in events}
 
     step_views, feed = [], []
@@ -453,7 +455,10 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         result = results[index] if index < len(results) and isinstance(results[index], dict) else None
         role = ROLE_TITLES.get(step.profile, step.profile)
         view = {"index": index, "step_id": step.step_id, "profile": step.profile, "role": role,
-                "state": state, "reason": reason, "result": None}
+                "state": state, "reason": reason, "result": None,
+                "handoff_rejections": [{"outcome": item.get("outcome"), "reason": item.get("reason")}
+                                       for item in rejections
+                                       if isinstance(item, dict) and item.get("step_id") == step.step_id]}
         step_views.append(view)
         if result is None:
             continue
@@ -1235,6 +1240,7 @@ function renderStages(){
     const why = [];
     if (s.reason) why.push(s.reason);
     if (s.result && s.result.status !== "completed") why.push("result " + s.result.status + (s.result.reason_code ? " / " + s.result.reason_code : ""));
+    for (const r of s.handoff_rejections || []) why.push("handoff " + (r.outcome === "retried" ? "retried" : "rejected, " + r.outcome) + ": " + r.reason);
     if (s.result && s.result.status === "completed" && !s.result.parsed) why.push("output unparsed");
     if (why.length) li.appendChild(el("div", {class:"why"}, why.join("; ")));
     list.appendChild(li);

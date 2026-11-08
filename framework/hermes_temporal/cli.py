@@ -38,9 +38,13 @@ def _strict_input(path: str) -> object:
     return _strict_json(Path(path).read_text(encoding="utf-8"))
 
 def _practice_deadline_seconds(request) -> int:
-    """Bound each round by three possible human waits plus every activity schedule window."""
+    """Bound each round by every possible human wait plus every activity schedule window.
+
+    A structured step may run twice (one handoff-correction retry), each run behind its own
+    execute wait; one reconciliation and one review wait follow the last run."""
+    approval = request.hunt.approval_timeout_seconds
     per_round = sum(
-        3 * request.hunt.approval_timeout_seconds + step.timeout_seconds + 140
+        (2 if step.hunt_context is not None else 1) * (approval + step.timeout_seconds + 140) + 2 * approval
         for step in request.hunt.steps
     )
     return request.rounds * per_round
