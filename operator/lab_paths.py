@@ -15,6 +15,8 @@ RUNTIME = Path(os.environ.get('HUNT_BOTS_RUNTIME') or ROOT.parent / 'runtime')
 FRAMEWORK = ROOT / 'framework'
 LAB_HOME = Path(os.environ.get('HUNT_BOTS_LAB_HOME') or RUNTIME / 'lab-home')
 LAB_STATE = LAB_HOME / 'profiles' / 'framework-network-analyst' / 'hunt-lab-vm'
+# lab_browser keeps each bot's session.json and audit.jsonl in <profile>/ here, next to the operator's demo.json.
+LAB_BROWSER = LAB_STATE.parent / 'hunt-lab-browser'
 PYTHON = os.environ.get('HUNT_BOTS_PYTHON') or sys.executable
 TEMPORAL_ADDRESS = os.environ.get('HUNT_BOTS_TEMPORAL_ADDRESS')
 TEMPORAL_TASK_QUEUE = os.environ.get('HUNT_BOTS_TASK_QUEUE')
@@ -22,8 +24,10 @@ PRACTICE = RUNTIME / 'practice'
 CASES = RUNTIME / 'cases'
 OPERATOR_ONLY = RUNTIME / 'operator-only'
 TOOL_LOOPS = PRACTICE / 'tool-loops'
+FILM_LOOPS = PRACTICE / 'film-loops'
 GATE_RUNS = PRACTICE / 'gate-runs'
 FFMPEG = os.environ.get('FFMPEG') or 'ffmpeg'
+FFPROBE = os.environ.get('FFPROBE') or str(Path(FFMPEG).with_name(Path(FFMPEG).name.replace('ffmpeg', 'ffprobe')))
 TOOLCAM_BROWSER = os.environ.get('TOOLCAM_BROWSER') or (
     r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' if os.name == 'nt' else 'chromium')
 TOOLCAM_FONT = os.environ.get('TOOLCAM_FONT') or (
