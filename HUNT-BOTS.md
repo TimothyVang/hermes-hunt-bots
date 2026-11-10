@@ -41,6 +41,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 - **Network and intel findings cannot be scored.** The scorer credits only `evt-` event IDs. Arkime sessions and intel feed matches carry none, and the lab exposes no session ID or key shared with events, so the Network Analyst's and Threat Intelligence Analyst's evidence is invisible to `hunt_lab.scenario score` unless they also cite the matching events (`hunt_lab_query` with `dataset=events` returns `event.id`).
 - **Answer keys are narrow.** Most evidence groups of a generated attack fact accept one or two specific events, so a report that proves the same step through a neighbouring event is not credited. Keys have not been checked by a human.
 - **Filming tools assume a serial hunt.** `operator/film/` and `operator/toolcam/` expect nine stages that start one at a time and do not know the `dropped` step state of a parallel hunt.
+- **A failed native run leaves no cause.** The worker discards Hermes's stderr, so a step that ends `native_nonzero` (seen live: a `merge` step exited after 26 seconds with zero tokens) records no reason. The parallel engine drops such an optional step and the hunt goes on, but the failure cannot be diagnosed afterwards.
 
 ## Contributing
 
