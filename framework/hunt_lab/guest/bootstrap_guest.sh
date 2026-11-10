@@ -16,7 +16,21 @@ if not isinstance(case.get('case_id'), str) or not re.fullmatch(r'[a-z0-9-]{3,64
 print(case['case_id'])
 PY
 )
-PCAP_SHA=$(sha256sum "$ROOT/evidence/traffic.pcap" | cut -c1-16)
+# "network_capture": "none" marks a case that ships no traffic.pcap; any other value is refused.
+CAPTURE=$(python3 - <<'PY'
+import json
+case = json.load(open('/opt/hermes-hunt-lab/evidence/case.json', encoding='utf-8'))
+if 'network_capture' in case and case['network_capture'] != 'none':
+    raise SystemExit('stage=failed_case_metadata')
+print(case.get('network_capture', 'pcap'))
+PY
+)
+PCAP_SHA=
+if [ "$CAPTURE" != none ]; then
+    PCAP_SHA=$(sha256sum "$ROOT/evidence/traffic.pcap" | cut -c1-16)
+elif [ -e "$ROOT/evidence/traffic.pcap" ]; then
+    echo 'stage=failed_case_metadata'; exit 1
+fi
 printf 'stage=loading_case case_id=%s\n' "$CASE_ID"
 printf 'stage=installing_guest_packages\n'
 # A reseeded instance already has the packages; only a first boot needs the network.
@@ -90,7 +104,9 @@ fi
 # served by its case time window instead of being imported a second time.
 SCOPE=tag
 MARKER="$ROOT/pcap-imported-$CASE_ID-$PCAP_SHA"
-if [ "$CASE_ID" = dns-lab-001 ] && [ -f "$ROOT/pcap-imported" ] && ! ls "$ROOT/pcap-imported-$CASE_ID-"* >/dev/null 2>&1; then
+if [ "$CAPTURE" = none ]; then
+    printf 'stage=case_sessions_skipped_no_capture case_id=%s\n' "$CASE_ID"
+elif [ "$CASE_ID" = dns-lab-001 ] && [ -f "$ROOT/pcap-imported" ] && ! ls "$ROOT/pcap-imported-$CASE_ID-"* >/dev/null 2>&1; then
     SCOPE=window
     printf 'stage=legacy_untagged_pcap case_id=%s\n' "$CASE_ID"
 elif [ ! -f "$MARKER" ]; then
@@ -120,7 +136,8 @@ else
 fi
 
 # Integrity: the served scope must contain this case's sessions before the API restarts.
-CASE_ID="$CASE_ID" SCOPE="$SCOPE" ELASTIC="$ELASTIC" python3 - <<'PY'
+if [ "$CAPTURE" != none ]; then
+    CASE_ID="$CASE_ID" SCOPE="$SCOPE" ELASTIC="$ELASTIC" python3 - <<'PY'
 import json
 import os
 import time
@@ -146,6 +163,7 @@ for attempt in range(60):
 else:
     raise SystemExit('stage=failed_case_sessions')
 PY
+fi
 docker-compose -p hermes-hunt-lab up -d arkime
 cat >/etc/systemd/system/hermes-hunt-lab-api.service <<UNIT
 [Unit]

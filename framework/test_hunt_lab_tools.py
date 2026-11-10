@@ -21,6 +21,15 @@ HOST_TOOLS = {'elastic_search', 'elastic_aggregate', 'detection_test', 'intel_lo
               'arkime_sessions', 'arkime_unique'}
 
 
+def guest_lab_server():
+    sys.path.insert(0, str(Path(query_adapter.__file__).parent / 'guest'))
+    try:
+        import lab_server
+    finally:
+        sys.path.pop(0)
+    return lab_server
+
+
 class GuestStub:
     """Loopback stand-in for the guest lab_server; records every request it receives."""
 
@@ -173,6 +182,48 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual(set(query_adapter.ARKIME_UNIQUE_FIELDS), set(lab_server.ARKIME_UNIQUE_FIELDS))
         described = query_adapter.TOOLS['elastic_search'][2]['parameters']['properties']['fields']['description']
         self.assertIn('winlog.event_data.TargetImage', described)
+
+    def test_real_windows_log_fields_are_advertised_on_both_sides(self):
+        lab_server = guest_lab_server()
+        keyword = ('event.module', 'process.args', 'process.hash.sha1', 'file.extension', 'winlog.record_id',
+                   'winlog.process.pid', 'winlog.event_data.User', 'winlog.event_data.CreationUtcTime',
+                   'winlog.event_data.TargetProcessGUID', 'winlog.event_data.TargetProcessGuid')
+        for field in keyword:
+            with self.subTest(field=field):
+                self.assertIn(field, query_adapter.ES_AGG_FIELDS)
+                self.assertIn(field, lab_server.AGG_FIELDS)
+                self.assertIn(field, lab_server.SEARCH_FIELDS)
+        script = 'powershell.file.script_block_text'
+        self.assertIn(script, query_adapter.ES_RETURN_FIELDS)
+        self.assertIn(script, lab_server.SEARCH_FIELDS)
+        self.assertNotIn(script, query_adapter.ES_AGG_FIELDS)
+        self.assertNotIn(script, lab_server.AGG_FIELDS)
+        self.assertIn('powershell', lab_server.EVENT_FIELDS)
+        described = query_adapter.TOOLS['elastic_search'][2]['parameters']['properties']['fields']['description']
+        self.assertIn('winlog.event_data.TargetProcessGUID', described)
+        self.assertIn(script, described)
+        result = self.call('elastic_search', {'case_id': CASE, 'fields': 'event.id,winlog.event_data.TargetProcessGUID,' + script})
+        self.assertTrue(result['ok'], result)
+
+    def test_no_network_capture_code_reaches_the_bot_from_the_real_guest(self):
+        lab_server = guest_lab_server()
+        case = {'case_id': CASE, 'question': 'Synthetic question.', 'network_capture': 'none',
+                'time_range_utc': {'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-05T00:00:00Z'}}
+        # No backend exists: a refusal that touched Elasticsearch or Arkime would surface as backend_not_ready.
+        server = lab_server.make_server('127.0.0.1', 0, case, 'http://elastic.invalid:9200')
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.runtime.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
+        for name, arguments in (('arkime_sessions', {'expression': 'ip.dst == 203.0.113.7'}),
+                                ('arkime_unique', {'field': 'ip.dst'}),
+                                ('hunt_lab_query', {'dataset': 'network'})):
+            with self.subTest(tool=name):
+                result = self.call(name, {'case_id': CASE, **arguments})
+                self.assertEqual((result['ok'], result['error'], result.get('detail')),
+                                 (False, 'lab_http_400', 'no_network_capture'))
+        case_view = self.call('hunt_lab_query', {'case_id': CASE, 'dataset': 'case'})
+        self.assertEqual(case_view['evidence']['network_capture'], 'none')
 
     def test_oversized_redirected_or_foreign_case_responses_are_refused(self):
         self.guest.overrides['/arkime/sessions'] = (200, b'{"case_id":"lab-med-001","x":"' + b'a' * (512 * 1024) + b'"}', {})

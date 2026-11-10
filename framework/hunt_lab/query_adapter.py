@@ -259,8 +259,18 @@ ES_AGG_FIELDS = (
     'winlog.event_data.TargetProcessGuid', 'winlog.event_data.TargetProcessId',
     'winlog.event_data.TargetUserName', 'winlog.event_data.TaskContent', 'winlog.event_data.TaskName',
     'winlog.event_data.WorkstationName',
+    'event.module', 'process.args', 'process.title', 'process.hash.md5', 'process.hash.sha1',
+    'file.directory', 'file.extension', 'winlog.record_id', 'winlog.event_id', 'winlog.computer_name',
+    'winlog.provider_name', 'winlog.task', 'winlog.process.pid', 'winlog.event_data.User',
+    'winlog.event_data.IntegrityLevel', 'winlog.event_data.LogonId', 'winlog.event_data.ParentUser',
+    'winlog.event_data.OriginalFileName', 'winlog.event_data.Description', 'winlog.event_data.Company',
+    'winlog.event_data.Product', 'winlog.event_data.Signed', 'winlog.event_data.Signature',
+    'winlog.event_data.SignatureStatus', 'winlog.event_data.RuleName', 'winlog.event_data.CreationUtcTime',
+    'winlog.event_data.EventType', 'winlog.event_data.SourceUser', 'winlog.event_data.TargetUser',
+    'winlog.event_data.TargetProcessGUID',
 )
-ES_RETURN_FIELDS = ES_AGG_FIELDS + ('@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets')
+ES_RETURN_FIELDS = ES_AGG_FIELDS + ('@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets',
+                                    'powershell.file.script_block_text')
 ARKIME_SESSION_FIELDS = (
     'firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port',
     'ipProtocol', 'protocol', 'network.bytes', 'network.packets', 'source.bytes', 'destination.bytes',

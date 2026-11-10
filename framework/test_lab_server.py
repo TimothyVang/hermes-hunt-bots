@@ -34,6 +34,19 @@ CASE = {'case_id': 'lab-med-001', 'question': 'Synthetic question.',
 START_S = 1772409600
 END_S = 1772668800
 
+# Fields of real winlogbeat/Sysmon/PowerShell logs (DEDALE); Sysmon spells TargetProcessGUID.
+REAL_WINDOWS_KEYWORD_FIELDS = (
+    'event.module', 'process.args', 'process.title', 'process.hash.md5', 'process.hash.sha1',
+    'file.directory', 'file.extension', 'winlog.record_id', 'winlog.event_id', 'winlog.computer_name',
+    'winlog.provider_name', 'winlog.task', 'winlog.process.pid', 'winlog.event_data.User',
+    'winlog.event_data.IntegrityLevel', 'winlog.event_data.LogonId', 'winlog.event_data.ParentUser',
+    'winlog.event_data.OriginalFileName', 'winlog.event_data.Description', 'winlog.event_data.Company',
+    'winlog.event_data.Product', 'winlog.event_data.Signed', 'winlog.event_data.Signature',
+    'winlog.event_data.SignatureStatus', 'winlog.event_data.RuleName', 'winlog.event_data.CreationUtcTime',
+    'winlog.event_data.EventType', 'winlog.event_data.SourceUser', 'winlog.event_data.TargetUser',
+    'winlog.event_data.TargetProcessGUID', 'winlog.event_data.TargetProcessGuid',
+)
+
 
 def es_hits(sources, total=None):
     hits = [{'_source': source, 'sort': [1772409600000 + n, source.get('event', {}).get('id', '')]}
@@ -58,6 +71,7 @@ class FakeElastic:
 
 class ServerCase(unittest.TestCase):
     scope = 'tag'
+    case = CASE
 
     def setUp(self):
         self.elastic = FakeElastic()
@@ -67,7 +81,7 @@ class ServerCase(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        self.server = lab_server.make_server('127.0.0.1', 0, CASE, 'http://elastic.invalid:9200', self.scope)
+        self.server = lab_server.make_server('127.0.0.1', 0, self.case, 'http://elastic.invalid:9200', self.scope)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)
@@ -156,6 +170,32 @@ class EndpointTests(ServerCase):
         self.elastic.response = {'hits': {'total': {'value': 0}}, 'aggregations': {'values': {'buckets': []}}}
         self.assertEqual(self.request('/es/aggs?field=winlog.event_data.TargetUserName')[0], 200)
         self.assertEqual(self.elastic.calls[-1]['body']['aggs']['values']['terms']['field'], 'winlog.event_data.TargetUserName')
+
+    def test_real_windows_log_fields_are_returnable_and_keyword_ones_aggregatable(self):
+        self.elastic.response = es_hits([{
+            '@timestamp': '2026-03-02T01:00:00.000Z', 'event': {'id': 'evt-000001', 'module': 'powershell'},
+            'process': {'args': ['powershell.exe', '-NoP'], 'hash': {'md5': 'a' * 32}},
+            'winlog': {'record_id': 12813, 'event_data': {'TargetProcessGUID': '{416dd0c5-0000}'}},
+            'powershell': {'file': {'script_block_text': 'Get-Process | Out-Null'}}}])
+        fields = REAL_WINDOWS_KEYWORD_FIELDS + ('powershell.file.script_block_text',)
+        status, value = self.request('/es/search?fields=' + ','.join(fields))
+        self.assertEqual(status, 200)
+        self.assertLessEqual(set(fields), set(self.elastic.calls[0]['body']['_source']))
+        hit = value['hits'][0]
+        self.assertEqual((hit['event.module'], hit['process.args'], hit['process.hash.md5'], hit['winlog.record_id']),
+                         ('powershell', ['powershell.exe', '-NoP'], 'a' * 32, 12813))
+        self.assertEqual(hit['winlog.event_data.TargetProcessGUID'], '{416dd0c5-0000}')
+        self.assertEqual(hit['powershell.file.script_block_text'], 'Get-Process | Out-Null')
+        self.elastic.response = {'hits': {'total': {'value': 0}}, 'aggregations': {'values': {'buckets': []}}}
+        for field in REAL_WINDOWS_KEYWORD_FIELDS:
+            with self.subTest(field=field):
+                self.assertEqual(self.request('/es/aggs?field=' + field)[0], 200)
+                self.assertEqual(self.elastic.calls[-1]['body']['aggs']['values']['terms']['field'], field)
+        self.assertEqual(self.request('/es/aggs?field=powershell.file.script_block_text'),
+                         (400, {'error': 'field_not_allowed'}))
+        self.elastic.response = es_hits([])
+        self.assertEqual(self.request('/events')[0], 200)
+        self.assertIn('powershell', self.elastic.calls[-1]['body']['_source'])
 
     def test_non_get_methods_are_405_and_unknown_routes_404(self):
         for method in ('POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'):
@@ -443,6 +483,58 @@ class LegacyWindowScopeTests(ServerCase):
         self.assertNotIn('tags', json.dumps(self.elastic.calls[-1]['body']))
 
 
+class NoCaptureTests(ServerCase):
+    case = dict(CASE, network_capture='none')
+
+    def test_health_is_ready_from_events_alone_and_reports_no_capture(self):
+        self.elastic.response = es_hits([{}], total=5)
+        with mock.patch.object(lab_server, 'answers', return_value=False), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['ready']), (200, True))
+        self.assertEqual((value['network_capture'], value['network_session_count'], value['event_count']),
+                         ('none', 0, 5))
+        self.assertFalse(any(call['index'] == 'arkime_sessions3-*' for call in self.elastic.calls))
+        self.elastic.response = es_hits([], total=0)
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            self.assertEqual(self.request('/health')[0], 503)
+
+    def test_network_queries_are_refused_with_a_fixed_code_before_any_backend_call(self):
+        for path in ('/arkime/sessions', '/arkime/sessions?expression=ip.dst%3D%3D10.0.0.1',
+                     '/arkime/unique?field=ip.src', '/network', '/network?q=dns&limit=5'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path, profile='framework-network-analyst'),
+                                 (400, {'error': 'no_network_capture'}))
+        self.arkime.assert_not_called()
+        self.assertEqual(self.elastic.calls, [])
+        _, activity = self.request('/activity')
+        self.assertEqual({entry['error'] for entry in activity['entries']}, {'no_network_capture'})
+        self.assertEqual(self.request('/events')[0], 200)
+        self.assertEqual(self.request('/case')[1]['network_capture'], 'none')
+
+    def test_case_with_a_capture_still_queries_its_sessions(self):
+        self.server.case = CASE
+        self.assertEqual(self.request('/arkime/sessions')[0], 200)
+        self.assertEqual(self.request('/network')[0], 200)
+        self.arkime.assert_called_once()
+
+
+class LoadCaseTests(unittest.TestCase):
+    def load(self, **fields):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'case.json'
+            path.write_text(json.dumps(dict(CASE, **fields)), encoding='utf-8')
+            return lab_server.load_case(path)
+
+    def test_network_capture_is_absent_or_none_and_nothing_else(self):
+        self.assertNotIn('network_capture', self.load())
+        self.assertEqual(self.load(network_capture='none')['network_capture'], 'none')
+        for value in ('pcap', 'None', '', None, False):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load(network_capture=value)
+
+
 class FakeIndexer:
     def __init__(self, current=None):
         self.calls = []
@@ -514,6 +606,25 @@ class IngestTests(unittest.TestCase):
         with mock.patch.object(ingest, 'request', fake):
             self.assertEqual(ingest.ensure_event_index('http://es'), 'ready')
         self.assertEqual(len(fake.calls), 1)
+
+    def test_script_block_text_is_full_text_on_new_and_existing_stores(self):
+        script = {'type': 'text'}
+        fake = FakeIndexer()
+        with mock.patch.object(ingest, 'request', fake):
+            ingest.ingest('http://es', self.events(2), 'lab-med-001')
+        mappings = next(data for method, path, data in fake.calls if method == 'PUT')['mappings']
+        self.assertEqual(mappings['properties']['powershell']['properties']['file']['properties']['script_block_text'], script)
+        # Every other string stays an aggregatable keyword.
+        self.assertEqual(mappings['dynamic_templates'][0]['strings_as_keywords']['mapping'],
+                         {'type': 'keyword', 'ignore_above': 1024})
+        self.assertFalse(any(path.endswith('/_mapping') for _, path, _ in fake.calls))
+        fake = FakeIndexer(current={'hunt-lab-events-v2': {}})
+        with mock.patch.object(ingest, 'request', fake):
+            ingest.ingest('http://es', self.events(2), 'lab-med-001')
+        update = next(data for method, path, data in fake.calls
+                      if (method, path) == ('PUT', '/hunt-lab-events-v2/_mapping'))
+        self.assertEqual(update['properties']['powershell']['properties']['file']['properties']['script_block_text'], script)
+        self.assertEqual(update['_meta'], mappings['_meta'])
 
     def test_events_from_another_case_or_rejected_documents_fail(self):
         fake = FakeIndexer()

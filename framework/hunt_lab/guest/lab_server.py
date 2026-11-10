@@ -3,7 +3,8 @@
 
 Every query is scoped server-side to the loaded case: events by event.dataset,
 intel by case_id, network sessions by the Arkime case tag and the case window.
-Arkime is reached only through two fixed read routes on guest loopback.
+Arkime is reached only through two fixed read routes on guest loopback. A case whose
+case.json says "network_capture": "none" has no sessions; its network queries are refused.
 """
 import argparse
 import base64
@@ -39,7 +40,8 @@ CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
 INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
 EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
-                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'message', 'labels']
+                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'powershell', 'message', 'labels']
+NO_CAPTURE = 'none'
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
 ES_TIMEOUT = 15
@@ -74,10 +76,21 @@ KEYWORD_FIELDS = (
     'winlog.event_data.TargetProcessGuid', 'winlog.event_data.TargetProcessId',
     'winlog.event_data.TargetUserName', 'winlog.event_data.TaskContent', 'winlog.event_data.TaskName',
     'winlog.event_data.WorkstationName',
+    # Fields of real winlogbeat/Sysmon/PowerShell logs (Sysmon spells TargetProcessGUID).
+    'event.module', 'process.args', 'process.title', 'process.hash.md5', 'process.hash.sha1',
+    'file.directory', 'file.extension', 'winlog.record_id', 'winlog.event_id', 'winlog.computer_name',
+    'winlog.provider_name', 'winlog.task', 'winlog.process.pid', 'winlog.event_data.User',
+    'winlog.event_data.IntegrityLevel', 'winlog.event_data.LogonId', 'winlog.event_data.ParentUser',
+    'winlog.event_data.OriginalFileName', 'winlog.event_data.Description', 'winlog.event_data.Company',
+    'winlog.event_data.Product', 'winlog.event_data.Signed', 'winlog.event_data.Signature',
+    'winlog.event_data.SignatureStatus', 'winlog.event_data.RuleName', 'winlog.event_data.CreationUtcTime',
+    'winlog.event_data.EventType', 'winlog.event_data.SourceUser', 'winlog.event_data.TargetUser',
+    'winlog.event_data.TargetProcessGUID',
 )
 AGG_FIELDS = frozenset(KEYWORD_FIELDS)
 SEARCH_FIELDS = frozenset(KEYWORD_FIELDS + (
-    '@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets'))
+    '@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets',
+    'powershell.file.script_block_text'))
 LABEL_FIELD = re.compile(r'labels\.[a-z0-9_]{1,40}')
 ALWAYS_FIELDS = ('event.id', '@timestamp', 'host.name')
 DEFAULT_FIELDS = ALWAYS_FIELDS + (
@@ -120,7 +133,8 @@ class BackendQueryError(Exception):
     """A refused query, with a fixed snake_case code the bot can act on; never echo backend text.
 
     invalid_query: the backend rejected the syntax; field_not_allowed / invalid_field_list: a field
-    outside the allowlist; leading_wildcard_not_supported: a term starts with * or ?.
+    outside the allowlist; leading_wildcard_not_supported: a term starts with * or ?;
+    no_network_capture: the case ships no packet capture, so it has no network sessions.
     """
 
 
@@ -246,6 +260,15 @@ def window(case):
     return bounds['start_inclusive'], bounds['end_exclusive']
 
 
+def has_capture(case):
+    return case.get('network_capture') != NO_CAPTURE
+
+
+def require_capture(server):
+    if not has_capture(server.case):
+        raise BackendQueryError('no_network_capture')
+
+
 def lucene(q):
     q = text(q, 500)
     if not q.strip():
@@ -274,6 +297,8 @@ def network_filters(server):
 
 
 def query(server, dataset, params):
+    if dataset != 'events':
+        require_capture(server)
     allowed = {'q', 'host', 'limit', 'offset'}
     values = single(params, allowed)
     limit = bounded(values.get('limit'), 50, 1, MAX_RESULT)
@@ -456,6 +481,7 @@ def arkime_scope(server, expression):
 
 
 def arkime_sessions_endpoint(server, params):
+    require_capture(server)
     values = single(params, {'expression', 'length', 'start', 'fields'})
     length = bounded(values.get('length'), 50, 1, MAX_RESULT)
     start = bounded(values.get('start'), 0, 0, 10000)
@@ -482,6 +508,7 @@ def arkime_sessions_endpoint(server, params):
 
 
 def arkime_unique_endpoint(server, params):
+    require_capture(server)
     values = single(params, {'expression', 'field', 'counts'})
     field = values.get('field')
     if field not in ARKIME_UNIQUE_FIELDS:
@@ -586,18 +613,24 @@ def counted(value):
 
 def health(server):
     events = query(server, 'events', {'limit': ['1']})
-    network = query(server, 'network', {'limit': ['1']})
+    captured = has_capture(server.case)
+    sessions = query(server, 'network', {'limit': ['1']})['total'] if captured else 0
     intel = es_search(server.elastic, INTEL_INDEX, {
         'query': {'bool': {'filter': [{'term': {'case_id': server.case['case_id']}}]}},
         'size': 0, 'track_total_hits': True, 'timeout': '10s'}, ignore_unavailable=True)
     viewer_ready = answers(ARKIME + '/')
     kibana_ready = kibana_case_ready(server.case['case_id'])
-    ready = events['total'] > 0 and network['total'] > 0 and viewer_ready and kibana_ready
-    return ready, {'ready': ready, 'case_id': server.case['case_id'],
-                   'event_count': events['total'], 'network_session_count': network['total'],
-                   'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
-                   'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True,
-                   'instance_id': server.instance_id}
+    # A case without a capture is served from events alone; Arkime has nothing of it to show.
+    network_ready = sessions > 0 and viewer_ready if captured else True
+    ready = events['total'] > 0 and network_ready and kibana_ready
+    value = {'ready': ready, 'case_id': server.case['case_id'],
+             'event_count': events['total'], 'network_session_count': sessions,
+             'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
+             'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True,
+             'instance_id': server.instance_id}
+    if not captured:
+        value['network_capture'] = NO_CAPTURE
+    return ready, value
 
 
 def answers(url):
@@ -707,6 +740,8 @@ def load_case(path):
     start, end = window(case)
     if epoch(start) >= epoch(end):
         raise ValueError('case.json time_range_utc must be a nonempty window')
+    if 'network_capture' in case and case['network_capture'] != NO_CAPTURE:
+        raise ValueError('case.json network_capture may only be "none"')
     return case
 
 
