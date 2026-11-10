@@ -326,7 +326,8 @@ def collect_tool_input(state_dir) -> dict:
     """
     case = lab_get(lab_endpoints(state_dir)["lab_url"], "/case")
     case_id = case.get("case_id")
-    if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None or set(case) != _CASE_FIELDS
+    if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None
+            or set(case) - {"network_capture"} != _CASE_FIELDS or case.get("network_capture", "none") != "none"
             or type(case.get("schema_version")) is not int or case.get("schema_version") != 1
             or not _case_body_ok(case)):
         _reject()

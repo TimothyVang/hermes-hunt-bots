@@ -324,6 +324,13 @@ class ToolDrivenInputTests(unittest.TestCase):
             self.assertIn("lab-med-001", step.prompt)
         self.assertEqual(self.collect(lab)[0], raw)
 
+    def test_a_log_only_case_is_exported_with_its_network_capture_field(self):
+        lab = FakeLab(case={**TOOL_CASE, "network_capture": "none"})
+        self.addCleanup(lab.close)
+        raw, _runtime = self.collect(lab)
+        self.assertIn('"network_capture":"none"', raw["evidence"][0]["content"])
+        supplied_evidence_hunt(raw)
+
     def test_export_refuses_unowned_unsafe_or_malformed_lab(self):
         endpoint_faults = ({"state": "stopped"}, {"profile": "framework-researcher"},
                            {"lab_url": "http://192.0.2.10:8765"}, {"lab_url": "https://127.0.0.1:8765"},
@@ -336,7 +343,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.assertEqual(lab.requests, [])
         bad_cases = ({**TOOL_CASE, "case_id": "Lab Med"}, {**TOOL_CASE, "truth": "x"},
                      {key: value for key, value in TOOL_CASE.items() if key != "schema_version"},
-                     {**TOOL_CASE, "sources": "events.jsonl"})
+                     {**TOOL_CASE, "sources": "events.jsonl"}, {**TOOL_CASE, "network_capture": "full"})
         for case in bad_cases:
             bad = FakeLab(case=case)
             self.addCleanup(bad.close)
