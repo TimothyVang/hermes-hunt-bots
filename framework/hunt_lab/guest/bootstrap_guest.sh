@@ -34,12 +34,14 @@ fi
 printf 'stage=loading_case case_id=%s\n' "$CASE_ID"
 printf 'stage=installing_guest_packages\n'
 # A reseeded instance already has the packages; only a first boot needs the network.
-INSTALLED=$(dpkg-query -W -f='${Status}\n' docker.io docker-compose python3 curl 2>/dev/null | grep -c '^install ok installed$' || true)
-if [ "$INSTALLED" = 4 ]; then
+# tshark decodes the saved case capture for packet_fields (read-only, -r only). Under
+# noninteractive debconf, wireshark-common keeps dumpcap root-only: no user may capture.
+INSTALLED=$(dpkg-query -W -f='${Status}\n' docker.io docker-compose python3 curl tshark 2>/dev/null | grep -c '^install ok installed$' || true)
+if [ "$INSTALLED" = 5 ]; then
     printf 'stage=guest_packages_present\n'
 else
     apt-get update -q
-    apt-get install -y -q docker.io docker-compose python3 curl
+    apt-get install -y -q docker.io docker-compose python3 curl tshark
 fi
 systemctl enable --now docker
 sysctl -w vm.max_map_count=262144

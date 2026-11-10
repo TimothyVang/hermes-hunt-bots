@@ -829,9 +829,12 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
     }
 
 
+_QUERY_KEYS = ("expression", "q", "filter", "values")
+
+
 def _query_text(params: dict) -> str:
-    """The bot's own query, expression or lookup values, as the lab recorded them."""
-    for key in ("expression", "q", "values"):
+    """The bot's own query, expression, packet filter or lookup values, as the lab recorded them."""
+    for key in _QUERY_KEYS:
         if isinstance(params.get(key), str):
             return params[key]
     return ""
@@ -886,7 +889,7 @@ def _tool_view(lab: dict, case: dict, working: dict[str, int]) -> dict:
             "endpoint": endpoint,
             "query": query,
             "params": {key: value for key, value in sorted(params.items())
-                       if key not in ("expression", "q", "values")},
+                       if key not in _QUERY_KEYS},
             "result_count": entry.get("result_count") if type(entry.get("result_count")) is int else None,
             "total": entry.get("total") if type(entry.get("total")) is int else None,
             "error": _text(entry.get("error")),
@@ -1775,7 +1778,7 @@ const STATE_LABEL = {pending:"waiting", not_reached:"not reached", awaiting_appr
   working:"running", awaiting_review:"in review", done:"done", dropped:"dropped", stopped:"stopped"};
 const OPEN = new Set(["working", "awaiting_approval", "awaiting_review"]);
 const PAGE_LABEL = {kibana_discover:"Kibana Discover", arkime_sessions:"Arkime Sessions", arkime_spiview:"Arkime SPI View", lab_console:"lab console"};
-const COUNT_NOUN = {elastic_search:"document", arkime_sessions:"session", arkime_unique:"unique value"};
+const COUNT_NOUN = {elastic_search:"document", arkime_sessions:"session", arkime_unique:"unique value", packet_fields:"frame"};
 const $ = (id) => document.getElementById(id);
 let state = null, lastKey = null, fetchError = null, wfExtra = 0;
 

@@ -101,6 +101,7 @@ class LabInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr[-1500:])
         self.assertIn('lab_browser', json.loads(result.stdout))
         self.assertIn('hunt_lab_query', json.loads(result.stdout))
+        self.assertIn('packet_fields', json.loads(result.stdout))
 
     def test_unregistered_specialists_are_skipped_but_analyst_is_required(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0))

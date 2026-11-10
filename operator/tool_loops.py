@@ -283,9 +283,10 @@ def report_digest(wf, n):
 
 WATCHER_RULES = (
     "You are the WATCHER for a six-bot AI threat-hunting team. Each bot drives its own read-only lab tool: "
-    "Threat Hunter (elastic_search, elastic_aggregate), Network Analyst (arkime_sessions, arkime_unique), Threat Intel "
-    "(intel_lookup, elastic_aggregate), Detection Engineer (detection_test, elastic_aggregate), Purple Team (elastic_search, "
-    "arkime_sessions, detection_test); the Incident Response Lead (scope, analysis, incident stages) has only delegate_task. "
+    "Threat Hunter (elastic_search, elastic_aggregate, packet_fields), Network Analyst (arkime_sessions, arkime_unique, "
+    "packet_fields), Threat Intel (intel_lookup, elastic_aggregate), Detection Engineer (detection_test, elastic_aggregate), "
+    "Purple Team (elastic_search, arkime_sessions, detection_test); the Incident Response Lead (scope, analysis, incident "
+    "stages) has only delegate_task. packet_fields decodes allowlisted, redacted fields of the case's saved capture only. "
     "Stages: scope, evidence, hypotheses (Threat Hunter), network, intel, analysis, detection, purple, incident. "
     "You watched the last hunt: every tool call, every refusal, the stage reports, and which answer-key CATEGORIES the final "
     "report missed (you never see the key itself). Propose ONE focused, general improvement that would help on any intrusion "
@@ -295,7 +296,8 @@ WATCHER_RULES = (
     "final report to cite at least one event.id from every evidence group of that fact and name its entities, so relaying "
     "earlier stages' event IDs into the final report matters. Lab refusals waste turns; their codes are "
     "field_not_allowed / invalid_field_list (field outside the list in the tool description), "
-    "leading_wildcard_not_supported, and invalid_query (syntax). Reply with ONE JSON object only, no prose, no fences: "
+    "leading_wildcard_not_supported, invalid_query (syntax), invalid_filter (packet filter outside its grammar) and "
+    "field_unavailable (the lab's tshark lacks that field). Reply with ONE JSON object only, no prose, no fences: "
     '{"diagnosis": "...", "hypothesis": "...", "brief": "<full new brief>", "stage_guidance": {"<stage>": "<text>", ...}}')
 
 

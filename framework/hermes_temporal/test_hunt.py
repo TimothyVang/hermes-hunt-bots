@@ -9,10 +9,10 @@ from pathlib import Path
 from .hunt import MAX_HUNT_BYTES, TOOL_STEP_TIMEOUT_SECONDS, supplied_evidence_hunt
 
 LAB_TOOLS = {"elastic_search", "elastic_aggregate", "arkime_sessions", "arkime_unique", "hunt_lab_query",
-             "intel_lookup", "detection_test", "delegate_task", "lab_browser"}
+             "intel_lookup", "detection_test", "delegate_task", "lab_browser", "packet_fields"}
 OWNED_TOOLS = {
-    "framework-researcher": {"elastic_search", "elastic_aggregate", "lab_browser"},
-    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query", "lab_browser"},
+    "framework-researcher": {"elastic_search", "elastic_aggregate", "lab_browser", "packet_fields"},
+    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query", "lab_browser", "packet_fields"},
     "framework-librarian": {"intel_lookup", "elastic_aggregate"},
     "framework-builder": {"detection_test", "elastic_aggregate"},
     "framework-reviewer": {"elastic_search", "arkime_sessions", "detection_test"},
@@ -59,6 +59,14 @@ class ToolDrivenHuntTests(unittest.TestCase):
             self.assert_tool_step(step)
             self.assertGreater(step.timeout_seconds, inline.steps[0].timeout_seconds)
         self.assertNotIn("delegate_task", by_id["purple"].prompt)
+
+    def test_packet_fields_prompts_keep_the_saved_capture_boundary(self) -> None:
+        by_id = {step.step_id: step for step in supplied_evidence_hunt(tool_input()).steps}
+        for stage in ("evidence", "hypotheses", "network"):
+            with self.subTest(stage=stage):
+                self.assertIn("from this case's saved capture only, never live traffic", by_id[stage].prompt)
+                self.assertIn("frame numbers only as supporting evidence", by_id[stage].prompt)
+        self.assertIn("No live capture", by_id["network"].prompt)
 
     def test_stage_guidance_reaches_only_its_stage_and_is_bounded(self) -> None:
         raw = tool_input()
