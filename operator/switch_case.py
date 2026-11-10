@@ -47,10 +47,13 @@ def health(url):
     return json.loads(opener.open(req, timeout=30).read())
 
 
-def ready(h, instance=None):
-    """Health says the case is served, and after a reseed it comes from that reseed's instance: the previous
-    boot's lab server restarts first and reports ready for the old guest software until setup replaces it."""
-    return h.get('ready') is True and bool(h.get('event_count')) and (instance is None or h.get('instance_id') == instance)
+def ready(h, instance=None, case_id=None):
+    """Health says the case is served, and after a reseed it comes from that reseed's instance and case: the
+    previous boot's lab server restarts first and reports ready for the old guest software, and the guest
+    reports the new instance ID before setup has replaced the previous case's data."""
+    return (h.get('ready') is True and bool(h.get('event_count'))
+            and (instance is None or h.get('instance_id') == instance)
+            and (case_id is None or h.get('case_id') == case_id))
 
 
 def main():
@@ -82,7 +85,7 @@ def main():
             raise SystemExit('reseed failed: ' + (r.stdout + r.stderr)[-600:])
         out = json.loads(r.stdout[r.stdout.index('{'):])
         say(f"reseed {out['status']} case {out['case_id']} load {out.get('load')} deployment_updated={out['deployment_updated']}")
-    instance = out.get('instance_id') if args.evidence_dir else None
+    instance, case_id = (out.get('instance_id'), out.get('case_id')) if args.evidence_dir else (None, None)
     t0, rc = time.time(), 1
     while rc and time.time() - t0 < 3600:
         if avail_mib() >= start_memory_mib():
@@ -98,7 +101,7 @@ def main():
         rc, st = lab('status', 180)
         try:
             h = health(st['lab_url'])
-            if ready(h, instance):
+            if ready(h, instance, case_id):
                 break
         except Exception:
             pass
