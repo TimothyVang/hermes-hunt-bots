@@ -107,16 +107,20 @@ def _request_from_file(path: str) -> WorkflowRequest:
     steps = []
     for item in steps_raw:
         if not isinstance(item, dict) or set(item) - {
-            "step_id", "prompt", "profile", "timeout_seconds", "depends_on", "hunt_context", "optional"
+            "step_id", "prompt", "profile", "timeout_seconds", "depends_on", "hunt_context", "optional", "focus"
         }:
             raise ValueError(
                 "each step must contain only step_id, prompt, profile, timeout_seconds, depends_on, "
-                "hunt_context, optional"
+                "hunt_context, optional, focus"
             )
         if "depends_on" in item:
             if not isinstance(item["depends_on"], list):
                 raise ValueError("depends_on must be a JSON list")
             item = {**item, "depends_on": tuple(item["depends_on"])}
+        if "focus" in item:
+            if not isinstance(item["focus"], list):
+                raise ValueError("focus must be a JSON list [step_id, claim index]")
+            item = {**item, "focus": tuple(item["focus"])}
         steps.append(HermesStep(**item))
     return WorkflowRequest(
         steps=steps,

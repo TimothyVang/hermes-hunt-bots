@@ -11,6 +11,8 @@ MAX_TEAM_STEPS = 32
 MAX_STEP_TIMEOUT_SECONDS = 3600
 MAX_APPROVAL_TIMEOUT_SECONDS = 86400
 MAX_PROMPT_BYTES = 65536
+# A handoff holds at most 16 claims (ontology.validate_handoff).
+MAX_FOCUS_CLAIMS = 16
 SAFE_STEP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 # In a parallel workflow one decision opens or reviews a whole wave; its gate is addressed by this ID.
 WAVE_GATE_ID = re.compile(r"wave-[1-9][0-9]?\Z")
@@ -47,6 +49,10 @@ class HermesStep:
     # A parallel workflow drops an optional step that does not produce a reviewed result instead
     # of ending the hunt. Defaults off so earlier histories deserialize unchanged.
     optional: bool = False
+    # Parallel workflows only: (predecessor step_id, claim index). The step receives that one claim of
+    # the predecessor's reviewed handoff instead of the predecessor's whole output, and is dropped
+    # when the predecessor has no such claim. The predecessor must be in depends_on.
+    focus: tuple[str, int] | None = None
     def __post_init__(self) -> None:
         if not isinstance(self.step_id, str) or SAFE_STEP_ID.fullmatch(self.step_id) is None:
             raise ValueError("step_id must be a safe 1-64 character identifier")
@@ -83,6 +89,12 @@ class HermesStep:
             validate_snapshot(self.hunt_context["snapshot"], set(evidence_ids))
         if type(self.optional) is not bool:
             raise ValueError("optional must be a boolean")
+        if self.focus is not None and (
+                not isinstance(self.focus, tuple) or len(self.focus) != 2
+                or not isinstance(self.focus[0], str) or SAFE_STEP_ID.fullmatch(self.focus[0]) is None
+                or type(self.focus[1]) is not int or not 0 <= self.focus[1] < MAX_FOCUS_CLAIMS
+                or self.focus[0] not in self.depends_on or self.hunt_context is None):
+            raise ValueError("focus must be (a typed step's depends_on entry, a claim index from 0 through 15)")
 
 
 @dataclass(frozen=True)
@@ -123,6 +135,8 @@ class WorkflowRequest:
             raise ValueError("optional steps require a parallel workflow")
         if self.parallel and any(WAVE_GATE_ID.fullmatch(step.step_id) for step in self.steps):
             raise ValueError("wave-<n> step IDs are reserved for wave gates in a parallel workflow")
+        if not self.parallel and any(step.focus is not None for step in self.steps):
+            raise ValueError("focus steps require a parallel workflow")
 
 
 def _validate_execution_id(value: str) -> None:
