@@ -38,6 +38,8 @@ GATE_ARGS = []
 LOG = TOOL_LOOPS / 'loop.log'
 REQUIRED = ('untrusted', 'no truth, scoring, intent or outcome claims')
 STEPS = ('scope', 'evidence', 'hypotheses', 'network', 'intel', 'analysis', 'detection', 'purple', 'incident')
+# STEPS names serial results by position; follow and merge take guidance only in a hunt with follow_ups.
+GUIDANCE_STAGES = STEPS + ('follow', 'merge')
 GENERIC = {'powershell.exe', 'cmd.exe', 'svchost.exe', 'lsass.exe', 'explorer.exe', 'winword.exe', 'outlook.exe',
            'w3wp.exe', 'rundll32.exe', 'schtasks.exe', 'wmiprvse.exe', 'msedge.exe', 'chrome.exe', 'system'}
 
@@ -101,7 +103,7 @@ def check_candidate(base, brief, guidance, case_id, forbidden):
     if len(brief.encode()) > 1200:
         problems.append('brief over 1200 bytes')
     for step, text in (guidance or {}).items():
-        if step not in STEPS:
+        if step not in GUIDANCE_STAGES:
             problems.append(f'unknown stage {step}')
         elif not isinstance(text, str) or not 1 <= len(text) <= 600:
             problems.append(f'guidance for {step} must be 1..600 characters')
