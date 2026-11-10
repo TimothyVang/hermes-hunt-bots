@@ -99,7 +99,7 @@ async def _practice_stop(args: argparse.Namespace) -> None:
 
 def _request_from_file(path: str) -> WorkflowRequest:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or set(raw) - {"steps", "approval_timeout_seconds", "synthetic_only"}:
+    if not isinstance(raw, dict) or set(raw) - {"steps", "approval_timeout_seconds", "synthetic_only", "parallel"}:
         raise ValueError("input must be a JSON object with only workflow request fields")
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list):
@@ -107,10 +107,11 @@ def _request_from_file(path: str) -> WorkflowRequest:
     steps = []
     for item in steps_raw:
         if not isinstance(item, dict) or set(item) - {
-            "step_id", "prompt", "profile", "timeout_seconds", "depends_on", "hunt_context"
+            "step_id", "prompt", "profile", "timeout_seconds", "depends_on", "hunt_context", "optional"
         }:
             raise ValueError(
-                "each step must contain only step_id, prompt, profile, timeout_seconds, depends_on, hunt_context"
+                "each step must contain only step_id, prompt, profile, timeout_seconds, depends_on, "
+                "hunt_context, optional"
             )
         if "depends_on" in item:
             if not isinstance(item["depends_on"], list):
@@ -121,6 +122,7 @@ def _request_from_file(path: str) -> WorkflowRequest:
         steps=steps,
         approval_timeout_seconds=raw.get("approval_timeout_seconds", 3600),
         synthetic_only=raw.get("synthetic_only", True),
+        parallel=raw.get("parallel", False),
     )
 
 
@@ -181,7 +183,9 @@ def _parser() -> argparse.ArgumentParser:
     status.set_defaults(handler=_status)
     decide = commands.add_parser("decision", help="signal an execute/review/reconcile decision")
     decide.add_argument("workflow_id")
-    decide.add_argument("--step-id", required=True)
+    decide.add_argument("--step-id", required=True,
+                        help="the gated step; in a parallel workflow the open wave's gate ID wave-<n>, "
+                             "or the step awaiting reconciliation")
     decide.add_argument("--phase", choices=("execute", "review", "reconcile"), required=True)
     decide.add_argument("--choice", choices=("approve", "deny", "accept", "abort"), required=True)
     decide.add_argument("--decision-id", required=True)

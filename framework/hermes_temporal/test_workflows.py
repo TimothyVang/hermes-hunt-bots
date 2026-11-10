@@ -8,6 +8,8 @@ import contextlib
 import io
 import json
 import importlib.util
+import itertools
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,7 +23,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
 from .contracts import (
-    ExecutionRequest, ExecutionResult, HermesStep, WorkflowDecision, WorkflowRequest,
+    ExecutionRequest, ExecutionResult, HermesStep, StepState, WorkflowDecision, WorkflowRequest,
     validate_loopback_address,
 )
 from .workflows import HermesWorkflow
@@ -1179,3 +1181,440 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 HermesStep("first", "synthetic", depends_on=("second",)),
                 HermesStep("second", "synthetic"),
             ])
+
+
+class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    _STAGES = {"execute": "awaiting_execution_approval", "review": "awaiting_review",
+               "reconcile": "needs_reconciliation"}
+
+    def setUp(self) -> None:
+        self._decision_ids = itertools.count(1)
+
+    @contextlib.asynccontextmanager
+    async def _started(self, queue: str, request: WorkflowRequest, execute):
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                yield env, await env.client.start_workflow(HermesWorkflow.run, request, id=queue, task_queue=queue)
+
+    async def _decide(self, handle, gate: str, phase: str, choice: str = "approve", *, note: str = "",
+                      when=lambda state: True):
+        """Signal one decision once its gate is open; returns the status observed at that gate."""
+        state = await _until(handle, lambda state: state.stage == self._STAGES[phase] and state.step_id == gate
+                             and when(state))
+        await handle.signal(HermesWorkflow.decision, WorkflowDecision(
+            gate, phase, choice, f"decision-{next(self._decision_ids)}", note))
+        return state
+
+    async def test_a_wave_runs_together_behind_one_execute_and_one_review_decision(self) -> None:
+        from .workflows import _OUTPUT_FRAME_MIDDLE, _OUTPUT_FRAME_PREFIX
+        hunters = [f"hunter-{number}" for number in range(1, 5)]
+        running: set[str] = set()
+        all_running = asyncio.Event()
+        prompts = {}
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            step_id = request.step.step_id
+            prompts[step_id] = request.step.prompt
+            if step_id in hunters:
+                running.add(step_id)
+                if len(running) == len(hunters):
+                    all_running.set()
+                # A serial engine never starts the next hunter, so this fails instead of hanging.
+                await asyncio.wait_for(all_running.wait(), timeout=5)
+            return ExecutionResult("completed", request.execution_id, f"result-{step_id}", "completed")
+
+        request = WorkflowRequest(
+            [HermesStep("scope", "base-scope")]
+            + [HermesStep(hunter, f"base-{hunter}", depends_on=("scope",)) for hunter in hunters]
+            + [HermesStep("lead", "base-lead", depends_on=tuple(hunters))],
+            parallel=True)
+        queue = "test-hermes-wave-overlap"
+        async with self._started(queue, request, execute) as (_, handle):
+            for gate in ("wave-1", "wave-2", "wave-3"):
+                await self._decide(handle, gate, "execute")
+                await self._decide(handle, gate, "review")
+            self.assertEqual(await handle.result(), "completed")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertTrue(all_running.is_set())
+        self.assertEqual([(result.execution_id, result.status) for result in state.results],
+                         [(f"{queue}:{index}", "completed") for index in range(6)])
+        self.assertEqual([(item.wave, item.state) for item in state.steps],
+                         [(1, "done")] + [(2, "done")] * 4 + [(3, "done")])
+        self.assertEqual(prompts["lead"], "base-lead" + "".join(
+            f"{_OUTPUT_FRAME_PREFIX}{hunter}{_OUTPUT_FRAME_MIDDLE}result-{hunter}" for hunter in hunters))
+
+    async def test_status_reports_the_open_wave_gate_and_every_step_state(self) -> None:
+        release = asyncio.Event()
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            if request.step.step_id != "scope":
+                await asyncio.wait_for(release.wait(), timeout=10)
+            return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+
+        request = WorkflowRequest([
+            HermesStep("scope", "synthetic"),
+            HermesStep("hunter-1", "synthetic", depends_on=("scope",)),
+            HermesStep("hunter-2", "synthetic", depends_on=("scope",), optional=True),
+            HermesStep("lead", "synthetic", depends_on=("hunter-1", "hunter-2")),
+        ], parallel=True)
+        queue = "test-hermes-wave-status"
+        async with self._started(queue, request, execute) as (env, handle):
+            opened = await self._decide(handle, "wave-1", "execute")
+            self.assertIsNone(opened.execution_id)
+            self.assertEqual(opened.steps, [
+                StepState("scope", "awaiting_approval", 1), StepState("hunter-1", "not_reached", 2),
+                StepState("hunter-2", "not_reached", 2), StepState("lead", "not_reached", 3)])
+            reviewing = await self._decide(handle, "wave-1", "review")
+            self.assertEqual(reviewing.steps[0], StepState("scope", "awaiting_review", 1, f"{queue}:0"))
+            opened = await self._decide(handle, "wave-2", "execute")
+            self.assertEqual(opened.steps, [
+                StepState("scope", "done", 1, f"{queue}:0"), StepState("hunter-1", "awaiting_approval", 2),
+                StepState("hunter-2", "awaiting_approval", 2), StepState("lead", "not_reached", 3)])
+            working = await _until(handle, lambda state: state.stage == "executing")
+            self.assertEqual((working.step_id, working.execution_id), ("wave-2", None))
+            self.assertEqual(working.steps[1:3], [StepState("hunter-1", "working", 2, f"{queue}:1"),
+                                                  StepState("hunter-2", "working", 2, f"{queue}:2")])
+            release.set()
+            reviewing = await _until(handle, lambda state: state.stage == "awaiting_review"
+                                     and state.step_id == "wave-2")
+            self.assertEqual(reviewing.steps[1:], [
+                StepState("hunter-1", "awaiting_review", 2, f"{queue}:1"),
+                StepState("hunter-2", "awaiting_review", 2, f"{queue}:2"), StepState("lead", "not_reached", 3)])
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                await _status(argparse.Namespace(
+                    address=env.client.service_client.config.target_host,
+                    workflow_id=handle.id,
+                ))
+            observed = json.loads(captured.getvalue())
+            self.assertEqual((observed["stage"], observed["step_id"], observed["execution_id"]),
+                             ("awaiting_review", "wave-2", None))
+            self.assertEqual(observed["steps"][2], {"step_id": "hunter-2", "state": "awaiting_review", "wave": 2,
+                                                    "execution_id": f"{queue}:2", "reason": ""})
+            await self._decide(handle, "wave-2", "review")
+            await self._decide(handle, "wave-3", "execute")
+            await self._decide(handle, "wave-3", "review")
+            self.assertEqual(await handle.result(), "completed")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertEqual((state.stage, state.step_id), ("completed", "wave-3"))
+        self.assertEqual([(item.step_id, item.state, item.execution_id) for item in state.steps],
+                         [("scope", "done", f"{queue}:0"), ("hunter-1", "done", f"{queue}:1"),
+                          ("hunter-2", "done", f"{queue}:2"), ("lead", "done", f"{queue}:3")])
+
+    async def test_dropped_optional_steps_are_named_to_the_dependent_and_the_hunt_completes(self) -> None:
+        from .workflows import _OUTPUT_FRAME_MIDDLE, _OUTPUT_FRAME_PREFIX
+        invalid = json.dumps(_handoff("typed", "framework-researcher", evidence_ids=["stale-source"]))
+        dispatched = []
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            step_id = request.step.step_id
+            dispatched.append((request.execution_id, request.step.prompt))
+            if step_id == "failing":
+                return ExecutionResult("failed", request.execution_id, "", "native_failed")
+            output = invalid if step_id == "typed" else f"result-{step_id}"
+            return ExecutionResult("completed", request.execution_id, output, "completed")
+
+        request = WorkflowRequest([
+            HermesStep("scope", "base-scope"),
+            HermesStep("steady", "base-steady", depends_on=("scope",), optional=True),
+            HermesStep("failing", "base-failing", depends_on=("scope",), optional=True),
+            HermesStep("typed", "base-typed", profile="framework-researcher", depends_on=("scope",),
+                       hunt_context=_ontology_context(), optional=True),
+            HermesStep("lead", "base-lead", depends_on=("steady", "failing", "typed")),
+        ], parallel=True)
+        queue = "test-hermes-wave-dropped"
+        async with self._started(queue, request, execute) as (_, handle):
+            await self._decide(handle, "wave-1", "execute")
+            await self._decide(handle, "wave-1", "review")
+            await self._decide(handle, "wave-2", "execute")
+            retry_gate = await self._decide(handle, "wave-2", "execute", when=lambda state: state.handoff_rejections)
+            self.assertEqual([(item.step_id, item.state, item.reason) for item in retry_gate.steps[1:4]],
+                             [("steady", "awaiting_review", ""), ("failing", "dropped", "native_failed"),
+                              ("typed", "awaiting_approval", "")])
+            await self._decide(handle, "wave-2", "review")
+            await self._decide(handle, "wave-3", "execute")
+            await self._decide(handle, "wave-3", "review")
+            self.assertEqual(await handle.result(), "completed")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps],
+                         [("scope", "done", ""), ("steady", "done", ""), ("failing", "dropped", "native_failed"),
+                          ("typed", "dropped", "retry_exhausted"), ("lead", "done", "")])
+        self.assertEqual([(item.step_id, item.outcome) for item in state.handoff_rejections],
+                         [("typed", "retried"), ("typed", "retry_exhausted")])
+        self.assertEqual([result.execution_id for result in state.results],
+                         [f"{queue}:0", f"{queue}:1", f"{queue}:2", f"{queue}:3:retry", f"{queue}:4"])
+        self.assertEqual(sorted(execution_id for execution_id, _ in dispatched),
+                         [f"{queue}:0", f"{queue}:1", f"{queue}:2", f"{queue}:3", f"{queue}:3:retry", f"{queue}:4"])
+        self.assertEqual(dict(dispatched)[f"{queue}:4"], (
+            f"base-lead{_OUTPUT_FRAME_PREFIX}steady{_OUTPUT_FRAME_MIDDLE}result-steady"
+            "\n\nDropped predecessor [failing]: no reviewed output (native_failed)."
+            "\n\nDropped predecessor [typed]: no reviewed output (retry_exhausted)."))
+
+    async def test_required_step_failure_in_a_wave_ends_at_the_serial_terminal_stage(self) -> None:
+        valid = json.dumps(_handoff("producer", "framework-researcher"))
+        for case, status, reason_code, output, terminal, reason in (
+            ("failed", "failed", "native_failed", "", "rejected", "native_failed"),
+            ("oversized", "completed", "completed", valid + " " * 16384,
+             "output_limit_rejected", "output_limit_rejected"),
+            ("invalid", "completed", "completed", "not a handoff",
+             "handoff_validation_rejected", "retry_exhausted"),
+        ):
+            with self.subTest(case=case):
+                dispatched = []
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    dispatched.append(request.step.step_id)
+                    if request.step.step_id == "producer":
+                        return ExecutionResult(status, request.execution_id, output, reason_code)
+                    return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+
+                request = WorkflowRequest([
+                    HermesStep("producer", "synthetic", profile="framework-researcher",
+                               hunt_context=_ontology_context()),
+                    HermesStep("steady", "synthetic"),
+                    HermesStep("consumer", "synthetic", depends_on=("producer",),
+                               hunt_context=_ontology_context()),
+                ], parallel=True)
+                async with self._started(f"test-hermes-wave-required-{case}", request, execute) as (_, handle):
+                    await self._decide(handle, "wave-1", "execute")
+                    if case == "invalid":
+                        await self._decide(handle, "wave-1", "execute",
+                                           when=lambda state: state.handoff_rejections)
+                    self.assertEqual(await handle.result(), terminal)
+                    state = await handle.query(HermesWorkflow.status)
+                self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps],
+                                 [("producer", "stopped", reason), ("steady", "awaiting_review", ""),
+                                  ("consumer", "not_reached", "")])
+                self.assertNotIn("consumer", dispatched)
+
+    async def test_required_unknown_outcome_is_reconciled_under_its_own_step_id(self) -> None:
+        for choice, terminal, states in (
+            ("accept", "rejected", [("uncertain", "stopped", "execution_error"), ("steady", "done", ""),
+                                    ("dependent", "stopped", "missing_dependency")]),
+            ("abort", "aborted", [("uncertain", "working", ""), ("steady", "awaiting_review", ""),
+                                  ("dependent", "not_reached", "")]),
+        ):
+            with self.subTest(choice=choice):
+                dispatched = []
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    dispatched.append(request.step.step_id)
+                    if request.step.step_id == "uncertain":
+                        raise RuntimeError("synthetic activity failure")
+                    return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+
+                request = WorkflowRequest([
+                    HermesStep("uncertain", "synthetic"),
+                    HermesStep("steady", "synthetic"),
+                    HermesStep("dependent", "synthetic", depends_on=("uncertain",)),
+                ], parallel=True)
+                queue = f"test-hermes-wave-reconcile-{choice}"
+                async with self._started(queue, request, execute) as (_, handle):
+                    await self._decide(handle, "wave-1", "execute")
+                    gate = await self._decide(handle, "uncertain", "reconcile", choice,
+                                              note="The uncertain outcome was assessed.")
+                    self.assertEqual(gate.steps[:2], [StepState("uncertain", "working", 1, f"{queue}:0"),
+                                                      StepState("steady", "awaiting_review", 1, f"{queue}:1")])
+                    if choice == "accept":
+                        await self._decide(handle, "wave-1", "review")
+                    self.assertEqual(await handle.result(), terminal)
+                    state = await handle.query(HermesWorkflow.status)
+                self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps], states)
+                self.assertEqual([(result.status, result.reason_code) for result in state.results],
+                                 [("unknown", "execution_error"), ("completed", "completed")])
+                self.assertEqual(sorted(dispatched), ["steady", "uncertain"])
+
+    async def test_a_wave_whose_optional_steps_all_drop_leaves_no_surviving_dependency(self) -> None:
+        dispatched = []
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            dispatched.append(request.step.step_id)
+            if request.step.step_id == "scope":
+                return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+            return ExecutionResult("failed", request.execution_id, "", "native_failed")
+
+        request = WorkflowRequest([
+            HermesStep("scope", "synthetic"),
+            HermesStep("hunter-1", "synthetic", depends_on=("scope",), optional=True),
+            HermesStep("hunter-2", "synthetic", depends_on=("scope",), optional=True),
+            HermesStep("lead", "synthetic", depends_on=("hunter-1", "hunter-2")),
+        ], parallel=True)
+        async with self._started("test-hermes-wave-no-survivor", request, execute) as (_, handle):
+            await self._decide(handle, "wave-1", "execute")
+            await self._decide(handle, "wave-1", "review")
+            await self._decide(handle, "wave-2", "execute")
+            self.assertEqual(await handle.result(), "rejected")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertEqual((state.stage, state.step_id), ("rejected", "wave-3"))
+        self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps],
+                         [("scope", "done", ""), ("hunter-1", "dropped", "native_failed"),
+                          ("hunter-2", "dropped", "native_failed"), ("lead", "stopped", "no_surviving_dependency")])
+        self.assertEqual(sorted(dispatched), ["hunter-1", "hunter-2", "scope"])
+
+    async def test_one_invalid_handoff_in_a_wave_is_retried_behind_a_second_wave_gate(self) -> None:
+        invalid = json.dumps(_handoff("first", "framework-coordinator", evidence_ids=["stale-source"]))
+        second_output = json.dumps(_handoff("second", "framework-coordinator"))
+        outputs = {"first": iter([invalid, json.dumps(_handoff("first", "framework-coordinator"))]),
+                   "second": iter([second_output])}
+        release = asyncio.Event()
+        dispatched = []
+
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            dispatched.append((request.execution_id, request.step.prompt))
+            if request.step.step_id == "second":
+                await asyncio.wait_for(release.wait(), timeout=10)
+            return ExecutionResult("completed", request.execution_id, next(outputs[request.step.step_id]),
+                                   "completed")
+
+        request = WorkflowRequest([
+            HermesStep("first", "synthetic", hunt_context=_ontology_context()),
+            HermesStep("second", "synthetic", hunt_context=_ontology_context()),
+        ], parallel=True)
+        queue = "test-hermes-wave-retry"
+        async with self._started(queue, request, execute) as (_, handle):
+            await self._decide(handle, "wave-1", "execute")
+            await _until(handle, lambda state: state.stage == "executing")
+            await handle.signal(HermesWorkflow.decision,
+                                WorkflowDecision("wave-1", "execute", "approve", "sent-while-executing"))
+            release.set()
+            retry_gate = await _until(handle, lambda state: state.stage == "awaiting_execution_approval"
+                                      and state.handoff_rejections)
+            await asyncio.sleep(0.2)
+            self.assertEqual((await handle.query(HermesWorkflow.status)).stage, "awaiting_execution_approval")
+            self.assertEqual(len(dispatched), 2, "an approval sent during execution must not start the retry")
+            self.assertEqual(retry_gate.step_id, "wave-1")
+            self.assertEqual(retry_gate.results,
+                             [ExecutionResult("completed", f"{queue}:1", second_output, "completed")])
+            self.assertEqual(retry_gate.steps, [StepState("first", "awaiting_approval", 1, f"{queue}:0"),
+                                                StepState("second", "awaiting_review", 1, f"{queue}:1")])
+            await self._decide(handle, "wave-1", "execute", when=lambda state: state.handoff_rejections)
+            review = await self._decide(handle, "wave-1", "review")
+            self.assertEqual([result.execution_id for result in review.results], [f"{queue}:0:retry", f"{queue}:1"])
+            self.assertEqual(review.steps, [StepState("first", "awaiting_review", 1, f"{queue}:0:retry"),
+                                            StepState("second", "awaiting_review", 1, f"{queue}:1")])
+            self.assertEqual(await handle.result(), "completed")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertEqual([(item.step_id, item.outcome, item.result) for item in state.handoff_rejections],
+                         [("first", "retried", ExecutionResult("completed", f"{queue}:0", invalid, "completed"))])
+        execution_ids = [execution_id for execution_id, _ in dispatched]
+        self.assertEqual((sorted(execution_ids[:2]), execution_ids[2:]),
+                         ([f"{queue}:0", f"{queue}:1"], [f"{queue}:0:retry"]))
+        prompts = dict(dispatched)
+        self.assertTrue(prompts[f"{queue}:0:retry"].startswith(prompts[f"{queue}:0"]))
+        self.assertIn(state.handoff_rejections[0].reason, prompts[f"{queue}:0:retry"][len(prompts[f"{queue}:0"]):])
+
+    async def test_a_step_whose_assembled_prompt_is_too_large_is_dropped_only_when_optional(self) -> None:
+        for optional, terminal, states in (
+            (True, "completed", [("scope", "done", ""), ("large", "dropped", "prompt_too_large"),
+                                 ("small", "done", "")]),
+            (False, "rejected", [("scope", "done", ""), ("large", "stopped", "prompt_too_large"),
+                                 ("small", "not_reached", "")]),
+        ):
+            with self.subTest(optional=optional):
+                dispatched = []
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    dispatched.append(request.step.step_id)
+                    return ExecutionResult("completed", request.execution_id, "é" * 20000, "completed")
+
+                request = WorkflowRequest([
+                    HermesStep("scope", "synthetic"),
+                    HermesStep("large", "x" * 40000, depends_on=("scope",), optional=optional),
+                    HermesStep("small", "synthetic", depends_on=("scope",)),
+                ], parallel=True)
+                queue = f"test-hermes-wave-prompt-{'optional' if optional else 'required'}"
+                async with self._started(queue, request, execute) as (_, handle):
+                    await self._decide(handle, "wave-1", "execute")
+                    await self._decide(handle, "wave-1", "review")
+                    if optional:
+                        await self._decide(handle, "wave-2", "execute")
+                        await self._decide(handle, "wave-2", "review")
+                    self.assertEqual(await handle.result(), terminal)
+                    state = await handle.query(HermesWorkflow.status)
+                self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps], states)
+                self.assertNotIn("large", dispatched)
+
+    async def test_wave_gates_end_the_hunt_on_denial_or_expiry(self) -> None:
+        for phase, choice, terminal, state_name, dispatches in (
+            ("execute", "deny", "rejected", "awaiting_approval", 0),
+            ("execute", None, "timed_out", "awaiting_approval", 0),
+            ("review", "deny", "rejected", "awaiting_review", 2),
+            ("review", None, "timed_out", "awaiting_review", 2),
+        ):
+            with self.subTest(phase=phase, choice=choice):
+                dispatched = []
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    dispatched.append(request.step.step_id)
+                    return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+
+                request = WorkflowRequest([
+                    HermesStep("first", "synthetic"),
+                    HermesStep("second", "synthetic"),
+                    HermesStep("dependent", "synthetic", depends_on=("first", "second")),
+                ], approval_timeout_seconds=30, parallel=True)
+                queue = f"test-hermes-wave-gate-{phase}-{choice}"
+                async with self._started(queue, request, execute) as (_, handle):
+                    if phase == "review":
+                        await self._decide(handle, "wave-1", "execute")
+                    if choice is not None:
+                        await self._decide(handle, "wave-1", phase, choice)
+                    self.assertEqual(await handle.result(), terminal)
+                    state = await handle.query(HermesWorkflow.status)
+                self.assertEqual((state.stage, state.step_id), (terminal, "wave-1"))
+                self.assertEqual([item.state for item in state.steps], [state_name, state_name, "not_reached"])
+                self.assertEqual(len(dispatched), dispatches)
+
+    async def test_a_parallel_request_may_hold_more_than_sixteen_steps(self) -> None:
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
+
+        steps = [HermesStep(f"hunter-{number}", "synthetic") for number in range(17)]
+        with self.assertRaises(ValueError):
+            WorkflowRequest(steps)
+        queue = "test-hermes-wave-team-size"
+        async with self._started(queue, WorkflowRequest(steps, parallel=True), execute) as (_, handle):
+            await self._decide(handle, "wave-1", "execute")
+            await self._decide(handle, "wave-1", "review")
+            self.assertEqual(await handle.result(), "completed")
+            state = await handle.query(HermesWorkflow.status)
+        self.assertEqual([result.execution_id for result in state.results],
+                         [f"{queue}:{index}" for index in range(17)])
+
+    def test_start_input_accepts_parallel_and_optional_and_still_rejects_unknown_fields(self) -> None:
+        from .cli import _request_from_file
+        raw = {"parallel": True, "steps": [
+            {"step_id": "scope", "prompt": "synthetic"},
+            {"step_id": "hunter", "prompt": "synthetic", "depends_on": ["scope"], "optional": True},
+        ]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "request.json"
+
+            def load(value) -> WorkflowRequest:
+                path.write_text(json.dumps(value), encoding="utf-8")
+                return _request_from_file(str(path))
+
+            self.assertEqual(load(raw), WorkflowRequest([
+                HermesStep("scope", "synthetic"),
+                HermesStep("hunter", "synthetic", depends_on=("scope",), optional=True),
+            ], parallel=True))
+            for invalid in (
+                {**raw, "waves": 2},
+                {**raw, "parallel": "yes"},
+                {**raw, "parallel": False},
+                {"steps": raw["steps"]},
+                {**raw, "steps": [{**raw["steps"][0], "optional": "yes"}]},
+                {**raw, "steps": [{**raw["steps"][0], "required": True}]},
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    load(invalid)

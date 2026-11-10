@@ -71,6 +71,17 @@ class ToolDrivenHuntTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             supplied_evidence_hunt(dict(inline, stage_guidance={"network": "x"}))
 
+    def test_parallel_hunt_marks_only_the_independent_stages_droppable(self) -> None:
+        serial = supplied_evidence_hunt(tool_input())
+        self.assertFalse(serial.parallel)
+        self.assertEqual([step.step_id for step in serial.steps if step.optional], [])
+        team = supplied_evidence_hunt(tool_input(parallel=True))
+        self.assertTrue(team.parallel)
+        self.assertEqual([step.step_id for step in team.steps if step.optional], ["evidence", "hypotheses", "network", "intel"])
+        self.assertEqual([step.prompt for step in team.steps], [step.prompt for step in serial.steps])
+        with self.assertRaises(ValueError):
+            supplied_evidence_hunt(tool_input(parallel="yes"))
+
     def test_tool_driven_input_must_be_only_its_case_metadata(self) -> None:
         extra = {"source_id": "lab-events-1", "locator": "lab-med-001:summary/events/01", "content": "rows"}
         bad_inputs = (

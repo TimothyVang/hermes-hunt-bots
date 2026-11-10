@@ -31,7 +31,13 @@ class PracticeRoundWorkflow(HermesWorkflow):
     @workflow.run
     async def run(self, request: WorkflowRequest) -> PracticeRoundResult:
         terminal_status = await super().run(request)
-        return PracticeRoundResult(terminal_status, [result.status for result in self._results])
+        results = self._results
+        if request.parallel:
+            # A dropped hunter must not halt the round, so only required steps are reported.
+            required = {state.execution_id for state, step in zip(self._step_states, request.steps)
+                        if not step.optional}
+            results = [result for result in results if result.execution_id in required]
+        return PracticeRoundResult(terminal_status, [result.status for result in results])
 
 
 @dataclass(frozen=True)
@@ -177,7 +183,7 @@ class PracticeWorkflow:
                 self._stage = "halted"
                 return self._stage
             statuses_completed = (
-                len(result.execution_statuses) == len(request.hunt.steps)
+                len(result.execution_statuses) == sum(not step.optional for step in request.hunt.steps)
                 and all(status == "completed" for status in result.execution_statuses)
             )
             self._last_result = (

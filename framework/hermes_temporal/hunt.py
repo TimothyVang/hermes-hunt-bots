@@ -18,6 +18,8 @@ MAX_DELEGATED_QUESTIONS = 3
 TOOL_STEP_TIMEOUT_SECONDS = 900
 _CASE_ID = re.compile(r"[a-z0-9-]{3,64}\Z")
 _BOUNDED_SOURCES = ("dns-lab-001", "hunt_lab")
+# Each depends only on scope, so a parallel hunt runs them together and can lose one and still report.
+_INDEPENDENT_STAGES = frozenset({"evidence", "hypotheses", "network", "intel"})
 
 
 def _summary_prefixes(case_id: str | None) -> tuple[str, ...]:
@@ -91,9 +93,12 @@ def _bounded_text(value: object, name: str, limit: int) -> str:
 
 
 def supplied_evidence_hunt(raw: object) -> WorkflowRequest:
-    """Build a bounded serial hunt from scope, explicit locators, and inline evidence."""
+    """Build a bounded hunt from scope, explicit locators, and inline evidence.
+
+    With ``parallel``, stages whose dependencies are reviewed run together, and one of the four
+    independent investigation stages failing is dropped instead of ending the hunt."""
     allowed = {"scope", "evidence", "approval_timeout_seconds", "synthetic_only", "ontology", "context_by_step", "mode",
-               "stage_guidance"}
+               "stage_guidance", "parallel"}
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise ValueError("hunt input contains unknown fields")
     ontology_enabled = "ontology" in raw
@@ -105,6 +110,9 @@ def supplied_evidence_hunt(raw: object) -> WorkflowRequest:
     if mode not in ("inline", "tool_driven"):
         raise ValueError("mode must be inline or tool_driven")
     tool_driven = mode == "tool_driven"
+    parallel = raw.get("parallel", False)
+    if type(parallel) is not bool:
+        raise ValueError("parallel must be a boolean")
     # Operator- or loop-tuned coaching for individual tool-driven stages. It is appended to
     # that stage's instruction only; it cannot replace the safety header or the scope.
     guidance = raw.get("stage_guidance", {})
@@ -273,8 +281,10 @@ def supplied_evidence_hunt(raw: object) -> WorkflowRequest:
             )
             prompt = instruction + "\n" + (network_header if step_id == "network" else common_header) + "\n\n" + scoped
         timeout = {"timeout_seconds": TOOL_STEP_TIMEOUT_SECONDS} if tool_driven else {}
-        steps.append(HermesStep(step_id, prompt, profile, depends_on=dependencies, hunt_context=context, **timeout))
+        steps.append(HermesStep(step_id, prompt, profile, depends_on=dependencies, hunt_context=context,
+                                optional=parallel and step_id in _INDEPENDENT_STAGES, **timeout))
     assembled_bytes = sum(len(step.prompt.encode("utf-8")) for step in steps)
     if assembled_bytes > MAX_HUNT_BYTES or any(len(step.prompt.encode("utf-8")) > MAX_PROMPT_BYTES for step in steps):
         raise ValueError("assembled hunt prompts exceed the UTF-8 byte limit")
-    return WorkflowRequest(steps, approval_timeout_seconds=raw.get("approval_timeout_seconds", 3600), tool_driven=tool_driven)
+    return WorkflowRequest(steps, approval_timeout_seconds=raw.get("approval_timeout_seconds", 3600), tool_driven=tool_driven,
+                           parallel=parallel)
