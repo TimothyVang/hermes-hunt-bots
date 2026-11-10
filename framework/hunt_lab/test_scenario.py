@@ -521,6 +521,21 @@ class Scoring(unittest.TestCase):
         self.assertEqual(detail["missing_groups"], [])
         self.assertEqual(detail["entities_named"], [])
 
+    def test_breakdown_separates_attack_facts_from_decoys(self):
+        perfect = scenario.score_report(self.truth, perfect_report(self.truth))
+        counts = {kind: sum(fact["kind"] == kind for fact in self.truth["facts"]) for kind in perfect["by_kind"]}
+        self.assertEqual({kind: (bucket["found"], bucket["partial"], bucket["total"]) for kind, bucket in perfect["by_kind"].items()},
+                         {kind: (count, 0, count) for kind, count in counts.items()})
+        self.assertEqual(perfect["decoys_cleared"], counts["decoy"])
+        lateral = self.fact("attack.lateral.winrm-helpdesk-account")
+        one_group = {"claims": [{"claim_id": "c1", "statement": "hd.kestrel on srv-files-02: " + lateral["evidence_event_groups"][0][0]}]}
+        attack = scenario.score_report(self.truth, one_group)["by_kind"]["attack"]
+        self.assertEqual((attack["found"], attack["partial"]), (0, 1))
+        admin = self.fact("decoy.it-admin-winrm")
+        cited = " ".join(group[0] for group in admin["evidence_event_groups"])
+        blamed = scenario.score_report(self.truth, {"claims": [{"claim_id": "c1", "statement": "The attacker used adm.halvorsen from wks-it-01 for lateral movement " + cited}]})
+        self.assertEqual((blamed["by_kind"]["decoy"]["found"], blamed["decoys_cleared"]), (1, 0))
+
     def test_decoy_with_compromise_language_is_misattributed(self):
         admin = self.fact("decoy.it-admin-winrm")
         cited = " ".join(group[0] for group in admin["evidence_event_groups"])

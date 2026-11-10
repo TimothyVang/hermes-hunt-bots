@@ -2243,7 +2243,17 @@ def score_report(truth, report):
                 misattributed.append({"fact_id": fact["fact_id"], "claim_id": claim.get("claim_id"),
                                       "entities": hits, "terms": terms})
     found = sum(detail["found"] for detail in details)
-    return {"found": found, "total": len(details), "facts": details, "misattributed_decoys": misattributed,
+    blamed = {item["fact_id"] for item in misattributed}
+    by_kind = {}
+    for detail in details:
+        bucket = by_kind.setdefault(detail["kind"], {"total": 0, "found": 0, "partial": 0})
+        bucket["total"] += 1
+        bucket["found"] += int(detail["found"])
+        bucket["partial"] += int(not detail["found"] and bool(detail["cited_groups"]))
+    decoys_cleared = sum(1 for detail in details
+                         if detail["kind"] == "decoy" and detail["found"] and detail["fact_id"] not in blamed)
+    return {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
+            "facts": details, "misattributed_decoys": misattributed,
             "method": "keyword and event-ID citation matching against the operator key; not human judgment"}
 
 
