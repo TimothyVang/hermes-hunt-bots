@@ -1,6 +1,6 @@
 # Hermes Agent - Development Guide
 
-**Fork: hermes-hunt-bots.** Read [HUNT-BOTS.md](HUNT-BOTS.md) first; its rules override upstream ones.
+**Fork:** [HUNT-BOTS.md](HUNT-BOTS.md) overrides upstream rules; gate is `scripts/hunt_bots_check.py`.
 
 For AI coding assistants and developers working on hermes-agent. This root file is a hub: what
 applies everywhere, then a routing table. Each area's `AGENTS.md` loads automatically when you work

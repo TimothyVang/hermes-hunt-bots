@@ -64,7 +64,7 @@ uv.lock                         @TimothyVang
 # Fork surfaces (HUNT-BOTS.md rule 6).
 /framework/                     @TimothyVang
 /HUNT-BOTS.md                   @TimothyVang
-/greptile.json                  @TimothyVang
+/.deep-mode.json                @TimothyVang
 /scripts/hunt_bots_check.py     @TimothyVang
 /THIRD-PARTY-NOTICES.md         @TimothyVang
 /operator/                      @TimothyVang

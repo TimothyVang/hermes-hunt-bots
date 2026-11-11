@@ -79,14 +79,15 @@ Details, including the exact gate commands: [framework/hermes_temporal/README.md
 
 ## 6. Make your first PR
 
-Use the project skill: point your coding agent at [.agents/skills/hunt-bots-pr/SKILL.md](.agents/skills/hunt-bots-pr/SKILL.md). It follows pstack poteto-mode, which is vendored in `.agents/`. In short:
+Install the [deep-mode](https://github.com/TimothyVang/deep-mode) plugin once (commands in [HUNT-BOTS.md, Contributing](HUNT-BOTS.md#contributing)), then point your coding agent at the project skill [.agents/skills/hunt-bots-pr/SKILL.md](.agents/skills/hunt-bots-pr/SKILL.md). In short:
 
 1. Branch from `hunt-bots`.
 2. Prove the change on the real thing.
 3. Run `scripts/hunt_bots_check.py`.
-4. Open a ready PR with the Why / What changed / Scope / Blast Radius / Verification sections.
+4. Self-review the branch with deep-mode's PR review.
+5. Open a ready PR with the Why / What changed / Scope / Blast Radius / Verification sections.
 
-Greptile reviews it, and a code owner approves.
+A maintainer reviews it with `/deep-mode:review-pr`, and a code owner approves.
 
 ## 7. Optional: the operator tools
 

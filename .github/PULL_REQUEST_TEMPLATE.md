@@ -23,11 +23,12 @@
 ## Verification
 
 - `python scripts/hunt_bots_check.py`: <paste the summary line>
+- deep-mode self-review: <paste the review line, e.g. `review: ready at <short sha>, 1 round, open P0/P1/P2 0/0/0, fixed 2, dismissed 1`>
 - <real run path and what you observed>
 
 <!--
 Checklist (HUNT-BOTS.md):
-- Synthetic data only; no credentials, tokens, cookies, session stores, CUI/NSS.
+- Commits carry synthetic data only (real or work data stays in runtime/); no credentials, tokens, cookies, session stores, CUI/NSS.
 - Bot tools stay read-only and lab-local; browser automation stays on lab origins.
 - No fabricated approvals, evidence, scores or test results; "enforced" claims have a runtime test.
 - New framework/ files are in framework/TRACKED-FILES.txt; copied code has its license and a THIRD-PARTY-NOTICES.md entry.
