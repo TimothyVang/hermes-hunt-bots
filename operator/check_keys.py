@@ -66,8 +66,15 @@ def write_json(path, value):
 
 
 def entity_id(record):
+    """process.entity_id, or for a Sysmon record winlogbeat failed to parse (no process field, as DEDALE's file
+    deletions) its winlog.event_data.ProcessGuid, the value winlogbeat copies into process.entity_id."""
     process = record.get('process')
-    return process.get('entity_id') if isinstance(process, dict) else None
+    if isinstance(process, dict):
+        return process.get('entity_id')
+    winlog = record.get('winlog')
+    data = winlog.get('event_data') if isinstance(winlog, dict) else None
+    guid = data.get('ProcessGuid') if isinstance(data, dict) else None
+    return guid if process is None and isinstance(guid, str) else None
 
 
 def read_events(path, wanted, processes=()):

@@ -20,6 +20,8 @@ EVENTS = [
     {'event': {'id': 'evt-000004', 'category': ['network']}, 'process': {'entity_id': Q, 'name': 'beacon.exe'}},
     {'event': {'id': 'evt-000005', 'category': ['network']}, 'process': {'entity_id': Q, 'name': 'beacon.exe'}},
     {'event': {'id': 'evt-000006', 'category': ['process']}, 'process': {'entity_id': '{R}', 'name': 'backup.exe'}},
+    # A Sysmon file deletion winlogbeat failed to parse: no process field, only winlog.event_data.
+    {'event': {'id': 'evt-000007', 'code': 26}, 'winlog': {'event_data': {'ProcessGuid': P}}},
 ]
 TRUTH = {'schema_version': 1, 'case_id': CASE, 'facts': [
     {'fact_id': 'attack.drop', 'kind': 'attack', 'observation': 'dropper.exe wrote payload.bin.',
@@ -67,7 +69,7 @@ class CheckKeys(unittest.TestCase):
         self.assertEqual(result['checked_facts'], ['attack.drop', 'attack.beacon'])
         drop, beacon = (json.loads(Path(path).read_text(encoding='utf-8')) for path in result['packets'])
         self.assertEqual([[e['event']['id'] for e in g['events']] for g in drop['groups']], [['evt-000001'], ['evt-000002']])
-        self.assertEqual([e['event']['id'] for e in drop['process_events']], ['evt-000003'])
+        self.assertEqual([e['event']['id'] for e in drop['process_events']], ['evt-000003', 'evt-000007'])
         self.assertEqual([e['event']['id'] for e in beacon['process_events']], ['evt-000005'])
         # Only the fact under review: no other fact's observation and no decoy reaches a packet.
         text = json.dumps(drop)
