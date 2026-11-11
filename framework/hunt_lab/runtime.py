@@ -45,6 +45,8 @@ OPTIONAL_PORT_KEYS = ("kibana_port",)
 # (bootstrap installs guest packages and pulls the locked images). "restricted": restrict=on, so the
 # guest reaches nothing outside its user-mode network; the loopback hostfwd rules keep working.
 NETWORK_MODES = ("provisioning", "restricted")
+# Reported, never stored: the launch predates network modes, so its QEMU had outbound NAT.
+LEGACY_NETWORK = "unrestricted_legacy"
 
 
 class RuntimeFailure(Exception):
@@ -75,6 +77,8 @@ def _view(record, state=None, reason=None):
     for key in result:
         if key in record:
             result[key] = record[key]
+    if "network" not in record:
+        result["network"] = LEGACY_NETWORK
     if state is not None:
         result["state"] = state
     if reason is not None:

@@ -400,6 +400,20 @@ class RuntimeTests(unittest.TestCase):
         network, _ = self.launch_network({"network": "restricted", "reason": "qemu_exited"})
         self.assertEqual(network, "restricted")
 
+    def test_status_of_a_vm_launched_before_network_modes_reports_it_unrestricted(self):
+        home, _, record = self.record()
+        client = mock.Mock()
+        client.execute.return_value = {"running": True, "status": "running"}
+        for stored, reported in (("restricted", "restricted"), ("provisioning", "provisioning"), (None, "unrestricted_legacy")):
+            with self.subTest(stored=stored):
+                saved = dict(record, network=stored) if stored else record
+                (home / "state.json").write_text(json.dumps(saved))
+                with mock.patch.object(runtime, "_owned", return_value=contextlib.nullcontext(client)):
+                    result = runtime.invoke("status", state_dir=self.state_dir)
+                self.assertEqual((result["state"], result["network"]), ("running", reported))
+        # The legacy label is reported only; the record keeps no mode, so the next launch is restricted.
+        self.assertNotIn("network", json.loads((home / "state.json").read_text()))
+
     def test_unknown_network_mode_in_state_is_refused(self):
         home, _, record = self.record()
         (home / "state.json").write_text(json.dumps(dict(record, network="open")))
