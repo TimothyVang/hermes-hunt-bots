@@ -19,13 +19,8 @@ AUTHORED_PROFILES = (
     'framework-coordinator', 'framework-researcher', 'framework-builder',
     'framework-reviewer', 'framework-librarian', PROFILE,
 )
-LICENSES = (
-    'noVNC-LICENSE.txt', 'noVNC-AUTHORS.txt', 'LICENSE.MPL-2.0',
-    'LICENSE.BSD-2-Clause', 'LICENSE.BSD-3-Clause', 'LICENSE.OFL-1.1',
-    'pako-LICENSE.MIT', 'regenerator-LICENSE.MIT', 'babel-LICENSE.MIT',
-)
-DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple(
-    'licenses/' + name for name in LICENSES)
+# The Hunting Lab page ships bundled in the desktop app (apps/desktop/src/plugins/hunt-lab);
+# install stages only this backend half.
 BACKEND_FILES = (
     '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py',
     'query_adapter.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
@@ -36,7 +31,6 @@ BACKEND_FILES = (
     'fixtures/dns-lab-001/events.jsonl', 'fixtures/dns-lab-001/traffic.pcap',
     'fixtures/dns-lab-001/case.json',
 )
-BUNDLE_FILES = BACKEND_FILES + tuple('desktop/' + name for name in DESKTOP_FILES)
 # Native Hermes imports a plugin once per gateway process, and `plugins enable` on an already
 # enabled plugin does not notify the gateway. A long-lived gateway (the default-profile multiplexer
 # serves every profile) would keep the previous bundle's tools, so ask the gateway serving each
@@ -119,7 +113,7 @@ def registered_profile(home, name, *, required=True):
 def bundle_source(kit_root=ROOT):
     root = install_desktop.ordinary_directory(Path(kit_root).absolute() / 'hunt_lab')
     files = {}
-    for relative in BUNDLE_FILES:
+    for relative in BACKEND_FILES:
         path = root / relative
         install_desktop.ordinary_directory(path.parent)
         if not stat.S_ISREG(install_desktop.no_alias(path).st_mode):
@@ -159,7 +153,7 @@ def reload_gateway(profile, python, runner):
 
 
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
-    """Stage both native halves and the existing companion; no VM/download action.
+    """Stage the backend half and the existing companion; no VM/download action.
 
     The backend goes to the analyst (required) and every other registered authored
     profile so each can load its read-only tools; VM lifecycle stays analyst-only.
@@ -182,14 +176,8 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     if not stat.S_ISREG(install_desktop.no_alias(companion).st_mode):
         raise ValueError('Regular companion source required')
     companion_data = companion.read_bytes()
-    # A backend desktop/ folder makes Hermes auto-copy a unified package with
-    # Desktop opt-in posture. Install the explicit standalone SDK component
-    # instead; only its human Start authorizes setup or VM execution.
-    backend_files = {name: files[name] for name in BACKEND_FILES}
-    backends = {name: install_desktop.sync_bundle(profile / 'plugins', 'hunt-lab', backend_files)
+    backends = {name: install_desktop.sync_bundle(profile / 'plugins', 'hunt-lab', files)
                 for name, profile in profiles.items()}
-    desktop = install_desktop.sync_bundle(root / 'desktop-plugins', 'hunt-lab', {
-        name: files['desktop/' + name] for name in DESKTOP_FILES})
     install_desktop.install(root, companion_data)
     env = dict(os.environ, HERMES_HOME=str(root))
     for name in profiles:
@@ -199,7 +187,7 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
             raise ValueError('Native Hermes plugin enable failed; no VM operation was attempted')
     gateway = {name: reload_gateway(profile, python, runner) for name, profile in profiles.items()}
     return {'profile': PROFILE, 'tool_profiles': list(profiles), 'backend': str(backends[PROFILE]),
-            'desktop': str(desktop), 'gateway': gateway, 'state': 'installed', 'prepared': False}
+            'gateway': gateway, 'state': 'installed', 'prepared': False}
 
 
 def command(args):

@@ -363,8 +363,8 @@ function LabVmCard({ args, profile: chatProfile, resolveImageUrl, result, status
   ] });
 }
 
-// Native Desktop's manifest is this default-exported HermesPlugin object.
-// package.json supplies versioned ESM metadata; it is not a dashboard manifest.
+// Native Desktop's manifest is this default-exported HermesPlugin object; the
+// desktop app bundles it from apps/desktop/src/plugins/hunt-lab/plugin.js.
 export default {
   id: 'hunt-lab', name: 'Hunting Lab', defaultEnabled: true,
   register(ctx) {

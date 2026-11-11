@@ -44,7 +44,7 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 1. Install Hermes. This repository is a fork of Hermes 0.23.0; build it from source with the upstream [CONTRIBUTING.md](CONTRIBUTING.md), or use an official Hermes install of the same version.
 2. Sign in to a model provider in that home.
-3. Install the six profiles, the hunting-lab plugin, and the desktop pages:
+3. Install the six profiles, the hunting-lab tools, and the cybersecurity workspace page:
 
    ```powershell
    ..\.venv-dev\Scripts\python.exe setup_hermes.py --home ..\..\runtime\lab-home install
@@ -53,6 +53,14 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
    ```
 
    `check` should report every setting `ready`. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+4. Build the Hunt Bots desktop app, which ships the Hunting Lab and Hunt Board pages. From the repository root, with the Node version in `.nvmrc`:
+
+   ```powershell
+   npm ci
+   $env:HERMES_DESKTOP_VARIANT = 'hunt-bots'; npm run pack --workspace apps/desktop
+   ```
+
+   That writes an unpacked, unsigned app to `apps\desktop\release\win-unpacked\Hunt Bots.exe`. It keeps its own settings and does not replace or update an installed Hermes desktop app.
 
 ## 4. Build the hunting lab VM
 
