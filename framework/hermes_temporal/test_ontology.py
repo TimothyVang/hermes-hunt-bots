@@ -49,12 +49,12 @@ class OntologyTests(unittest.TestCase):
         common = dict(snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="follow-2",
                       profile="framework-researcher", predecessors=[analysis])
         # Live (team-k6-131024 follow-2): a grandparent target was rejected, which spent the one retry.
-        with self.assertRaisesRegex(ValueError, r"contradiction target evidence:c8 in follow-2:c1 is not a claim "
-                                                r"of a reviewed step \(allowed steps: analysis, follow-2\)"):
+        with self.assertRaisesRegex(ValueError, r"^contradiction target evidence:c8 in follow-2:c1 is not a claim "
+                                                r"of this step or of a human-reviewed earlier step$"):
             validate_handoff(follow, **common)
         accepted = validate_handoff(follow, **common, ancestor_claims=["evidence:c8", "hypotheses:c1"])
         self.assertEqual(accepted["claims"][0]["contradicts"], ["evidence:c8"])
-        with self.assertRaisesRegex(ValueError, r"allowed steps: analysis, evidence, follow-2, hypotheses\)"):
+        with self.assertRaisesRegex(ValueError, "contradiction target evidence:c8 in follow-2:c1"):
             validate_handoff(follow, **common, ancestor_claims=["evidence:c9", "hypotheses:c1"])
         with self.assertRaisesRegex(ValueError, "cannot contradict itself"):
             validate_handoff(handoff("follow-2", "framework-researcher",

@@ -28,7 +28,7 @@ from .contracts import (
     WorkflowStatus,
 )
 
-from .ontology import CLAIM_KINDS, MAX_HANDOFF_BYTES, validate_handoff
+from .ontology import CLAIM_KINDS, MAX_HANDOFF_BYTES, MAX_PREDECESSORS, validate_handoff
 
 
 _ACTIVITY_NAME = "execute_hermes_step"
@@ -107,6 +107,14 @@ def _rejection_reason(exc: BaseException) -> str:
 
 def _correction_suffix() -> str:
     return _CORRECTION_SUFFIX + (_WHOLE_CHECK_SUFFIX if workflow.patched(_WHOLE_CHECK_PATCH) else "")
+
+
+def _claim_text(claim: dict[str, Any]) -> str:
+    return json.dumps({key: claim[key] for key in ("claim_id", "kind", "statement")}, ensure_ascii=False, sort_keys=True)
+
+
+def _hidden_note(hidden: int, total: int) -> str:
+    return f"\nNot shown (prompt limit): {hidden} of {total} claims."
 
 
 _OUTPUT_CAP_PREFIX = "\n\nOutput limit: keep your complete response within "
@@ -512,13 +520,16 @@ class HermesWorkflow:
         )
 
     def _fallback_inputs(self, step: HermesStep) -> tuple[str, ...]:
-        """Reviewed inputs of a dropped aggregator the step reads; empty for older histories."""
+        """Reviewed inputs of a dropped aggregator the step reads, within the validator's predecessor
+        limit; empty for older histories."""
         dropped = [dependency for dependency in step.depends_on
                    if dependency in self._aggregator_inputs and dependency not in self._reviewed_outputs]
         if not dropped or not workflow.patched(_MERGE_FALLBACK_PATCH):
             return ()
-        return tuple(source for dependency in dropped for source in self._aggregator_inputs[dependency]
-                     if source in self._reviewed_handoffs and source not in step.depends_on)
+        sources = dict.fromkeys(source for dependency in dropped for source in self._aggregator_inputs[dependency]
+                                if source in self._reviewed_handoffs and source not in step.depends_on)
+        room = MAX_PREDECESSORS - sum(dependency in self._reviewed_handoffs for dependency in step.depends_on)
+        return tuple(sources)[:max(room, 0)]
 
     def _fallback_frame(self, sources: tuple[str, ...], room: int) -> str:
         """The sources' reviewed claims, first claims of each source first, as many as fit in room bytes.
@@ -527,12 +538,10 @@ class HermesWorkflow:
         queues = [self._reviewed_handoffs[source]["claims"] for source in sources]
         rows = [queue[rank] for rank in range(max(map(len, queues), default=0))
                 for queue in queues if rank < len(queue)]
-        note = f"\nNot shown (prompt limit): {len(rows)} of {len(rows)} claims."
-        used = len((_FALLBACK_FRAME_PREFIX + note).encode("utf-8")) + _RETRY_NOTICE_RESERVE
+        used = len((_FALLBACK_FRAME_PREFIX + _hidden_note(len(rows), len(rows))).encode("utf-8")) + _RETRY_NOTICE_RESERVE
         shown: list[str] = []
         for claim in rows:
-            line = "\n" + json.dumps({key: claim[key] for key in ("claim_id", "kind", "statement")},
-                                     ensure_ascii=False, sort_keys=True)
+            line = "\n" + _claim_text(claim)
             size = len(line.encode("utf-8"))
             if used + size <= room:
                 shown.append(line)
@@ -540,8 +549,7 @@ class HermesWorkflow:
         if not shown:
             return ""
         hidden = len(rows) - len(shown)
-        return _FALLBACK_FRAME_PREFIX + "".join(shown) + (
-            f"\nNot shown (prompt limit): {hidden} of {len(rows)} claims." if hidden else "")
+        return _FALLBACK_FRAME_PREFIX + "".join(shown) + (_hidden_note(hidden, len(rows)) if hidden else "")
 
     @staticmethod
     def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -640,9 +648,7 @@ class HermesWorkflow:
         def frame(dependency: str) -> str:
             if dependency != focus:
                 return f"{_OUTPUT_FRAME_PREFIX}{dependency}{_OUTPUT_FRAME_MIDDLE}{self._reviewed_outputs[dependency]}"
-            claim = self._focus_claim(step)
-            return _FOCUS_FRAME_PREFIX + dependency + _OUTPUT_FRAME_MIDDLE + json.dumps(
-                {key: claim[key] for key in ("claim_id", "kind", "statement")}, ensure_ascii=False, sort_keys=True)
+            return _FOCUS_FRAME_PREFIX + dependency + _OUTPUT_FRAME_MIDDLE + _claim_text(self._focus_claim(step))
 
         prompt = step.prompt + "".join(
             frame(dependency) for dependency in step.depends_on if dependency in self._reviewed_outputs

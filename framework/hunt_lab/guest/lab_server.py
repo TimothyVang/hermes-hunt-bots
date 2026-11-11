@@ -463,8 +463,8 @@ def es_aggs_endpoint(server, params):
 
 def sample_event_id(bucket):
     hits = bucket.get('sample', {}).get('hits', {}).get('hits', [])
-    event = hits[0].get('_source', {}).get('event', {}) if hits else {}
-    return event.get('id') if isinstance(event, dict) else None
+    value = pick(hits[0].get('_source', {}), ['event', 'id']) if hits else MISSING
+    return None if value is MISSING else value
 
 
 def es_detect_endpoint(server, params):

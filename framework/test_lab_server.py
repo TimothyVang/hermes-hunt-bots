@@ -265,7 +265,7 @@ class EndpointTests(ServerCase):
         self.assertEqual(value['unmatched'], ['198.51.100.7'])
 
     def test_aggregations_terms_and_bounded_histogram(self):
-        sample = {'hits': {'hits': [{'_source': {'event': {'id': 'evt-000007'}}}]}}
+        sample = {'hits': {'hits': [{'_source': {'event.id': 'evt-000007'}}]}}
         self.elastic.response = {'hits': {'total': {'value': 12, 'relation': 'eq'}, 'hits': []},
                                  'aggregations': {'values': {'sum_other_doc_count': 2, 'buckets': [
                                      {'key': 'ws-01', 'doc_count': 10, 'sample': sample}]}}}

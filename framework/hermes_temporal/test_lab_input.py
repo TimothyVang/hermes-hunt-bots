@@ -385,6 +385,8 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.assertEqual(raw["data_origin"], "public-dataset")
         self.assertTrue(raw["scope"].startswith(
             "Public research dataset dedale-001 (real lab telemetry, no customer data) only; "))
+        # Live: a report listed 12 of 20 IDs in one series and dropped a whole process's two events.
+        self.assertIn("first at least one per distinct process and per event.category of each process", raw["scope"])
         bot_visible = {key: value for key, value in raw.items() if key != "synthetic_only"}
         self.assertNotIn("synthetic", json.dumps(bot_visible).lower())
         request = supplied_evidence_hunt(raw)

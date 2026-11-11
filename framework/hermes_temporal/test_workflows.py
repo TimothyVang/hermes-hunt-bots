@@ -1964,7 +1964,9 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
             HermesStep("incident", "base-incident", depends_on=("analysis", "merge", "purple"), hunt_context=context),
         ], parallel=True, tool_driven=True)
         first = {
-            "evidence": _handoff("evidence", "framework-researcher"),
+            # Live: follow-ups wrote the verdict word into kind.
+            "evidence": dict(_handoff("evidence", "framework-researcher"), claims=[
+                dict(_handoff("evidence", "framework-researcher")["claims"][0], kind="unresolved")]),
             "analysis": _handoff("analysis", "framework-coordinator"),
             # Contradicts a grandparent claim it saw quoted inside analysis.
             "follow-1": _handoff("follow-1", "framework-researcher", contradicts=["evidence:claim"]),
@@ -1973,6 +1975,7 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "incident": _handoff("incident", "framework-coordinator", contradicts=["follow-1:claim"]),
         }
         retry = {
+            "evidence": _handoff("evidence", "framework-researcher"),
             "follow-1": _handoff("follow-1", "framework-researcher"),
             "purple": _handoff("purple", "framework-reviewer", reviewer=True, review_claim_ids=["analysis:claim"]),
             "incident": _handoff("incident", "framework-coordinator"),
@@ -2006,16 +2009,33 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(states["merge"], ("dropped", "native_failed"))
                 rejections = [(item.step_id, item.outcome) for item in state.handoff_rejections]
                 purple, incident = prompts["4"], prompts["5"]
+                self.assertEqual(state.handoff_rejections[0].reason, "ValueError: unknown claim kind in "
+                                 "evidence:claim (allowed: finding, hypothesis, inference, observed)")
                 if mode == "new":
-                    self.assertEqual(rejections, [])
+                    self.assertEqual(rejections, [("evidence", "retried")])
+                    self.assertTrue(prompts["0:retry"].endswith(_WHOLE_CHECK_SUFFIX))
                     for prompt in (purple, incident):
                         self.assertIn("\n\nDropped predecessor [merge]: no reviewed output (native_failed)."
                                       + _FALLBACK_FRAME_PREFIX + '\n{"claim_id": "follow-1:claim", "kind": "observed", '
                                       '"statement": "Synthetic observation by follow-1."}', prompt)
                 else:
-                    self.assertEqual(rejections, [("follow-1", "retried"), ("purple", "retried"),
-                                                  ("incident", "retried")])
+                    self.assertEqual(rejections, [("evidence", "retried"), ("follow-1", "retried"),
+                                                  ("purple", "retried"), ("incident", "retried")])
                     self.assertNotIn(_FALLBACK_FRAME_PREFIX, purple + incident)
-                    self.assertNotIn(_WHOLE_CHECK_SUFFIX, prompts["2:retry"])
+                    self.assertNotIn(_WHOLE_CHECK_SUFFIX, prompts["0:retry"] + prompts["2:retry"])
                     self.assertIn("contradiction target evidence:claim in follow-1:claim",
-                                  state.handoff_rejections[0].reason)
+                                  state.handoff_rejections[1].reason)
+
+    def test_fallback_inputs_are_unique_and_keep_within_the_predecessor_limit(self) -> None:
+        from temporalio import workflow as temporal_workflow
+        from unittest import mock
+        from .ontology import MAX_PREDECESSORS
+        flow = HermesWorkflow()
+        hunters = tuple(f"hunter-{number}" for number in range(1, 15))
+        flow._aggregator_inputs = {"merge-a": hunters, "merge-b": hunters}
+        flow._reviewed_handoffs = {step_id: _handoff(step_id, "framework-researcher") for step_id in hunters + ("base",)}
+        flow._reviewed_outputs = {"base": "result-base"}
+        reader = HermesStep("reader", "base-reader", depends_on=("base", "merge-a", "merge-b"))
+        with mock.patch.object(temporal_workflow, "patched", lambda patch_id: True):
+            sources = flow._fallback_inputs(reader)
+        self.assertEqual(sources, hunters[:MAX_PREDECESSORS - 1])

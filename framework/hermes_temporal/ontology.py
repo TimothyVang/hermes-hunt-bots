@@ -25,6 +25,7 @@ _CLAIM_FIELDS = {"claim_id", "kind", "statement", "evidence_ids", "entity_ids", 
 _REVIEW_FIELDS = {"review_id", "claim_ids", "disposition", "rationale", "evidence_ids"}
 _MAX_SNAPSHOT_BYTES = 32768
 MAX_HANDOFF_BYTES = 16384
+MAX_PREDECESSORS = 16
 
 
 _FIELD_NAME = re.compile(r"[A-Za-z0-9_]{1,40}\Z")
@@ -205,7 +206,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
         prior_values = list(predecessors)
     except (TypeError, ValueError) as exc:
         raise ValueError("predecessors must be reviewed handoff objects") from exc
-    if len(prior_values) > 16:
+    if len(prior_values) > MAX_PREDECESSORS:
         raise ValueError("too many predecessors")
     for predecessor in prior_values:
         p = _validate_predecessor(predecessor, snap["case_id"], note_limit)
@@ -253,9 +254,8 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     for claim in claims:
         for target in claim["contradicts"]:
             if target not in current_claim_ids and target not in prior_claims and target not in ancestors:
-                steps = sorted({step_id, *prior_steps, *(item.partition(":")[0] for item in ancestors)})
-                raise ValueError(f"contradiction target {target} in {claim['claim_id']} is not a claim of "
-                                 f"a reviewed step (allowed steps: {', '.join(steps)})")
+                raise ValueError(f"contradiction target {target} in {claim['claim_id']} is not a claim of this "
+                                 f"step or of a human-reviewed earlier step")
     disposition = raw["disposition"]
     if type(disposition) is not str or disposition not in HANDOFF_DISPOSITIONS:
         raise ValueError("invalid handoff disposition")
