@@ -1929,3 +1929,93 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompts["detection"], (
             f"base-detection{_OUTPUT_FRAME_PREFIX}analysis{_OUTPUT_FRAME_MIDDLE}result-analysis"
             "\n\nDropped predecessor [merge]: no reviewed output (no_surviving_dependency)."))
+
+    async def _approve_every_gate(self, handle) -> str:
+        phases = {"awaiting_execution_approval": "execute", "awaiting_review": "review"}
+        while True:
+            state = await handle.query(HermesWorkflow.status)
+            if state.stage not in phases and state.stage != "executing":
+                return await handle.result()
+            if state.stage in phases:
+                seen = (state.stage, state.step_id, len(state.results), len(state.handoff_rejections))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision(
+                    state.step_id, phases[state.stage], "approve", f"decision-{next(self._decision_ids)}", ""))
+                await _until(handle, lambda now: (now.stage, now.step_id, len(now.results),
+                                                  len(now.handoff_rejections)) != seen)
+            else:
+                await asyncio.sleep(0.01)
+
+    async def test_a_dropped_merge_hands_its_follow_ups_on_and_ancestor_contradictions_pass_new_histories_only(self) -> None:
+        """Live: a dropped merge lost every follow-up finding, and contradicting a grandparent claim
+        spent a step's one retry. Both now pass, behind new patch IDs; histories without them replay."""
+        from temporalio import workflow as temporal_workflow
+        from unittest import mock
+        from .workflows import (_ANCESTOR_CONTRADICTION_PATCH, _FALLBACK_FRAME_PREFIX, _MERGE_FALLBACK_PATCH,
+                                _WHOLE_CHECK_PATCH, _WHOLE_CHECK_SUFFIX)
+        context = _ontology_context()
+        request = WorkflowRequest([
+            HermesStep("evidence", "base-evidence", "framework-researcher", hunt_context=context),
+            HermesStep("analysis", "base-analysis", depends_on=("evidence",), hunt_context=context),
+            HermesStep("follow-1", "base-follow-1", "framework-researcher", depends_on=("analysis",),
+                       hunt_context=context, optional=True, focus=("analysis", 0)),
+            HermesStep("merge", "base-merge", depends_on=("follow-1",), hunt_context=context, optional=True),
+            HermesStep("purple", "base-purple", "framework-reviewer", depends_on=("analysis", "merge"),
+                       hunt_context=context),
+            HermesStep("incident", "base-incident", depends_on=("analysis", "merge", "purple"), hunt_context=context),
+        ], parallel=True, tool_driven=True)
+        first = {
+            "evidence": _handoff("evidence", "framework-researcher"),
+            "analysis": _handoff("analysis", "framework-coordinator"),
+            # Contradicts a grandparent claim it saw quoted inside analysis.
+            "follow-1": _handoff("follow-1", "framework-researcher", contradicts=["evidence:claim"]),
+            # Reviews and contradicts a follow-up claim that reached it only through the fallback.
+            "purple": _handoff("purple", "framework-reviewer", reviewer=True, review_claim_ids=["follow-1:claim"]),
+            "incident": _handoff("incident", "framework-coordinator", contradicts=["follow-1:claim"]),
+        }
+        retry = {
+            "follow-1": _handoff("follow-1", "framework-researcher"),
+            "purple": _handoff("purple", "framework-reviewer", reviewer=True, review_claim_ids=["analysis:claim"]),
+            "incident": _handoff("incident", "framework-coordinator"),
+        }
+        new_ids = {_ANCESTOR_CONTRADICTION_PATCH, _MERGE_FALLBACK_PATCH, _WHOLE_CHECK_PATCH}
+        real_patched = temporal_workflow.patched
+        for mode in ("new", "recorded-before"):
+            with self.subTest(mode=mode):
+                prompts = {}
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    step_id = request.step.step_id
+                    prompts[request.execution_id.split(":", 1)[1]] = request.step.prompt
+                    if step_id == "merge":
+                        return ExecutionResult("failed", request.execution_id, "", "native_failed")
+                    output = (retry if request.execution_id.endswith(":retry") else first)[step_id]
+                    return ExecutionResult("completed", request.execution_id, json.dumps(output), "completed")
+
+                old = mock.patch.object(temporal_workflow, "patched",
+                                        lambda patch_id: False if patch_id in new_ids else real_patched(patch_id))
+                with old if mode == "recorded-before" else contextlib.nullcontext():
+                    async with self._started(f"test-hermes-merge-fallback-{mode}", request, execute) as (_, handle):
+                        result = await self._approve_every_gate(handle)
+                        state = await handle.query(HermesWorkflow.status)
+                        history = await handle.fetch_history()
+                # Replays with the current code: new histories take the new paths, older ones the old.
+                await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
+                self.assertEqual(result, "completed")
+                states = {item.step_id: (item.state, item.reason) for item in state.steps}
+                self.assertEqual(states["merge"], ("dropped", "native_failed"))
+                rejections = [(item.step_id, item.outcome) for item in state.handoff_rejections]
+                purple, incident = prompts["4"], prompts["5"]
+                if mode == "new":
+                    self.assertEqual(rejections, [])
+                    for prompt in (purple, incident):
+                        self.assertIn("\n\nDropped predecessor [merge]: no reviewed output (native_failed)."
+                                      + _FALLBACK_FRAME_PREFIX + '\n{"claim_id": "follow-1:claim", "kind": "observed", '
+                                      '"statement": "Synthetic observation by follow-1."}', prompt)
+                else:
+                    self.assertEqual(rejections, [("follow-1", "retried"), ("purple", "retried"),
+                                                  ("incident", "retried")])
+                    self.assertNotIn(_FALLBACK_FRAME_PREFIX, purple + incident)
+                    self.assertNotIn(_WHOLE_CHECK_SUFFIX, prompts["2:retry"])
+                    self.assertIn("contradiction target evidence:claim in follow-1:claim",
+                                  state.handoff_rejections[0].reason)

@@ -173,12 +173,14 @@ def select_snapshot(snapshot: object, evidence_ids: Iterable[str]) -> dict:
 
 def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[str], step_id: str,
                      profile: str, predecessors: Iterable[dict] = (), note_limit: int = 512,
-                     handoff_limit: int = MAX_HANDOFF_BYTES) -> dict:
+                     handoff_limit: int = MAX_HANDOFF_BYTES, ancestor_claims: Iterable[str] = ()) -> dict:
     """Validate a handoff; caller supplies predecessors only after its human-review gate.
 
     ``note_limit`` bounds each limitation/requested-decision string in UTF-8 bytes and
     ``handoff_limit`` bounds the whole normalized handoff. Predecessors are always held to
-    MAX_HANDOFF_BYTES, because only a final step (never forwarded) may use a larger limit."""
+    MAX_HANDOFF_BYTES, because only a final step (never forwarded) may use a larger limit.
+    ``ancestor_claims`` are claim IDs of other human-reviewed earlier steps; they are valid
+    contradiction targets only (never review targets), since a step sees them quoted upstream."""
     supplied = _evidence_set(evidence_ids)
     if type(step_id) is not str or not _STEP_ID.fullmatch(step_id):
         raise ValueError("invalid step_id")
@@ -192,7 +194,8 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     if case_id != snap["case_id"]:
         raise ValueError("handoff case_id does not match snapshot")
     if raw["step_id"] != step_id or raw["profile"] != profile:
-        raise ValueError("handoff identity does not match execution context")
+        raise ValueError(f"handoff identity does not match execution context (expected step_id {step_id}, "
+                         f"profile {profile})")
     entities = {item["entity_id"] for item in snap["entities"]}
     prior_claims: set[str] = set()
     prior_claim_profiles: dict[str, str] = {}
@@ -231,12 +234,12 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
         _obj(item, _CLAIM_FIELDS, "claim")
         claim_id = _text(item["claim_id"], "claim_id", 192, ident=True)
         if not claim_id.startswith(step_id + ":") or claim_id in claim_ids:
-            raise ValueError("claim ID must be uniquely namespaced by step_id")
+            raise ValueError(f"claim ID must be uniquely namespaced by step_id (expected prefix {step_id}:)")
         claim_ids.add(claim_id)
         current_claim_ids.add(claim_id)
         kind = item["kind"]
         if type(kind) is not str or kind not in CLAIM_KINDS:
-            raise ValueError("unknown claim kind")
+            raise ValueError(f"unknown claim kind in {claim_id} (allowed: {', '.join(sorted(CLAIM_KINDS))})")
         statement = _text(item["statement"], "claim statement", 2048)
         refs = _ids(item["evidence_ids"], "evidence ID", supplied, maximum=32)
         refs_entities = _optional_ids(item["entity_ids"], "entity ID", entities, maximum=64)
@@ -245,11 +248,14 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
             raise ValueError("claim cannot contradict itself")
         claims.append({"claim_id": claim_id, "kind": kind, "statement": statement,
                        "evidence_ids": refs, "entity_ids": refs_entities, "contradicts": contradicts})
+    ancestors = {_text(item, "ancestor claim ID", 192, ident=True) for item in ancestor_claims}
     # Re-check contradictions after all claims exist (forward references are allowed, self is not).
     for claim in claims:
         for target in claim["contradicts"]:
-            if target not in current_claim_ids and target not in prior_claims:
-                raise ValueError("contradiction target is not a current or predecessor claim")
+            if target not in current_claim_ids and target not in prior_claims and target not in ancestors:
+                steps = sorted({step_id, *prior_steps, *(item.partition(":")[0] for item in ancestors)})
+                raise ValueError(f"contradiction target {target} in {claim['claim_id']} is not a claim of "
+                                 f"a reviewed step (allowed steps: {', '.join(steps)})")
     disposition = raw["disposition"]
     if type(disposition) is not str or disposition not in HANDOFF_DISPOSITIONS:
         raise ValueError("invalid handoff disposition")
@@ -263,7 +269,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
         _obj(item, _REVIEW_FIELDS, "review")
         review_id = _text(item["review_id"], "review_id", 192, ident=True)
         if not review_id.startswith(step_id + ":") or review_id in review_ids:
-            raise ValueError("review ID must be uniquely namespaced by step_id")
+            raise ValueError(f"review ID must be uniquely namespaced by step_id (expected prefix {step_id}:)")
         review_ids.add(review_id)
         reviewed_claims = _ids(
             item["claim_ids"], "claim ID",
@@ -378,17 +384,25 @@ def _historical_ids(value: object, name: str, maximum: int, *, required: bool,
     return result
 
 
-def handoff_instructions() -> str:
-    """Return concise native-child JSON guidance; inclusion is not enforcement."""
+def handoff_instructions(tool_driven: bool = False) -> str:
+    """Return concise native-child JSON guidance; inclusion is not enforcement.
+
+    Inline hunts keep their original wording: their nine prompts sit at the 64 KiB hunt limit."""
     # Keep every enum, prefix and list-shape rule in sync with validate_handoff:
     # native models cannot satisfy constraints the prompt does not state.
+    # Live tool-driven Purple reviews carried a stray "claim_id" key or a trailing note, and steps
+    # contradicted grandparent claims they saw quoted (now allowed by the workflow).
     return (
-        "Return one strict JSON object, no fences, exactly: schema_version=1, case_id, step_id, profile, claims, reviews, "
+        "Return one strict JSON object, no fences" + (" and no text after it" if tool_driven else "")
+        + ", exactly: schema_version=1, case_id, step_id, profile, claims, reviews, "
         "disposition (review_ready|needs_validation|needs_revision), limitations, requested_decisions (string lists; max 16, each under 300 chars). "
         "Claims (max 16), exactly: claim_id (step_id + \":\" + suffix, e.g. \"scope:c1\"), kind (observed|inference|hypothesis|finding), "
         "statement (under 1600 chars), evidence_ids (nonempty; supplied source_id values, never event.id), entity_ids (snapshot entity_id values only, else []), "
-        "contradicts (own/direct-predecessor claim IDs or []). Coverage gaps go in limitations, not claims. "
-        "Reviews (framework-reviewer only): review_id (same prefix), "
-        "claim_ids (predecessor claims only), disposition (same 3 values), rationale, evidence_ids; never approvals. "
+        + ("contradicts (claim IDs of this or any human-reviewed earlier step, or []). " if tool_driven
+           else "contradicts (own/direct-predecessor claim IDs or []). ")
+        + "Coverage gaps go in limitations, not claims. "
+        "Reviews (framework-reviewer only)" + (", exactly:" if tool_driven else ":") + " review_id (same prefix), "
+        "claim_ids (predecessor claims only), disposition (same 3 values), rationale, evidence_ids"
+        + ("; no claim_id key" if tool_driven else "") + "; never approvals. "
         "Never invent evidence, IDs, approvals, execution or facts; keep uncertainty."
     )

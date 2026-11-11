@@ -167,6 +167,14 @@ class ToolDrivenHuntTests(unittest.TestCase):
         for follow_id in follow_ids:
             self.assertEqual(by_id[follow_id].hunt_context, by_id["evidence"].hunt_context)
             self.assertIn("malicious, benign or unresolved", by_id[follow_id].prompt)
+            # Live real-win-002/003 hunts missed processes' file/DNS groups and their grandchildren.
+            self.assertIn('field=event.category q=process.entity_id:"<its process.entity_id>"', by_id[follow_id].prompt)
+            self.assertIn("until no new children appear", by_id[follow_id].prompt)
+        # Follow-ups wrote the verdict into kind, the most common live handoff rejection.
+        for step_id in ("follow-1", "merge"):
+            self.assertIn("kind is still exactly observed, inference, hypothesis or finding, never a verdict",
+                          by_id[step_id].prompt)
+        self.assertIn('children (process.parent.entity_id:"<guid>")', by_id["incident"].prompt)
         self.assertEqual(by_id["merge"].hunt_context, by_id["analysis"].hunt_context)
 
     def test_follow_ups_require_a_parallel_tool_driven_hunt_and_a_bounded_count(self) -> None:

@@ -40,6 +40,46 @@ def claim(cid, *, evidence="dns:1", entities=("host:alpha",), kind="observed", c
 
 
 class OntologyTests(unittest.TestCase):
+    def test_ancestor_claims_are_contradiction_targets_only(self):
+        analysis = validate_handoff(handoff("analysis", "framework-coordinator", claims=[claim("analysis:c1")]),
+                                    snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="analysis",
+                                    profile="framework-coordinator")
+        follow = handoff("follow-2", "framework-researcher",
+                         claims=[claim("follow-2:c1", contradicts=("evidence:c8",))])
+        common = dict(snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="follow-2",
+                      profile="framework-researcher", predecessors=[analysis])
+        # Live (team-k6-131024 follow-2): a grandparent target was rejected, which spent the one retry.
+        with self.assertRaisesRegex(ValueError, r"contradiction target evidence:c8 in follow-2:c1 is not a claim "
+                                                r"of a reviewed step \(allowed steps: analysis, follow-2\)"):
+            validate_handoff(follow, **common)
+        accepted = validate_handoff(follow, **common, ancestor_claims=["evidence:c8", "hypotheses:c1"])
+        self.assertEqual(accepted["claims"][0]["contradicts"], ["evidence:c8"])
+        with self.assertRaisesRegex(ValueError, r"allowed steps: analysis, evidence, follow-2, hypotheses\)"):
+            validate_handoff(follow, **common, ancestor_claims=["evidence:c9", "hypotheses:c1"])
+        with self.assertRaisesRegex(ValueError, "cannot contradict itself"):
+            validate_handoff(handoff("follow-2", "framework-researcher",
+                                     claims=[claim("follow-2:c1", contradicts=("follow-2:c1",))]),
+                             **common, ancestor_claims=["follow-2:c1"])
+        review = {"review_id": "purple:r1", "claim_ids": ["evidence:c8"], "disposition": "review_ready",
+                  "rationale": "Reviewed.", "evidence_ids": []}
+        with self.assertRaisesRegex(ValueError, "unknown claim ID reference: evidence:c8"):
+            validate_handoff(handoff("purple", "framework-reviewer", reviews=[review]), snapshot=SNAPSHOT,
+                             evidence_ids=EVIDENCE, step_id="purple", profile="framework-reviewer",
+                             predecessors=[analysis], ancestor_claims=["evidence:c8"])
+
+    def test_rejections_name_the_claim_and_what_is_expected(self):
+        common = dict(snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="evidence", profile="framework-researcher")
+        # Live: 13 follow-ups put the verdict "unresolved" into kind; a retry told nothing repeated it.
+        with self.assertRaisesRegex(ValueError, r"^unknown claim kind in evidence:c2 \(allowed: finding, "
+                                                r"hypothesis, inference, observed\)$"):
+            validate_handoff(handoff("evidence", "framework-researcher",
+                                     claims=[claim("evidence:c1"), claim("evidence:c2", kind="unresolved")]), **common)
+        # Live (team-k3-234711): the retry repeated step_id "hunt" because the error named no expectation.
+        with self.assertRaisesRegex(ValueError, r"\(expected step_id evidence, profile framework-researcher\)$"):
+            validate_handoff(handoff("hunt", "framework-researcher", claims=[claim("hunt:c1")]), **common)
+        with self.assertRaisesRegex(ValueError, r"\(expected prefix evidence:\)$"):
+            validate_handoff(handoff("evidence", "framework-researcher", claims=[claim("hunt:c1")]), **common)
+
     def test_instructions_state_every_enforced_enum_and_prefix_rule(self):
         # Live native runs failed validation on rules the prompt never stated
         # (claim_id separator, disposition values, text sizes). Keep them stated,
@@ -55,8 +95,13 @@ class OntologyTests(unittest.TestCase):
         review_rules = text.split("Reviews (framework-reviewer only)")[1]
         self.assertIn("disposition (same 3 values)", review_rules)
         self.assertIn("claim_ids (predecessor claims only)", review_rules)
-        # A live incident step contradicted a non-direct (transitive) predecessor claim.
         self.assertIn("contradicts (own/direct-predecessor claim IDs or [])", text)
+        # Tool-driven steps contradicted grandparent claims they saw quoted (now allowed by the workflow),
+        # Purple reviews carried a stray claim_id key, and a trailing note broke JSON parsing.
+        tool_text = ontology.handoff_instructions(tool_driven=True)
+        self.assertIn("contradicts (claim IDs of this or any human-reviewed earlier step, or [])", tool_text)
+        self.assertIn("no claim_id key", tool_text.split("Reviews (framework-reviewer only)")[1])
+        self.assertIn("no text after it", tool_text)
         # Live evidence steps put event IDs ("evt-0001") into evidence_ids, which accepts
         # only supplied source IDs; the prompt names the distinction and validation rejects it.
         self.assertIn("evidence_ids (nonempty; supplied source_id values, never event.id)", text)
