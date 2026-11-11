@@ -716,9 +716,11 @@ function renderCaseRail(sel){
     let subText;
     if (openStep){ const os = idx.byId.get(openStep.step_id); subText = openStep.step_id + " \u00b7 " + (os ? kindOf(os) : words(openStep.state)); }
     else if (ms.length && ms.every((s) => s.state === "pending" || s.state === "not_reached")) subText = words(ms[0].state === "not_reached" ? "not reached" : "pending");
-    else subText = plural(ms.length, "step") + " \u00b7 " + plural(m.claims || 0, "claim");
-    const dropped = ms.filter((s) => kindOf(s) === "dropped").length;
-    if (dropped && !openStep) subText += " \u00b7 " + dropped + " dropped";
+    else {
+      // The dropped count goes before the claims, so the narrow rail cuts the claim count, not the drop.
+      const dropped = ms.filter((s) => kindOf(s) === "dropped").length;
+      subText = plural(ms.length, "step") + (dropped ? " \u00b7 " + dropped + " dropped" : "") + " \u00b7 " + plural(m.claims || 0, "claim");
+    }
     const on = !!sel.step && sel.step.profile === m.profile;
     const b = add(h("button", "ri" + (on ? " on" : ""), null, {type:"button", title:m.role + " \u00b7 " + m.profile}), h("span", "mg", m.monogram || "?"),
       add(h("div", "grow"), h("div", "t ell", m.role || m.profile), h("div", "s ell", subText)), glyph(rollKind(ms)));
