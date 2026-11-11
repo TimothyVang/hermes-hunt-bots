@@ -725,8 +725,8 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         step_views.append(view)
         if result is None:
             continue
-        status = result.get("status")
-        view["result"] = {"status": status, "reason_code": result.get("reason_code")}
+        status, diagnostic = result.get("status"), _text(result.get("diagnostic"))
+        view["result"] = {"status": status, "reason_code": result.get("reason_code"), "diagnostic": diagnostic}
         handoff, error = (parse_handoff(result.get("output")) if status == "completed"
                           else (None, f"result status is {status}; no output to parse"))
         counted = handoff is not None and state in _CITED_STATES
@@ -734,7 +734,7 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         output = result.get("output") if isinstance(result.get("output"), str) else ""
         item = {"index": index, "step_id": step.step_id, "profile": step.profile, "role": role,
                 "state": state, "reason": reason, "result_status": status,
-                "reason_code": result.get("reason_code"), "parsed": handoff is not None,
+                "reason_code": result.get("reason_code"), "diagnostic": diagnostic, "parsed": handoff is not None,
                 "parse_error": error, "counted": counted, "output_chars": len(output),
                 "raw_excerpt": output[:_RAW_EXCERPT_CHARS] if handoff is None else None,
                 "handoff": handoff, "unknown_cited_ids": [], "pending_cited_ids": []}
@@ -1918,7 +1918,8 @@ function stepCell(s, now, lane){
   if (!lane && s.usage) t.title = usageTip(s.usage);
   meta.appendChild(t);
   li.appendChild(meta);
-  if (s.state === "dropped" && s.reason) li.appendChild(el("div", {class:"why", title:s.reason}, s.reason.replace(/_/g, " ")));
+  const why = [(s.reason || "").replace(/_/g, " "), s.result && s.result.diagnostic].filter(Boolean).join(": ");
+  if (s.state === "dropped" && why) li.appendChild(el("div", {class:"why", title:why}, why));
   return li;
 }
 function wallMs(w, now){ return (w.closed_ms || 0) + (w.open_since_ms === null ? 0 : now - w.open_since_ms); }
@@ -2332,7 +2333,7 @@ function renderFeed(){
     const ho = item.handoff;
     if (ho && ho.disposition) h.appendChild(el("span", {class:"st", title:"step disposition written by the bot"}, ho.disposition.replace(/_/g, " ")));
     card.appendChild(h);
-    if (item.result_status !== "completed") card.appendChild(el("div", {class:"note warn"}, "Result status " + item.result_status + (item.reason_code ? " (" + item.reason_code + ")" : "")));
+    if (item.result_status !== "completed") card.appendChild(el("div", {class:"note warn"}, "Result status " + item.result_status + (item.reason_code ? " (" + item.reason_code + ")" : "") + (item.diagnostic ? ": " + item.diagnostic : "")));
     if (item.state === "awaiting_review") card.appendChild(el("div", {class:"note"}, "Waiting for human review; not yet accepted."));
     if (item.state === "stopped") card.appendChild(el("div", {class:"note warn"}, "Workflow stopped at this step (" + (item.reason || "unknown") + "); its citations are not counted."));
     if (item.state === "dropped") card.appendChild(el("div", {class:"note warn"}, "Step dropped (" + (item.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."));
