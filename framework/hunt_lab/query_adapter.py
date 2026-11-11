@@ -71,7 +71,7 @@ def _guest_error(exc):
 
 def _get(base, path, profile, timeout=DEFAULT_TIMEOUT):
     # Ignore ambient proxy settings; neither proxy credentials nor redirects belong
-    # on this explicitly local, credential-free synthetic evidence path.
+    # on this explicitly local, credential-free lab evidence path.
     opener = request.build_opener(request.ProxyHandler({}), NoRedirect())
     caller = profile if profile in FRAMEWORK_PROFILES else 'unknown'
     req = request.Request(base + path, headers={'X-Hermes-Profile': caller}, method='GET')
@@ -381,9 +381,11 @@ TOOLS = {
         ('q', 'name'))),
     'intel_lookup': (_intel, {'values'}, _schema(
         'intel_lookup',
-        'Look up observed indicator values (IPs, domains, hashes, URLs) in the case\'s synthetic threat '
-        'intelligence. Returns matches with id, type, feed, confidence, description and first_seen, plus '
-        'unmatched values. Cite a match by its id exactly as returned (for example ioc-00012).',
+        'Look up observed indicator values (IPs, domains, hashes, URLs) in the loaded case\'s threat-'
+        'intelligence feed. Returns matches with id, type, feed, confidence, description and first_seen, plus '
+        'unmatched values. A synthetic case\'s feed is invented; a real-data case states in its coverage whether '
+        'it has a feed, and without one every value is unmatched, which is no evidence either way. Cite a match '
+        'by its id exactly as returned (for example ioc-00012).',
         {'values': {'type': 'string', 'maxLength': 10050,
                     'description': 'Comma-separated list of at most 50 values, each at most 200 characters.'}},
         ('values',))),
