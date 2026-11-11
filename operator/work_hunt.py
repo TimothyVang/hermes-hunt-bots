@@ -26,8 +26,11 @@ Usage: python operator/work_hunt.py --url https://HOST:9200 --index PATTERN --st
            [--hosts NAME,NAME] [--ca-file CA.pem] [--follow-ups 6] [--max-events N] [--reseed-python PATH]
 """
 import argparse
+import contextlib
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -35,9 +38,10 @@ from pathlib import Path
 
 from lab_paths import CASES, DEFAULT_LANE, FRAMEWORK, GATE_RUNS, PRACTICE, PYTHON, ROOT, RUNTIME
 import drive_gates
+from switch_case import say
 from tool_loops import tcli, usage_total
 
-# switch_case (imported by tool_loops) puts framework/ on sys.path.
+# switch_case puts framework/ on sys.path.
 from hermes_temporal.hunt import MAX_FOLLOW_UPS
 from hunt_lab.import_elastic import (API_KEY_ENV, DATA_ORIGIN, DEFAULT_MAX_EVENTS, INDEX_PATTERN,
                                      cluster_base, host_names, window)
@@ -48,10 +52,6 @@ WORK_HUNTS = PRACTICE / 'work-hunts'
 REMINDER = ('Reminder: export only your own unclassified, non-CUI work data (planning tickets 01 and 12); '
             'CUI/NSS data never goes this way.')
 READY_SECONDS = 2 * 3600
-
-
-def say(message):
-    print(time.strftime('%H:%M:%S ') + message, flush=True)
 
 
 def parse_args(argv=None):
@@ -90,7 +90,8 @@ def parse_args(argv=None):
         if not Path(args.ca_file).is_file():
             ap.error(f'--ca-file is not a file: {args.ca_file}')
         args.ca_file = str(Path(args.ca_file).resolve())
-    # drive_gates owns the mode rules; checking them now refuses a bad mode before anything is exported.
+    if not shutil.which(args.reseed_python):
+        ap.error(f'--reseed-python is not an executable: {args.reseed_python}')
     if args.operator is not None:
         args.gate_args = ['--two-decisions', '--operator', args.operator]
         if args.delegated_by is not None or args.reason is not None:
@@ -100,7 +101,13 @@ def parse_args(argv=None):
             ['--reason', args.reason] if args.reason is not None else [])
         if not args.gate_args:
             ap.error('choose exactly one mode: --operator "<name>", or --delegated-by and --reason')
-    gate = drive_gates.parse_args(['preflight', *args.gate_args])
+    # drive_gates owns the mode rules; checking them now refuses a bad mode before anything is exported.
+    errors = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(errors):
+            gate = drive_gates.parse_args(['preflight', *args.gate_args])
+    except SystemExit:
+        ap.error(errors.getvalue().strip().rsplit(' error: ', 1)[-1])
     args.operator, args.delegated_by = gate.operator, gate.delegated_by
     return args
 
@@ -118,14 +125,25 @@ def last_json(text):
 
 
 def start_holder(evidence, log_path, reseed_python):
-    """switch_case.py --hold in its own process, logging to log_path; it keeps the VM up after this command ends."""
+    """switch_case.py --hold in its own process group, logging to log_path, so Ctrl+C at the gate driver and the
+    end of this command leave it running."""
+    group = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
+             else {'start_new_session': True})
     log = log_path.open('ab')
     try:
         return subprocess.Popen([sys.executable, '-B', '-u', str(Path(__file__).with_name('switch_case.py')),
                                  str(evidence), '--hold'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                env=dict(DEFAULT_LANE.env(), HUNT_BOTS_PYTHON=reseed_python))
+                                env=dict(DEFAULT_LANE.env(), HUNT_BOTS_PYTHON=reseed_python), **group)
     finally:
         log.close()
+
+
+def stop_hint(holder_pid):
+    # QEMU runs detached from the holder, so ending the holder alone leaves the VM running.
+    end = f'taskkill /PID {holder_pid} /F' if os.name == 'nt' else f'kill {holder_pid}'
+    return (f'stop the holder ({end}) and then the VM ('
+            + drive_gates.shell_join([DEFAULT_LANE.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', 'stop'])
+            + f' with HERMES_HOME={DEFAULT_LANE.home})')
 
 
 def wait_ready(holder, log_path, case_id, timeout=READY_SECONDS, poll=5):
@@ -147,8 +165,11 @@ def wait_ready(holder, log_path, case_id, timeout=READY_SECONDS, poll=5):
 
 def drive(workflow, gate_args):
     """Run the gate driver in the foreground so its WAITING FOR OPERATOR lines and decision commands show."""
-    return subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('drive_gates.py')), workflow, *gate_args],
-                          env=DEFAULT_LANE.env()).returncode
+    return subprocess.run(drive_command(workflow, gate_args), env=DEFAULT_LANE.env()).returncode
+
+
+def drive_command(workflow, gate_args):
+    return [sys.executable, '-B', str(Path(__file__).with_name('drive_gates.py')), workflow, *gate_args]
 
 
 def main(args):
@@ -172,7 +193,6 @@ def main(args):
     cmd += ['--hosts', ','.join(args.hosts)] if args.hosts else []
     cmd += ['--ca-file', args.ca_file] if args.ca_file else []
     rc, out, err = child(cmd, dict(os.environ, **{API_KEY_ENV: key}), 3600)
-    del key
     result = last_json(out)
     if rc or 'error' in result:
         raise SystemExit('export failed: ' + str(result.get('error') or err[-300:]))
@@ -180,6 +200,10 @@ def main(args):
         f"[{result['time_range_utc']['start_inclusive']}, {result['time_range_utc']['end_exclusive']}) "
         f"hosts={','.join(result['hosts']) if result['hosts'] else 'all'} elastic={result['elastic_version']} "
         f"sha256={result['ndjson']['sha256']} -> {export}")
+    if not result['event_count']:
+        export.unlink()
+        meta.unlink()
+        raise SystemExit('the window holds no documents; nothing was imported and the empty export was removed')
     record = {'case_id': args.case_id, 'export': {name: result[name] for name in (
         'host', 'index', 'time_range_utc', 'hosts', 'event_count', 'elastic_version', 'ndjson', 'output', 'meta')}}
 
@@ -188,7 +212,11 @@ def main(args):
                           '--evidence-dir', str(evidence), '--max-events', str(args.max_events)], None, 3600)
     result = last_json(out)
     if rc or 'error' in result:
-        raise SystemExit('import failed: ' + str(result.get('error') or err[-300:]))
+        # The import removes its evidence folder on failure; the case folder it created is empty.
+        with contextlib.suppress(OSError):
+            case_dir.rmdir()
+        raise SystemExit('import failed: ' + str(result.get('error') or err[-300:])
+                         + f'; the export is kept at {export} (delete it and its .meta.json to reuse this --case-id)')
     say(f"IMPORT case {result['case_id']} data_origin={result['data_origin']} {result['event_count']} events "
         f"{result['host_count']} hosts ({result['outside_window']} outside the window) -> {evidence}")
     record['import'] = {name: result[name] for name in ('data_origin', 'event_count', 'host_count', 'outside_window', 'files')}
@@ -197,8 +225,11 @@ def main(args):
     holder_log = work / 'holder.log'
     holder = start_holder(evidence, holder_log, args.reseed_python)
     say(f'loading the lab VM (holder pid {holder.pid}, log {holder_log}); this takes several minutes')
-    ready = wait_ready(holder, holder_log, args.case_id)
-    say(ready)
+    try:
+        ready = wait_ready(holder, holder_log, args.case_id)
+    except SystemExit as failure:
+        raise SystemExit(f'{failure}; {stop_hint(holder.pid)}') from None
+    print(ready, flush=True)  # the holder's line already carries its time
     record['lab'] = {'ready': ready, 'holder_pid': holder.pid, 'holder_log': str(holder_log)}
 
     base_path = work / 'lab-input.json'
@@ -230,7 +261,9 @@ def main(args):
     else:
         print(f'Every gate, including the scope and final report reviews, is approved on behalf of {args.delegated_by} '
               'and recorded as delegated, not as a human review.', flush=True)
-    drive(workflow, args.gate_args)
+    driver = drive(workflow, args.gate_args)
+    if driver == 2:  # the driver's own error, not the hunt's outcome: the workflow may still wait at a gate
+        say('the gate driver failed; resume it with: ' + drive_gates.shell_join(drive_command(workflow, args.gate_args)))
 
     rc, out, err = tcli('status', child_id)
     status = json.loads(out) if not rc else {}
@@ -243,8 +276,8 @@ def main(args):
     say(f"HUNT {'COMPLETED' if completed else 'ENDED'} {child_id} stage={record['stage']} "
         f"tokens={usage['total_tokens'] if usage else 'unknown'} "
         + (f'report={report}' if report.exists() else 'no final report'))
-    say(f'the lab stays loaded while holder pid {holder.pid} runs; stop it when you are done '
-        f"({'taskkill /PID %d /T /F' % holder.pid if os.name == 'nt' else 'kill %d' % holder.pid}). Record: {work / 'hunt.json'}")
+    say(f'the lab stays loaded with case {args.case_id}; when you are done, {stop_hint(holder.pid)}. '
+        f"Record: {work / 'hunt.json'}")
     return 0 if completed else 1
 
 

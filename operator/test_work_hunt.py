@@ -36,6 +36,7 @@ class ParseArgsTest(unittest.TestCase):
             'bad index': (['--index', '/_all'], '--index'),
             'missing CA file': (['--ca-file', 'no-such-ca.pem'], '--ca-file is not a file'),
             'empty hosts': (['--hosts', ' , '], '--hosts names no host'),
+            'missing reseed Python': (['--reseed-python', 'no-such-python.exe'], '--reseed-python is not an executable'),
         }
         for name, (extra, message) in cases.items():
             with self.subTest(name):
@@ -46,7 +47,11 @@ class ParseArgsTest(unittest.TestCase):
         self.assertIn('choose exactly one mode', parse())
         self.assertIn('choose exactly one mode', parse('--operator', 'Ada', *DELEGATED))
         self.assertIn('--delegated-by and --reason', parse('--delegated-by', 'Ada Lovelace'))
-        self.assertIn('non-blank --operator', parse('--operator', '  '))
+        blank = parse('--operator', '  ')
+        self.assertIn('non-blank --operator', blank)
+        # The gate driver's rules apply, but the operator sees this command's usage, not the driver's.
+        self.assertNotIn('workflow_id', blank)
+        self.assertNotIn('workflow_id', parse('--delegated-by', 'Ada Lovelace'))
         args = parse('--operator', 'Ada  Lovelace')
         self.assertEqual(args.gate_args, ['--two-decisions', '--operator', 'Ada  Lovelace'])
         self.assertEqual(args.operator, 'Ada Lovelace')
@@ -58,17 +63,25 @@ class FakeLab:
 
     def __init__(self, root):
         self.root, self.calls = root, []
+        self.export_count, self.import_error, self.driver_rc = 3, None, 0
 
     def child(self, cmd, env, timeout):
         env = os.environ if env is None else env
         action = cmd[cmd.index('hunt_lab.import_elastic') + 1]
         self.calls.append((action, KEY in env.values(), cmd))
         if action == 'export':
+            output = Path(cmd[cmd.index('--output') + 1])
+            output.write_text('', encoding='utf-8')
+            output.with_name(output.name + '.meta.json').write_text('{}', encoding='utf-8')
             return 0, json.dumps({
-                'host': 'elastic.example.internal:9243', 'index': 'logs-*', 'hosts': None, 'event_count': 3,
-                'elastic_version': '8.15.3', 'output': cmd[cmd.index('--output') + 1], 'meta': 'm',
+                'host': 'elastic.example.internal:9243', 'index': 'logs-*', 'hosts': None,
+                'event_count': self.export_count, 'elastic_version': '8.15.3', 'output': str(output), 'meta': 'm',
                 'time_range_utc': {'start_inclusive': '2026-11-03T08:00:00Z', 'end_exclusive': '2026-11-03T12:00:00Z'},
                 'ndjson': {'file': 'f', 'bytes': 9, 'sha256': '0' * 64}}), ''
+        if self.import_error:
+            # Like import_case: its evidence folder is removed on failure, the case folder above it stays.
+            Path(cmd[cmd.index('--evidence-dir') + 1]).parent.mkdir(parents=True)
+            return 2, json.dumps({'error': self.import_error}), ''
         return 0, json.dumps({'case_id': 'work-test-001', 'data_origin': 'work-export', 'event_count': 3,
                               'host_count': 1, 'outside_window': 0, 'files': {}}), ''
 
@@ -98,12 +111,14 @@ class FakeLab:
 
     def drive(self, workflow, gate_args):
         self.calls.append(('drive', KEY in os.environ.values(), gate_args))
-        return 0
+        return self.driver_rc
 
 
 class MainTest(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
         self.lab = FakeLab(self.root)
         patches = [patch.object(wh, name, self.root / folder) for name, folder in (
             ('CASES', 'cases'), ('EXPORTS', 'work-exports'), ('WORK_HUNTS', 'work-hunts'), ('GATE_RUNS', 'gate-runs'))]
@@ -166,7 +181,8 @@ class MainTest(unittest.TestCase):
         self.assertEqual(hunt['follow_ups'], 0)
 
     def test_an_existing_case_is_refused_before_any_export(self):
-        for existing in ('cases/work-test-001', 'work-exports/work-test-001.ndjson', 'work-hunts/work-test-001'):
+        for existing in ('cases/work-test-001', 'work-exports/work-test-001.ndjson',
+                         'work-exports/work-test-001.ndjson.meta.json', 'work-hunts/work-test-001'):
             with self.subTest(existing):
                 path = self.root / existing
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,10 +208,44 @@ class MainTest(unittest.TestCase):
         self.assertNotIn(KEY, str(code) + out)
         self.assertEqual(self.lab.child.call_count, 1)
 
+    def test_an_empty_window_removes_its_export_and_stops_before_the_import(self):
+        self.lab.export_count = 0
+        code, _ = self.run_main(*DELEGATED)
+        self.assertIn('the window holds no documents', str(code))
+        self.assertEqual([call[0] for call in self.lab.calls], ['export'])
+        self.assertEqual(list((self.root / 'work-exports').iterdir()), [])
+
+    def test_a_failed_import_frees_the_case_folder_and_names_the_kept_export(self):
+        self.lab.import_error = 'no records match the window'
+        code, _ = self.run_main(*DELEGATED)
+        self.assertIn('import failed: no records match the window', str(code))
+        self.assertIn(str(self.root / 'work-exports' / 'work-test-001.ndjson'), str(code))
+        self.assertFalse((self.root / 'cases' / 'work-test-001').exists())
+        self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import'])
+
+    def test_a_lab_that_never_loads_says_how_to_stop_the_holder_and_the_vm(self):
+        def not_ready(holder, log_path, case_id):
+            raise SystemExit('the lab did not load work-test-001')
+        with patch.object(wh, 'wait_ready', not_ready):
+            code, _ = self.run_main(*DELEGATED)
+        self.assertIn('the lab did not load work-test-001', str(code))
+        self.assertIn('4242', str(code))
+        self.assertIn('hunt-lab stop', str(code))
+        self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import', 'holder'])
+
+    def test_a_failed_gate_driver_prints_how_to_resume_it(self):
+        self.lab.driver_rc = 2
+        code, out = self.run_main(*DELEGATED)
+        self.assertEqual(code, 0, out)
+        self.assertIn('the gate driver failed; resume it with:', out)
+        self.assertIn('drive_gates.py', out.split('resume it with:')[1].splitlines()[0])
+
 
 class WaitReadyTest(unittest.TestCase):
     def setUp(self):
-        self.log = Path(tempfile.mkdtemp()) / 'holder.log'
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.log = Path(temp.name) / 'holder.log'
 
     def test_ready_for_this_case_returns_the_line(self):
         self.log.write_text('10:00:00 vm stopped\n10:05:00 READY case=work-test-001 events=3 sessions=0\n',
