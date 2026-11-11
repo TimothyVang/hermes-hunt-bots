@@ -111,5 +111,46 @@ class RoundRecordTest(unittest.TestCase):
                 self.assertRegex(summary, r' misattributed 0 calls 0 in [0-9.]+ min$')
 
 
+PUBLIC_SCOPE = 'Public research dataset dedale-001 (real lab telemetry, no customer data) only; case brief'
+
+
+class BaseInputTest(unittest.TestCase):
+    def export(self, base, **options):
+        """base_input with lab-input faked: it writes base to the requested --output path."""
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            Path(argv[argv.index('--output') + 1]).write_text(json.dumps(base), encoding='utf-8')
+            return Mock(returncode=0, stderr='')
+
+        lane = Mock(temporal_cli=lambda: ['cli'], state_dir='state')
+        lane.name = ''
+        with tempfile.TemporaryDirectory() as tmp, patch.object(tl, 'TOOL_LOOPS', Path(tmp)), \
+                patch.object(tl.subprocess, 'run', fake_run):
+            return tl.base_input('dedale-001', lane, **options), calls
+
+    def test_public_dataset_approval_is_passed_only_when_asked(self):
+        synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
+        _, [argv] = self.export(synthetic)
+        self.assertNotIn('--allow-public-dataset', argv)
+        public = {'scope': PUBLIC_SCOPE, 'synthetic_only': False, 'data_origin': 'public-dataset'}
+        base, [argv] = self.export(public, allow_public_dataset=True)
+        self.assertEqual(argv[:4], ['cli', 'lab-input', '--tool-driven', '--allow-public-dataset'])
+        self.assertEqual(base, public)
+        # A public input on disk (here written by the fake) is never used without the approval.
+        with self.assertRaises(SystemExit):
+            self.export(public)
+
+    def test_a_new_brief_keeps_the_base_origin(self):
+        public = {'scope': PUBLIC_SCOPE, 'synthetic_only': False, 'data_origin': 'public-dataset'}
+        self.assertEqual(tl.build_input(public, 'new brief', {}, 'dedale-001')['scope'],
+                         'Public research dataset dedale-001 (real lab telemetry, no customer data) only; new brief')
+        synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
+        self.assertEqual(tl.build_input(synthetic, 'new brief', {}, 'dedale-001')['scope'],
+                         'Synthetic dedale-001 only; new brief')
+
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -53,7 +53,10 @@ def _practice_deadline_seconds(request) -> int:
 async def _lab_input(args: argparse.Namespace) -> None:
     from .lab_input import collect_lab_input, collect_tool_input
 
-    raw = collect_tool_input(args.state_dir) if args.tool_driven else collect_lab_input(args.state_dir)
+    if args.allow_public_dataset and not args.tool_driven:
+        raise ValueError("--allow-public-dataset applies only to --tool-driven")
+    raw = (collect_tool_input(args.state_dir, allow_public_dataset=args.allow_public_dataset) if args.tool_driven
+           else collect_lab_input(args.state_dir))
     text = json.dumps(raw, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
     with Path(args.output).open("x", encoding="utf-8", newline="\n") as output:
         output.write(text)
@@ -214,6 +217,9 @@ def _parser() -> argparse.ArgumentParser:
     lab_input.add_argument("--output", required=True, help="new path; existing files are never overwritten")
     lab_input.add_argument("--tool-driven", action="store_true",
                            help="export a tool-driven hunt for the loaded case: reads /case only; stages query with their own tools")
+    lab_input.add_argument("--allow-public-dataset", action="store_true",
+                           help="with --tool-driven: approve exporting a case whose case.json says data_origin "
+                                "public-dataset (a public research dataset, not synthetic); refused without it")
     lab_input.set_defaults(handler=_lab_input)
     return parser
 

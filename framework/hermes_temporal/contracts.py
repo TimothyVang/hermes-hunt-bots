@@ -28,6 +28,10 @@ PROFILES = frozenset({
     "framework-librarian",
     "framework-network-analyst",
 })
+# A case is synthetic unless its case.json says "data_origin": "public-dataset": a public research
+# dataset the operator approved for the lab (HUNT-BOTS.md rule 1). No other origin exists.
+SYNTHETIC = "synthetic"
+PUBLIC_DATASET = "public-dataset"
 
 
 def validate_loopback_address(address: str) -> str:
@@ -108,10 +112,17 @@ class WorkflowRequest:
     # Steps whose dependencies are reviewed run together as one wave behind one execute and one
     # review decision. Defaults off so earlier histories deserialize and replay unchanged.
     parallel: bool = False
+    # Only an explicitly authorized tool-driven hunt over a public research dataset sets this;
+    # synthetic_only must then be False. Defaults to synthetic so earlier histories deserialize unchanged.
+    data_origin: str = SYNTHETIC
 
     def __post_init__(self) -> None:
-        if self.synthetic_only is not True:
+        if self.data_origin not in (SYNTHETIC, PUBLIC_DATASET):
+            raise ValueError("data_origin must be synthetic or public-dataset")
+        if self.data_origin == SYNTHETIC and self.synthetic_only is not True:
             raise ValueError("this integration accepts synthetic-only workflows")
+        if self.data_origin == PUBLIC_DATASET and (self.synthetic_only is not False or self.tool_driven is not True):
+            raise ValueError("a public-dataset workflow must be tool_driven and not synthetic_only")
         limit = MAX_TEAM_STEPS if self.parallel is True else MAX_STEPS
         if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= limit:
             raise ValueError(f"steps must contain 1 through {limit} Hermes steps")

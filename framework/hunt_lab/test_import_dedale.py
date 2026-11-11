@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import unittest
 import zipfile
 
-from hunt_lab import import_dedale, scenario
+from hunt_lab import import_dedale, prepare_guest, scenario
 
 
 SYSMON = "Microsoft-Windows-Sysmon/Operational"
@@ -255,9 +255,13 @@ class ImportCase(unittest.TestCase):
             hosts=[], case_id="x", start=0, end=0, env={"org": "X"},
             EVENTS_COVERAGE=scenario.Scenario.EVENTS_COVERAGE, PCAP_COVERAGE=scenario.Scenario.PCAP_COVERAGE), 0, 0, 0, 0)
         self.assertEqual(case["question"], metadata["question"])
-        self.assertEqual(set(case), {"case_id", "schema_version", "question", "time_range_utc", "network_capture", "sources"})
+        self.assertEqual(set(case), {"case_id", "schema_version", "question", "time_range_utc", "network_capture",
+                                     "data_origin", "sources"})
         self.assertEqual(case["case_id"], "dedale-test-001")
         self.assertEqual(case["network_capture"], "none")
+        # Real lab telemetry: marked so lab-input refuses it without the operator's approval.
+        self.assertEqual(case["data_origin"], "public-dataset")
+        self.assertEqual(prepare_guest.case_metadata(evidence / "case.json"), case)
         self.assertEqual(case["time_range_utc"], {"start_inclusive": START, "end_exclusive": END})
         self.assertEqual(len(case["sources"]), 1)
         self.assertEqual(case["sources"][0]["artifact"], "events.jsonl")

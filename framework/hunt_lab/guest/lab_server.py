@@ -45,6 +45,8 @@ INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
 EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
                 'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'powershell', 'message', 'labels']
 NO_CAPTURE = 'none'
+# case.json "data_origin": "public-dataset" marks an approved public research dataset; absent means synthetic.
+PUBLIC_DATASET = 'public-dataset'
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
 ES_TIMEOUT = 15
@@ -171,8 +173,6 @@ PACKET_FILTER_TOKEN = re.compile(
 MAX_PACKET_FILTER = 300
 MAX_PACKET_FILTER_DEPTH = 20
 MAX_PACKET_START = 100000
-# Packets tshark reads at most (-c); the page itself stops reading much earlier.
-MAX_PACKET_SCAN = 2000000
 MAX_PACKET_VALUE = 1000
 URL_USERINFO = re.compile(r'([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@')
 MISSING = object()
@@ -766,7 +766,8 @@ def packet_fields_endpoint(server, params):
         args += ['-e', column]
     if display_filter:
         args += ['-Y', display_filter]
-    args += ['-c', str(MAX_PACKET_SCAN)]
+    # No -c packet count: a cutoff would end the scan early and a filter matching only later
+    # frames would read as a complete negative. TSHARK_TIMEOUT and MAX_BACKEND_BYTES bound it.
 
     def consume(stream):
         page, seen, size = [], 0, 0
@@ -821,7 +822,10 @@ def console_page(server, params):
     return status, (
         '<!doctype html><html><head><meta charset="utf-8"><title>Hermes hunting lab</title>'
         '<style>body{font:16px system-ui;margin:24px}td{vertical-align:top;border-bottom:1px solid #999}pre{white-space:pre-wrap}input{margin:6px}</style></head><body>'
-        '<h1>Hermes supplied-evidence lab</h1><p>Synthetic data only. Read-only. No live capture.</p>'
+        '<h1>Hermes supplied-evidence lab</h1><p>'
+        + ('Public research dataset (real lab telemetry, no customer data).' if case.get('data_origin') == PUBLIC_DATASET
+           else 'Synthetic data only.') +
+        ' Read-only. No live capture.</p>'
         '<p>Case: ' + html.escape(case['case_id']) + '</p><p>' + html.escape(case['question']) + '</p>'
         '<form action="/view" method="get"><label for="q">Search</label><input id="q" name="q" size="60" value="' + shown['q'] + '">'
         '<label for="host">Host</label><input id="host" name="host" value="' + shown['host'] + '"><button>Search logs</button></form>'
@@ -1006,6 +1010,8 @@ def load_case(path):
         raise ValueError('case.json time_range_utc must be a nonempty window')
     if 'network_capture' in case and case['network_capture'] != NO_CAPTURE:
         raise ValueError('case.json network_capture may only be "none"')
+    if 'data_origin' in case and case['data_origin'] != PUBLIC_DATASET:
+        raise ValueError('case.json data_origin may only be "public-dataset"')
     return case
 
 
