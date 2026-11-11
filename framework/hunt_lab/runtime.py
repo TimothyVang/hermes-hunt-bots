@@ -41,6 +41,10 @@ STATE_VERSION = 1
 PORT_KEYS = ("qmp_port", "vnc_port", "console_websocket_port", "lab_port", "arkime_port", "kibana_port")
 # A VM launched before the Kibana forward existed has no kibana_port; it stays manageable without one.
 OPTIONAL_PORT_KEYS = ("kibana_port",)
+# "provisioning": user-mode NAT out to the host and Internet, for the first boot of a prepared disk only
+# (bootstrap installs guest packages and pulls the locked images). "restricted": restrict=on, so the
+# guest reaches nothing outside its user-mode network; the loopback hostfwd rules keep working.
+NETWORK_MODES = ("provisioning", "restricted")
 
 
 class RuntimeFailure(Exception):
@@ -61,7 +65,7 @@ def _base(profile=PROFILE):
         "state": "stopped", "reason": "not_started", "vm_name": None,
         "pid": None, "console_websocket_url": None, "vnc_port": None,
         "qmp_port": None, "lab_url": None, "arkime_url": None, "kibana_url": None,
-        "memory_mib": None, "accel": None, "cpus": None,
+        "memory_mib": None, "accel": None, "cpus": None, "network": None,
         "console_websocket_port": None, "lab_port": None, "arkime_port": None, "kibana_port": None,
     }
 
@@ -210,6 +214,9 @@ def _load(home, name):
         if len(set(ports)) != len(ports) or record["vnc_port"] < 5900:
             raise ValueError
         _parameters(record.get("memory_mib"), record.get("cpus"), record.get("accel"))
+        # A record written before network modes existed has none; its VM was launched before.
+        if "network" in record and record["network"] not in NETWORK_MODES:
+            raise ValueError
         if not isinstance(record.get("launch_started"), (int, float)):
             raise ValueError
         # Output URLs are derived from validated ports, never trusted JSON strings.
@@ -455,6 +462,20 @@ def _reserved_ports():
             listener.close()
 
 
+def _network(previous):
+    """Only a prepared disk's first boot needs outbound NAT; every later boot is restricted.
+
+    Cloud-init runs bootstrap once per instance, and a reseeded instance finds the packages and
+    locked images already installed. A provisioning launch whose guest never ran (QEMU failed to
+    launch or exited before QMP answered) leaves the disk unprovisioned, so the next launch retries it.
+    """
+    if previous is None:
+        return "provisioning"
+    if previous.get("network") == "provisioning" and previous["reason"] in ("launch_failed", "qemu_exited"):
+        return "provisioning"
+    return "restricted"
+
+
 def build_argv(executable, disk, seed, record, serial_log):
     """Construct only the fixed guest devices; file names use JSON block nodes."""
     def block(**values):
@@ -470,8 +491,10 @@ def build_argv(executable, disk, seed, record, serial_log):
         "-blockdev", block(driver="file", filename=str(seed), **{"node-name": "seed-file", "read-only": True}),
         "-blockdev", block(driver="raw", file="seed-file", **{"node-name": "seed", "read-only": True}),
         "-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-cd,drive=seed,bus=scsi0.0",
-        "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:{lab}-:8765,hostfwd=tcp:127.0.0.1:{arkime}-:8005,"
+        # Fail closed: anything but an explicit provisioning launch gets restrict=on.
+        "-netdev", "user,id=net0,{restrict}hostfwd=tcp:127.0.0.1:{lab}-:8765,hostfwd=tcp:127.0.0.1:{arkime}-:8005,"
                    "hostfwd=tcp:127.0.0.1:{kibana}-:5601".format(
+            restrict="" if record.get("network") == "provisioning" else "restrict=on,",
             lab=record["lab_port"], arkime=record["arkime_port"], kibana=record["kibana_port"]),
         "-device", "virtio-net-pci,netdev=net0", "-device", "virtio-vga",
         "-device", "qemu-xhci,id=xhci", "-device", "usb-tablet,bus=xhci.0",
@@ -530,7 +553,7 @@ def _start(home, name, record, qemu, disk, seed, memory_mib, cpus, accel):
     with _reserved_ports() as ports:
         new = dict(version=STATE_VERSION, profile=PROFILE, vm_name=name, pid=None,
                    state="starting", reason="qmp_starting", memory_mib=memory_mib,
-                   cpus=cpus, accel=accel, launch_started=time.time(), **ports)
+                   cpus=cpus, accel=accel, network=_network(record), launch_started=time.time(), **ports)
         _urls(new)
         # Persist intent before launch: an interrupted launch is never blindly duplicated.
         _save(home, new)
