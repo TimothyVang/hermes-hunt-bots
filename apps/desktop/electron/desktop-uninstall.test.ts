@@ -66,6 +66,21 @@ test('only standard installs allow desktop uninstall; managed kinds have no safe
   assert.deepEqual(allowedUninstallModes('bundled'), [])
 })
 
+test('the Hunt Command build is removed by deleting its folder, never by a package manager or cleanup script', () => {
+  const hunt = { payload: 'bootstrap', updateMechanism: 'external', variant: 'hunt' } as const
+  assert.equal(resolveInstallKind(hunt), 'hunt')
+  assert.equal(installKindAllowsCodeRemoval('hunt'), false)
+  assert.deepEqual(allowedUninstallModes('hunt'), [])
+  assert.equal(
+    nativeRemovalInstructions('hunt', 'win32', 'C:\\Builds\\win-unpacked'),
+    'Delete the Hunt Command folder at C:\\Builds\\win-unpacked.'
+  )
+  assert.match(nativeRemovalInstructions('hunt', 'linux'), /Delete the Hunt Command folder from wherever/)
+  // Stock and commit builds keep the external package-manager copy.
+  assert.equal(resolveInstallKind({ payload: 'bootstrap', updateMechanism: 'external' }), 'external')
+  assert.match(nativeRemovalInstructions('external', 'win32'), /Another package manager installed this Hermes/)
+})
+
 test('nativeRemovalInstructions names the steward per kind and OS', () => {
   assert.match(nativeRemovalInstructions('nix', 'linux'), /installed by Nix/)
   assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)

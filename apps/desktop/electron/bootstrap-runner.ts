@@ -434,22 +434,27 @@ function cleanInstallerLogLine(raw: string): string {
 
 // The installer drives Hermes's own toolchain (install.sh takes a uv from PATH
 // when it is new enough), so store dirs already on PATH stay ahead of the
-// login-shell entries shell-path.ts merged in front of them. A build with its
-// own source repo has the installer clone that repo unless the user chose one.
-function installerEnv(hermesHome, identity: Pick<ProductIdentity, 'sourceRepo'> = PRODUCT_IDENTITY) {
+// login-shell entries shell-path.ts merged in front of them. A fresh install by
+// a build with its own source repo clones that repo unless the user chose one.
+// Never on an existing checkout: install.ps1/install.sh would repoint its origin,
+// and that checkout (HERMES_HOME/hermes-agent) is shared with stock Hermes.
+function installerEnv(
+  hermesHome,
+  { freshInstall = true, identity = PRODUCT_IDENTITY }: { freshInstall?: boolean; identity?: Pick<ProductIdentity, 'sourceRepo'> } = {}
+) {
   const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: hermesHome || process.env.HERMES_HOME || '' }
   const key = pathEnvKey(env)
 
   env[key] = storeFirstPath(env[key] || '', { currentEnv: env })
 
-  if (identity.sourceRepo && !env.HERMES_REPO_URL) {
+  if (freshInstall && identity.sourceRepo && !env.HERMES_REPO_URL) {
     env.HERMES_REPO_URL = `https://github.com/${identity.sourceRepo}.git`
   }
 
   return env
 }
 
-function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome, freshInstall }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
@@ -461,7 +466,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         stdio: ['ignore', 'pipe', 'pipe'],
         // Pass HERMES_HOME through so install.ps1 respects the caller's
         // choice rather than re-computing the default.
-        env: installerEnv(hermesHome)
+        env: installerEnv(hermesHome, { freshInstall })
       })
     )
 
@@ -553,11 +558,11 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
   })
 }
 
-function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome, freshInstall }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: installerEnv(hermesHome)
+      env: installerEnv(hermesHome, { freshInstall })
     })
 
     let stdout = ''
@@ -655,25 +660,49 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 // a repair/update path and must not let an old packaged app detach the checkout
 // back to the commit baked into that app. All-zero fallback stamps are never
 // passed as -Commit/--commit — only the branch is used (#50823 / #50864 review).
-function buildPinArgs(installStamp, { pinCommit = true } = {}) {
+// A build with its own source repo has a branch only that repo carries, so its
+// repair of an existing checkout (whose origin it keeps, see installerEnv)
+// passes no branch and the checkout's own channel/branch logic decides.
+function stampBranch(installStamp, pinCommit, identity: Pick<ProductIdentity, 'sourceRepo'>) {
+  return installStamp && installStamp.branch && (pinCommit || !identity.sourceRepo) ? installStamp.branch : null
+}
+
+function buildPinArgs(
+  installStamp,
+  { pinCommit = true, identity = PRODUCT_IDENTITY }: { pinCommit?: boolean; identity?: Pick<ProductIdentity, 'sourceRepo'> } = {}
+) {
   const args = []
+  const branch = stampBranch(installStamp, pinCommit, identity)
 
   if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
     args.push('-Commit', installStamp.commit)
   }
 
-  if (installStamp && installStamp.branch) {
-    args.push('-Branch', installStamp.branch)
+  if (branch) {
+    args.push('-Branch', branch)
   }
 
   return args
 }
 
-function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = true }) {
+function buildPosixPinArgs({
+  installStamp,
+  activeRoot,
+  hermesHome,
+  pinCommit = true,
+  identity = PRODUCT_IDENTITY
+}: {
+  installStamp
+  activeRoot
+  hermesHome
+  pinCommit?: boolean
+  identity?: Pick<ProductIdentity, 'sourceRepo'>
+}) {
   const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
+  const branch = stampBranch(installStamp, pinCommit, identity)
 
-  if (installStamp && installStamp.branch) {
-    args.push('--branch', installStamp.branch)
+  if (branch) {
+    args.push('--branch', branch)
   }
 
   if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
@@ -704,7 +733,9 @@ async function fetchManifest({
     emit,
     stageName: '__manifest__',
     abortSignal,
-    hermesHome
+    hermesHome,
+    // The commit pin is fresh-install only (runBootstrap: pinCommit = !existingCheckout).
+    freshInstall: pinCommit
   })
 
   if (result.code !== 0) {
@@ -790,7 +821,8 @@ async function runStage({
     emit,
     stageName: stage.name,
     abortSignal,
-    hermesHome
+    hermesHome,
+    freshInstall: pinCommit
   })
 
   const durationMs = Date.now() - startedAt

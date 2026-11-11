@@ -36,11 +36,20 @@ test('the installer comes from upstream unless the build names its own source re
   delete process.env.HERMES_REPO_URL
 
   try {
-    // install.ps1 / install.sh clone HERMES_REPO_URL, else NousResearch/hermes-agent.
-    assert.equal(installerEnv('/home', {}).HERMES_REPO_URL, undefined)
-    assert.equal(installerEnv('/home', hunt).HERMES_REPO_URL, 'https://github.com/TimothyVang/hermes-hunt-bots.git')
+    // install.ps1 / install.sh clone HERMES_REPO_URL, else NousResearch/hermes-agent, and on an
+    // existing checkout they repoint its origin to it.
+    for (const freshInstall of [true, false]) {
+      assert.equal(installerEnv('/home', { freshInstall, identity: {} }).HERMES_REPO_URL, undefined)
+    }
+
+    assert.equal(
+      installerEnv('/home', { freshInstall: true, identity: hunt }).HERMES_REPO_URL,
+      'https://github.com/TimothyVang/hermes-hunt-bots.git'
+    )
+    // A repair keeps the shared checkout's origin, so stock Hermes never follows the fork.
+    assert.equal(installerEnv('/home', { freshInstall: false, identity: hunt }).HERMES_REPO_URL, undefined)
     process.env.HERMES_REPO_URL = 'https://example.test/own.git'
-    assert.equal(installerEnv('/home', hunt).HERMES_REPO_URL, 'https://example.test/own.git')
+    assert.equal(installerEnv('/home', { freshInstall: true, identity: hunt }).HERMES_REPO_URL, 'https://example.test/own.git')
   } finally {
     if (saved === undefined) {
       delete process.env.HERMES_REPO_URL
@@ -48,6 +57,26 @@ test('the installer comes from upstream unless the build names its own source re
       process.env.HERMES_REPO_URL = saved
     }
   }
+})
+
+test('a fork build passes its branch to a fresh install only; a repair keeps the checkout branch logic', () => {
+  const hunt = { sourceRepo: 'TimothyVang/hermes-hunt-bots' }
+  const stamp = { commit: 'a'.repeat(40), branch: 'hunt-bots' }
+  const posix = { installStamp: stamp, activeRoot: '/root', hermesHome: '/home' }
+
+  assert.deepEqual(buildPinArgs(stamp, { pinCommit: true, identity: hunt }), ['-Commit', stamp.commit, '-Branch', 'hunt-bots'])
+  assert.deepEqual(buildPinArgs(stamp, { pinCommit: false, identity: hunt }), [])
+  assert.deepEqual(buildPosixPinArgs({ ...posix, pinCommit: false, identity: hunt }), ['--dir', '/root', '--hermes-home', '/home'])
+  // Stock repairs keep passing the stamp branch.
+  assert.deepEqual(buildPinArgs(stamp, { pinCommit: false, identity: {} }), ['-Branch', 'hunt-bots'])
+  assert.deepEqual(buildPosixPinArgs({ ...posix, pinCommit: false, identity: {} }), [
+    '--dir',
+    '/root',
+    '--hermes-home',
+    '/home',
+    '--branch',
+    'hunt-bots'
+  ])
 })
 
 test('runBootstrap bails immediately when the signal is already aborted', async () => {

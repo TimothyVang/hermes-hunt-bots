@@ -194,9 +194,13 @@ stock full client (bootstrap payload) with these changes only:
   (`product-identity.cjs`), so its storage, plugin choices and single-instance
   lock never mix with stock Hermes. It has no release feed (`channel: null`) and no
   in-app updater (stamped `external`, like commit builds): the checkout hand-off would
-  rebuild stock Hermes. Update manually by pulling and rebuilding with `pack:hunt`.
-- First-run install: the bootstrap fetches `install.ps1`/`install.sh` from this fork
+  rebuild stock Hermes. Settings say to update by pulling and rerunning `pack:hunt`,
+  and Uninstall says to delete the app folder.
+- First-run install: a fresh install fetches `install.ps1`/`install.sh` from this fork
   (`TimothyVang/hermes-hunt-bots`) and clones it via `HERMES_REPO_URL`, never upstream.
+  A repair of an existing checkout (`HERMES_HOME/hermes-agent`, shared with stock
+  Hermes) keeps that checkout's origin and passes no fork branch, so stock Hermes and
+  `hermes update` never start following the fork.
 - Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
 - Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
   and Cybersecurity workspace plugins are bundled straight from `framework/`

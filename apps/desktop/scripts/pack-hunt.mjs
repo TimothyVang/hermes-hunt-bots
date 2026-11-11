@@ -8,9 +8,14 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const app = join(fileURLToPath(new URL('.', import.meta.url)), '..')
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+// Under npm, rerun npm's own CLI with this Node and no shell (a shell with args is Node 26's
+// DEP0190). Run directly without npm, fall back to the npm launcher, which on Windows needs one.
+const npmCli = process.env.npm_execpath
+const npm = npmCli
+  ? { cmd: process.execPath, args: [npmCli], shell: false }
+  : { cmd: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: [], shell: true }
 const env = { ...process.env, HERMES_DESKTOP_VARIANT: 'hunt' }
-const run = (cmd, args) => execFileSync(cmd, args, { cwd: app, env, stdio: 'inherit', shell: cmd === npm })
+const runNpm = args => execFileSync(npm.cmd, [...npm.args, ...args], { cwd: app, env, stdio: 'inherit', shell: npm.shell })
 const git = (...args) => execFileSync('git', ['-C', app, ...args], { encoding: 'utf8' })
 
 // Restoring with checkout would also drop someone's own edits to assets/.
@@ -20,8 +25,8 @@ if (git('status', '--porcelain', '--', 'assets').trim()) {
 }
 
 try {
-  run(npm, ['run', 'build', '--', '--icons', '../../variants/hunt/icons'])
-  run(npm, ['run', 'builder', '--', ...process.argv.slice(2)])
+  runNpm(['run', 'build', '--', '--icons', '../../variants/hunt/icons'])
+  runNpm(['run', 'builder', '--', ...process.argv.slice(2)])
 } finally {
   git('checkout', '--', 'assets')
 }

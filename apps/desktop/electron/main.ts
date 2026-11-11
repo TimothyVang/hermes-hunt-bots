@@ -17463,7 +17463,10 @@ registerDesktopUninstallIpc({
   fallbackSummary: fallbackUninstallSummary,
   probeSummary: probeUninstallSummary,
   runUninstall: runDesktopUninstall,
-  removableAppPath: () => resolveRemovableAppPath(process.execPath, process.platform, process.env),
+  // Hunt Command runs from wherever its owner built it (e.g. win-unpacked): name that folder.
+  removableAppPath: () =>
+    resolveRemovableAppPath(process.execPath, process.platform, process.env) ??
+    (PRODUCT_IDENTITY.hunt ? path.dirname(process.execPath) : null),
   openAppsSettings: () => shell.openExternal('ms-settings:appsfeatures')
 })
 
