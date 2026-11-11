@@ -52,6 +52,8 @@ WORK_HUNTS = PRACTICE / 'work-hunts'
 REMINDER = ('Reminder: export only your own unclassified, non-CUI work data (planning tickets 01 and 12); '
             'CUI/NSS data never goes this way.')
 READY_SECONDS = 2 * 3600
+# Bounds on the export and import children; on expiry the child is killed before its own cleanup runs.
+EXPORT_SECONDS = IMPORT_SECONDS = 3600
 
 
 def parse_args(argv=None):
@@ -63,7 +65,7 @@ def parse_args(argv=None):
     ap.add_argument('--hosts', help='comma-separated exact host.name values (default: every host)')
     ap.add_argument('--ca-file', help='PEM CA bundle to verify the server with instead of the system trust store')
     ap.add_argument('--case-id', required=True, help='new case ID, [a-z0-9-]{3,64}; an existing case is refused')
-    ap.add_argument('--follow-ups', type=int, default=6, help='follow-up hunters (0-%d, default 6)' % MAX_FOLLOW_UPS)
+    ap.add_argument('--follow-ups', type=int, default=6, help=f'follow-up hunters (0-{MAX_FOLLOW_UPS}, default 6)')
     ap.add_argument('--max-events', type=int, default=DEFAULT_MAX_EVENTS,
                     help='refuse a window holding more documents (default %(default)s)')
     ap.add_argument('--operator', help='two-decision mode: you approve the scope and decide the final report')
@@ -108,14 +110,14 @@ def parse_args(argv=None):
             gate = drive_gates.parse_args(['preflight', *args.gate_args])
     except SystemExit:
         ap.error(errors.getvalue().strip().rsplit(' error: ', 1)[-1])
-    args.operator, args.delegated_by = gate.operator, gate.delegated_by
+    args.operator, args.delegated_by, args.reason = gate.operator, gate.delegated_by, gate.reason
     return args
 
 
 def child(cmd, env, timeout):
     """(exit code, stdout, stderr) of one child run from framework/."""
     r = subprocess.run(cmd, cwd=FRAMEWORK, env=env, capture_output=True, text=True, encoding='utf-8',
-                       errors='replace', timeout=timeout)
+                       errors='replace', timeout=timeout, check=False)
     return r.returncode, r.stdout, r.stderr
 
 
@@ -165,7 +167,7 @@ def wait_ready(holder, log_path, case_id, timeout=READY_SECONDS, poll=5):
 
 def drive(workflow, gate_args):
     """Run the gate driver in the foreground so its WAITING FOR OPERATOR lines and decision commands show."""
-    return subprocess.run(drive_command(workflow, gate_args), env=DEFAULT_LANE.env()).returncode
+    return subprocess.run(drive_command(workflow, gate_args), env=DEFAULT_LANE.env(), check=False).returncode
 
 
 def drive_command(workflow, gate_args):
@@ -192,7 +194,16 @@ def main(args):
            '--start', args.start, '--end', args.end, '--output', str(export), '--max-events', str(args.max_events)]
     cmd += ['--hosts', ','.join(args.hosts)] if args.hosts else []
     cmd += ['--ca-file', args.ca_file] if args.ca_file else []
-    rc, out, err = child(cmd, dict(os.environ, **{API_KEY_ENV: key}), 3600)
+    try:
+        rc, out, err = child(cmd, dict(os.environ, **{API_KEY_ENV: key}), EXPORT_SECONDS)
+    except BaseException as failure:
+        # A child killed on timeout or Ctrl+C cannot remove its partial file of real work data.
+        export.unlink(missing_ok=True)
+        meta.unlink(missing_ok=True)
+        if isinstance(failure, subprocess.TimeoutExpired):
+            raise SystemExit(f'export timed out after {EXPORT_SECONDS // 60} minutes; the partial export was removed. '
+                             'Narrow the window or --hosts') from None
+        raise
     result = last_json(out)
     if rc or 'error' in result:
         raise SystemExit('export failed: ' + str(result.get('error') or err[-300:]))
@@ -204,19 +215,30 @@ def main(args):
         export.unlink()
         meta.unlink()
         raise SystemExit('the window holds no documents; nothing was imported and the empty export was removed')
-    record = {'case_id': args.case_id, 'export': {name: result[name] for name in (
-        'host', 'index', 'time_range_utc', 'hosts', 'event_count', 'elastic_version', 'ndjson', 'output', 'meta')}}
+    record = {'case_id': args.case_id, 'gates': (
+        {'mode': 'two-decisions', 'operator': args.operator} if args.operator else
+        {'mode': 'delegated', 'delegated_by': args.delegated_by, 'reason': args.reason}),
+        'export': {name: result[name] for name in (
+            'host', 'index', 'time_range_utc', 'hosts', 'event_count', 'elastic_version', 'ndjson', 'output', 'meta')}}
 
-    rc, out, err = child([PYTHON, '-B', '-m', 'hunt_lab.import_elastic', 'import', '--input', str(export),
-                          '--case-id', args.case_id, '--start', args.start, '--end', args.end,
-                          '--evidence-dir', str(evidence), '--max-events', str(args.max_events)], None, 3600)
+    kept = f'the export is kept at {export} (delete it and its .meta.json to reuse this --case-id)'
+    try:
+        rc, out, err = child([PYTHON, '-B', '-m', 'hunt_lab.import_elastic', 'import', '--input', str(export),
+                              '--case-id', args.case_id, '--start', args.start, '--end', args.end,
+                              '--evidence-dir', str(evidence), '--max-events', str(args.max_events)], None, IMPORT_SECONDS)
+    except BaseException as failure:
+        # The case folder did not exist before this run, so all of it is the killed import's partial output.
+        shutil.rmtree(case_dir, ignore_errors=True)
+        if isinstance(failure, subprocess.TimeoutExpired):
+            raise SystemExit(f'import timed out after {IMPORT_SECONDS // 60} minutes; the partial case was removed; '
+                             + kept) from None
+        raise
     result = last_json(out)
     if rc or 'error' in result:
         # The import removes its evidence folder on failure; the case folder it created is empty.
         with contextlib.suppress(OSError):
             case_dir.rmdir()
-        raise SystemExit('import failed: ' + str(result.get('error') or err[-300:])
-                         + f'; the export is kept at {export} (delete it and its .meta.json to reuse this --case-id)')
+        raise SystemExit('import failed: ' + str(result.get('error') or err[-300:]) + '; ' + kept)
     say(f"IMPORT case {result['case_id']} data_origin={result['data_origin']} {result['event_count']} events "
         f"{result['host_count']} hosts ({result['outside_window']} outside the window) -> {evidence}")
     record['import'] = {name: result[name] for name in ('data_origin', 'event_count', 'host_count', 'outside_window', 'files')}
@@ -224,13 +246,27 @@ def main(args):
     work.mkdir(parents=True)
     holder_log = work / 'holder.log'
     holder = start_holder(evidence, holder_log, args.reseed_python)
-    say(f'loading the lab VM (holder pid {holder.pid}, log {holder_log}); this takes several minutes')
+    record['lab'] = {'holder_pid': holder.pid, 'holder_log': str(holder_log)}
     try:
-        ready = wait_ready(holder, holder_log, args.case_id)
-    except SystemExit as failure:
-        raise SystemExit(f'{failure}; {stop_hint(holder.pid)}') from None
+        return hunt(args, record, work, holder)
+    except BaseException as failure:
+        # Whatever ends the run early (a failed step, Ctrl+C, an unreadable status), the lab stays loaded and a
+        # started workflow may wait at a gate: keep the record and say how to resume and how to stop.
+        record['ended_early'] = type(failure).__name__ + (f': {failure}' if str(failure) else '')
+        (work / 'hunt.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+        if 'workflow' in record:
+            print('resume the gate driver with: '
+                  + drive_gates.shell_join(drive_command(record['workflow'], args.gate_args)), flush=True)
+        print(f"the lab stays loaded with case {args.case_id}; {stop_hint(holder.pid)}. Record: {work / 'hunt.json'}",
+              flush=True)
+        raise
+
+
+def hunt(args, record, work, holder):
+    say(f"loading the lab VM (holder pid {holder.pid}, log {record['lab']['holder_log']}); this takes several minutes")
+    ready = wait_ready(holder, Path(record['lab']['holder_log']), args.case_id)
     print(ready, flush=True)  # the holder's line already carries its time
-    record['lab'] = {'ready': ready, 'holder_pid': holder.pid, 'holder_log': str(holder_log)}
+    record['lab']['ready'] = ready
 
     base_path = work / 'lab-input.json'
     rc, out, err = tcli('lab-input', '--tool-driven', '--data-origin', DATA_ORIGIN, '--state-dir',
@@ -238,16 +274,16 @@ def main(args):
     if rc:
         raise SystemExit('lab-input failed: ' + err[-300:])
     base = json.loads(base_path.read_text(encoding='utf-8'))
-    hunt = dict(base, parallel=True, follow_ups=args.follow_ups)
+    hunt_input = dict(base, parallel=True, follow_ups=args.follow_ups)
     input_path = work / 'input.json'
-    input_path.write_text(json.dumps(hunt, indent=2), encoding='utf-8')
+    input_path.write_text(json.dumps(hunt_input, indent=2), encoding='utf-8')
     workflow = f"work-hunt-{args.case_id}-{time.strftime('%Y%m%d%H%M%S')}"
     rc, out, err = tcli('practice', workflow, '--input', str(input_path), '--rounds', '1')
     if rc:
         raise SystemExit('hunt start failed: ' + err[-300:])
     child_id = f'{workflow}:round:001'
     say(f'HUNT STARTED {workflow} (parallel, {args.follow_ups} follow-ups) on case {args.case_id}')
-    record.update(workflow=workflow, input=str(input_path), gate_mode=args.gate_args[0])
+    record.update(workflow=workflow, input=str(input_path))
     if args.operator:
         print(f'Your two decisions (HUNT-BOTS.md rule 3) are yours alone, {args.operator}: approve the scope and '
               'accept or reject the final report. When the driver below prints WAITING FOR OPERATOR, run the '

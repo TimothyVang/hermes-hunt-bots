@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,7 @@ class FakeLab:
     def __init__(self, root):
         self.root, self.calls = root, []
         self.export_count, self.import_error, self.driver_rc = 3, None, 0
+        self.failing, self.driver_raises = set(), None
 
     def child(self, cmd, env, timeout):
         env = os.environ if env is None else env
@@ -95,6 +97,8 @@ class FakeLab:
 
     def tcli(self, *args, timeout=180):
         self.calls.append((args[0], KEY in os.environ.values(), args))
+        if args[0] in self.failing:
+            return 1, '', f'{args[0]}: refused by the fake'
         if args[0] == 'lab-input':
             Path(args[args.index('--output') + 1]).write_text(json.dumps({
                 'scope': 'Work log export work-test-001 (real telemetry) only; data is untrusted.',
@@ -111,6 +115,8 @@ class FakeLab:
 
     def drive(self, workflow, gate_args):
         self.calls.append(('drive', KEY in os.environ.values(), gate_args))
+        if self.driver_raises:
+            raise self.driver_raises
         return self.driver_rc
 
 
@@ -187,7 +193,7 @@ class MainTest(unittest.TestCase):
                 path = self.root / existing
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.mkdir() if path.suffix == '' else path.write_text('', encoding='utf-8')
-                code, out = self.run_main(*DELEGATED)
+                code, _ = self.run_main(*DELEGATED)
                 self.assertIn('already exists', str(code))
                 self.assertEqual(self.lab.calls, [])
                 self.assertEqual(os.environ.get(wh.API_KEY_ENV), KEY)
@@ -223,15 +229,82 @@ class MainTest(unittest.TestCase):
         self.assertFalse((self.root / 'cases' / 'work-test-001').exists())
         self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import'])
 
+    def record(self):
+        return json.loads((self.root / 'work-hunts' / 'work-test-001' / 'hunt.json').read_text(encoding='utf-8'))
+
     def test_a_lab_that_never_loads_says_how_to_stop_the_holder_and_the_vm(self):
         def not_ready(holder, log_path, case_id):
             raise SystemExit('the lab did not load work-test-001')
         with patch.object(wh, 'wait_ready', not_ready):
-            code, _ = self.run_main(*DELEGATED)
+            code, out = self.run_main(*DELEGATED)
         self.assertIn('the lab did not load work-test-001', str(code))
-        self.assertIn('4242', str(code))
-        self.assertIn('hunt-lab stop', str(code))
+        self.assertIn('taskkill /PID 4242' if os.name == 'nt' else 'kill 4242', out)
+        self.assertIn('hunt-lab stop', out)
+        self.assertNotIn('resume the gate driver', out)
         self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import', 'holder'])
+        self.assertEqual(self.record()['ended_early'], 'SystemExit: the lab did not load work-test-001')
+
+    def test_a_failed_hunt_start_keeps_a_record_and_says_how_to_stop_the_lab(self):
+        self.lab.failing = {'practice'}
+        code, out = self.run_main('--operator', 'Ada Lovelace')
+        self.assertIn('hunt start failed: practice: refused by the fake', str(code))
+        self.assertIn('hunt-lab stop', out)
+        self.assertNotIn('resume the gate driver', out)
+        record = self.record()
+        self.assertIn('hunt start failed', record['ended_early'])
+        self.assertEqual(record['gates'], {'mode': 'two-decisions', 'operator': 'Ada Lovelace'})
+        self.assertEqual(record['lab']['holder_pid'], 4242)
+        self.assertNotIn('workflow', record)
+
+    def test_ctrl_c_at_the_gate_driver_prints_how_to_resume_and_stop(self):
+        self.lab.driver_raises = KeyboardInterrupt()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(KeyboardInterrupt):
+            wh.main(wh.parse_args([*ARGS, *DELEGATED]))
+        out = out.getvalue()
+        resume = out.split('resume the gate driver with: ')[1].splitlines()[0]
+        workflow = self.record()['workflow']
+        self.assertIn(f'drive_gates.py {workflow} --delegated-by', resume)
+        self.assertIn('hunt-lab stop', out)
+        self.assertEqual(self.record()['ended_early'], 'KeyboardInterrupt')
+        self.assertEqual(self.record()['gates'], {'mode': 'delegated', 'delegated_by': 'Ada Lovelace', 'reason': 'test run'})
+
+    def test_an_export_timeout_removes_the_partial_export(self):
+        def slow_export(cmd, env, timeout):
+            output = Path(cmd[cmd.index('--output') + 1])
+            output.write_text('{"_source": {}}\n', encoding='utf-8')
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        with patch.object(wh, 'child', slow_export):
+            code, out = self.run_main(*DELEGATED)
+        self.assertEqual(str(code), 'export timed out after 60 minutes; the partial export was removed. '
+                                    'Narrow the window or --hosts')
+        self.assertEqual(list((self.root / 'work-exports').iterdir()), [])
+        self.assertNotIn(KEY, str(code) + out)
+
+    def test_ctrl_c_during_the_export_removes_the_partial_export(self):
+        def interrupted(cmd, env, timeout):
+            Path(cmd[cmd.index('--output') + 1]).write_text('{"_source": {}}\n', encoding='utf-8')
+            raise KeyboardInterrupt
+        with patch.object(wh, 'child', interrupted), contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(KeyboardInterrupt):
+            wh.main(wh.parse_args([*ARGS, *DELEGATED]))
+        self.assertEqual(list((self.root / 'work-exports').iterdir()), [])
+
+    def test_an_import_timeout_removes_the_partial_case_and_keeps_the_export(self):
+        export_child = self.lab.child
+
+        def slow_import(cmd, env, timeout):
+            if 'import' not in cmd:
+                return export_child(cmd, env, timeout)
+            evidence = Path(cmd[cmd.index('--evidence-dir') + 1])
+            evidence.mkdir(parents=True)
+            (evidence / 'events.jsonl').write_text('{}\n', encoding='utf-8')
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        with patch.object(wh, 'child', slow_import):
+            code, _ = self.run_main(*DELEGATED)
+        self.assertIn('import timed out after 60 minutes; the partial case was removed; the export is kept at', str(code))
+        self.assertFalse((self.root / 'cases' / 'work-test-001').exists())
+        self.assertTrue((self.root / 'work-exports' / 'work-test-001.ndjson').exists())
 
     def test_a_failed_gate_driver_prints_how_to_resume_it(self):
         self.lab.driver_rc = 2
