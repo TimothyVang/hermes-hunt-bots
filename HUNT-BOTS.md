@@ -66,7 +66,9 @@ Start any task with `/deep-mode:poteto <task>`. The project skill **`hunt-bots-p
 Reviews run on the contributor's or maintainer's own agent, through deep-mode's PR review (`skill://deep-mode/references/techniques/pr-review.md`). Its reviewers read this file and `framework/AGENTS.md` as the project constraints.
 
 - **Before opening a PR,** self-review the branch in local mode and fix, dismiss with a reason, or ask for each finding. Put the review line (`review: ready at <short sha>, ...`) in the PR's `## Verification`.
-- **Maintainers** review an open PR with `/deep-mode:review-pr <number>`. It keeps only findings a code read or a run proves and posts one GitHub review after the maintainer says yes; a new push gets a re-review.
+- **Maintainers** review an open PR with `/deep-mode:review-pr <number>`. It keeps only findings a code read or a run proves and posts one comment-only review (it asks first on a repository that isn't yours); a new push gets a re-review.
+- **Optional second opinion:** deep-mode's pr-agent technique runs PR-Agent on your own Claude subscription (`describe`, `review`, `improve`) and posts to your PR; triage its findings like any other. It draws on the subscription's usage limits; there is no separate service to pay for.
+- deep-mode's security-audit gate is not enabled here: it needs GitHub Actions, which this project keeps off.
 - A clean review never replaces the gate or the proof on the real app.
 
 Reviewers flag these as blocking, in addition to the rules above:
