@@ -33,7 +33,13 @@ length as the event groups), by one of its capture frames written frame-<n>
 (tshark frame.number of a packet of that group's sessions) or one of its intel
 record IDs (ioc-NNNNN: a domain/IP record for an indicator of the fact that
 those sessions carry, listed only in the first such group of the fact). Keys
-without these lists score on event IDs alone.
+without these lists score on event IDs alone. When the key also lists
+evidence_sibling_groups (generate writes them for attack facts: the other events
+of an attack-lineage process with the same process.entity_id and event.category
+as one of the group's events; never an event any fact's groups accept, and never
+one that would sit beside two groups), every report also gets a with_siblings
+score in which those events cite their group too. The top-level found, by_kind
+and decoys_cleared stay strict.
 Citations and names are taken from claims; coverage facts also accept
 limitations. A decoy fact is flagged misattributed when a claim names one of
 its distinctive entities with compromise/malicious language and no benign
@@ -372,6 +378,8 @@ class Scenario:
         self.session_of = {}
         self.tags = {}
         self.group_tags = {}
+        self.process_events = {}
+        self.started = {}
         self.family = Counter()
         self.used_external = set()
         self.ip_of = {}
@@ -512,6 +520,9 @@ class Scenario:
         seq = len(self.rows)
         self.rows.append((ms, seq, json.dumps(row, sort_keys=True)))
         self.family[family] += 1
+        entity_id = (fields.get("process") or {}).get("entity_id")
+        if entity_id:
+            self.process_events.setdefault((entity_id, category[0]), []).append(seq)
         return seq
 
     # ----- processes ----------------------------------------------------
@@ -530,6 +541,8 @@ class Scenario:
                 "user": self.user(user)}
             seq = self.emit(ms, host, SYSMON, "1", ["process"], ["start"], "Process Create (rule: ProcessCreate)",
                             fields, "sysmon:1", channel=SYSMON_CHANNEL, message="Process Create")
+        if seq is not None:
+            self.started[seq] = process["entity_id"]
         process["seq"] = seq
         return process
 
@@ -1229,6 +1242,28 @@ class Scenario:
                 ids = {key for value in touched for key in records.get(value, ())} - listed
                 listed |= ids
                 fact["evidence_intel_groups"].append(sorted(ids))
+
+    def cite_siblings(self, facts):
+        """Per evidence group of an attack fact: the other events of the same process (process.entity_id) and the
+        same event.category as one of the group's events. Only processes whose start event an attack group
+        accepts count, so a shared benign process (a user's OUTLOOK.EXE) lends nothing; an event any fact's
+        groups accept, decoys included, is never a sibling; and an event that would be a sibling of two or more
+        groups (synchost.exe's DNS lookup of the lateral-movement target sits beside its C2 and tunnel queries)
+        is listed in none, so a sibling always points at one step."""
+        groups = {fact["fact_id"]: [{seq for tag in tags for seq in self.tags.get(tag, ())} for tags in self.group_tags[fact["fact_id"]]]
+                  for fact in facts}
+        accepted = set().union(*(seqs for fact_groups in groups.values() for seqs in fact_groups))
+        lineage = {self.started[seq] for fact in facts if fact["kind"] == "attack"
+                   for seqs in groups[fact["fact_id"]] for seq in seqs if seq in self.started}
+        key_of = {seq: key for key, seqs in self.process_events.items() if key[0] in lineage
+                  for seq in seqs if seq in accepted}
+        candidates = {fact["fact_id"]: [{sibling for seq in seqs if seq in key_of for sibling in self.process_events[key_of[seq]]} - accepted
+                                        if fact["kind"] == "attack" else set() for seqs in groups[fact["fact_id"]]]
+                      for fact in facts}
+        counts = Counter(seq for fact_groups in candidates.values() for siblings in fact_groups for seq in siblings)
+        for fact in facts:
+            fact["evidence_sibling_groups"] = [sorted(self.event_ids[seq] for seq in siblings if counts[seq] == 1)
+                                               for siblings in candidates[fact["fact_id"]]]
 
     def facts(self):
         c = self.chain
@@ -2141,6 +2176,7 @@ def generate(size, seed, case_id, evidence_dir, truth_dir, story="a"):
     scenario.build()
     scenario.ordered_rows()
     facts = scenario.facts()
+    scenario.cite_siblings(facts)
     intel = scenario.intel()
     tracked = scenario.link_sessions()
     truth = {"schema_version": SCHEMA_VERSION, "case_id": case_id, "facts": facts,
@@ -2222,6 +2258,9 @@ FRAME_ID = re.compile(r"\bframe-(\d+)\b", re.IGNORECASE)
 INTEL_ID = re.compile(r"\bioc-\d{5,}\b")
 # Optional per-fact lists parallel to evidence_event_groups; each entry is another way to cite that group.
 ALTERNATIVE_GROUPS = (("evidence_frame_groups", "cited_frames"), ("evidence_intel_groups", "cited_intel_ids"))
+# Optional per-fact list parallel to evidence_event_groups: events of the same process and event category as a
+# group's events. They count only toward the separate with_siblings score; the strict score never reads them.
+SIBLING_GROUPS = "evidence_sibling_groups"
 COMPROMISE_TERMS = ("malicious", "compromise", "compromised", "attacker", "adversary", "intrusion", "threat actor",
                     "command-and-control", "command and control", "c2", "exfiltration", "exfiltrate", "exfiltrated",
                     "lateral movement", "backdoor", "implant", "brute force", "brute-force", "password spray", "malware")
@@ -2282,10 +2321,24 @@ def validate_truth(truth):
             raise ValueError("truth fact is missing required keys")
         if not fact["evidence_event_groups"] or not all(isinstance(g, list) and g for g in fact["evidence_event_groups"]):
             raise ValueError("truth fact %s has empty evidence groups" % fact["fact_id"])
-        for key, _ in ALTERNATIVE_GROUPS:
+        for key in [key for key, _ in ALTERNATIVE_GROUPS] + [SIBLING_GROUPS]:
             if key in fact and not (isinstance(fact[key], list) and len(fact[key]) == len(fact["evidence_event_groups"])
                                     and all(isinstance(g, list) and all(isinstance(i, str) for i in g) for g in fact[key])):
                 raise ValueError("truth fact %s has malformed %s" % (fact["fact_id"], key))
+
+
+def tally(details, blamed, status):
+    """(found, by_kind, decoys_cleared) over fact details, reading each fact's (found, cited_groups) via status."""
+    found, by_kind, decoys_cleared = 0, {}, 0
+    for detail in details:
+        fact_found, cited_groups = status(detail)
+        found += int(fact_found)
+        bucket = by_kind.setdefault(detail["kind"], {"total": 0, "found": 0, "partial": 0})
+        bucket["total"] += 1
+        bucket["found"] += int(fact_found)
+        bucket["partial"] += int(not fact_found and bool(cited_groups))
+        decoys_cleared += int(detail["kind"] == "decoy" and fact_found and detail["fact_id"] not in blamed)
+    return found, by_kind, decoys_cleared
 
 
 def score_report(truth, report):
@@ -2300,6 +2353,7 @@ def score_report(truth, report):
     attack_entities = {value.lower() for fact in truth["facts"] if fact["kind"] == "attack"
                        for values in fact["entities"].values() for value in values}
     details, misattributed = [], []
+    with_siblings = any(SIBLING_GROUPS in fact for fact in truth["facts"])
     for fact in truth["facts"]:
         coverage = fact["kind"] == "coverage"
         cited = claim_ids | limitation_ids if coverage else claim_ids
@@ -2318,6 +2372,12 @@ def score_report(truth, report):
         for key, label in alternatives:
             # (length, text) puts frame-9 before frame-10.
             detail[label] = sorted(cited & {item for group in fact[key] for item in group}, key=lambda item: (len(item), item))
+        if with_siblings:
+            siblings = fact.get(SIBLING_GROUPS) or [[] for _ in groups]
+            wider = [index for index, ids in enumerate(accepted) if cited & (ids | set(siblings[index]))]
+            detail["cited_sibling_ids"] = sorted(cited & {eid for group in siblings for eid in group})
+            detail["with_siblings"] = {"found": len(wider) == len(groups) and bool(named), "cited_groups": wider,
+                                       "missing_groups": [i for i in range(len(groups)) if i not in wider]}
         details.append(detail)
         if fact["kind"] != "decoy":
             continue
@@ -2329,21 +2389,20 @@ def score_report(truth, report):
             if hits and terms and not has_term(statement, BENIGN_TERMS):
                 misattributed.append({"fact_id": fact["fact_id"], "claim_id": claim.get("claim_id"),
                                       "entities": hits, "terms": terms})
-    found = sum(detail["found"] for detail in details)
     blamed = {item["fact_id"] for item in misattributed}
-    by_kind = {}
-    for detail in details:
-        bucket = by_kind.setdefault(detail["kind"], {"total": 0, "found": 0, "partial": 0})
-        bucket["total"] += 1
-        bucket["found"] += int(detail["found"])
-        bucket["partial"] += int(not detail["found"] and bool(detail["cited_groups"]))
-    decoys_cleared = sum(1 for detail in details
-                         if detail["kind"] == "decoy" and detail["found"] and detail["fact_id"] not in blamed)
+    found, by_kind, decoys_cleared = tally(details, blamed, lambda detail: (detail["found"], detail["cited_groups"]))
     method = ("keyword and event-, frame- and intel-ID citation matching" if any(
         key in fact for fact in truth["facts"] for key, _ in ALTERNATIVE_GROUPS) else "keyword and event-ID citation matching")
-    return {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
-            "facts": details, "misattributed_decoys": misattributed,
-            "method": method + " against the operator key; not human judgment"}
+    result = {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
+              "facts": details, "misattributed_decoys": misattributed,
+              "method": method + " against the operator key; not human judgment"}
+    if with_siblings:
+        found, by_kind, decoys_cleared = tally(details, blamed, lambda detail: (
+            detail["with_siblings"]["found"], detail["with_siblings"]["cited_groups"]))
+        result["with_siblings"] = {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
+                                   "method": "as found, but a group is also cited by an event of the same process and "
+                                             "event category as one of its events (evidence_sibling_groups)"}
+    return result
 
 
 def score(truth_path, report_paths):

@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from hunt_lab import scenario
@@ -29,14 +30,14 @@ PINNED_TINY_A = {
     "traffic.pcap": "7e4aff3de6f373253dfb873b4647a90a8a8de1ff077e5155fd311b0bb83743c8",
     "intel.jsonl": "a72e80d54060d5fa2ba17133827c007b3a5950e9078c1ca1c6b9a5342e2d15c6",
     "case.json": "34b75640a1b64421d2af9f6ab2282f27823c0220d03b1a66a9f63220c708b549",
-    "truth.json": "cc740d80c3b461a0d02343baae47ab5fb861a21957a36b64445a962eee231b31",
+    "truth.json": "7c4b5859e750c44a7456831abf7da1ee4968530b1af364fff58a30ad2b481587",
 }
 PINNED_MEDIUM_A = {
     "events.jsonl": "3aff6df769254ddb2aa5bf71fa006f1efb9c2e7c3b335a670204158590517060",
     "traffic.pcap": "b50612822339f4e95974c61fd94ff71fcd32e77034b37a629c1049c162e59d77",
     "intel.jsonl": "a17f8bf3e5604f4ae0063bbddfe8cc64704ac25736e0307199e66cb35b04924e",
     "case.json": "fbc0636ac931f0509a187a147e3d77324a28155fb2a0a631832628a77aa51811",
-    "truth.json": "844d90b3cee116c0348224669f8a4022a5ad3958cc0c11f95c9e800b7256708e",
+    "truth.json": "efbe22f0949a172832c2d536a15984ea7f350ef8c7ecebb6747abe9a82f6d74d",
 }
 
 
@@ -249,9 +250,10 @@ class GeneratedTinyCase(unittest.TestCase):
         self.assertEqual({fact["kind"] for fact in facts}, {"attack", "decoy", "benign-pattern", "coverage"})
         for fact in facts:
             self.assertEqual(set(fact), {"fact_id", "kind", "observation", "entities", "evidence_event_groups",
-                                         "evidence_frame_groups", "evidence_intel_groups"})
+                                         "evidence_frame_groups", "evidence_intel_groups", "evidence_sibling_groups"})
             self.assertEqual(len(fact["evidence_frame_groups"]), len(fact["evidence_event_groups"]))
             self.assertEqual(len(fact["evidence_intel_groups"]), len(fact["evidence_event_groups"]))
+            self.assertEqual(len(fact["evidence_sibling_groups"]), len(fact["evidence_event_groups"]))
             self.assertEqual(set(fact["entities"]), {"hosts", "users", "processes", "domains", "ips"})
             self.assertTrue(fact["evidence_event_groups"])
             for group in fact["evidence_event_groups"]:
@@ -259,6 +261,22 @@ class GeneratedTinyCase(unittest.TestCase):
                 for event_id in group:
                     self.assertIn(event_id, self.by_id, fact["fact_id"])
         self.check_story_truth(facts)
+
+    def test_sibling_events_share_process_and_category_and_are_never_key_events(self):
+        accepted = {eid for fact in self.truth["facts"] for group in fact["evidence_event_groups"] for eid in group}
+        listed = []
+        for fact in self.truth["facts"]:
+            for group, siblings in zip(fact["evidence_event_groups"], fact["evidence_sibling_groups"]):
+                if fact["kind"] != "attack":
+                    self.assertEqual(siblings, [], fact["fact_id"])
+                shapes = {(self.by_id[eid].get("process", {}).get("entity_id"), self.by_id[eid]["event"]["category"][0])
+                          for eid in group}
+                for eid in siblings:
+                    row = self.by_id[eid]
+                    self.assertIn((row["process"]["entity_id"], row["event"]["category"][0]), shapes, eid)
+                    self.assertNotIn(eid, accepted)
+                listed.extend(siblings)
+        self.assertEqual(len(listed), len(set(listed)))
 
     def fact_events(self, fact_id, group=0):
         fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
@@ -567,6 +585,12 @@ OLD_STYLE_RESULT = {
                               "terms": ["compromised", "attacker"]}],
     "method": "keyword and event-ID citation matching against the operator key; not human judgment",
 }
+# The same key with sibling lists: evt-000011/evt-000012 sit beside the attack fact's groups.
+SIBLING_KEY = dict(OLD_STYLE_KEY, facts=[
+    dict(OLD_STYLE_KEY["facts"][0], evidence_sibling_groups=[["evt-000011"], ["evt-000012"]]),
+    dict(OLD_STYLE_KEY["facts"][1], evidence_sibling_groups=[[]]),
+    dict(OLD_STYLE_KEY["facts"][2], evidence_sibling_groups=[[]]),
+])
 
 
 class Scoring(unittest.TestCase):
@@ -598,6 +622,34 @@ class Scoring(unittest.TestCase):
         short = dict(OLD_STYLE_KEY["facts"][0], evidence_frame_groups=[["frame-7"]])
         with self.assertRaises(ValueError):
             scenario.score_report(dict(OLD_STYLE_KEY, facts=[short]), {"claims": []})
+
+    def test_sibling_event_cites_its_group_only_in_the_with_siblings_score(self):
+        report = {"claims": [{"claim_id": "c1", "statement": "ws-01 beaconed: evt-000001 evt-000012"},
+                             {"claim_id": "c2", "statement": "bk-01 ran its routine backup evt-000004"}]}
+        strict, wide = scenario.score_report(OLD_STYLE_KEY, report), scenario.score_report(SIBLING_KEY, report)
+        siblings = wide.pop("with_siblings")
+        attack = wide["facts"][0]
+        self.assertEqual(attack.pop("cited_sibling_ids"), ["evt-000012"])
+        self.assertEqual(attack.pop("with_siblings"), {"found": True, "cited_groups": [0, 1], "missing_groups": []})
+        for detail in wide["facts"][1:]:
+            self.assertEqual(detail.pop("cited_sibling_ids"), [])
+            detail.pop("with_siblings")
+        # The strict score is untouched by sibling lists: same as the key without them.
+        self.assertEqual(wide, strict)
+        self.assertEqual((strict["found"], strict["by_kind"]["attack"]), (1, {"total": 1, "found": 0, "partial": 1}))
+        self.assertEqual((siblings["found"], siblings["by_kind"]["attack"]), (2, {"total": 1, "found": 1, "partial": 0}))
+        self.assertEqual((siblings["by_kind"]["decoy"], siblings["decoys_cleared"]), (strict["by_kind"]["decoy"], strict["decoys_cleared"]))
+
+    def test_sibling_of_one_group_does_not_cite_another_and_decoys_get_no_siblings(self):
+        # evt-000011 sits beside group 0 only; citing it twice still leaves group 1 missing.
+        report = {"claims": [{"claim_id": "c1", "statement": "ws-01 evt-000011 and again evt-000011"}]}
+        detail = scenario.score_report(SIBLING_KEY, report)["facts"][0]["with_siblings"]
+        self.assertEqual((detail["found"], detail["missing_groups"]), (False, [1]))
+        decoy = scenario.score_report(SIBLING_KEY, {"claims": [{"claim_id": "c1", "statement": "bk-01 benign evt-000012"}]})
+        self.assertEqual(decoy["with_siblings"]["decoys_cleared"], 0)
+        malformed = dict(SIBLING_KEY["facts"][0], evidence_sibling_groups=[["evt-000011"]])
+        with self.assertRaises(ValueError):
+            scenario.score_report(dict(SIBLING_KEY, facts=[malformed]), {"claims": []})
 
     def test_event_citations_score_the_same_with_or_without_alternatives(self):
         stripped = dict(self.truth, facts=[{key: value for key, value in fact.items()
@@ -726,6 +778,33 @@ class Scoring(unittest.TestCase):
         bad = {"claims": [{"claim_id": "c1", "statement": "feupload.exe on pc-mkt-02 performed exfiltration " + cited}]}
         flagged = scenario.score_report(truth, bad)["misattributed_decoys"]
         self.assertEqual([item["fact_id"] for item in flagged], ["decoy.cdn-large-uploads"])
+
+
+class SiblingDerivation(unittest.TestCase):
+    def test_siblings_are_same_process_and_category_unclaimed_unambiguous_and_attack_lineage_only(self):
+        # (process, category, tag) per seq; P is attack lineage (its start is accepted by attack fact a),
+        # Q is a shared process (a user's mail client) whose start no attack group accepts, R a decoy's process.
+        rows = [("P", "process", "a.start"), ("P", "file", "a.file"), ("P", "file", None), ("P", "process", None),
+                ("P", "network", None), ("P", "network", "b.net"), ("P", "network", "c.net"), ("P", "file", "d.x"),
+                ("Q", "file", "a.q"), ("Q", "file", None), ("R", "process", "d.start"), ("R", "process", None)]
+        state = SimpleNamespace(tags={}, process_events={}, started={0: "P", 10: "R"},
+                                event_ids={seq: "evt-%06d" % (seq + 1) for seq in range(len(rows))},
+                                group_tags={"a": [("a.start",), ("a.file",), ("a.q",)], "b": [("b.net",)],
+                                            "c": [("c.net",)], "d": [("d.x",), ("d.start",)]})
+        for seq, (process, category, tag) in enumerate(rows):
+            state.process_events.setdefault((process, category), []).append(seq)
+            if tag:
+                state.tags.setdefault(tag, []).append(seq)
+        facts = [{"fact_id": "a", "kind": "attack"}, {"fact_id": "b", "kind": "attack"},
+                 {"fact_id": "c", "kind": "attack"}, {"fact_id": "d", "kind": "decoy"}]
+        scenario.Scenario.cite_siblings(state, facts)
+        self.assertEqual({fact["fact_id"]: fact["evidence_sibling_groups"] for fact in facts}, {
+            # seq 3 beside the start, seq 2 beside the file; seq 7 is a decoy's key event; Q lends nothing.
+            "a": [["evt-000004"], ["evt-000003"], []],
+            # seq 4 would sit beside both b's and c's groups, so it is listed in neither.
+            "b": [[]], "c": [[]],
+            "d": [[], []],
+        })
 
 
 if __name__ == "__main__":
