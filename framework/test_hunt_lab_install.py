@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,23 @@ import install_desktop
 import lab
 import setup_hermes
 from test_setup_hermes import create_kit
+
+
+# Every native call succeeds and no gateway answers the plugin reload (stdout `null`).
+def no_gateway():
+    return Mock(return_value=subprocess.CompletedProcess([], 0, 'null\n', ''))
+
+
+def gateway_answer(answer, *, returncode=0, enable_returncode=0):
+    """Native runner whose plugin-reload probe prints *answer*; records every call."""
+    calls = []
+    def runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1:3] == ['-I', '-c']:
+            return subprocess.CompletedProcess(argv, returncode, json.dumps(answer) + '\n', '')
+        return subprocess.CompletedProcess(argv, enable_returncode)
+    runner.calls = calls
+    return runner
 
 
 class LabInstallTests(unittest.TestCase):
@@ -39,7 +57,7 @@ class LabInstallTests(unittest.TestCase):
             if name != 'SOUL.md':
                 path.write_bytes(b'private canary; must not be read or copied')
             canaries[path] = path.read_bytes()
-        runner = Mock(return_value=subprocess.CompletedProcess([], 0))
+        runner = no_gateway()
         real_read = Path.read_bytes
         def bounded_read(path):
             if path in canaries:
@@ -61,7 +79,7 @@ class LabInstallTests(unittest.TestCase):
 
     def test_every_registered_authored_profile_gets_enabled_tool_backend_without_vm_state(self):
         profiles = {name: self.profile(name) for name in lab.AUTHORED_PROFILES}
-        runner = Mock(return_value=subprocess.CompletedProcess([], 0))
+        runner = no_gateway()
         installed = lab.install(self.home, sys.executable, runner=runner)
         self.assertEqual(set(installed['tool_profiles']), set(lab.AUTHORED_PROFILES))
         enabled = {call.args[0][2] for call in runner.call_args_list
@@ -77,7 +95,7 @@ class LabInstallTests(unittest.TestCase):
         # Bots load the installed copy, not the source tree: a module missing from the bundle
         # makes register() fail and takes every hunt_lab tool down with it.
         profile = self.profile()
-        lab.install(self.home, sys.executable, runner=Mock(return_value=subprocess.CompletedProcess([], 0)))
+        lab.install(self.home, sys.executable, runner=no_gateway())
         probe = '\n'.join([
             'import importlib.util, json, sys, types',
             'backend, home = sys.argv[1], sys.argv[2]',
@@ -104,7 +122,7 @@ class LabInstallTests(unittest.TestCase):
         self.assertIn('packet_fields', json.loads(result.stdout))
 
     def test_unregistered_specialists_are_skipped_but_analyst_is_required(self):
-        runner = Mock(return_value=subprocess.CompletedProcess([], 0))
+        runner = no_gateway()
         with self.assertRaises(ValueError):
             lab.install(self.home, sys.executable, runner=runner)
         runner.assert_not_called()
@@ -122,6 +140,74 @@ class LabInstallTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1 if argv[2] == 'framework-librarian' else 0)
         with self.assertRaises(ValueError):
             lab.install(self.home, sys.executable, runner=runner)
+
+    def test_install_makes_the_running_gateway_reimport_every_profiles_bundle(self):
+        # A long-lived gateway keeps the plugin module it imported; `plugins enable` on an already
+        # enabled plugin never tells it, so an upgrade kept serving the previous tool set.
+        profiles = {name: self.profile(name) for name in (lab.PROFILE, 'framework-researcher')}
+        runner = gateway_answer({'reloaded': True, 'plugins': ['hunt-lab', 'web-xai']})
+        installed = lab.install(self.home, sys.executable, runner=runner)
+        self.assertEqual(installed['gateway'], {name: 'reloaded' for name in profiles})
+        reloads = [(argv, kwargs) for argv, kwargs in runner.calls if argv[1:3] == ['-I', '-c']]
+        self.assertEqual([kwargs['env']['HERMES_HOME'] for _argv, kwargs in reloads],
+                         [str(profile) for profile in profiles.values()])
+        for argv, _kwargs in reloads:
+            self.assertEqual(argv[0], str(lab.hermes_python(sys.executable)))
+            self.assertEqual(argv[3], lab.GATEWAY_RELOAD)
+        enables = [index for index, (argv, _kwargs) in enumerate(runner.calls) if argv[3:] == ['plugins', 'enable', 'hunt-lab']]
+        first_reload = next(index for index, (argv, _kwargs) in enumerate(runner.calls) if argv[1:3] == ['-I', '-c'])
+        self.assertLess(max(enables), first_reload, 'Reload only after the new bundle is in place and enabled')
+
+    def test_no_running_gateway_needs_no_reload(self):
+        self.profile()
+        installed = lab.install(self.home, sys.executable, runner=gateway_answer(None))
+        self.assertEqual(installed['gateway'], {lab.PROFILE: 'not_running'})
+
+    def test_gateway_that_does_not_reload_the_bundle_fails_install(self):
+        self.profile()
+        for runner in (gateway_answer({'reloaded': False, 'error': 'home is not served by this gateway'}),
+                       gateway_answer({'reloaded': True, 'plugins': ['web-xai']}),
+                       gateway_answer({'ok': False, 'error': 'unknown verb'}),
+                       gateway_answer(None, returncode=1)):
+            with self.assertRaisesRegex(ValueError, 'still serves the previous hunt-lab tools'):
+                lab.install(self.home, sys.executable, runner=runner)
+
+    def test_failed_enable_never_reaches_the_gateway(self):
+        self.profile()
+        runner = gateway_answer({'reloaded': True, 'plugins': ['hunt-lab']}, enable_returncode=1)
+        with self.assertRaises(ValueError):
+            lab.install(self.home, sys.executable, runner=runner)
+        self.assertFalse([argv for argv, _kwargs in runner.calls if argv[1:3] == ['-I', '-c']])
+
+    def test_reload_probe_asks_the_profile_socket_then_the_multiplexer_for_that_profile(self):
+        root = self.home
+        profile = self.profile()
+        asked = []
+        def reload_gateway_plugins(home, *, profile_home=None):
+            asked.append((Path(home), profile_home and Path(profile_home)))
+            return None if profile_home is None else {'reloaded': True, 'plugins': ['hunt-lab']}
+        control = types.ModuleType('gateway.control_socket')
+        control.reload_gateway_plugins = reload_gateway_plugins
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: profile
+        constants.get_default_hermes_root = lambda: root
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'gateway': types.ModuleType('gateway'), 'gateway.control_socket': control,
+                                      'hermes_constants': constants}), redirect_stdout(output):
+            exec(compile(lab.GATEWAY_RELOAD, 'gateway-reload', 'exec'), {})
+        self.assertEqual(asked, [(profile, None), (root, profile)])
+        self.assertEqual(json.loads(output.getvalue()), {'reloaded': True, 'plugins': ['hunt-lab']})
+
+    def test_hermes_interpreter_is_the_cli_environment_sibling(self):
+        folder = Path(self.temp.name) / 'venv-bin'
+        folder.mkdir()
+        cli = folder / ('hermes.exe' if os.name == 'nt' else 'hermes')
+        cli.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'Hermes interpreter not found'):
+            lab.hermes_python(cli)
+        python = folder / ('python.exe' if os.name == 'nt' else 'python')
+        python.write_bytes(b'')
+        self.assertEqual(lab.hermes_python(cli), python)
 
     def test_user_edits_unknown_bundles_and_aliases_are_never_adopted(self):
         parent = self.home / 'desktop-plugins'
@@ -169,7 +255,7 @@ class LabInstallTests(unittest.TestCase):
         companion.parent.mkdir(parents=True)
         companion.write_bytes(install_desktop.source())
         factory = Mock(side_effect=AssertionError('Existing profile must not be reinstalled'))
-        runner = Mock(return_value=subprocess.CompletedProcess([], 0))
+        runner = no_gateway()
         real_install = lab.install
         with patch.object(lab, 'install', side_effect=lambda *args: real_install(*args, runner=runner)), redirect_stdout(io.StringIO()):
             self.assertEqual(setup_hermes.install(None, sys.executable, kit, factory, self.home), 0)
