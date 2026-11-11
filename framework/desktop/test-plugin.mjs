@@ -62,7 +62,7 @@ const optionTargets=nodes.filter(n=>n.type==='option' && n.props.value).map(n=>J
 assert.deepEqual(optionTargets,['framework-coordinator'],'A framework-named alias must not expose an unapproved target profile');
 const selectedRouteKey=JSON.stringify([screenRoute.connectionId,screenRoute.mode,screenRoute.profile,screenRoute.targetProfile]);
 await selector.props.onChange({target:{value:selectedRouteKey}});
-const openScreen=nodes.find(n=>n.props?.children==='Open native Bot Screen');
+const openScreen=nodes.find(n=>n.props?.['data-cyber-action']==='open-screen');
 assert.ok(openScreen);
 await openScreen.props.onClick();
 assert.equal(screenCalls.length,1,'An explicit open dispatches once, without retries or a fallback route');
