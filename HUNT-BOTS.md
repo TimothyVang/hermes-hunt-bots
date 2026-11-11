@@ -17,7 +17,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 
 ## Rules (enforced)
 
-**Safety.** These are not negotiable and Greptile reviews every PR against them.
+**Safety.** These are not negotiable, and every PR review checks them (see [Review](#review)).
 
 1. **Synthetic data, an approved public research dataset, or the operator's unclassified work export.** Cases are synthetic; a public research dataset the operator approved for the lab (DEDALE, decision D7 in the planning notes); or a time window of the operator's own unclassified work logs exported from the work Elastic (planning tickets 01 and 06). A real-data case names its origin in its `case.json`: `"data_origin": "public-dataset"` (written by `hunt_lab.import_dedale`) or `"data_origin": "work-export"` (written by `hunt_lab.import_elastic`). `lab-input --tool-driven` refuses such a case unless the operator passes `--data-origin` with that same origin, and refuses the flag for a case of any other origin; its hunt is then marked `synthetic_only: false` and tells the bots its origin, never synthetic: a public research dataset (real lab telemetry, no customer data), or a work log export (real telemetry from the operator's environment; unclassified work data). Cases, datasets, work exports and answer keys stay in `runtime/`, next to the clone, and are never committed. No other real data: never customer data, and never CUI/NSS data without a named, approved boundary for it. Never commit real logs, packet captures, credentials, API keys, tokens, cookies, session stores, or anything marked CUI/NSS.
 2. **Tools stay read-only and lab-local.** Bot tools may only read the loaded case through the guest lab service on `127.0.0.1`. No tool may control the VM, capture live traffic, reach other hosts, or read an answer key. `packet_fields` reads only the case's saved capture (`tshark -r` on `evidence/traffic.pcap`), never live traffic, and returns only allowlisted, redacted fields (ADR 0003 in the planning notes); the guest's argument list, field allowlist, filter grammar and URI redaction are enforced and tested with a faked tshark (`framework/test_lab_server.py`). One live run (2026-11-10, generated case `team-med-011`, tshark 3.6 in the guest) returned DNS, TLS and HTTP fields, refused denied fields and filters, answered `field_unavailable` for JA4, and returned every query string among the first 200 HTTP requests as `?[redacted]`. Browser automation may only open lab origins (`127.0.0.1` / `localhost` lab ports); a change that lets a bot browse elsewhere is rejected.
@@ -27,7 +27,7 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 
 **Change process.**
 
-6. **Everything lands by pull request** into `hunt-bots`. There is no hosted CI (GitHub Actions is off to keep the project free to run). Before opening or updating a PR, run `python scripts/hunt_bots_check.py` and paste its summary line into the PR. Greptile reviews every PR. Code owners approve `framework/`, `.github/`, `scripts/hunt_bots_check.py`, and this file.
+6. **Everything lands by pull request** into `hunt-bots`. There is no hosted CI (GitHub Actions is off to keep the project free to run). Before opening or updating a PR, run `python scripts/hunt_bots_check.py` and paste its summary line into the PR. Every PR gets a deep-mode review (see [Review](#review)); no paid review service is used. Code owners approve `framework/`, `.github/`, `scripts/hunt_bots_check.py`, and this file.
 7. **Tests with behavior.** A behavior change ships with a test that fails before and passes after, plus the docs it affects. Do not weaken a guard, cap, or test to make a check pass.
 8. **The public file list is explicit.** Every tracked file under `framework/` is listed in [framework/TRACKED-FILES.txt](framework/TRACKED-FILES.txt); `scripts/hunt_bots_check.py` fails on anything else. Add new files there in the same PR.
 9. **Third-party code needs its license.** Copying code (for example from the MIT omp browser tool or Orca, or the Apache-2.0 Playwright/agent-browser code) requires keeping the original notice, adding an entry to `THIRD-PARTY-NOTICES.md`, and marking modified files. Code with an unknown or incompatible license is not accepted.
@@ -46,7 +46,12 @@ Copied third-party code keeps its own license and notice, listed in `THIRD-PARTY
 
 ## Contributing
 
-The workflow follows [pstack](https://github.com/cursor/plugins/tree/main/pstack)'s poteto-mode playbooks: small verified units, proof from the real app, honest PR briefings. pstack is vendored in `.agents/` (MIT), and the project skill **`hunt-bots-pr`** (`.agents/skills/hunt-bots-pr/SKILL.md`) walks you or your coding agent through every step below. Agents that read `.agents/skills/` (OMP, Codex and others) find it automatically; in Claude Code or Cursor, point the agent at that file.
+The workflow is [deep-mode](https://github.com/TimothyVang/deep-mode) (MIT, adapted from Lauren Tan's [pstack](https://github.com/cursor/plugins/tree/main/pstack)): small verified units, proof from the real app, honest PR briefings, and a PR review that runs on your own agent. Install it once per machine:
+
+- OMP: `omp plugin marketplace add TimothyVang/deep-mode`, then `omp plugin install deep-mode@deep-mode`.
+- Claude Code: `/plugin marketplace add TimothyVang/deep-mode`, then `/plugin install deep-mode@deep-mode`.
+
+Start any task with `/deep-mode:poteto <task>`. The project skill **`hunt-bots-pr`** (`.agents/skills/hunt-bots-pr/SKILL.md`) adds this repository's steps below. Agents that read `.agents/skills/` (OMP, Codex and others) find it automatically; in Claude Code or Cursor, point the agent at that file.
 
 0. New here? Follow [GETTING-STARTED.md](GETTING-STARTED.md) first: clone, check, generate a case, install the bots, run a hunt.
 1. Branch from `hunt-bots` and open the PR against `hunt-bots`. Prefer several narrow PRs to one large one; stack dependent PRs on their parent branch. Open PRs ready, not as drafts.
@@ -54,4 +59,18 @@ The workflow follows [pstack](https://github.com/cursor/plugins/tree/main/pstack
 3. Prove it works on the real thing (the lab, the desktop app, a live hunt), not only with tests. A bug fix shows the failure before and the pass after.
 4. Run `python scripts/hunt_bots_check.py` (policy gate, framework tests, gitleaks when installed).
 5. Write the PR body with these sections, short sentences, and nothing invented: `## Why`, `## What changed`, `## Scope` (what it leaves out), `## Tradeoffs` (only if there was a real choice), `## Blast Radius`, `## Verification` (each real run and its outcome, plus the check summary line).
-6. Greptile reviews automatically. Triage every comment on its merits: fix it, dismiss it with a concrete reason, or ask. Do not churn code for nitpicks.
+6. Review with deep-mode (below). Triage every finding on its merits: fix it, dismiss it with a concrete reason, or ask. Do not churn code for nitpicks.
+
+## Review
+
+Reviews run on the contributor's or maintainer's own agent, through deep-mode's PR review (`skill://deep-mode/references/techniques/pr-review.md`). Its reviewers read this file and `framework/AGENTS.md` as the project constraints.
+
+- **Before opening a PR,** self-review the branch in local mode and fix, dismiss with a reason, or ask for each finding. Put the review line (`review: ready at <short sha>, ...`) in the PR's `## Verification`.
+- **Maintainers** review an open PR with `/deep-mode:review-pr <number>`. It keeps only findings a code read or a run proves and posts one GitHub review after the maintainer says yes; a new push gets a re-review.
+- A clean review never replaces the gate or the proof on the real app.
+
+Reviewers flag these as blocking, in addition to the rules above:
+
+- `framework/hunt_lab/**`: bot lab tools stay read-only, scoped to the loaded case, and reach only the guest lab service on `127.0.0.1`; no VM control, live capture, other hosts, or answer-key access. Refusals relay only fixed snake_case error codes to the bot, never backend free text, and host-advertised field lists stay equal to the guest allowlists (`test_hunt_lab_tools.py`).
+- `framework/hermes_temporal/**`: a workflow behavior change is gated by a new `workflow.patched()` ID so recorded histories replay unchanged; human execute and review gates stay; no new retries without explicit approval.
+- `framework/**`: operator-only material (answer keys, `truth.json`, scoring rubrics) is never reachable from bot prompts, tools or the guest payload. Browser automation enforces the lab-origin allowlist inside the browser (navigations, frames, new tabs), not only by scanning code for URLs. Every tracked file is in `framework/TRACKED-FILES.txt`, and shipped files are also in the portable package lists (`package_portable.py` `FILES` and `test_package_portable.py` `APPROVED_FILES`).

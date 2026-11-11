@@ -36,6 +36,5 @@ docker/entrypoint.sh text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
 
-# hermes-hunt-bots: framework/ and .agents/ hold hash-pinned fixtures and contracts; store and check out exact bytes.
+# hermes-hunt-bots: framework/ holds hash-pinned fixtures and contracts; store and check out exact bytes.
 /framework/** -text
-/.agents/** -text

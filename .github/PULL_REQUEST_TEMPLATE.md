@@ -23,6 +23,7 @@
 ## Verification
 
 - `python scripts/hunt_bots_check.py`: <paste the summary line>
+- deep-mode self-review: <paste the review line, e.g. `review: ready at <short sha>, 1 round, open P0/P1/P2 0/0/0, fixed 2, dismissed 1`>
 - <real run path and what you observed>
 
 <!--
