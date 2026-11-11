@@ -257,16 +257,28 @@ class ParallelFilmTest(unittest.TestCase):
         self.assertEqual([(c['wave'], c['at']) for c in chapters], [(w, 62 * (w - 1) + 2) for w in range(1, 9)])
         follow = chapters[3]
         self.assertEqual(follow['step_ids'], [f'follow-{n}' for n in range(1, 7)])
-        self.assertEqual(follow['lines'][:2], ['Wave 4 of 8 · Follow-1, Follow-2, Follow-3, Follow-4, Follow-5, Follow-6',
-                                               'Threat Hunter'])
-        self.assertEqual(follow['lines'][3:], ['1 min 00 s', 'Follow-2 dropped (retry exhausted)'])
-        self.assertEqual(chapters[1]['lines'][1], 'Threat Hunter · Network Analyst · Threat Intelligence Analyst')
-        self.assertFalse(any('not finished' in c['lines'][2] for c in chapters))
+        self.assertEqual(follow['lines'][:3], ['Wave 4 of 8 · 6 steps',
+                                               'Follow-1, Follow-2, Follow-3, Follow-4, Follow-5, Follow-6', 'Threat Hunter'])
+        self.assertEqual(follow['lines'][4:], ['1 min 00 s', 'Follow-2 dropped (retry exhausted)'])
+        self.assertEqual(chapters[1]['lines'][:2], ['Wave 2 of 8 · Evidence, Hypotheses, Network, Intel',
+                                                    'Threat Hunter · Network Analyst · Threat Intelligence Analyst'])
+        self.assertFalse(any('not finished' in line for c in chapters for line in c['lines']))
+
+    def test_card_lines_stay_inside_the_frame_for_the_widest_wave(self):
+        wide = [cutter.Stage(n, f'follow-{n}', 'Threat Hunter', 4, T0, T0 + 60, True, 'dropped',
+                             'no_surviving_dependency') for n in range(1, 13)]
+        lines = cutter.chapter_lines(cutter.Chapter(0, 4, tuple(wide), 8))
+        self.assertLessEqual(len(lines[0]), cutter.TITLE_CHARS)
+        self.assertTrue(all(len(line) <= cutter.CARD_CHARS for line in lines[1:]))
+        outro = cutter.steps_lines([{'index': n, 'step_id': f'follow-{n}', 'state': 'dropped', 'wave': 4,
+                                     'reason': 'no_surviving_dependency'} for n in range(12)])
+        self.assertTrue(all(len(line) <= cutter.CARD_CHARS for line in outro))
+        self.assertEqual(sum(line.count('(no surviving dependency)') for line in outro), 12)
 
     def test_the_outro_counts_the_real_steps(self):
-        self.assertEqual(cutter.steps_line(PAR_SAMPLES[-1][1]),
-                         '15 of 16 steps done in 8 waves · 1 dropped (follow-2: retry exhausted)')
-        self.assertEqual(cutter.steps_line(steps(*['done'] * 9)), '9 of 9 steps done')
+        self.assertEqual(cutter.steps_lines(PAR_SAMPLES[-1][1]),
+                         ['15 of 16 steps done in 8 waves · 1 dropped:', 'follow-2 (retry exhausted)'])
+        self.assertEqual(cutter.steps_lines(steps(*['done'] * 9)), ['9 of 9 steps done'])
 
     def test_the_recorder_keeps_wave_and_reason(self):
         kept = record.steps_of({'steps': PAR_SAMPLES[-1][1]})[7]

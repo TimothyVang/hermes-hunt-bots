@@ -4,11 +4,12 @@ Option A, video-full.mp4: the whole round at 1x. Option B, video.mp4: the whole 
 speed (knob speed, default 5x), the cut the film loop reviews. Both are the board's own screencast frames,
 each held until the next one (the board repaints at least every 2 s), with a bar along the bottom that
 carries a permanent label ("5x speed · every frame is real") and, when the captions knob is on, the bot and
-tool acting, from the lab_browser audit and the lab's /activity log. A chapter card (CHAPTER_SECONDS) is
-inserted wherever a stage really started, from the board's step states sampled during the round: stage
-number and name, owner bot, wall-clock range and duration. Intro and outro cards carry the round's real
-numbers. Cards add video time but never consume round time, so the board footage of Option A lasts exactly
-as long as the round.
+tool acting, from the lab_browser audit and the lab's /activity log. A chapter card (CHAPTER_SECONDS) opens
+each wave where its first step really started, from the board's step states sampled during the round: "Wave n
+of N" with its step names, owner bots, wall-clock range, duration and any dropped or stopped step's reason (a
+serial round has one step per wave). Intro and outro cards carry the round's real numbers; the outro also
+counts the steps done and dropped. Cards add video time but never consume round time, so the board footage
+of Option A lasts exactly as long as the round.
 
 Every video is rendered in one ffmpeg pass from an ffconcat list of JPEG stills, each listed for its screen
 time: board frames for their real hold divided by the speed, cards for their own seconds. The label is
@@ -32,6 +33,9 @@ BROWSER_HOLD = 8.0  # real seconds a bot's browser counts as live on the board a
 BAR = 64
 BACKGROUND = '0x0b1220'
 SIZE = (1920, 1080)
+# Widest card lines, in characters, that fit 1920 px: Segoe UI Bold measured ~25 px a character at the
+# title's 52 px and ~16 at the other lines' 34 px.
+TITLE_CHARS, CARD_CHARS = 60, 90
 WAITING = {'pending', 'not_reached'}
 ENDED = {'done', 'stopped', 'dropped'}
 # A blank page (about:blank, a page mid-load) encodes to ~7 KB at 1280x960; lab pages with content were 86 KB+.
@@ -195,16 +199,28 @@ def wave_count(samples):
     return len({_wave(s) for s in samples[-1][1]}) if samples else 0
 
 
-def steps_line(steps):
-    """The end card's count of the round's last board state: steps done, dropped (with reasons) and waves."""
+def _wrap(parts, sep, width=CARD_CHARS):
+    """parts joined by sep into lines of at most width characters (a longer part gets its own line):
+    drawtext never wraps, so a wider line would be cut at the frame's edges."""
+    lines = []
+    for part in parts:
+        if lines and len(lines[-1]) + len(sep) + len(part) <= width:
+            lines[-1] += sep + part
+        else:
+            lines.append(part)
+    return lines
+
+
+def steps_lines(steps):
+    """The end card's count of the round's last board state: steps done, waves, and each dropped step's reason."""
     done = sum(1 for s in steps if s.get('state') == 'done')
     dropped = [s for s in steps if s.get('state') == 'dropped']
     waves = len({_wave(s) for s in steps})
     line = f'{done} of {len(steps)} steps done' + (f' in {waves} waves' if waves != len(steps) else '')
-    if dropped:
-        line += f' · {len(dropped)} dropped (' + ', '.join(
-            f'{s.get("step_id")}: {str(s.get("reason") or "no reason").replace("_", " ")}' for s in dropped) + ')'
-    return line
+    if not dropped:
+        return [line]
+    return [line + f' · {len(dropped)} dropped:'] + _wrap(
+        [f'{s.get("step_id")} ({str(s.get("reason") or "no reason given").replace("_", " ")})' for s in dropped], ', ')
 
 
 def _clock(t):
@@ -218,13 +234,14 @@ def _span(seconds):
 
 def chapter_lines(chapter):
     stages = chapter.stages
-    end = max(s.end for s in stages)
+    begin, end = min(s.start for s in stages), max(s.end for s in stages)
     open_ = not all(s.finished for s in stages)
-    roles = list(dict.fromkeys(s.role for s in stages))
-    lines = [f'Wave {chapter.wave} of {chapter.total} · ' + ', '.join(s.step_id.capitalize() for s in stages),
-             ' · '.join(roles),
-             f'{_clock(min(s.start for s in stages))} – {_clock(end)}' + (' (round end, wave not finished)' if open_ else ''),
-             _span(end - min(s.start for s in stages))]
+    names = [s.step_id.capitalize() for s in stages]
+    title = f'Wave {chapter.wave} of {chapter.total} · ' + ', '.join(names)
+    lines = [title] if len(title) <= TITLE_CHARS else [f'Wave {chapter.wave} of {chapter.total} · {len(names)} steps',
+                                                       *_wrap(names, ', ')]
+    lines += _wrap(list(dict.fromkeys(s.role for s in stages)), ' · ')
+    lines += [f'{_clock(begin)} – {_clock(end)}' + (' (round end, wave not finished)' if open_ else ''), _span(end - begin)]
     lines += [f'{s.step_id.capitalize()} {s.state} ({s.reason.replace("_", " ") or "no reason given"})'
               for s in stages if s.state in ('dropped', 'stopped')]
     return lines
@@ -340,7 +357,7 @@ def card_lines(result, cov, knobs, case_id, steps=()):
              f'{result.get("minutes", 0)} min · {result.get("tool_calls", 0)} API tool calls · {typed} searches typed on screen',
              'Driving coverage ' + f'{cov["coverage"]:.0%}: ' + ', '.join(f'{o["role"]} {o["coverage"]:.0%}' for o in owners.values())]
     if steps:
-        outro.append(steps_line(steps))
+        outro += steps_lines(steps)
     return intro, outro
 
 
