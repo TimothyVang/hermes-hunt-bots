@@ -12,7 +12,7 @@ import native_team
 class NativeTeamPolicyTests(unittest.TestCase):
     def test_models_turn_caps_tool_allowlists_and_routes_are_exact(self):
         expected = {
-            'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation'], ['delegate_task']),
+            'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation', 'hunt_lab'], ['delegate_task']),
             'framework-researcher': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
                                      ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields']),
             'framework-builder': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
@@ -50,14 +50,14 @@ class NativeTeamPolicyTests(unittest.TestCase):
                           for name, description in native_team.PROFILE_ROUTES])
         for profile in native_team.PROFILES:
             settings = native_team.expected_settings(profile)
+            # Every profile keeps hunt_lab enabled: owners use their tools, and the coordinator's delegated
+            # specialists inherit the toolset (its own registration is empty, see test_hunt_lab_tools).
+            self.assertNotIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
             if profile == 'framework-coordinator':
-                # The coordinator only delegates; it never sees hunt_lab or its tools.
                 self.assertNotIn('tools.tool_search.enabled', settings)
-                self.assertIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
             else:
                 # Tool Search would hide plugin tools behind bridges the allowlist strips.
                 self.assertEqual(settings['tools.tool_search.enabled'], 'off')
-                self.assertNotIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
 
     def test_every_host_tool_has_an_owner_and_only_the_analyst_keeps_hunt_lab_query(self):
         owners = {}
@@ -175,10 +175,13 @@ class NativeTeamPolicyTests(unittest.TestCase):
                          ['agent.allowed_tool_names'], 'custom_configuration_conflict')
     def test_safe_observed_fields_report_readiness_and_conflict(self):
         current = native_team.expected_settings('framework-coordinator')
-        current['agent.disabled_toolsets'] = [
-            'desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory', 'hunt_lab'
-        ]
+        current['agent.disabled_toolsets'] = ['desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory']
         self.assertEqual(set(native_team.validate_observed('framework-coordinator', current).values()), {'ready'})
+        # Delegated specialists inherit the coordinator's toolsets, so an earlier disabled hunt_lab must be removed.
+        current['agent.disabled_toolsets'] = current['agent.disabled_toolsets'] + ['hunt_lab']
+        self.assertEqual(native_team.validate_observed('framework-coordinator', current)['agent.disabled_toolsets'],
+                         'needs_explicit_configuration')
+        current['agent.disabled_toolsets'].remove('hunt_lab')
         current['model.default'] = 'user-selected-model'
         self.assertEqual(native_team.validate_observed('framework-coordinator', current)['model.default'],
                          'custom_configuration_conflict')

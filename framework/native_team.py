@@ -46,15 +46,18 @@ HUNT_TOOL_PROFILES = tuple(name for name in PROFILES if name != 'framework-coord
 
 # Earlier reviewed values that apply may replace; any other differing value is user policy.
 SUPERSEDED_SETTINGS = {
-    profile: {
-        'agent.allowed_tool_names': [
-            ['hunt_lab_query'] if profile == 'framework-network-analyst' else [],
-            [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields')],
-            [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'packet_fields'],
-        ],
-        'platform_toolsets.cli': [['no_mcp']],
-    }
-    for profile in HUNT_TOOL_PROFILES
+    **{
+        profile: {
+            'agent.allowed_tool_names': [
+                ['hunt_lab_query'] if profile == 'framework-network-analyst' else [],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields')],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'packet_fields'],
+            ],
+            'platform_toolsets.cli': [['no_mcp']],
+        }
+        for profile in HUNT_TOOL_PROFILES
+    },
+    'framework-coordinator': {'platform_toolsets.cli': [['no_mcp', 'delegation']]},
 }
 
 def _allowed_tool_names(profile):
@@ -97,8 +100,11 @@ def expected_settings(profile):
         # Bot Chat uses the CLI policy surface and adds Desktop client toolsets
         # after resolution. Explicit no_mcp is required: [] alone still admits
         # globally enabled MCP servers in native Hermes.
+        # A delegated child's toolsets are a subset of its parent's (Hermes 0.23.0), so the coordinator
+        # enables hunt_lab for the specialists it delegates to; the plugin registers no tool for the
+        # coordinator itself, and each child registers only its own profile's tools.
         'platform_toolsets.cli': (
-            ['no_mcp', 'delegation'] if profile == 'framework-coordinator'
+            ['no_mcp', 'delegation', 'hunt_lab'] if profile == 'framework-coordinator'
             else ['no_mcp', 'hunt_lab']
         ),
     }
@@ -127,14 +133,13 @@ def _disabled_toolset_requirements(profile):
     blocked = ['desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory']
     if profile != 'framework-coordinator':
         blocked.append('delegation')
-    else:
-        blocked.append('hunt_lab')
     return blocked
 
 
 def _enabled_toolset_requirements(profile):
-    # Earlier reviewed policy disabled hunt_lab outside the analyst; tool owners need it live.
-    return ['hunt_lab'] if profile in HUNT_TOOL_PROFILES else []
+    # Earlier reviewed policy disabled hunt_lab outside the analyst, and for the coordinator; tool owners
+    # need it live, and the coordinator's delegated specialists inherit it.
+    return ['hunt_lab']
 
 
 def validate_observed(profile, observed):
