@@ -1640,6 +1640,18 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 load({**raw, "parallel": False, "steps": [raw["steps"][0], {**follow, "optional": False}]})
 
+    def test_a_focus_on_an_untyped_predecessor_is_rejected_at_construction(self) -> None:
+        def request(analysis_context) -> WorkflowRequest:
+            return WorkflowRequest([
+                HermesStep("analysis", "synthetic", hunt_context=analysis_context),
+                HermesStep("follow-1", "synthetic", depends_on=("analysis",), hunt_context=_ontology_context(),
+                           optional=True, focus=("analysis", 0)),
+            ], parallel=True)
+
+        self.assertEqual(request(_ontology_context()).steps[1].focus, ("analysis", 0))
+        with self.assertRaisesRegex(ValueError, "predecessor with a hunt_context"):
+            request(None)
+
     async def test_a_focus_step_receives_only_its_claim_of_the_predecessor_handoff(self) -> None:
         from .workflows import (
             _FINAL_HANDOFF_BYTES, _OUTPUT_CAP_PREFIX, _OUTPUT_CAP_SUFFIX, _OUTPUT_FRAME_MIDDLE, _OUTPUT_FRAME_PREFIX,
