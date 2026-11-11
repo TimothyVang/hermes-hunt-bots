@@ -11,6 +11,7 @@ MAX_TEAM_STEPS = 32
 MAX_STEP_TIMEOUT_SECONDS = 3600
 MAX_APPROVAL_TIMEOUT_SECONDS = 86400
 MAX_PROMPT_BYTES = 65536
+MAX_DIAGNOSTIC_CHARS = 640
 # A handoff holds at most 16 claims (ontology.validate_handoff).
 MAX_FOCUS_CLAIMS = 16
 SAFE_STEP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
@@ -170,6 +171,8 @@ class ExecutionResult:
     session_id: str | None = None
     # Token counts and wall time of the native run, when the worker records them.
     usage: dict | None = None
+    # Exit code and a redacted stderr cause of a failed native run; never model output.
+    diagnostic: str | None = None
 
     def __post_init__(self) -> None:
         _validate_execution_id(self.execution_id)
@@ -196,6 +199,10 @@ class ExecutionResult:
                 not isinstance(self.usage, dict) or set(self.usage) != USAGE_KEYS
                 or any(type(value) is not int or value < 0 for value in self.usage.values())):
             raise ValueError("usage must map exactly the usage keys to non-negative integers")
+        if self.diagnostic is not None and (
+                not isinstance(self.diagnostic, str) or len(self.diagnostic) > MAX_DIAGNOSTIC_CHARS
+                or not self.diagnostic.isascii() or not self.diagnostic.isprintable()):
+            raise ValueError("diagnostic must be at most 640 printable ASCII characters")
 
 
 @dataclass(frozen=True)

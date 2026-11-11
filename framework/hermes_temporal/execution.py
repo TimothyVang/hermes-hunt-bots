@@ -6,7 +6,7 @@ independent receipt stores. Losing that file loses the dispatch protection.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import closing
 import hashlib
 import json
@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import threading
 
-from .contracts import ExecutionRequest, ExecutionResult
+from .contracts import MAX_DIAGNOSTIC_CHARS, ExecutionRequest, ExecutionResult
 
 PROFILES = frozenset({
     'framework-coordinator', 'framework-researcher', 'framework-builder',
@@ -30,6 +30,26 @@ MAX_TURNS = 32
 MAX_STREAM_BYTES = 16 * 1024 * 1024
 # A result line still fits when all MAX_OUTPUT_BYTES of its text are \uXXXX escapes; longer lines are dropped unparsed.
 MAX_STREAM_LINE_BYTES = 1024 * 1024
+# Only the end of stderr is kept; the rest is drained and discarded so the child never blocks on it.
+MAX_STDERR_TAIL_BYTES = 4096
+MAX_CAUSE_CHARS = 600
+_DIAGNOSED_REASONS = frozenset({'native_nonzero', 'output_unavailable', 'subprocess_timeout'})
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+_EXCEPTION_LINE = re.compile(r'(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|Exit|Interrupt|Failure)\b(?::.*)?\Z')
+_ERROR_LINE = re.compile(r'(?i)\b(?:error|fatal|failed)\b')
+_SECRETS = (
+    (re.compile(r'(?i)\b((?:proxy-)?authorization|set-cookie|cookie)\b\s*[:=].*'), r'\1: [redacted]'),
+    (re.compile(r'(?i)\b(bearer|basic)\s+[^\s,;]+'), r'\1 [redacted]'),
+    (re.compile(r'(?i)\b([\w-]*(?:api[_-]?key|token|secret|password|passwd|credentials?|signature|sig))\b'
+                r'(["\']?\s*[:=]\s*["\']?)[^\s"\',;&]+'), r'\1\2[redacted]'),
+    (re.compile(r'://[^/\s@]+@'), '://[redacted]@'),
+    (re.compile(r'(?i)(https?://[^\s?#]+)[?#]\S*'), r'\1?[redacted]'),
+    (re.compile(r'(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}'), '[redacted]'),
+    (re.compile(r'(?i)\bxox[a-z]-[A-Za-z0-9-]+'), '[redacted]'),
+    (re.compile(r'\b(?:gh[pousr]_|github_pat_|glpat-|hf_|AKIA|ASIA|AIza)[A-Za-z0-9_-]{8,}'), '[redacted]'),
+    (re.compile(r'\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*'), '[redacted]'),
+)
+_LONG_RUN = re.compile(r'[A-Za-z0-9+/=_-]{32,}')
 _USAGE_FIELDS = (('input_tokens', 'input'), ('output_tokens', 'output'), ('cache_read_tokens', 'cache_read'),
                  ('cache_write_tokens', 'cache_write'), ('total_tokens', 'total'))
 _ADDED_RECEIPT_COLUMNS = ('usage', 'session_id')
@@ -274,6 +294,51 @@ def _stream_result(request: ExecutionRequest, stream: _ResultStream, returncode:
     return _result(request, 'completed', 'completed', text, **spend)
 
 
+def _plain_result(request: ExecutionRequest, chunks: list[bytes], returncode: int) -> ExecutionResult:
+    if returncode != 0:
+        return _result(request, 'unknown', 'native_nonzero')
+    try:
+        output = b''.join(chunks).decode('utf-8', errors='strict')
+    except UnicodeDecodeError:
+        return _result(request, 'unknown', 'output_unavailable')
+    if not output.strip():
+        return _result(request, 'unknown', 'output_unavailable')
+    return _result(request, 'completed', 'completed', output)
+
+
+def _redact(line: str) -> str:
+    for pattern, replacement in _SECRETS:
+        line = pattern.sub(replacement, line)
+    # Long base64/hex runs with a digit are treated as keys; identifiers and paths rarely qualify.
+    return _LONG_RUN.sub(lambda match: '[redacted]' if len(match[0]) >= 48 or any(
+        character.isdigit() for character in match[0]) else match[0], line)
+
+
+def _safe_line(line: str) -> str:
+    printable = ''.join(character if ' ' <= character <= '~' else ' ' if character == '\t' else '?'
+                        for character in _ANSI_ESCAPE.sub('', line))
+    return ' '.join(_redact(printable).split())
+
+
+def _diagnostic(exit_code: int, tail: bytes, cut: bool) -> str:
+    """Exit code plus a redacted printable-ASCII cause from stderr's end, preferring the last exception line."""
+    text = tail.decode('utf-8', errors='replace')
+    if cut:
+        # The first kept line may start inside a secret whose prefix the patterns need.
+        text = text.partition('\n')[2]
+    lines = [line for line in map(_safe_line, text.splitlines()) if line]
+    cause = next((line for line in reversed(lines) if _EXCEPTION_LINE.match(line)), None)
+    if cause is None:
+        cause = next((line for line in reversed(lines) if _ERROR_LINE.search(line)), None)
+    if cause is not None:
+        cause = cause if len(cause) <= MAX_CAUSE_CHARS else cause[:MAX_CAUSE_CHARS - 3] + '...'
+    else:
+        cause = ' | '.join(lines[-3:])
+        cause = cause if len(cause) <= MAX_CAUSE_CHARS else '...' + cause[3 - MAX_CAUSE_CHARS:]
+    diagnostic = f'exit code {exit_code}: {cause}' if cause else f'exit code {exit_code}; no stderr'
+    return diagnostic[:MAX_DIAGNOSTIC_CHARS]
+
+
 def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
     step = request.step
     command = [config.executable, '-p', step.profile, 'chat', '--oneshot', '--quiet',
@@ -287,7 +352,7 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
         limit = MAX_STREAM_BYTES
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, cwd=config.working_directory,
+                                   stderr=subprocess.PIPE, cwd=config.working_directory,
                                    env=_environment(config.hermes_home, config.executable), shell=False)
     except (OSError, ValueError):
         return _result(request, 'failed', 'launch_failed')
@@ -296,6 +361,8 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
     chunks: list[bytes] = []
     overflow = threading.Event()
     read_error = threading.Event()
+    # (last bytes of stderr, whether earlier bytes were discarded), rebound whole so a snapshot is consistent.
+    stderr_tail = (b'', False)
 
     def read_output() -> None:
         size = 0
@@ -326,6 +393,23 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
             except OSError:
                 read_error.set()
 
+    def read_errors() -> None:
+        nonlocal stderr_tail
+        try:
+            while True:
+                part = os.read(process.stderr.fileno(), 8192)
+                if not part:
+                    break
+                kept = stderr_tail[0] + part
+                stderr_tail = (kept[-MAX_STDERR_TAIL_BYTES:], stderr_tail[1] or len(kept) > MAX_STDERR_TAIL_BYTES)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                process.stderr.close()
+            except OSError:
+                pass
+
     def send_prompt() -> None:
         try:
             process.stdin.write(step.prompt.encode('utf-8'))
@@ -338,8 +422,10 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
                 write_error.set()
 
     reader = threading.Thread(target=read_output, daemon=True)
+    errors = threading.Thread(target=read_errors, daemon=True)
     writer = threading.Thread(target=send_prompt, daemon=True)
     reader.start()
+    errors.start()
     writer.start()
     timed_out = False
     try:
@@ -354,22 +440,23 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
     reader.join(timeout=1)
     writer.join(timeout=1)
     if timed_out:
-        return _result(request, 'unknown', 'subprocess_timeout')
-    if overflow.is_set():
-        return _result(request, 'unknown', 'output_limit')
-    if reader.is_alive() or writer.is_alive() or read_error.is_set() or write_error.is_set():
-        return _result(request, 'unknown', 'output_unavailable')
-    if stream is not None:
-        return _stream_result(request, stream, process.returncode)
-    if process.returncode != 0:
-        return _result(request, 'unknown', 'native_nonzero')
-    try:
-        output = b''.join(chunks).decode('utf-8', errors='strict')
-    except UnicodeDecodeError:
-        return _result(request, 'unknown', 'output_unavailable')
-    if not output.strip():
-        return _result(request, 'unknown', 'output_unavailable')
-    return _result(request, 'completed', 'completed', output)
+        result = _result(request, 'unknown', 'subprocess_timeout')
+    elif overflow.is_set():
+        result = _result(request, 'unknown', 'output_limit')
+    elif reader.is_alive() or writer.is_alive() or read_error.is_set() or write_error.is_set():
+        result = _result(request, 'unknown', 'output_unavailable')
+    elif stream is not None:
+        result = _stream_result(request, stream, process.returncode)
+    else:
+        result = _plain_result(request, chunks, process.returncode)
+    if result.reason_code not in _DIAGNOSED_REASONS:
+        return result
+    errors.join(timeout=1)
+    exit_code = process.returncode
+    if exit_code == 0 and stream is not None and stream.record is not None \
+            and type(stream.record.get('exit_code')) is int:
+        exit_code = stream.record['exit_code']
+    return replace(result, diagnostic=_diagnostic(exit_code, *stderr_tail))
 
 
 def _refusal(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult | None:
