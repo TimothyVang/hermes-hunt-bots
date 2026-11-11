@@ -42,7 +42,9 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertEqual(coordinator['delegation.fallback_providers'], [])
         self.assertEqual(coordinator['delegation.backend'], 'profile_routes')
         names = [name for name, _ in native_team.PROFILE_ROUTES]
-        self.assertEqual(coordinator['delegation.allowed_profiles'], names)
+        self.assertEqual(coordinator['delegation.backends.profile_routes.default'], 'framework-researcher')
+        self.assertIn('framework-researcher', names)
+        self.assertNotIn('delegation.allowed_profiles', coordinator)
         self.assertEqual(coordinator['delegation.backends.profile_routes.profiles'],
                          [{'name': name, 'description': description}
                           for name, description in native_team.PROFILE_ROUTES])
@@ -157,7 +159,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
         expected = native_team.expected_settings('framework-coordinator')
         for key in ('agent.allowed_tool_names', 'delegation.max_spawn_depth',
                     'delegation.max_iterations', 'delegation.max_summary_chars',
-                    'delegation.allowed_profiles', 'delegation.backend',
+                    'delegation.backends.profile_routes.default', 'delegation.backend',
                     'delegation.backends.profile_routes.profiles'):
             missing = dict(expected)
             del missing[key]
@@ -288,7 +290,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
 
         observed = native_team.expected_settings('framework-coordinator')
         observed['agent.disabled_toolsets'] = native_team._disabled_toolset_requirements('framework-coordinator')
-        observed['delegation.allowed_profiles'] = []
+        observed['delegation.backends.profile_routes.default'] = 'framework-builder'
         with unittest.mock.patch.object(native_team, '_resolve', return_value=('hermes', 'selected-home')):
             with unittest.mock.patch.object(native_team, '_read_current', return_value=observed):
                 with unittest.mock.patch.object(native_team, '_run') as run:
@@ -456,13 +458,12 @@ class NativeTeamPolicyTests(unittest.TestCase):
             native_team.initialize('framework-coordinator', root)
             config = json.loads((profile_dir / 'config.yaml').read_text(encoding='utf-8'))
             self.assertEqual(config['agent']['allowed_tool_names'], ['delegate_task'])
-            self.assertEqual(config['delegation']['allowed_profiles'],
-                             [name for name, _ in native_team.PROFILE_ROUTES])
+            self.assertNotIn('allowed_profiles', config['delegation'])
             self.assertEqual(config['delegation']['backend'], 'profile_routes')
             self.assertEqual(config['delegation']['backends']['profile_routes']['profiles'],
                              [{'name': name, 'description': description}
                               for name, description in native_team.PROFILE_ROUTES])
-            self.assertNotIn('default', config['delegation']['backends']['profile_routes'])
+            self.assertEqual(config['delegation']['backends']['profile_routes']['default'], 'framework-researcher')
 
     def test_initialize_requires_exact_identity_and_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as root:

@@ -39,6 +39,8 @@ PROFILE_ROUTES = (
     ('framework-librarian', 'Prepare provenance-rich drafts for human review.'),
     ('framework-network-analyst', 'Analyze only bounded, sanitized hunt_lab summaries.'),
 )
+# The narrowest specialist takes any delegated task that names no profile.
+DEFAULT_ROUTE = 'framework-researcher'
 
 HUNT_TOOL_PROFILES = tuple(name for name in PROFILES if name != 'framework-coordinator')
 
@@ -64,7 +66,6 @@ def _profile_route_entries():
     return [{'name': name, 'description': description} for name, description in PROFILE_ROUTES]
 
 POLICY_BLOCKERS = (
-    'The separate reviewed native-policy patch based on Hermes bf0203a794a07aac3ff764972ab9087baa4e4f4e is required to enforce delegation.allowed_profiles; this helper neither installs nor activates that patch.',
     'The pinned advanced-delegation plugin revision must be installed and enabled in the coordinator profile; this helper does not fetch, install, or activate plugins.',
     'Managed-worker sessions with frozen config cannot switch to another profile. Use a verified profile-capable native execution path; this helper does not add cross-profile worker routing or bypass that refusal.',
     'Native Hermes may ignore unsupported policy fields; persisted configuration alone does not establish runtime capabilities or readiness.',
@@ -107,9 +108,10 @@ def expected_settings(profile):
             'delegation.max_iterations': 8,
             'delegation.max_summary_chars': 4000,
             'delegation.fallback_providers': [],
-            'delegation.allowed_profiles': [name for name, _ in PROFILE_ROUTES],
             'delegation.backend': 'profile_routes',
             'delegation.backends.profile_routes.profiles': _profile_route_entries(),
+            # A task that names no profile would otherwise run as the coordinator itself.
+            'delegation.backends.profile_routes.default': DEFAULT_ROUTE,
         })
     if profile in HUNT_TOOL_PROFILES:
         # Native Tool Search defers plugin tools behind tool_search/tool_call bridges,
@@ -179,9 +181,9 @@ def plan_lines():
             + (f'; tools.tool_search.enabled={search}' if search else '')
         )
     lines.append('Coordinator output/turn controls: delegation.max_spawn_depth=1; delegation.max_iterations=8; delegation.max_summary_chars=4000; delegation.fallback_providers=[].')
-    lines.append('Coordinator delegation policy: delegation.backend=profile_routes; delegation.allowed_profiles is exactly the five authored specialists; task.profile must select an allowed route.')
+    lines.append('Coordinator delegation policy: delegation.backend=profile_routes; delegation.backends.profile_routes.profiles is exactly the five authored specialists, which Hermes enforces at runtime as the task.profile enum; a task with no profile runs as ' + DEFAULT_ROUTE + '.')
     lines.extend(f"  {route['name']}: {route['description']}" for route in _profile_route_entries())
-    lines.append('Native policy fields are planned and explicitly configurable, not runtime readiness evidence. The separate reviewed native-policy patch and pinned official plugin are deployment prerequisites.')
+    lines.append('Native policy fields are planned and explicitly configurable, not runtime readiness evidence. The pinned official advanced-delegation plugin is a deployment prerequisite.')
     for blocker in POLICY_BLOCKERS:
         lines.append('BLOCKER: ' + blocker)
     return '\n'.join(lines)
@@ -289,7 +291,7 @@ def inspect(hermes_override=None, home=None, model_projection_python=None):
     for profile in PROFILES:
         status = validate_observed(profile, _read_current(executable, profile, root, model_projection_python))
         lines.append(profile + ': ' + ', '.join(f'{key}={value}' for key, value in status.items()))
-    lines.append('Delegation routes: BLOCKED; see the policy blockers below.')
+    lines.append('Delegation routes: enforced by the profile_routes enum when the advanced-delegation plugin is enabled.')
     lines.extend('BLOCKER: ' + item for item in POLICY_BLOCKERS)
     return '\n'.join(lines)
 
@@ -380,7 +382,7 @@ def initialize(profile, home=None):
     except OSError:
         raise PolicyError('Exclusive config publication failed; no existing path was replaced. Same-filesystem hard-link support is required; a fully published new config may remain if staging cleanup failed.') from None
     return (f'Initialized reviewed nonsecret policy for {profile} at config.yaml. '
-            'This does not install or activate the native-policy patch or plugin, or verify provider access, final tools, routes, or runtime readiness.')
+            'This does not install or activate the advanced-delegation plugin, or verify provider access, final tools, routes, or runtime readiness.')
 
 
 def main(argv=None):
