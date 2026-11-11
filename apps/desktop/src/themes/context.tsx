@@ -471,13 +471,25 @@ const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
-if (typeof window !== 'undefined') {
+const bootPaint = () => {
   const profile = BOOT_PROFILE_KEY
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
   const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
+}
+
+if (typeof window !== 'undefined') {
+  // The Hunt Command build's theme registers with its bundled plugin later in
+  // this same synchronous module graph (discoverBundledPlugins). Painting now
+  // would flash the nous fallback first, so paint once the graph has evaluated;
+  // normalizeSkin still falls back to nous when the plugin is off.
+  if (IS_HUNT_VARIANT && !resolveTheme(storedSkin(BOOT_PROFILE_KEY))) {
+    queueMicrotask(bootPaint)
+  } else {
+    bootPaint()
+  }
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────

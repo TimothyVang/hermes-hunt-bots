@@ -82,7 +82,8 @@ const identity = {
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
   msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
-  ...(hunt ? { hunt } : {}),
+  // The bootstrap installer fetches and clones this fork, never upstream (bootstrap-runner.ts).
+  ...(hunt ? { hunt, sourceRepo: 'TimothyVang/hermes-hunt-bots' } : {}),
   ...(store
     ? {
         storeMsix: {

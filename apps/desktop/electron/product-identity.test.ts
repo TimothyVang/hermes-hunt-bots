@@ -15,7 +15,7 @@ import type { AppInfo as BuilderAppInfo, Configuration, Metadata, Packager, Prot
 import { build, type BuildResult } from 'esbuild'
 import { afterEach, beforeEach, test, vi } from 'vitest'
 
-import type { applyDesktopIdentity, ProductIdentity } from './product-identity'
+import type { applyDesktopIdentity, defaultThemeSource, ProductIdentity } from './product-identity'
 
 type PackagingConfiguration = Omit<Configuration, 'extraMetadata' | 'mac' | 'msix' | 'protocols' | 'win'> & {
   extraMetadata: Metadata
@@ -241,6 +241,8 @@ test('hunt is a stable Hunt Command identity with its own userData and no releas
   assert.equal(hunt.artifactNamePascal, 'HuntCommand')
   assert.equal(hunt.windowsExecutableName, 'Hunt Command')
   assert.equal(hunt.channel, null)
+  assert.equal(hunt.sourceRepo, 'TimothyVang/hermes-hunt-bots')
+  assert.equal(full.sourceRepo, undefined)
   process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
   assert.equal((await identityForVariant('hunt')).channel, null)
   delete process.env.HERMES_PAYLOAD_TAG
@@ -250,7 +252,14 @@ test('hunt is a stable Hunt Command identity with its own userData and no releas
     assert.notEqual(hunt[field], full[field])
   }
 
-  const runtime: { applyDesktopIdentity: typeof applyDesktopIdentity } = await import('./product-identity')
+  const runtime: {
+    applyDesktopIdentity: typeof applyDesktopIdentity
+    defaultThemeSource: typeof defaultThemeSource
+  } = await import('./product-identity')
+
+  // Before the renderer reports a mode: stock follows the OS, Hunt Command's design is dark.
+  assert.equal(runtime.defaultThemeSource(full), 'system')
+  assert.equal(runtime.defaultThemeSource(hunt), 'dark')
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-hunt-'))
   const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Hermes') }
   let name: string = 'Hermes'

@@ -11,7 +11,9 @@ import {
   cachedScriptPath,
   cleanInstallerLogLine,
   hasExistingGitCheckout,
+  installerEnv,
   installRefForStamp,
+  installScriptUrl,
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
@@ -24,6 +26,29 @@ const ZERO_COMMIT = '0000000000000000000000000000000000000000'
 function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-test-'))
 }
+
+test('the installer comes from upstream unless the build names its own source repo', () => {
+  const hunt = { sourceRepo: 'TimothyVang/hermes-hunt-bots' }
+  assert.equal(installScriptUrl('abc123', {}), `https://raw.githubusercontent.com/NousResearch/hermes-agent/abc123/scripts/${SCRIPT_NAME}`)
+  assert.equal(installScriptUrl('abc123', hunt), `https://raw.githubusercontent.com/TimothyVang/hermes-hunt-bots/abc123/scripts/${SCRIPT_NAME}`)
+
+  const saved = process.env.HERMES_REPO_URL
+  delete process.env.HERMES_REPO_URL
+
+  try {
+    // install.ps1 / install.sh clone HERMES_REPO_URL, else NousResearch/hermes-agent.
+    assert.equal(installerEnv('/home', {}).HERMES_REPO_URL, undefined)
+    assert.equal(installerEnv('/home', hunt).HERMES_REPO_URL, 'https://github.com/TimothyVang/hermes-hunt-bots.git')
+    process.env.HERMES_REPO_URL = 'https://example.test/own.git'
+    assert.equal(installerEnv('/home', hunt).HERMES_REPO_URL, 'https://example.test/own.git')
+  } finally {
+    if (saved === undefined) {
+      delete process.env.HERMES_REPO_URL
+    } else {
+      process.env.HERMES_REPO_URL = saved
+    }
+  }
+})
 
 test('runBootstrap bails immediately when the signal is already aborted', async () => {
   const controller = new AbortController()

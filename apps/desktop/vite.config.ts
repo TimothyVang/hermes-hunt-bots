@@ -89,13 +89,17 @@ const debugEntry = (command: string, env: Record<string, string>) =>
 
 // HERMES_DESKTOP_VARIANT=hunt is this fork's Hunt Command build (HUNT-BOTS.md): src/variant.ts
 // reads the baked variant, the variant's bundled plugins replace the empty stock set, and the
-// document is retitled. Every other variant builds the stock renderer.
+// document is retitled and pre-paints dark before its first boot palette exists (the design is
+// dark). Every other variant builds the stock renderer.
 const desktopVariant = process.env.HERMES_DESKTOP_VARIANT ?? ''
 const huntVariant = desktopVariant === 'hunt'
 
-const huntTitle = {
-  name: 'hunt-command-title',
-  transformIndexHtml: (html: string): string => html.replace('<title>Hermes</title>', '<title>Hunt Command</title>')
+export const huntIndexHtml = {
+  name: 'hunt-command-index',
+  transformIndexHtml: (html: string): string =>
+    html
+      .replace('<title>Hermes</title>', '<title>Hunt Command</title>')
+      .replace("const dark = window.matchMedia('(prefers-color-scheme: dark)').matches", 'const dark = true')
 }
 
 // The emoji picker (frimousse) fetches `<emojibaseUrl>/<locale>/data.json` at
@@ -148,7 +152,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets(), ...(huntVariant ? [huntTitle] : [])],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets(), ...(huntVariant ? [huntIndexHtml] : [])],
   define: { __HERMES_DESKTOP_VARIANT__: JSON.stringify(desktopVariant) },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by

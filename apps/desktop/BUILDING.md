@@ -188,11 +188,15 @@ Hermes state and explicit dependency-cache paths remain build-owned during packa
 ## Hunt Command variant
 
 `HERMES_DESKTOP_VARIANT=hunt` builds this fork's rebrand, **Hunt Command**. It is the
-stock full client (bootstrap payload, checkout updates) with these changes only:
+stock full client (bootstrap payload) with these changes only:
 
 - Identity: name, app ID, executable and userData are Hunt Command's own
   (`product-identity.cjs`), so its storage, plugin choices and single-instance
-  lock never mix with stock Hermes. It has no release feed (`channel: null`).
+  lock never mix with stock Hermes. It has no release feed (`channel: null`) and no
+  in-app updater (stamped `external`, like commit builds): the checkout hand-off would
+  rebuild stock Hermes. Update manually by pulling and rebuilding with `pack:hunt`.
+- First-run install: the bootstrap fetches `install.ps1`/`install.sh` from this fork
+  (`TimothyVang/hermes-hunt-bots`) and clones it via `HERMES_REPO_URL`, never upstream.
 - Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
 - Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
   and Cybersecurity workspace plugins are bundled straight from `framework/`
@@ -203,8 +207,8 @@ stock full client (bootstrap payload, checkout updates) with these changes only:
 
 From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
 `release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
-also packages installers. Both copy the variant icons over the committed
-`assets/`; run `git checkout -- assets` before a stock build.
+also packages installers. Both run `scripts/pack-hunt.mjs`, which copies the variant
+icons over the committed `assets/` and restores them afterwards, even on failure.
 
 ## Commit-only builds
 

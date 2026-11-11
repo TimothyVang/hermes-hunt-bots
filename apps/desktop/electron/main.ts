@@ -448,7 +448,7 @@ import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfil
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { connectPrimaryRemote } from './primary-remote-startup'
-import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
+import { applyDesktopIdentity, defaultThemeSource, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -1399,7 +1399,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
-// Stock windows keep the 'Hermes' title; the Hunt Command build shows its own name.
+// Stock windows and tray keep 'Hermes'; the Hunt Command build shows its own name.
 const WINDOW_TITLE = PRODUCT_IDENTITY.hunt ? APP_NAME : 'Hermes'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1450,10 +1450,10 @@ function readPersistedThemeSource() {
       return parsed.themeSource
     }
   } catch {
-    // Missing / malformed → follow the OS like a fresh install.
+    // Missing / malformed → a fresh install's appearance (the OS; dark for Hunt Command).
   }
 
-  return 'system'
+  return defaultThemeSource()
 }
 
 function writePersistedThemeSource(mode) {
@@ -12211,7 +12211,8 @@ const minimizeToTray = createMinimizeToTray({
   restoreMainWindow: () =>
     ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
   isQuittingForHandoff: () => isQuittingForHandoff,
-  log: rememberLog
+  log: rememberLog,
+  productName: WINDOW_TITLE
 })
 
 function focusWindow(win) {

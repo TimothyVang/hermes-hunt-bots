@@ -23,6 +23,7 @@ vi.mock('electron', () => ({
   Tray: class extends EventEmitter {
     destroyed = false
     menu: any[] = []
+    tooltip = ''
     constructor() {
       super()
 
@@ -32,7 +33,9 @@ vi.mock('electron', () => ({
 
       native.trays.push(this)
     }
-    setToolTip() {}
+    setToolTip(tooltip: string) {
+      this.tooltip = tooltip
+    }
     setContextMenu(menu: any[]) {
       this.menu = menu
     }
@@ -119,7 +122,7 @@ beforeEach(() => {
 })
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 
-function setup() {
+function setup(productName = 'Hermes') {
   const main = new Window()
   const peer = new Window()
   native.windows.push(main, peer)
@@ -130,7 +133,8 @@ function setup() {
     getIconPath: () => 'icon.png',
     restoreMainWindow: () => main.showInactive(),
     isQuittingForHandoff: () => handoff,
-    log: vi.fn()
+    log: vi.fn(),
+    productName
   })
 
   controller.registerWindow(main as unknown as BrowserWindow, { closeToTray: true })
@@ -173,6 +177,23 @@ test('tray hide defers past the minimize dispatch (#119252)', async () => {
   expect(main.visible).toBe(true)
   await flushDeferredHide()
   expect(main.visible).toBe(false)
+})
+
+test('the tray names the product: Hermes in stock builds, Hunt Command in the hunt build', async () => {
+  for (const productName of ['Hermes', 'Hunt Command']) {
+    native.trays = []
+    const { controller } = setup(productName)
+    await controller.start()
+    await controller.setEnabled(true)
+
+    const [tray] = native.trays
+    expect(tray.tooltip).toBe(productName)
+    expect(tray.menu.map((item: { label?: string }) => item.label).filter(Boolean)).toEqual([
+      `Show ${productName}`,
+      `Quit ${productName}`
+    ])
+    await controller.setEnabled(false)
+  }
 })
 
 test('Windows restore re-activates the window instead of showInactive (#119252)', async () => {

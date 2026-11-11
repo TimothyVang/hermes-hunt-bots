@@ -49,3 +49,9 @@ export function applyDesktopIdentity(
 
   return identity.displayName
 }
+
+/** The native appearance before the renderer reports one: the OS, except the
+ * Hunt Command build, whose design is dark (src/themes/context.tsx agrees). */
+export function defaultThemeSource(identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY): 'dark' | 'system' {
+  return identity.hunt ? 'dark' : 'system'
+}

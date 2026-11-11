@@ -42,6 +42,7 @@ import path from 'node:path'
 import { stripAnsi } from '../../shared/src/ansi'
 
 import { pathEnvKey, storeFirstPath } from './backend-env'
+import { PRODUCT_IDENTITY, type ProductIdentity } from './product-identity'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -224,12 +225,17 @@ function cachedScriptPath(hermesHome, cacheKey) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
+// Upstream unless this build names its own source repo (the Hunt Command fork).
+function installScriptUrl(ref: string, identity: Pick<ProductIdentity, 'sourceRepo'> = PRODUCT_IDENTITY) {
+  return `https://raw.githubusercontent.com/${identity.sourceRepo ?? 'NousResearch/hermes-agent'}/${ref}/scripts/${installScriptName()}`
+}
+
 function downloadInstallScript(ref, destPath) {
   // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
   // install, the branch for an existing checkout or a non-git fallback stamp
   // (never the all-zero placeholder, which is not a real GitHub commit).
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const url = installScriptUrl(ref)
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -428,12 +434,17 @@ function cleanInstallerLogLine(raw: string): string {
 
 // The installer drives Hermes's own toolchain (install.sh takes a uv from PATH
 // when it is new enough), so store dirs already on PATH stay ahead of the
-// login-shell entries shell-path.ts merged in front of them.
-function installerEnv(hermesHome) {
-  const env = { ...process.env, HERMES_HOME: hermesHome || process.env.HERMES_HOME || '' }
+// login-shell entries shell-path.ts merged in front of them. A build with its
+// own source repo has the installer clone that repo unless the user chose one.
+function installerEnv(hermesHome, identity: Pick<ProductIdentity, 'sourceRepo'> = PRODUCT_IDENTITY) {
+  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: hermesHome || process.env.HERMES_HOME || '' }
   const key = pathEnvKey(env)
 
   env[key] = storeFirstPath(env[key] || '', { currentEnv: env })
+
+  if (identity.sourceRepo && !env.HERMES_REPO_URL) {
+    env.HERMES_REPO_URL = `https://github.com/${identity.sourceRepo}.git`
+  }
 
   return env
 }
@@ -1036,7 +1047,9 @@ export {
   cachedScriptPath,
   cleanInstallerLogLine,
   hasExistingGitCheckout,
+  installerEnv,
   installRefForStamp,
+  installScriptUrl,
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,
