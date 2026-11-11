@@ -54,7 +54,7 @@ def run(states, args=None, on_status=None, sleep=None):
     before each child status read is answered, as a bridge acting meanwhile would; sleep replaces time.sleep.
     Returns the exit code, decisions sent, saved outputs, log messages, printed text, decision-log lines,
     the pending records seen at each status read and the pending records left at the end."""
-    states, decisions, seen = list(states), [], []
+    states, decisions, seen, deciders = list(states), [], [], []
     folder = None
 
     def fake_cli(*args):
@@ -71,6 +71,7 @@ def run(states, args=None, on_status=None, sleep=None):
         options = dict(zip(args[2::2], args[3::2]))
         decisions.append((options['--step-id'], options['--phase'], options['--decision-id'],
                           options['--evidence-note']))
+        deciders.append((options['--decided-by'], options['--via']))
         return {'signal_sent': True}
 
     args = args or argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop',
@@ -88,7 +89,7 @@ def run(states, args=None, on_status=None, sleep=None):
                  if decision_log.exists() else [])
         left = sorted(path.name for path in (folder / 'pending').glob('*'))
     return SimpleNamespace(code=code, decisions=decisions, saved=saved, messages=[line.split(' ', 1)[1] for line in log],
-                           printed=printed.getvalue(), lines=lines, seen=seen, left=left)
+                           printed=printed.getvalue(), lines=lines, seen=seen, left=left, deciders=deciders)
 
 
 def drive(states, args=None):
@@ -310,7 +311,8 @@ class TwoDecisionModeTest(unittest.TestCase):
         for gate in ('wave-1', 'wave-4'):
             for choice in ('approve', 'deny'):
                 self.assertIn(f'decision {CHILD} --step-id {gate} --phase review --choice {choice} '
-                              f'--decision-id {CHILD}:{gate}:review --evidence-note ', printed)
+                              f'--decision-id {CHILD}:{gate}:review '
+                              + dg.shell_join(['--decided-by', 'Ada Lovelace']) + ' --evidence-note ', printed)
         self.assertNotIn('approved (delegated', printed)
 
     def test_a_serial_hunt_waits_for_the_operator_at_the_scope_and_incident_reviews_and_automates_the_rest(self):
@@ -366,6 +368,8 @@ class ModeChoiceTest(unittest.TestCase):
             'delegated without a reason': ['--delegated-by', 'Ada'],
             'delegated with a blank reason': ['--delegated-by', 'Ada', '--reason', ' '],
             'card summary in delegated mode': ['--delegated-by', 'Ada', '--reason', 'loop', '--card-summary'],
+            'operator name longer than the workflow records': ['--two-decisions', '--operator', 'A' * 201],
+            'delegated name with a control character': ['--delegated-by', 'Ada\x1b[2J', '--reason', 'loop'],
         }
         for case, argv in rejected.items():
             with self.subTest(case), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
@@ -427,6 +431,13 @@ def slack_line(folder, nonce):
                        decision_id=f'{CHILD}:wave-1:review:{nonce}', note_sha256='0' * 64)
 
 
+def recorded(states, start, decision_id, decision='approve', **identity):
+    """These statuses with the workflow's own record of the wave-1 review from status read `start` (1-based) on."""
+    item = {'gate': 'wave-1', 'phase': 'review', 'decision': decision, 'decision_id': decision_id,
+            'decided_by': '', 'via': '', 'slack_user': '', **identity}
+    return [dict(state, decisions=[item]) if number >= start else state for number, state in enumerate(states, 1)]
+
+
 class DecisionLogTest(unittest.TestCase):
     def test_every_decision_the_driver_sends_is_logged_with_who_decided_and_through_which_channel(self):
         hunted = run(parallel_hunt(), two_decisions())
@@ -442,6 +453,57 @@ class DecisionLogTest(unittest.TestCase):
         self.assertEqual([(line['decided_by'], line['channel'], line['phase'], line['decision_id'])
                           for line in delegated.lines],
                          [('delegated: Ada', 'drive_gates', 'execute', f'{CHILD}:evidence:execute')])
+        # The workflow itself records each approval as automated, under the operator's or delegating person's name.
+        self.assertEqual(set(hunted.deciders), {('Ada Lovelace', 'automated')})
+        self.assertEqual(delegated.deciders, [('Ada', 'automated')])
+
+    def test_an_outside_decision_is_logged_with_the_decider_the_workflow_recorded(self):
+        states = recorded(parallel_hunt(), 5, f'{CHILD}:wave-1:review', decided_by='Grace Hopper', via='cli')
+        hunted = run(states, two_decisions())
+        self.assertEqual([(line['gate'], line['choice'], line['decided_by'], line['channel'], line['decision_id'])
+                          for line in hunted.lines if line['channel'] != 'drive_gates'],
+                         [('wave-1', 'approve', 'human: Grace Hopper', 'cli', f'{CHILD}:wave-1:review'),
+                          ('wave-4', 'approve', OUTSIDE, 'unknown', None)])
+        self.assertIn(f'scope review of {CHILD} wave-1 decided via cli by human: Grace Hopper: approve, as the '
+                      'workflow records it', hunted.messages)
+
+    def test_a_bridge_line_the_workflow_ignored_is_followed_by_the_decision_the_workflow_took(self):
+        def bridge(call, folder):
+            pending = folder / 'pending' / SCOPE_RECORD
+            if call == 4:
+                nonce = json.loads(pending.read_text(encoding='utf-8'))['nonce']
+                pending.unlink()
+                slack_line(folder, nonce)
+
+        # The operator denied through the CLI a moment before the bridge sent its approval, which the workflow ignored.
+        states = recorded(parallel_hunt()[:4], 4, f'{CHILD}:wave-1:review', 'deny', decided_by='Ada Lovelace',
+                          via='cli') + [hunt('denied', 'wave-1', scope='awaiting_review')]
+        states[-1]['decisions'] = states[-2]['decisions']
+        hunted = run(states, two_decisions(), on_status=bridge)
+        self.assertEqual([(line['choice'], line['decided_by'], line['channel']) for line in hunted.lines
+                          if line['gate'] == 'wave-1' and line['phase'] == 'review'],
+                         [('approve', 'human: Ada Lovelace', 'slack'), ('deny', 'human: Ada Lovelace', 'cli')])
+        self.assertTrue(any(message.endswith('as the workflow records it; the workflow ignored the logged approve '
+                                             'by human: Ada Lovelace') for message in hunted.messages),
+                        hunted.messages)
+
+    def test_a_bridge_decision_the_workflow_recorded_is_logged_once(self):
+        states = recorded(parallel_hunt(), 5, '', decided_by='Ada Lovelace', via='slack', slack_user='U0ADA')
+        item = states[4]['decisions'][0]
+
+        def bridge(call, folder):
+            pending = folder / 'pending' / SCOPE_RECORD
+            if call == 4:
+                nonce = json.loads(pending.read_text(encoding='utf-8'))['nonce']
+                pending.unlink()
+                slack_line(folder, nonce)
+                item['decision_id'] = f'{CHILD}:wave-1:review:{nonce}'
+
+        hunted = run(states, two_decisions(), on_status=bridge)
+        self.assertEqual([line['channel'] for line in hunted.lines if line['gate'] == 'wave-1'
+                          and line['phase'] == 'review'], ['slack'])
+        self.assertIn(f'scope review of {CHILD} wave-1 decided via slack by human: Ada Lovelace: approve',
+                      hunted.messages)
 
     def test_a_pending_record_is_written_once_per_operator_gate_and_deleted_when_the_gate_moves_on(self):
         hunted = run(parallel_hunt(), two_decisions())
