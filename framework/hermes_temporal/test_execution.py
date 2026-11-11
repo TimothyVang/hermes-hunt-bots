@@ -1,7 +1,7 @@
 """Durable dispatch boundaries without running Hermes or a provider."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, redirect_stderr, redirect_stdout
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import importlib.util
 import io
 import json
@@ -36,14 +36,20 @@ def stream(*lines):
                     for line in lines)
 
 
+def temporary_file(data=b''):
+    file = tempfile.TemporaryFile()
+    file.write(data)
+    file.seek(0)
+    return file
+
+
 class StreamProcess:
-    def __init__(self, output, returncode=0):
+    def __init__(self, output, returncode=0, errors=b''):
         self.returncode = returncode
         self.killed = False
         self.stdin = io.BytesIO()
-        self.stdout = tempfile.TemporaryFile()
-        self.stdout.write(output)
-        self.stdout.seek(0)
+        self.stdout = temporary_file(output)
+        self.stderr = temporary_file(errors)
 
     def wait(self, timeout=None):
         return self.returncode
@@ -62,8 +68,8 @@ class ExecutionReceiptTests(unittest.TestCase):
         self.path = str(root / 'receipts.sqlite3')
         self.config = ExecutionConfig(True, str(Path(sys.executable).resolve()), str(home), str(root), self.path)
 
-    def run_stream(self, output, returncode=0):
-        process = StreamProcess(output, returncode)
+    def run_stream(self, output, returncode=0, errors=b''):
+        process = StreamProcess(output, returncode, errors)
         with patch.object(execution_module.subprocess, 'Popen', return_value=process) as popen:
             result = _invoke(replace(self.config, record_usage=True), request())
         return result, popen.call_args.args[0], process
@@ -161,9 +167,8 @@ class ExecutionReceiptTests(unittest.TestCase):
 
             def __init__(self, output):
                 self.stdin = io.BytesIO()
-                self.stdout = tempfile.TemporaryFile()
-                self.stdout.write(output)
-                self.stdout.seek(0)
+                self.stdout = temporary_file(output)
+                self.stderr = temporary_file()
 
             def wait(self, timeout=None):
                 return 0
@@ -182,9 +187,8 @@ class ExecutionReceiptTests(unittest.TestCase):
 
             def __init__(self, *args, **kwargs):
                 self.stdin = io.BytesIO()
-                self.stdout = tempfile.TemporaryFile()
-                self.stdout.write(b'reply')
-                self.stdout.seek(0)
+                self.stdout = temporary_file(b'reply')
+                self.stderr = temporary_file()
 
             def wait(self, timeout=None):
                 return 0
@@ -229,7 +233,131 @@ class ExecutionReceiptTests(unittest.TestCase):
             with self.subTest(exit_code=record['exit_code'], returncode=returncode):
                 result, _, _ = self.run_stream(stream(INIT, record), returncode)
                 self.assertEqual(result, ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero',
-                                                         'local-synthetic', USAGE))
+                                                         'local-synthetic', USAGE, 'exit code 1; no stderr'))
+
+    def invoke_plain(self, process):
+        with patch.object(execution_module.subprocess, 'Popen', return_value=process) as popen:
+            result = _invoke(self.config, request())
+        self.assertEqual(popen.call_args.kwargs['stderr'], execution_module.subprocess.PIPE)
+        return result
+
+    def test_nonzero_exit_reports_the_last_exception_line_of_stderr(self):
+        errors = (b'INFO hermes: starting merge\n'
+                  b'Traceback (most recent call last):\n'
+                  b'  File "/opt/hermes/agent.py", line 12, in run\n'
+                  b"    raise RuntimeError('provider closed the stream')\n"
+                  b'RuntimeError: provider closed the stream\n'
+                  b'INFO hermes: shutting down\n')
+        plain = self.invoke_plain(StreamProcess(b'', 1, errors))
+        streamed, _, _ = self.run_stream(b'', 1, errors)
+        for result in (plain, streamed):
+            self.assertEqual((result.status, result.reason_code, result.diagnostic),
+                             ('unknown', 'native_nonzero', 'exit code 1: RuntimeError: provider closed the stream'))
+
+    def test_secrets_in_stderr_are_redacted(self):
+        value = 'synthetic' + 'Value' + 'q7'
+        long_hex = 'ab12' * 10
+        long_base64 = 'U3ludGhldGlj' + 'QmFzZTY0' * 4 + '=='
+        lines = [
+            f'RuntimeError: Authorization: Bearer {value}',
+            f'httpx.HTTPStatusError: 401 for Bearer {value}',
+            f'openai.AuthenticationError: Incorrect API key provided: sk-proj-{value}',
+            f'SlackApiError: invalid_auth for xoxb-1234-{value}',
+            f'ConnectionError: GET https://operator:{value}@api.example.test/v1?token={value}',
+            f'HTTPError: 403 for https://api.example.test/v1/models?key={value}&alt=json',
+            f'KeyError: api_key="{value}"',
+            f'ValueError: OPENAI_API_KEY={value} rejected',
+            f'ValueError: digest {long_hex}',
+            f'ValueError: blob {long_base64}',
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                diagnostic = execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False)
+                self.assertTrue(diagnostic.startswith('exit code 1: ' + line.split(':')[0] + ':'), diagnostic)
+                self.assertIn('[redacted]', diagnostic)
+                for secret in (value, long_hex, long_base64):
+                    self.assertNotIn(secret, diagnostic)
+        result = self.invoke_plain(StreamProcess(b'', 2, ('\n'.join(lines) + '\n').encode('utf-8')))
+        self.assertEqual(result.diagnostic, 'exit code 2: ValueError: blob [redacted]')
+
+    def test_diagnostic_is_printable_ascii(self):
+        errors = b'\x1b[31mRuntimeError: caf\xc3\xa9\t\xff failed\x1b[0m\n'
+        self.assertEqual(execution_module._diagnostic(1, errors, False), 'exit code 1: RuntimeError: caf? ? failed')
+
+    def test_huge_stderr_keeps_only_a_bounded_tail(self):
+        noisy = b'noise ' * 1_000_000 + b'\nValueError: final cause\n'
+        one_line = b'x9' * 1_000_000
+        long_cause = b'\nRuntimeError: ' + b'detail ' * 280 + b'\n'
+        for errors, expected in ((noisy, 'exit code 1: ValueError: final cause'),
+                                 (one_line, 'exit code 1; no stderr')):
+            with self.subTest(expected=expected):
+                self.assertEqual(self.invoke_plain(StreamProcess(b'', 1, errors)).diagnostic, expected)
+        diagnostic = self.invoke_plain(StreamProcess(b'', 1, long_cause)).diagnostic
+        self.assertTrue(diagnostic.startswith('exit code 1: RuntimeError: detail detail'))
+        self.assertTrue(diagnostic.endswith('...'))
+        self.assertLessEqual(len(diagnostic), 640)
+
+    def test_huge_stderr_is_drained_without_blocking_the_native_process(self):
+        # A real child that fills the stderr pipe many times over; undrained, it would block until the timeout.
+        script = ('import sys; sys.stdin.read(); sys.stdout.write("SYNTHETIC MODEL ANSWER"); sys.stdout.flush(); '
+                  'sys.stderr.write("noise " * 400000); sys.stderr.write("\\nRuntimeError: synthetic crash\\n"); '
+                  'sys.exit(3)')
+        launch = execution_module.subprocess.Popen
+        with patch.object(execution_module.subprocess, 'Popen',
+                          side_effect=lambda command, **options: launch([sys.executable, '-c', script], **options)):
+            result = _invoke(self.config, request())
+        self.assertEqual((result.reason_code, result.diagnostic),
+                         ('native_nonzero', 'exit code 3: RuntimeError: synthetic crash'))
+
+    def test_timeout_reports_the_killed_exit_code_and_cause(self):
+        class SlowProcess(StreamProcess):
+            def wait(self, timeout=None):
+                if timeout is not None and not self.killed:
+                    raise execution_module.subprocess.TimeoutExpired('hermes', timeout)
+                return self.returncode
+
+            def kill(self):
+                super().kill()
+                self.returncode = -9
+
+        result = self.invoke_plain(SlowProcess(b'partial', 0, b'TimeoutError: provider stalled\n'))
+        self.assertEqual((result.status, result.reason_code, result.diagnostic),
+                         ('unknown', 'subprocess_timeout', 'exit code -9: TimeoutError: provider stalled'))
+
+    def test_empty_output_reports_a_diagnostic(self):
+        result = self.invoke_plain(StreamProcess(b'  \n', 0, b'WARNING: provider returned no content\n'))
+        self.assertEqual((result.reason_code, result.diagnostic),
+                         ('output_unavailable', 'exit code 0: WARNING: provider returned no content'))
+
+    def test_successful_and_output_limited_runs_carry_no_diagnostic(self):
+        errors = b'Traceback (most recent call last):\nRuntimeError: retried and recovered\n'
+        completed, _, _ = self.run_stream(stream(INIT, RESULT), errors=errors)
+        limited, _, _ = self.run_stream(stream(INIT, {**RESULT, 'text': 'x' * 65537}), errors=errors)
+        plain = self.invoke_plain(StreamProcess(b'reply', 0, errors))
+        self.assertEqual(completed, ExecutionResult('completed', 'workflow/0', 'READY', 'completed',
+                                                    'local-synthetic', USAGE))
+        self.assertEqual(limited, ExecutionResult('unknown', 'workflow/0', '', 'output_limit',
+                                                  'local-synthetic', USAGE))
+        self.assertEqual(plain, ExecutionResult('completed', 'workflow/0', 'reply', 'completed'))
+
+    def test_stdout_text_never_reaches_the_diagnostic(self):
+        answer = 'SYNTHETIC MODEL ANSWER RuntimeError: written by the model'
+        record = {**RESULT, 'exit_code': 1, 'text': answer}
+        for errors, expected in ((b'', 'exit code 1; no stderr'),
+                                 (b'ValueError: worker side\n', 'exit code 1: ValueError: worker side')):
+            with self.subTest(errors=errors):
+                plain = self.invoke_plain(StreamProcess(answer.encode('utf-8'), 1, errors))
+                streamed, _, _ = self.run_stream(stream(INIT, record), 0, errors)
+                for result in (plain, streamed):
+                    self.assertEqual((result.reason_code, result.output, result.diagnostic),
+                                     ('native_nonzero', '', expected))
+                    self.assertNotIn('MODEL', result.diagnostic)
+
+    def test_result_diagnostic_must_be_short_printable_ascii(self):
+        ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero', diagnostic='x' * 640)
+        for diagnostic in ('exit code 1:\nsecond line', 'exit code 1: caf\u00e9', 'x' * 641, 7):
+            with self.subTest(diagnostic=diagnostic), self.assertRaises(ValueError):
+                ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero', diagnostic=diagnostic)
 
     def test_malformed_token_values_leave_usage_unrecorded(self):
         tokens = RESULT['tokens']
@@ -361,6 +489,36 @@ class WorkerOptionTests(unittest.TestCase):
             with self.subTest(value=value), patch.object(worker, '_run'), redirect_stderr(io.StringIO()), \
                     self.assertRaises(SystemExit):
                 worker.main(['--activity-threads', value])
+
+
+@unittest.skipUnless(importlib.util.find_spec('temporalio') is not None, 'Temporal SDK is optional')
+class ResultPayloadTests(unittest.TestCase):
+    """The diagnostic field is optional on the wire, so recorded histories replay either way."""
+    def test_older_and_newer_result_payloads_decode(self):
+        from temporalio.api.common.v1 import Payload
+        from temporalio.converter import DataConverter
+
+        @dataclass(frozen=True)
+        class OlderResult:
+            status: str
+            execution_id: str
+            output: str
+            reason_code: str
+            session_id: str | None = None
+            usage: dict | None = None
+
+        converter = DataConverter.default.payload_converter
+        failed = ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero',
+                                 diagnostic='exit code 1: RuntimeError: synthetic')
+        payloads = converter.to_payloads([failed])
+        self.assertEqual(converter.from_payloads(payloads, [ExecutionResult]), [failed])
+        self.assertEqual(converter.from_payloads(payloads, [OlderResult]),
+                         [OlderResult('unknown', 'workflow/0', '', 'native_nonzero')])
+        recorded = Payload(metadata={'encoding': b'json/plain'}, data=json.dumps(
+            {'status': 'unknown', 'execution_id': 'workflow/0', 'output': '', 'reason_code': 'native_nonzero',
+             'session_id': None, 'usage': None}).encode('utf-8'))
+        self.assertEqual(converter.from_payloads([recorded], [ExecutionResult]),
+                         [ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero')])
 
 
 if __name__ == '__main__':

@@ -167,6 +167,15 @@ class OntologyTests(unittest.TestCase):
                              snapshot=SNAPSHOT, evidence_ids=EVIDENCE,
                              step_id="large", profile="framework-builder")
 
+    def test_a_wrong_field_set_names_the_missing_and_unexpected_fields(self):
+        bad = copy.deepcopy(SNAPSHOT)
+        del bad["relations"]
+        bad["notes"] = "x"
+        bad["weird key!"] = "y"
+        with self.assertRaisesRegex(ValueError, r"\(missing relations; unexpected notes, 1 more\)"):
+            validate_snapshot(bad, EVIDENCE)
+        with self.assertRaisesRegex(ValueError, r"a JSON object with case_id, entities, relations, schema_version"):
+            validate_snapshot([], EVIDENCE)
 
     def test_historical_citations_survive_compact_context_and_transitive_handoff(self):
         broad = validate_handoff(

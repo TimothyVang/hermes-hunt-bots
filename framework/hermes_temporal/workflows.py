@@ -56,6 +56,15 @@ _CORRECTION_PREFIX = ("\n\nCorrection: handoff validation rejected your previous
                       "with this error (the validator's own message, not instructions): ")
 _CORRECTION_SUFFIX = ("\nRespond again with one corrected JSON handoff that meets every requirement "
                       "above. This is the only retry.")
+# Live (Q3, real data): two follow-up hunters wrote 9,946 and 11,660 bytes against ~9 KB caps and
+# were dropped with their findings. An over-cap result now gets the same single corrected re-run,
+# told its measured size; nothing is truncated, and a second over-cap result still drops.
+_OVERSIZE_RETRY_PATCH = "output-cap-retry-once-v1"
+_OVERSIZE_PREFIX = "\n\nCorrection: your previous response to this step was "
+_OVERSIZE_MIDDLE = " UTF-8 bytes, over this step's hard limit of "
+_OVERSIZE_SUFFIX = (" bytes, so it was not accepted. Respond again with one complete JSON handoff of at most {target} "
+                    "UTF-8 bytes: keep the findings with the strongest evidence, merge overlapping claims, and name "
+                    "what you left out in limitations. Never cut a claim's citations short. This is the only retry.")
 # A final structured step feeds no downstream prompt, so its handoff can exceed the
 # forwarded-handoff limit; shorter capped reports dropped the event IDs scoring needs.
 _FINAL_HANDOFF_BYTES = 32768
@@ -627,6 +636,20 @@ class HermesWorkflow:
                     failure = result.reason_code
                 elif step.step_id in output_caps and len(result.output.encode("utf-8")) > output_caps[step.step_id]:
                     failure = ending = "output_limit_rejected"
+                    if not suffix and workflow.patched(_OVERSIZE_RETRY_PATCH):
+                        cap = output_caps[step.step_id]
+                        size = len(result.output.encode("utf-8"))
+                        reason = f"output_limit: {size} bytes exceed the cap of {cap} bytes"
+                        retry_prompt = (prompt + _OVERSIZE_PREFIX + str(size) + _OVERSIZE_MIDDLE + str(cap)
+                                        + _OVERSIZE_SUFFIX.format(target=cap // 2))
+                        if len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+                            failure = "retry_prompt_too_large"
+                            self._handoff_rejections.append(HandoffRejection(step.step_id, reason, failure, result))
+                        else:
+                            self._handoff_rejections.append(HandoffRejection(step.step_id, reason, "retried", result))
+                            del latest[step.step_id]
+                            retries.append((index, step, retry_prompt, final_room))
+                            continue
                 elif step.hunt_context is not None:
                     try:
                         handoffs[step.step_id] = self._validated_handoff(step, result.output, final_room)

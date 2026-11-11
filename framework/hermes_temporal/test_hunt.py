@@ -66,7 +66,9 @@ class ToolDrivenHuntTests(unittest.TestCase):
         for stage in ("evidence", "hypotheses", "network"):
             with self.subTest(stage=stage):
                 self.assertIn("from this case's saved capture only, never live traffic", by_id[stage].prompt)
-                self.assertIn("frame numbers only as supporting evidence", by_id[stage].prompt)
+                self.assertIn("when a finding rests on packets, also cite frame-<frame.number>", by_id[stage].prompt)
+                self.assertIn("cite intel matches by their ioc- id", by_id[stage].prompt)
+                self.assertNotIn("only as supporting evidence", by_id[stage].prompt)
         self.assertIn("No live capture", by_id["network"].prompt)
 
     def test_stage_guidance_reaches_only_its_stage_and_is_bounded(self) -> None:
@@ -166,7 +168,6 @@ class ToolDrivenHuntTests(unittest.TestCase):
             self.assertEqual(by_id[follow_id].hunt_context, by_id["evidence"].hunt_context)
             self.assertIn("malicious, benign or unresolved", by_id[follow_id].prompt)
         self.assertEqual(by_id["merge"].hunt_context, by_id["analysis"].hunt_context)
-        self.assertIn("Never drop cited event IDs", by_id["merge"].prompt)
 
     def test_follow_ups_require_a_parallel_tool_driven_hunt_and_a_bounded_count(self) -> None:
         self.assertEqual(len(supplied_evidence_hunt(tool_input(parallel=True, follow_ups=12)).steps), 22)

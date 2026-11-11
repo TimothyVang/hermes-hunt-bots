@@ -529,5 +529,36 @@ class DecisionLogTest(unittest.TestCase):
         self.assertFalse(any('summary' in record for seen in plain.seen for record in seen.values()))
 
 
+class CliRetryTest(unittest.TestCase):
+    def outcomes(self, *results):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            return results[len(calls) - 1]
+        return calls, fake_run
+
+    def test_a_transient_rpc_error_is_retried_and_a_lasting_one_fails(self):
+        rpc = SimpleNamespace(returncode=2, stdout='', stderr='error: operation failed (RPCError)')
+        ok = SimpleNamespace(returncode=0, stdout='{"stage": "executing"}', stderr='')
+        calls, fake_run = self.outcomes(rpc, ok)
+        with patch.object(dg.subprocess, 'run', fake_run), patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            self.assertEqual(dg.cli('status', CHILD), {'stage': 'executing'})
+        self.assertEqual(len(calls), 2)
+        calls, fake_run = self.outcomes(rpc, rpc, rpc)
+        with patch.object(dg.subprocess, 'run', fake_run), patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            with self.assertRaisesRegex(RuntimeError, 'failed three times'):
+                dg.cli('status', CHILD)
+        self.assertEqual(len(calls), 3)
+
+    def test_other_failures_are_not_retried(self):
+        bad = SimpleNamespace(returncode=2, stdout='', stderr='error: operation failed (ValueError)')
+        calls, fake_run = self.outcomes(bad)
+        with patch.object(dg.subprocess, 'run', fake_run), patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            with self.assertRaisesRegex(RuntimeError, 'status exit 2'):
+                dg.cli('status', CHILD)
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

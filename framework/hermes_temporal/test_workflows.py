@@ -1399,7 +1399,7 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 ], parallel=True)
                 async with self._started(f"test-hermes-wave-required-{case}", request, execute) as (_, handle):
                     await self._decide(handle, "wave-1", "execute")
-                    if case == "invalid":
+                    if case in ("invalid", "oversized"):
                         await self._decide(handle, "wave-1", "execute",
                                            when=lambda state: state.handoff_rejections)
                     self.assertEqual(await handle.result(), terminal)
@@ -1408,6 +1408,52 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                                  [("producer", "stopped", reason), ("steady", "awaiting_review", ""),
                                   ("consumer", "not_reached", "")])
                 self.assertNotIn("consumer", dispatched)
+
+    async def test_an_oversized_output_is_retried_once_with_its_size_and_then_dropped_or_kept(self) -> None:
+        valid = json.dumps(_handoff("producer", "framework-researcher"))
+        oversized = valid + " " * 16384
+        for second, states in (
+            (valid, [("producer", "done", ""), ("consumer", "done", "")]),
+            (oversized, [("producer", "dropped", "output_limit_rejected"),
+                         ("consumer", "dropped", "no_surviving_dependency")]),
+        ):
+            with self.subTest(retry_fits=second is valid):
+                prompts = {}
+
+                @activity.defn(name="execute_hermes_step")
+                async def execute(request: ExecutionRequest) -> ExecutionResult:
+                    prompts[request.execution_id] = request.step.prompt
+                    if request.step.step_id == "producer":
+                        output = second if request.execution_id.endswith(":retry") else oversized
+                        return ExecutionResult("completed", request.execution_id, output, "completed")
+                    return ExecutionResult("completed", request.execution_id,
+                                           json.dumps(_handoff("consumer", "framework-researcher")), "completed")
+
+                request = WorkflowRequest([
+                    HermesStep("producer", "synthetic", profile="framework-researcher",
+                               hunt_context=_ontology_context(), optional=True),
+                    HermesStep("consumer", "synthetic", profile="framework-researcher",
+                               depends_on=("producer",), hunt_context=_ontology_context(), optional=True),
+                ], parallel=True)
+                queue = f"test-hermes-wave-oversize-{'fits' if second is valid else 'drops'}"
+                async with self._started(queue, request, execute) as (_, handle):
+                    await self._decide(handle, "wave-1", "execute")
+                    await self._decide(handle, "wave-1", "execute", when=lambda state: state.handoff_rejections)
+                    if second is valid:
+                        await self._decide(handle, "wave-1", "review")
+                        await self._decide(handle, "wave-2", "execute")
+                        await self._decide(handle, "wave-2", "review")
+                    self.assertEqual(await handle.result(), "completed")
+                    state = await handle.query(HermesWorkflow.status)
+                self.assertEqual([(item.step_id, item.state, item.reason) for item in state.steps], states)
+                [rejection] = state.handoff_rejections
+                self.assertEqual((rejection.step_id, rejection.outcome), ("producer", "retried"))
+                size = len(oversized.encode("utf-8"))
+                self.assertIn(f"output_limit: {size} bytes exceed the cap of", rejection.reason)
+                retry_prompt = prompts[f"{queue}:0:retry"]
+                self.assertTrue(retry_prompt.startswith(prompts[f"{queue}:0"]))
+                self.assertIn(f"your previous response to this step was {size} UTF-8 bytes", retry_prompt)
+                self.assertIn("This is the only retry.", retry_prompt)
 
     async def test_required_unknown_outcome_is_reconciled_under_its_own_step_id(self) -> None:
         for choice, terminal, states in (

@@ -12,7 +12,7 @@ import native_team
 class NativeTeamPolicyTests(unittest.TestCase):
     def test_models_turn_caps_tool_allowlists_and_routes_are_exact(self):
         expected = {
-            'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation'], ['delegate_task']),
+            'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation', 'hunt_lab'], ['delegate_task']),
             'framework-researcher': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
                                      ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields']),
             'framework-builder': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
@@ -42,20 +42,22 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertEqual(coordinator['delegation.fallback_providers'], [])
         self.assertEqual(coordinator['delegation.backend'], 'profile_routes')
         names = [name for name, _ in native_team.PROFILE_ROUTES]
-        self.assertEqual(coordinator['delegation.allowed_profiles'], names)
+        self.assertEqual(coordinator['delegation.backends.profile_routes.default'], 'framework-researcher')
+        self.assertIn('framework-researcher', names)
+        self.assertNotIn('delegation.allowed_profiles', coordinator)
         self.assertEqual(coordinator['delegation.backends.profile_routes.profiles'],
                          [{'name': name, 'description': description}
                           for name, description in native_team.PROFILE_ROUTES])
         for profile in native_team.PROFILES:
             settings = native_team.expected_settings(profile)
+            # Every profile keeps hunt_lab enabled: owners use their tools, and the coordinator's delegated
+            # specialists inherit the toolset (its own registration is empty, see test_hunt_lab_tools).
+            self.assertNotIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
             if profile == 'framework-coordinator':
-                # The coordinator only delegates; it never sees hunt_lab or its tools.
                 self.assertNotIn('tools.tool_search.enabled', settings)
-                self.assertIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
             else:
                 # Tool Search would hide plugin tools behind bridges the allowlist strips.
                 self.assertEqual(settings['tools.tool_search.enabled'], 'off')
-                self.assertNotIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
 
     def test_every_host_tool_has_an_owner_and_only_the_analyst_keeps_hunt_lab_query(self):
         owners = {}
@@ -71,6 +73,15 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertEqual(set(owners), {'delegate_task', 'hunt_lab_query', 'elastic_search', 'elastic_aggregate',
                                        'detection_test', 'intel_lookup', 'arkime_sessions', 'arkime_unique',
                                        'lab_browser', 'packet_fields'})
+
+    def test_allowlists_are_the_plugins_ownership_map(self):
+        # One definition: the installed plugin registers exactly these owners' tools.
+        from hunt_lab import query_adapter
+        self.assertIs(native_team.TOOL_OWNERSHIP, query_adapter.TOOL_OWNERSHIP)
+        self.assertEqual(set(native_team.PROFILES), set(query_adapter.TOOL_OWNERSHIP))
+        for profile in native_team.PROFILES:
+            self.assertEqual(native_team.expected_settings(profile)['agent.allowed_tool_names'],
+                             list(query_adapter.TOOL_OWNERSHIP[profile]))
 
     def test_previous_reviewed_tool_policy_migrates_but_user_values_are_preserved(self):
         for profile in native_team.PROFILES:
@@ -148,7 +159,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
         expected = native_team.expected_settings('framework-coordinator')
         for key in ('agent.allowed_tool_names', 'delegation.max_spawn_depth',
                     'delegation.max_iterations', 'delegation.max_summary_chars',
-                    'delegation.allowed_profiles', 'delegation.backend',
+                    'delegation.backends.profile_routes.default', 'delegation.backend',
                     'delegation.backends.profile_routes.profiles'):
             missing = dict(expected)
             del missing[key]
@@ -164,10 +175,13 @@ class NativeTeamPolicyTests(unittest.TestCase):
                          ['agent.allowed_tool_names'], 'custom_configuration_conflict')
     def test_safe_observed_fields_report_readiness_and_conflict(self):
         current = native_team.expected_settings('framework-coordinator')
-        current['agent.disabled_toolsets'] = [
-            'desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory', 'hunt_lab'
-        ]
+        current['agent.disabled_toolsets'] = ['desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory']
         self.assertEqual(set(native_team.validate_observed('framework-coordinator', current).values()), {'ready'})
+        # Delegated specialists inherit the coordinator's toolsets, so an earlier disabled hunt_lab must be removed.
+        current['agent.disabled_toolsets'] = current['agent.disabled_toolsets'] + ['hunt_lab']
+        self.assertEqual(native_team.validate_observed('framework-coordinator', current)['agent.disabled_toolsets'],
+                         'needs_explicit_configuration')
+        current['agent.disabled_toolsets'].remove('hunt_lab')
         current['model.default'] = 'user-selected-model'
         self.assertEqual(native_team.validate_observed('framework-coordinator', current)['model.default'],
                          'custom_configuration_conflict')
@@ -279,7 +293,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
 
         observed = native_team.expected_settings('framework-coordinator')
         observed['agent.disabled_toolsets'] = native_team._disabled_toolset_requirements('framework-coordinator')
-        observed['delegation.allowed_profiles'] = []
+        observed['delegation.backends.profile_routes.default'] = 'framework-builder'
         with unittest.mock.patch.object(native_team, '_resolve', return_value=('hermes', 'selected-home')):
             with unittest.mock.patch.object(native_team, '_read_current', return_value=observed):
                 with unittest.mock.patch.object(native_team, '_run') as run:
@@ -447,13 +461,12 @@ class NativeTeamPolicyTests(unittest.TestCase):
             native_team.initialize('framework-coordinator', root)
             config = json.loads((profile_dir / 'config.yaml').read_text(encoding='utf-8'))
             self.assertEqual(config['agent']['allowed_tool_names'], ['delegate_task'])
-            self.assertEqual(config['delegation']['allowed_profiles'],
-                             [name for name, _ in native_team.PROFILE_ROUTES])
+            self.assertNotIn('allowed_profiles', config['delegation'])
             self.assertEqual(config['delegation']['backend'], 'profile_routes')
             self.assertEqual(config['delegation']['backends']['profile_routes']['profiles'],
                              [{'name': name, 'description': description}
                               for name, description in native_team.PROFILE_ROUTES])
-            self.assertNotIn('default', config['delegation']['backends']['profile_routes'])
+            self.assertEqual(config['delegation']['backends']['profile_routes']['default'], 'framework-researcher')
 
     def test_initialize_requires_exact_identity_and_preserves_existing_file(self):
         with tempfile.TemporaryDirectory() as root:

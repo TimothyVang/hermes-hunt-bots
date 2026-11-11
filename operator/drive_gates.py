@@ -54,6 +54,7 @@ from lab_paths import DEFAULT_LANE, FRAMEWORK, GATE_RUNS, PRACTICE
 LOG = GATE_RUNS / 'driver.log'
 DECISION_DIR = PRACTICE / 'operator-decisions'
 NOTE_LIMIT_BYTES = 4096  # the workflow silently ignores a decision whose note is larger
+RPC_BACKOFF_SECONDS = 10
 RETRY_NOTE = ('Retry approval: the workflow re-offered this step once because handoff validation rejected '
               'its previous output. ')
 AUTOMATED_NOTE = ('Automated approval under ADR 0002 (two human decisions per hunt) for operator {operator}; '
@@ -228,16 +229,23 @@ def card_summary(kind, outputs):
 
 def cli(*args):
     # Status reads are side-effect free and the workflow ignores a repeated decision
-    # once its gate has passed, so retrying a slow call cannot double-approve.
+    # once its gate has passed, so retrying a slow or failed call cannot double-approve.
+    # Live (2026-11-10): one transient RPCError from a loaded Temporal server ended a 13-minute hunt.
     for attempt in range(3):
+        if attempt:
+            time.sleep(RPC_BACKOFF_SECONDS * attempt)
         try:
             result = subprocess.run([*DEFAULT_LANE.temporal_cli(), *args], cwd=FRAMEWORK,
                                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
-            break
         except subprocess.TimeoutExpired:
             log(f'{args[0]} timed out (attempt {attempt + 1}/3)')
+            continue
+        if result.returncode and '(RPCError)' in result.stderr:
+            log(f'{args[0]} transient RPCError (attempt {attempt + 1}/3)')
+            continue
+        break
     else:
-        raise RuntimeError(f'{args[0]} timed out three times')
+        raise RuntimeError(f'{args[0]} failed three times (timeout or RPCError)')
     if result.returncode:
         raise RuntimeError(f'{args[0]} exit {result.returncode}: {result.stderr.strip()[-300:]}')
     return json.loads(result.stdout)

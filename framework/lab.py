@@ -37,6 +37,21 @@ BACKEND_FILES = (
     'fixtures/dns-lab-001/case.json',
 )
 BUNDLE_FILES = BACKEND_FILES + tuple('desktop/' + name for name in DESKTOP_FILES)
+# Native Hermes imports a plugin once per gateway process, and `plugins enable` on an already
+# enabled plugin does not notify the gateway. A long-lived gateway (the default-profile multiplexer
+# serves every profile) would keep the previous bundle's tools, so ask the gateway serving each
+# profile to re-import its plugins: the profile's own socket, else the multiplexer's for this home.
+GATEWAY_RELOAD = '\n'.join((
+    'import json',
+    'from pathlib import Path',
+    'from gateway.control_socket import reload_gateway_plugins',
+    'from hermes_constants import get_default_hermes_root, get_hermes_home',
+    'home, root = Path(get_hermes_home()), Path(get_default_hermes_root())',
+    'answer = reload_gateway_plugins(home)',
+    'if answer is None and root.resolve() != home.resolve():',
+    '    answer = reload_gateway_plugins(root, profile_home=home)',
+    'print(json.dumps(answer))',
+))
 
 
 def resolve_home(home=None):
@@ -113,6 +128,36 @@ def bundle_source(kit_root=ROOT):
     return files
 
 
+def hermes_python(executable):
+    """The interpreter of the Hermes CLI's own environment (its console-script sibling)."""
+    names = ('python.exe',) if os.name == 'nt' else ('python', 'python3')
+    for folder in dict.fromkeys((Path(executable).absolute().parent, Path(executable).resolve().parent)):
+        for name in names:
+            if (folder / name).is_file():
+                return folder / name
+    raise ValueError('Hermes interpreter not found beside the CLI; cannot refresh a running gateway')
+
+
+def reload_gateway(profile, python, runner):
+    """Make a running gateway serve the installed bundle now; 'not_running' when none answered."""
+    result = runner([str(python), '-I', '-c', GATEWAY_RELOAD], env=dict(os.environ, HERMES_HOME=str(profile)),
+                    capture_output=True, text=True, timeout=120, check=False)
+    refused = ValueError(f'The running Hermes gateway still serves the previous hunt-lab tools for {profile.name}; '
+                         'restart it when no hunt is running (hermes gateway restart), then rerun install')
+    if result.returncode != 0:
+        raise refused
+    try:
+        answer = json.loads((result.stdout or '').strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        raise refused from None
+    if answer is None:
+        return 'not_running'
+    if not (isinstance(answer, dict) and answer.get('reloaded') is True
+            and 'hunt-lab' in (answer.get('plugins') or ())):
+        raise refused
+    return 'reloaded'
+
+
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     """Stage both native halves and the existing companion; no VM/download action.
 
@@ -129,6 +174,7 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     executable = shutil.which(str(hermes) if hermes else 'hermes')
     if not executable:
         raise ValueError('Hermes CLI not found; install the framework Hermes prerequisite')
+    python = hermes_python(executable)
     files = bundle_source(kit_root)
     companion_root = Path(kit_root).absolute() / 'desktop' / install_desktop.PLUGIN
     install_desktop.ordinary_directory(companion_root)
@@ -151,8 +197,9 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
                         env=env, check=False)
         if result.returncode != 0:
             raise ValueError('Native Hermes plugin enable failed; no VM operation was attempted')
+    gateway = {name: reload_gateway(profile, python, runner) for name, profile in profiles.items()}
     return {'profile': PROFILE, 'tool_profiles': list(profiles), 'backend': str(backends[PROFILE]),
-            'desktop': str(desktop), 'state': 'installed', 'prepared': False}
+            'desktop': str(desktop), 'gateway': gateway, 'state': 'installed', 'prepared': False}
 
 
 def command(args):

@@ -81,7 +81,7 @@ class RoundRecordTest(unittest.TestCase):
         self.assertEqual(first['dropped'], [{'step_id': 'intel', 'reason': 'timeout'}])
         self.assertEqual(first['usage'], {'input_tokens': 970, 'output_tokens': 30, 'cache_read_tokens': 9,
                                           'cache_write_tokens': 3, 'total_tokens': 1000, 'duration_ms': 7000,
-                                          'steps_without_usage': 1})
+                                          'steps_without_usage': 1, 'retried_attempts': 0})
         # A dropped optional step does not make a completed round a halt.
         self.assertTrue(first['completed'])
         self.assertEqual(first['found'], 18)
@@ -111,6 +111,40 @@ class RoundRecordTest(unittest.TestCase):
                 self.assertRegex(summary, r' misattributed 0 calls 0 in [0-9.]+ min$')
 
 
+def rejection(step_id, outcome, rejected):
+    return {'step_id': step_id, 'reason': 'ValueError: invalid handoff', 'outcome': outcome, 'result': rejected}
+
+
+class UsageTotalTest(unittest.TestCase):
+    def test_a_retried_step_bills_both_of_its_attempts(self):
+        # The workflow drops a retried attempt from results; only its handoff rejection keeps it.
+        st = {'results': [result('w:0', 'sc', usage=usage(100, 1000)), result('w:1:retry', 'ev', usage=usage(300, 3000))],
+              'handoff_rejections': [rejection('evidence', 'retried', result('w:1', 'bad', usage=usage(200, 2000)))]}
+        self.assertEqual(tl.usage_total(st), {'input_tokens': 570, 'output_tokens': 30, 'cache_read_tokens': 9,
+                                              'cache_write_tokens': 3, 'total_tokens': 600, 'duration_ms': 6000,
+                                              'steps_without_usage': 0, 'retried_attempts': 1})
+
+    def test_a_retried_attempt_without_usage_is_a_step_without_usage(self):
+        st = {'results': [result('w:0', 'sc', usage=usage(100, 1000))],
+              'handoff_rejections': [rejection('scope', 'retried', result('w:0-first', 'bad'))]}
+        total = tl.usage_total(st)
+        self.assertEqual((total['total_tokens'], total['steps_without_usage'], total['retried_attempts']), (100, 1, 1))
+
+    def test_a_rejection_that_ended_the_round_is_counted_once(self):
+        final = result('w:1:retry', 'bad again', usage=usage(300, 3000))
+        st = {'results': [result('w:0', 'sc', usage=usage(100, 1000)), final],
+              'handoff_rejections': [rejection('evidence', 'retried', result('w:1', 'bad', usage=usage(200, 2000))),
+                                     rejection('evidence', 'retry_exhausted', final)]}
+        total = tl.usage_total(st)
+        self.assertEqual((total['total_tokens'], total['retried_attempts']), (600, 1))
+
+    def test_a_round_record_includes_retried_attempts(self):
+        retried = {'stage': 'completed', 'step_id': None, 'execution_id': None,
+                   'results': [result('w:0', 'sc', usage=usage(100, 1000))],
+                   'handoff_rejections': [rejection('scope', 'retried', result('w:0-first', 'bad', usage=usage(50, 500)))]}
+        run, summary = run_rounds([retried])
+        self.assertEqual(run['rounds'][0]['usage']['total_tokens'], 150)
+        self.assertIn(' tokens 150 in ', summary)
 PUBLIC_SCOPE = 'Public research dataset dedale-001 (real lab telemetry, no customer data) only; case brief'
 
 
@@ -149,7 +183,6 @@ class BaseInputTest(unittest.TestCase):
         synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
         self.assertEqual(tl.build_input(synthetic, 'new brief', {}, 'dedale-001')['scope'],
                          'Synthetic dedale-001 only; new brief')
-
 
 
 if __name__ == '__main__':

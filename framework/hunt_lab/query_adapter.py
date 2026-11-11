@@ -13,6 +13,17 @@ FRAMEWORK_PROFILES = frozenset({
     'framework-coordinator', 'framework-researcher', 'framework-builder',
     'framework-reviewer', 'framework-librarian', LAB_OWNER,
 })
+# The single tool-ownership map. The plugin registers only the owner's hunt_lab tools in each
+# profile (so Hermes's unknown-tool check refuses the rest), and native_team.py writes the same
+# lists as agent.allowed_tool_names. delegate_task is a core Hermes tool, not a plugin tool.
+TOOL_OWNERSHIP = {
+    'framework-coordinator': ('delegate_task',),
+    'framework-researcher': ('elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields'),
+    'framework-builder': ('detection_test', 'elastic_aggregate'),
+    'framework-reviewer': ('elastic_search', 'arkime_sessions', 'detection_test'),
+    'framework-librarian': ('intel_lookup', 'elastic_aggregate'),
+    LAB_OWNER: ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'),
+}
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 TEXT = re.compile(r'[^\x00-\x1f\x7f]*')
 TOKEN = re.compile(r'[\x21-\x7e]{1,2048}')
@@ -370,8 +381,8 @@ TOOLS = {
     'intel_lookup': (_intel, {'values'}, _schema(
         'intel_lookup',
         'Look up observed indicator values (IPs, domains, hashes, URLs) in the case\'s synthetic threat '
-        'intelligence. Returns matches with type, feed, confidence, description and first_seen, plus '
-        'unmatched values.',
+        'intelligence. Returns matches with id, type, feed, confidence, description and first_seen, plus '
+        'unmatched values. Cite a match by its id exactly as returned (for example ioc-00012).',
         {'values': {'type': 'string', 'maxLength': 10050,
                     'description': 'Comma-separated list of at most 50 values, each at most 200 characters.'}},
         ('values',))),
@@ -400,8 +411,8 @@ TOOLS = {
         'are removed: no cookies, authorization headers, bodies, payload bytes, passwords, hashes or tickets, '
         'and http.request.uri is its path only (a query string reads ?[redacted]). Page with start; more=true '
         'means another page exists, truncated=true that the output cap ended the scan. Cite the matching evt- '
-        'log events where they exist; frame numbers are supporting evidence. field_unavailable means the '
-        'lab\'s tshark lacks that field.',
+        'log events where they exist; frame numbers are supporting evidence, cited as frame-<frame.number> '
+        '(for example frame-1234). field_unavailable means the lab\'s tshark lacks that field.',
         {'fields': _PACKET_FIELDS_PARAM, 'filter': _PACKET_FILTER_PARAM,
          'length': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'description': 'Rows to return.'},
          'start': {'type': 'integer', 'minimum': 0, 'maximum': 100000,

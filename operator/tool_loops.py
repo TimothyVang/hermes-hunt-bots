@@ -184,13 +184,20 @@ def result_sizes(st):
     return sizes
 
 
-def usage_total(results):
-    """Each usage key summed over the results that recorded usage, with how many did not; None when none did."""
-    recorded = [r['usage'] for r in results if r.get('usage')]
+def usage_total(st):
+    """Each usage key summed over every billed attempt of a round's status, with how many attempts recorded no
+    usage and how many were rejected handoffs that the workflow retried; None when no attempt recorded usage.
+    A retried attempt leaves status.results and survives only as its handoff rejection's result; a rejection
+    whose result is still in status.results (it ended the round) is counted once."""
+    kept = {r['execution_id'] for r in st['results']}
+    retried = [item['result'] for item in st.get('handoff_rejections', [])
+               if item.get('result') and item['result']['execution_id'] not in kept]
+    attempts = [*st['results'], *retried]
+    recorded = [r['usage'] for r in attempts if r.get('usage')]
     if not recorded:
         return None
     return ({key: sum(u[key] for u in recorded) for key in recorded[0]}
-            | {'steps_without_usage': len(results) - len(recorded)})
+            | {'steps_without_usage': len(attempts) - len(recorded), 'retried_attempts': len(retried)})
 
 
 def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT_LANE):
@@ -226,7 +233,7 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
         if st.get('steps'):
             entry['dropped'] = [{'step_id': s['step_id'], 'reason': s['reason']}
                                 for s in st['steps'] if s['state'] == 'dropped']
-        usage = usage_total(st['results'])
+        usage = usage_total(st)
         if usage:
             entry['usage'] = usage
         if entry['completed']:
