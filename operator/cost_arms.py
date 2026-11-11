@@ -6,7 +6,9 @@ cache_write_tokens, total_tokens, steps_without_usage}, "by_kind": {"attack": {"
 "decoys_blamed", "minutes_measured"}. Writes summary.json and prints a short table:
 
   G4.1  complete data: every --cases case has one completed hunt in every arm, and every step of every hunt
-        recorded usage (steps_without_usage 0). Missing, incomplete and unmetered hunts are listed.
+        recorded usage (steps_without_usage 0). Missing, incomplete and unmetered hunts are listed. A hunt's usage
+        must include every retried handoff attempt (tool_loops.usage_total, which also records retried_attempts);
+        rounds written before it counted them undercount retried steps, so run recount_usage.py on those first.
   G4.2  the rule, on the cases present in every arm (paired; the others are listed and left out): among the arms
         with mean attack facts fully evidenced at least the baseline's mean minus 1, no halt, and no more decoys
         blamed in total than the baseline, the chosen arm has the lowest mean tokens per hunt; otherwise "none
