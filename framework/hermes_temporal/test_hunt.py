@@ -132,6 +132,7 @@ class ToolDrivenHuntTests(unittest.TestCase):
         self.assertEqual(digest, "5a3193843d61a3495379f5e2c805705965d59f70e5d618a0d3d664fa75c1d54b")
         self.assertEqual({step.timeout_seconds for step in request.steps}, {300})
         self.assertTrue(all(tool not in step.prompt for step in request.steps for tool in LAB_TOOLS - {"delegate_task"}))
+        self.assertFalse(any("no claim_id key" in step.prompt for step in request.steps))
 
     def test_zero_follow_ups_is_the_unchanged_parallel_hunt(self) -> None:
         self.assertEqual(supplied_evidence_hunt(tool_input(parallel=True, follow_ups=0)),
@@ -167,6 +168,17 @@ class ToolDrivenHuntTests(unittest.TestCase):
         for follow_id in follow_ids:
             self.assertEqual(by_id[follow_id].hunt_context, by_id["evidence"].hunt_context)
             self.assertIn("malicious, benign or unresolved", by_id[follow_id].prompt)
+            # Live real-win-002/003 hunts missed processes' file/DNS groups and their grandchildren.
+            self.assertIn('field=event.category q=process.entity_id:"<its process.entity_id>"', by_id[follow_id].prompt)
+            self.assertIn("until no new children appear", by_id[follow_id].prompt)
+            self.assertIn("follow next_after pages to the last one", by_id[follow_id].prompt)
+        # Live Purple reviews carried a stray claim_id key; tool-driven hunts state the review fields.
+        self.assertIn("no claim_id key", by_id["purple"].prompt)
+        # Follow-ups wrote the verdict into kind, the most common live handoff rejection.
+        for step_id in ("follow-1", "merge"):
+            self.assertIn("kind is still exactly observed, inference, hypothesis or finding, never a verdict",
+                          by_id[step_id].prompt)
+        self.assertIn('children (process.parent.entity_id:"<guid>")', by_id["incident"].prompt)
         self.assertEqual(by_id["merge"].hunt_context, by_id["analysis"].hunt_context)
 
     def test_follow_ups_require_a_parallel_tool_driven_hunt_and_a_bounded_count(self) -> None:
