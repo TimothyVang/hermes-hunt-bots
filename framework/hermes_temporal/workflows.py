@@ -70,7 +70,8 @@ _OVERSIZE_SUFFIX = (" bytes, so it was not accepted. Respond again with one comp
 # A final structured step feeds no downstream prompt, so its handoff can exceed the
 # forwarded-handoff limit; shorter capped reports dropped the event IDs scoring needs.
 _FINAL_HANDOFF_BYTES = 32768
-# Each consumed gate decision is recorded with who sent it; replayed older histories record none.
+# Each consumed gate decision is recorded with who sent it. patched() is memoized per run, so a run whose
+# first decision was consumed by older code (replayed without the marker) records none, keeping replay exact.
 _DECIDER_PATCH = "gate-decider-v1"
 
 

@@ -96,7 +96,7 @@ class _GateRecordObserver(HermesWorkflow):
 def _decision_args(address: str, workflow_id: str, step_id: str, phase: str, decision_id: str, **identity):
     return argparse.Namespace(address=address, workflow_id=workflow_id, step_id=step_id, phase=phase,
                               choice="approve", decision_id=decision_id, evidence_note="",
-                              **{"decided_by": "", "via": None, "slack_user": "", **identity})
+                              **{"decided_by": None, "via": None, "slack_user": "", **identity})
 
 
 class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -669,8 +669,15 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(base64.b64decode(completed)), "handoff_validation_rejected")
         history = WorkflowHistory.from_json("test-hermes-pre-retry-history", raw)
         await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
+
+    async def test_history_from_before_the_gate_record_replays_with_no_deciders(self) -> None:
+        raw = (Path(__file__).with_name("fixtures") / "replay" / "handoff-rejected-before-retry.json").read_text(
+            encoding="utf-8")
+        self.assertEqual(sum(event.get("workflowExecutionSignaledEventAttributes", {}).get("signalName") == "decision"
+                             for event in json.loads(raw)["events"]), 1)
         _replayed_gate_records.clear()
-        await Replayer(workflows=[_GateRecordObserver]).replay_workflow(history)
+        await Replayer(workflows=[_GateRecordObserver]).replay_workflow(
+            WorkflowHistory.from_json("test-hermes-pre-retry-history", raw))
         self.assertEqual(_replayed_gate_records, [[]])
 
     async def test_status_records_who_decided_each_gate_and_ignores_invalid_identities(self) -> None:
@@ -701,7 +708,8 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 for number, identity in enumerate(invalid):
                     await handle.signal(HermesWorkflow.decision, WorkflowDecision(
                         "triage", "execute", "approve", f"invalid-{number}", "", **identity))
-                for identity in ({"via": "automated"}, {"slack_user": "U0ADA"}, {"decided_by": "A" * 201}):
+                for identity in ({"via": "automated"}, {"slack_user": "U0ADA"}, {"decided_by": "A" * 201},
+                                 {"decided_by": "   "}, {"decided_by": "Ada", "via": "slack", "slack_user": "u0ada"}):
                     with self.subTest(identity=identity), self.assertRaises(ValueError):
                         await _decision(_decision_args(address, queue, "triage", "execute", "refused", **identity))
                 with contextlib.redirect_stdout(io.StringIO()):

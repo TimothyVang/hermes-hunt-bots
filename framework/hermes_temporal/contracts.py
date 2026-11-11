@@ -273,6 +273,7 @@ class GateDecision:
     via: str = ""
     slack_user: str = ""
 
+
 @dataclass(frozen=True)
 class HandoffRejection:
     """One handoff validation rejection of a completed execution and what the workflow did next.
@@ -319,5 +320,5 @@ class WorkflowStatus:
     # Parallel workflows only: every step's state. ``step_id`` then holds the open wave's gate
     # ID (``wave-<n>``), or the step awaiting reconciliation.
     steps: list[StepState] = field(default_factory=list)
-    # Every decision a gate took, oldest first (histories started before identity was recorded list none).
+    # Every decision a gate took, oldest first; a run whose first gate decision predates the record lists none.
     decisions: list[GateDecision] = field(default_factory=list)

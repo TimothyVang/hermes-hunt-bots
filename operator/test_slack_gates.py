@@ -201,7 +201,6 @@ class BridgeTest(unittest.TestCase):
         decision_id = f'{CHILD}:wave-1:review:{nonce}'
         self.assertEqual(decision[-18:-7], ['decision', CHILD, '--step-id', 'wave-1', '--phase', 'review',
                                             '--choice', 'approve', '--decision-id', decision_id, '--evidence-note'])
-        # The workflow records who decided with the gate.
         self.assertEqual(decision[-6:], ['--decided-by', 'Ada Lovelace', '--via', 'slack', '--slack-user', OPERATOR])
         note = decision[-7]
         self.assertRegex(note, r'^Decided by Ada Lovelace \(Slack user U0ADA\) via Slack at '

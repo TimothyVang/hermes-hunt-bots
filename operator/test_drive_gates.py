@@ -457,15 +457,22 @@ class DecisionLogTest(unittest.TestCase):
         self.assertEqual(set(hunted.deciders), {('Ada Lovelace', 'automated')})
         self.assertEqual(delegated.deciders, [('Ada', 'automated')])
 
-    def test_an_outside_decision_is_logged_with_the_decider_the_workflow_recorded(self):
-        states = recorded(parallel_hunt(), 5, f'{CHILD}:wave-1:review', decided_by='Grace Hopper', via='cli')
-        hunted = run(states, two_decisions())
-        self.assertEqual([(line['gate'], line['choice'], line['decided_by'], line['channel'], line['decision_id'])
-                          for line in hunted.lines if line['channel'] != 'drive_gates'],
-                         [('wave-1', 'approve', 'human: Grace Hopper', 'cli', f'{CHILD}:wave-1:review'),
-                          ('wave-4', 'approve', OUTSIDE, 'unknown', None)])
-        self.assertIn(f'scope review of {CHILD} wave-1 decided via cli by human: Grace Hopper: approve, as the '
-                      'workflow records it', hunted.messages)
+    def test_an_outside_decision_is_logged_as_stated_with_the_decider_the_workflow_recorded(self):
+        cases = {
+            'named over slack': ({'decided_by': 'Grace Hopper', 'via': 'slack', 'slack_user': 'U0GH'},
+                                 ('stated: Grace Hopper', 'slack', 'U0GH')),
+            'unidentified': ({}, (OUTSIDE, 'unknown', None)),
+        }
+        for case, (identity, (who, via, slack_user)) in cases.items():
+            with self.subTest(case):
+                hunted = run(recorded(parallel_hunt(), 5, f'{CHILD}:wave-1:review', **identity), two_decisions())
+                [line] = [line for line in hunted.lines if line['gate'] == 'wave-1' and line['phase'] == 'review']
+                # Never labelled like a bridge-checked line (human: <name>, channel slack).
+                self.assertEqual((line['choice'], line['decided_by'], line['channel'], line['via'],
+                                  line.get('slack_user'), line['decision_id']),
+                                 ('approve', who, 'workflow_record', via, slack_user, f'{CHILD}:wave-1:review'))
+                self.assertIn(f'scope review of {CHILD} wave-1 decided by {who} via {via}: approve, as the workflow '
+                              'records it', hunted.messages)
 
     def test_a_bridge_line_the_workflow_ignored_is_followed_by_the_decision_the_workflow_took(self):
         def bridge(call, folder):
@@ -482,7 +489,8 @@ class DecisionLogTest(unittest.TestCase):
         hunted = run(states, two_decisions(), on_status=bridge)
         self.assertEqual([(line['choice'], line['decided_by'], line['channel']) for line in hunted.lines
                           if line['gate'] == 'wave-1' and line['phase'] == 'review'],
-                         [('approve', 'human: Ada Lovelace', 'slack'), ('deny', 'human: Ada Lovelace', 'cli')])
+                         [('approve', 'human: Ada Lovelace', 'slack'),
+                          ('deny', 'stated: Ada Lovelace', 'workflow_record')])
         self.assertTrue(any(message.endswith('as the workflow records it; the workflow ignored the logged approve '
                                              'by human: Ada Lovelace') for message in hunted.messages),
                         hunted.messages)

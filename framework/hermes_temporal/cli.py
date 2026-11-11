@@ -165,11 +165,12 @@ async def _status(args: argparse.Namespace) -> None:
 async def _decision(args: argparse.Namespace) -> None:
     if args.phase == "reconcile" and not args.evidence_note.strip():
         raise ValueError("reconciliation requires a nonempty --evidence-note")
-    decided_by = " ".join(args.decided_by.split())
+    decided_by = " ".join((args.decided_by or "").split())
     via = args.via or ("cli" if decided_by else "")
-    if not valid_decider(decided_by, via, args.slack_user):
+    if (args.decided_by is not None and not decided_by) or not valid_decider(decided_by, via, args.slack_user):
         raise ValueError("--decided-by needs a name of 1 to 200 printable characters; --via and --slack-user need "
-                         "--decided-by, and --slack-user is required with --via slack and refused otherwise")
+                         "--decided-by; --via slack needs a --slack-user Slack user ID (U or W, then 2 to 20 capital "
+                         "letters or digits), and no other channel takes one")
     item = WorkflowDecision(args.step_id, args.phase, args.choice, args.decision_id, args.evidence_note,
                             decided_by, via, args.slack_user)
     client = await _connect(args)
@@ -204,7 +205,7 @@ def _parser() -> argparse.ArgumentParser:
     decide.add_argument("--choice", choices=("approve", "deny", "accept", "abort"), required=True)
     decide.add_argument("--decision-id", required=True)
     decide.add_argument("--evidence-note", default="")
-    decide.add_argument("--decided-by", default="",
+    decide.add_argument("--decided-by",
                         help="who decides, recorded with the gate in the workflow status")
     decide.add_argument("--via", choices=("cli", "slack", "automated"),
                         help="channel of the decision, recorded with --decided-by (default: cli)")

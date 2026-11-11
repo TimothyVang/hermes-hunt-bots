@@ -33,9 +33,10 @@ driver also writes pending/<child>__<gate>__<digest>__review.json (digest: 16 he
 child and gate, so IDs that sanitize alike never share a record), with a one-time nonce, while it waits at one of
 the operator's two gates; operator/slack_gates.py turns that record into a Slack card. When the gate moves
 on, the driver deletes the record and reads who decided from the workflow's record of that gate: unless the
-log already holds that decision, it appends a line naming that decider and channel. A workflow started before
-it recorded deciders names none; then, unless the bridge logged the decision, the line says the operator
-decided outside the driver.
+log already holds that decision, it appends that record as a line with channel workflow_record and decided_by
+'stated: <name>', since the workflow does not authenticate the sender. A workflow that records no deciders
+(see the patch note in framework/hermes_temporal/README.md) falls back to the earlier rule: unless the bridge
+logged the decision, the line says the operator decided outside the driver.
 
 Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<person>" --reason "<text>"
        python operator/drive_gates.py <practice_workflow_id> --two-decisions --operator "<name>" [--card-summary]
@@ -348,19 +349,17 @@ def close_pending(args, gate, state):
         time.sleep(1)
         sent = bridge_lines()
     where = f'{gate["kind"]} review of {gate["child"]} {gate["gate"]}'
-    if recorded:
-        name, via = recorded.get('decided_by'), recorded.get('via') or 'unknown'
-        who = (f'automated: {name}' if via == 'automated' else f'human: {name}') if name else OUTSIDE_DRIVER
-        if any(line.get('decision_id') == recorded.get('decision_id') for line in sent):
-            log(f'{where} decided via {via} by {who}: {choice}')
-            return
+    if recorded and not any(line.get('decision_id') == recorded.get('decision_id') for line in sent):
         # The workflow took a decision the log lacks: sent outside the bridge, or one that beat the bridge's signal.
+        # Its identity is what the sender stated, so the line is labelled as such, never as a bridge-checked one.
+        name, via = recorded.get('decided_by'), recorded.get('via') or 'unknown'
+        who = f'stated: {name}' if name else OUTSIDE_DRIVER
         retry_busy(lambda: claimed.unlink(missing_ok=True))
         append_decision(args.decision_dir, workflow=args.workflow_id, child=gate['child'], gate=gate['gate'],
-                        phase='review', choice=choice, decided_by=who, channel=via,
+                        phase='review', choice=choice, decided_by=who, channel='workflow_record', via=via,
                         **({'slack_user': recorded['slack_user']} if recorded.get('slack_user') else {}),
                         decision_id=recorded.get('decision_id'), note_sha256=None)
-        log(f'{where} decided via {via} by {who}: {choice}, as the workflow records it'
+        log(f'{where} decided by {who} via {via}: {choice}, as the workflow records it'
             + (f'; the workflow ignored the logged {sent[-1].get("choice")} by {sent[-1].get("decided_by")}'
                if sent else ''))
         return
