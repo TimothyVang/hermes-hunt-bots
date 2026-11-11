@@ -222,7 +222,7 @@ test('light and bundled retain distinct OS markers from the full client', async 
   }
 })
 
-test('hunt-bots is its own product: own names, state and lock, no Nous identity, no release feed', async (): Promise<void> => {
+test('hunt-bots is its own product: own names and app IDs, own state and lock, no release feed', async (): Promise<void> => {
   const full: ProductIdentity = await identityForVariant(undefined)
   const fork: ProductIdentity = await identityForVariant('hunt-bots')
 

@@ -20,7 +20,7 @@ On Windows, run `py -3 .\setup_hermes.py check`, then deliberately run `py -3 .\
 
 ## Built-in local hunting lab
 
-Normal framework setup includes the lab; there is **no separate QEMU, Docker, Ubuntu, pycdlib, or ISO installation for the user**. The Hunting Lab page ships bundled in the desktop app built from this repository (the Hunt Bots variant: `HERMES_DESKTOP_VARIANT=hunt-bots`, see [GETTING-STARTED.md](../GETTING-STARTED.md)); `lab.py install` stages only its tool backend. Open **Cybersecurity workspace → Open hunting lab**, or the **Hunting Lab** sidebar entry. Find the local framework profiles, select `framework-network-analyst`, then click **Start lab VM**.
+Normal framework setup includes the lab; there is **no separate QEMU, Docker, Ubuntu, pycdlib, or ISO installation for the user**. The Hunting Lab page ships bundled in every desktop app built from this repository (build the Hunt Bots variant, `HERMES_DESKTOP_VARIANT=hunt-bots`, as in [GETTING-STARTED.md](../GETTING-STARTED.md)); `lab.py install` stages only its tool backend. Open **Cybersecurity workspace → Open hunting lab**, or the **Hunting Lab** sidebar entry. Find the local framework profiles, select `framework-network-analyst`, then click **Start lab VM**.
 
 The first explicit Start downloads hash-pinned public prerequisites, extracts QEMU without executing its installer, prepares the guest, and boots it. Docker and the digest-pinned Elasticsearch 8.19.23 / Arkime 6.9.1 images are installed inside the guest. **Prepare lab assets** is optional and does not boot. Opening/importing the framework, setup, help, check, and status do not download or start the VM; a valid existing deployment is reused unchanged.
 

@@ -8,7 +8,8 @@ Licenses
 - The authored Hunting Lab code (everything in plugin.js except the
   CONSOLE_BUNDLE string) is AGPL-3.0, like the rest of framework/; see
   framework/LICENSE in the source repository,
-  https://github.com/TimothyVang/hermes-hunt-bots.
+  https://github.com/TimothyVang/hermes-hunt-bots (packaged builds ship it as
+  LICENSE.AGPL-3.0 beside this file).
 - CONSOLE_BUNDLE is the noVNC 1.6.0 core library, MPL-2.0, Copyright (C) 2022
   The noVNC authors (licenses/noVNC-LICENSE.txt, licenses/noVNC-AUTHORS.txt,
   licenses/LICENSE.MPL-2.0). Its core/des.js carries BSD-style terms and its

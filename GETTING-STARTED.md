@@ -60,7 +60,7 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
    $env:HERMES_DESKTOP_VARIANT = 'hunt-bots'; npm run pack --workspace apps/desktop
    ```
 
-   That writes an unpacked, unsigned app to `apps\desktop\release\win-unpacked\Hunt Bots.exe`. It keeps its own settings and does not replace or update an installed Hermes desktop app.
+   That writes an unpacked, unsigned app to `apps\desktop\release\win-unpacked\Hunt Bots.exe`. It keeps its own app settings and single-instance lock, and does not replace or update an installed Hermes desktop app. It uses the same Hermes home as Hermes unless told otherwise, so start it on the lab home: `$env:HERMES_HOME = '<full path to runtime\lab-home>'; & '.\apps\desktop\release\win-unpacked\Hunt Bots.exe'`.
 
 ## 4. Build the hunting lab VM
 
