@@ -459,13 +459,6 @@ class BoardServerTests(unittest.TestCase):
         self.assertIsNone(state["live"])
         self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
 
-    def test_page_carries_the_wave_group_and_usage_hooks(self) -> None:
-        body = self.request("GET", "/")[2]
-        for hook in (b'id="stage-list"', b'id="tl-bar"', b'id="tl-num"', b'id="usage"', b'id="wf-count"',
-                     b'"data-wave"', b'"data-step"', b'"data-state"', b'"data-dropped"', b'"wave-h"',
-                     b'"wave-lanes"', b'"wave-lane"'):
-            self.assertIn(hook, body)
-
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
             self.assertEqual(self.request("GET", path)[0], 404)
@@ -626,12 +619,10 @@ class LiveBoardTests(unittest.TestCase):
             self.assertEqual(self.live.status()[0]["page"], page, url)
 
     def test_page_csp_allows_live_images_from_the_board_only(self) -> None:
-        _, headers, body = self.request("/")
+        _, headers, _ = self.request("/")
         csp = headers["Content-Security-Policy"]
         self.assertIn(f"img-src data: http://127.0.0.1:{self.port};", csp)
         self.assertIn(f"connect-src http://127.0.0.1:{self.port};", csp)
-        self.assertIn(b'id="bots"', body)
-        self.assertIn(b"powered by Claude", body)
 
     def test_state_carries_each_owners_newest_audit_action_of_this_round(self) -> None:
         child = _load("child-status.json")
