@@ -116,6 +116,16 @@ Real work hunts take one time window of the operator's own **unclassified** work
 
    The bots are told the case is a work log export (real telemetry from the operator's environment; unclassified work data), never synthetic, and the lab console says the same. Use the Slack bridge's minimal cards for these hunts (HUNT-BOTS.md rule 4).
 
+**In one command.** From the repository root, `operator/work_hunt.py` runs all three steps and the hunt. It prints a reminder that only unclassified, non-CUI work data may be exported, refuses a case ID whose case, export or work folder already exists, exports to `runtime/work-exports/<case>.ndjson`, imports into `runtime/cases/<case>/evidence`, loads the case with an `operator/switch_case.py --hold` holder that keeps the VM up after the command ends, exports the hunt input with `--data-origin work-export`, and starts one parallel hunt with six follow-up hunters (`--follow-ups`). It reads the API key only from `HUNT_ELASTIC_API_KEY`, removes it from its own environment, and gives it to the export alone, so the lab, the workflow and the gate driver never see it. It then runs `operator/drive_gates.py --two-decisions` in the foreground: you approve the scope and accept or reject the final report with the command it prints, or on Slack (minimal cards), and every other gate is recorded as automated. The run's record, with the export and import summaries, the lab's READY line, the workflow, its outcome, tokens and the final report path, is `runtime/practice/work-hunts/<case>/hunt.json`. The command needs `LAB_HERMES_EXE`, `HUNT_BOTS_PYTHON` with the Temporal dependencies, a running worker on `HUNT_BOTS_TASK_QUEUE`, and a Python with `pycdlib` for the reseed (`--reseed-python`, see [operator/README.md](../operator/README.md)):
+
+```powershell
+$env:HUNT_ELASTIC_API_KEY = Read-Host -MaskInput 'Elastic API key'   # PowerShell 7
+py -3 operator\work_hunt.py --url https://elastic.example.internal:9243 --index 'logs-*' `
+    --start 2026-11-03T08:00:00Z --end 2026-11-03T12:00:00Z --hosts WS-0142,WS-0177 `
+    --case-id work-2026-11-03-am --operator "Ada Lovelace"
+Remove-Item Env:HUNT_ELASTIC_API_KEY
+```
+
 ### Operator scoring
 
 From this framework directory, generate into **new, separate external directories**, never a live profile or source fixture:
