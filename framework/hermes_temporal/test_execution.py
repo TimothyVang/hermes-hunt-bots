@@ -283,6 +283,12 @@ class ExecutionReceiptTests(unittest.TestCase):
             f'HTTPError: 403 for https://api.example.test/v1/models?key={value}&alt=json',
             f'KeyError: api_key="{value}"',
             f'ValueError: OPENAI_API_KEY={value} rejected',
+            f'RuntimeError: api_key "{value}"',
+            f"RuntimeError: client_secret '{value} {value}'",
+            f'RuntimeError: password "it\'s {value}"',
+            f'RuntimeError: token "{value}',
+            f'Error: token is sk_live_{value}',
+            f'stripe.error.PermissionError: restricted key rk_test_{value} lacks access',
             f'ValueError: digest {long_hex}',
             f'ValueError: blob {long_base64}',
         ]
@@ -295,6 +301,19 @@ class ExecutionReceiptTests(unittest.TestCase):
                     self.assertNotIn(secret, diagnostic)
         result = self.invoke_plain(StreamProcess(b'', 2, ('\n'.join(lines) + '\n').encode('utf-8')))
         self.assertEqual(result.diagnostic, 'exit code 2: ValueError: blob [redacted]')
+
+    def test_redaction_keeps_ordinary_words_and_identifiers(self):
+        lines = [
+            'RuntimeError: token limit exceeded',
+            'ValueError: password incorrect for user operator',
+            'KeyError: secret manager unavailable',
+            'sqlite3.IntegrityError: UNIQUE constraint failed: pk_receipts_execution',
+            'RuntimeError: max_tokens "4096" is too large',
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False),
+                                 'exit code 1: ' + line)
 
     def test_diagnostic_is_printable_ascii(self):
         errors = b'\x1b[31mRuntimeError: caf\xc3\xa9\t\xff failed\x1b[0m\n'
