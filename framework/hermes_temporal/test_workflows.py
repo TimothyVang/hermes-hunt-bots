@@ -16,18 +16,18 @@ from pathlib import Path
 if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run Temporal integration tests.")
 
-from temporalio import activity
+from temporalio import activity, workflow
 from temporalio.client import WorkflowHistory
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
 
 from .contracts import (
-    ExecutionRequest, ExecutionResult, HermesStep, StepState, WorkflowDecision, WorkflowRequest,
+    ExecutionRequest, ExecutionResult, GateDecision, HermesStep, StepState, WorkflowDecision, WorkflowRequest,
     validate_loopback_address,
 )
 from .workflows import HermesWorkflow
-from .cli import _status
+from .cli import _decision, _status
 from .hunt import supplied_evidence_hunt
 
 
@@ -68,6 +68,35 @@ async def _until(handle, predicate):
                 return state
             await asyncio.sleep(0.01)
     return await asyncio.wait_for(observe(), timeout=10)
+
+
+_replayed_gate_records: list[list[GateDecision]] = []
+
+
+@workflow.defn(name="HermesWorkflow", sandboxed=False)
+class _GateRecordObserver(HermesWorkflow):
+    """HermesWorkflow that hands its gate record to the test when a replayed run ends."""
+
+    @workflow.query(name="status")
+    def status(self):
+        return super().status()
+
+    @workflow.signal(name="decision")
+    def decision(self, item: WorkflowDecision) -> None:
+        super().decision(item)
+
+    @workflow.run
+    async def run(self, request: WorkflowRequest) -> str:
+        try:
+            return await super().run(request)
+        finally:
+            _replayed_gate_records.append(list(self._gate_decisions))
+
+
+def _decision_args(address: str, workflow_id: str, step_id: str, phase: str, decision_id: str, **identity):
+    return argparse.Namespace(address=address, workflow_id=workflow_id, step_id=step_id, phase=phase,
+                              choice="approve", decision_id=decision_id, evidence_note="",
+                              **{"decided_by": "", "via": None, "slack_user": "", **identity})
 
 
 class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -640,6 +669,69 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(base64.b64decode(completed)), "handoff_validation_rejected")
         history = WorkflowHistory.from_json("test-hermes-pre-retry-history", raw)
         await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
+        _replayed_gate_records.clear()
+        await Replayer(workflows=[_GateRecordObserver]).replay_workflow(history)
+        self.assertEqual(_replayed_gate_records, [[]])
+
+    async def test_status_records_who_decided_each_gate_and_ignores_invalid_identities(self) -> None:
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            return ExecutionResult("completed", request.execution_id, "Synthetic finding.", "completed")
+
+        queue = "test-hermes-gate-decider"
+        invalid = [
+            {"decided_by": "Ada", "via": "slack"},  # slack without a user ID
+            {"via": "cli"},  # a channel without a name
+            {"decided_by": "Ada", "via": "cli", "slack_user": "U0ADA"},  # a user ID outside slack
+            {"decided_by": "Ada", "via": "email"},
+            {"decided_by": "A" * 201, "via": "cli"},
+            {"decided_by": "Ada\x1b[2J", "via": "cli"},
+            {"decided_by": "Ada\u202e", "via": "cli"},
+            {"decided_by": " Ada", "via": "cli"},
+        ]
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            address = env.client.service_client.config.target_host
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(
+                    HermesWorkflow.run,
+                    WorkflowRequest([HermesStep("triage", "Synthetic triage."),
+                                     HermesStep("review", "Synthetic review.")]),
+                    id=queue, task_queue=queue)
+                await _until(handle, lambda state: state.stage == "awaiting_execution_approval")
+                for number, identity in enumerate(invalid):
+                    await handle.signal(HermesWorkflow.decision, WorkflowDecision(
+                        "triage", "execute", "approve", f"invalid-{number}", "", **identity))
+                for identity in ({"via": "automated"}, {"slack_user": "U0ADA"}, {"decided_by": "A" * 201}):
+                    with self.subTest(identity=identity), self.assertRaises(ValueError):
+                        await _decision(_decision_args(address, queue, "triage", "execute", "refused", **identity))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    await _decision(_decision_args(address, queue, "triage", "execute", "cli-execute",
+                                                   decided_by="  Ada   Lovelace "))
+                await _until(handle, lambda state: state.stage == "awaiting_review")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision(
+                    "triage", "review", "approve", "slack-review", "", "Ada Lovelace", "slack", "U0ADA"))
+                await _until(handle, lambda state: state.step_id == "review")
+                await handle.signal(HermesWorkflow.decision,
+                                    WorkflowDecision("review", "execute", "approve", "unidentified-execute"))
+                await _until(handle, lambda state: state.stage == "awaiting_review" and state.step_id == "review")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    await _decision(_decision_args(address, queue, "review", "review", "automated-review",
+                                                   decided_by="Grace Hopper", via="automated"))
+                self.assertEqual(await handle.result(), "completed")
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    await _status(argparse.Namespace(address=address, workflow_id=queue))
+                history = await handle.fetch_history()
+        expected = [
+            GateDecision("triage", "execute", "approve", "cli-execute", "Ada Lovelace", "cli"),
+            GateDecision("triage", "review", "approve", "slack-review", "Ada Lovelace", "slack", "U0ADA"),
+            GateDecision("review", "execute", "approve", "unidentified-execute"),
+            GateDecision("review", "review", "approve", "automated-review", "Grace Hopper", "automated"),
+        ]
+        self.assertEqual(json.loads(captured.getvalue())["decisions"], [vars(item) for item in expected])
+        _replayed_gate_records.clear()
+        await Replayer(workflows=[_GateRecordObserver]).replay_workflow(history)
+        self.assertEqual(_replayed_gate_records, [expected])
 
     async def test_ontology_unknown_claim_reference_never_becomes_a_downstream_handoff(self) -> None:
         calls = []

@@ -15,6 +15,7 @@ from .contracts import (
     DATA_ORIGINS,
     ExecutionRequest,
     ExecutionResult,
+    GateDecision,
     HandoffRejection,
     HermesStep,
     MAX_PROMPT_BYTES,
@@ -26,6 +27,7 @@ from .contracts import (
     WorkflowDecision,
     WorkflowRequest,
     WorkflowStatus,
+    valid_decider,
 )
 
 from .ontology import CLAIM_KINDS, MAX_HANDOFF_BYTES, validate_handoff
@@ -68,6 +70,8 @@ _OVERSIZE_SUFFIX = (" bytes, so it was not accepted. Respond again with one comp
 # A final structured step feeds no downstream prompt, so its handoff can exceed the
 # forwarded-handoff limit; shorter capped reports dropped the event IDs scoring needs.
 _FINAL_HANDOFF_BYTES = 32768
+# Each consumed gate decision is recorded with who sent it; replayed older histories record none.
+_DECIDER_PATCH = "gate-decider-v1"
 
 
 def _disclosed_target(cap: int, tighter: bool = False, tool_driven: bool = False) -> int:
@@ -234,11 +238,12 @@ class HermesWorkflow:
         self._reviewed_handoffs: dict[str, dict[str, Any]] = {}
         self._handoff_rejections: list[HandoffRejection] = []
         self._step_states: list[StepState] = []
+        self._gate_decisions: list[GateDecision] = []
 
     @workflow.query(name="status")
     def status(self) -> WorkflowStatus:
         return WorkflowStatus(self._stage, self._step_id, self._execution_id, list(self._results),
-                              list(self._handoff_rejections), list(self._step_states))
+                              list(self._handoff_rejections), list(self._step_states), list(self._gate_decisions))
 
     @workflow.signal(name="decision")
     def decision(self, item: WorkflowDecision) -> None:
@@ -254,6 +259,7 @@ class HermesWorkflow:
             or not item.decision_id
             or len(item.decision_id) > 128
             or not isinstance(item.evidence_note, str)
+            or not valid_decider(item.decided_by, item.via, item.slack_user)
         ):
             return
         if item.phase not in {"execute", "review", "reconcile"} or item.decision not in {"approve", "deny", "accept", "abort"}:
@@ -506,6 +512,10 @@ class HermesWorkflow:
             return None
         result = self._pending
         self._pending = None
+        if result is not None and workflow.patched(_DECIDER_PATCH):
+            self._gate_decisions.append(GateDecision(result.step_id, result.phase, result.decision,
+                                                     result.decision_id, result.decided_by, result.via,
+                                                     result.slack_user))
         return result
 
     async def _run_waves(self, request: WorkflowRequest, output_caps: dict[str, int]) -> str:
