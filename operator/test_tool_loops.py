@@ -146,6 +146,8 @@ class UsageTotalTest(unittest.TestCase):
         self.assertEqual(run['rounds'][0]['usage']['total_tokens'], 150)
         self.assertIn(' tokens 150 in ', summary)
 PUBLIC_SCOPE = 'Public research dataset dedale-001 (real lab telemetry, no customer data) only; case brief'
+WORK_SCOPE = ("Work log export dedale-001 (real telemetry from the operator's environment; unclassified work data) "
+              'only; case brief')
 
 
 class BaseInputTest(unittest.TestCase):
@@ -164,22 +166,27 @@ class BaseInputTest(unittest.TestCase):
                 patch.object(tl.subprocess, 'run', fake_run):
             return tl.base_input('dedale-001', lane, **options), calls
 
-    def test_public_dataset_approval_is_passed_only_when_asked(self):
+    def test_the_data_origin_is_passed_only_when_asked_and_must_match(self):
         synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
         _, [argv] = self.export(synthetic)
-        self.assertNotIn('--allow-public-dataset', argv)
-        public = {'scope': PUBLIC_SCOPE, 'synthetic_only': False, 'data_origin': 'public-dataset'}
-        base, [argv] = self.export(public, allow_public_dataset=True)
-        self.assertEqual(argv[:4], ['cli', 'lab-input', '--tool-driven', '--allow-public-dataset'])
-        self.assertEqual(base, public)
-        # A public input on disk (here written by the fake) is never used without the approval.
+        self.assertNotIn('--data-origin', argv)
+        for scope, origin in ((PUBLIC_SCOPE, 'public-dataset'), (WORK_SCOPE, 'work-export')):
+            real = {'scope': scope, 'synthetic_only': False, 'data_origin': origin}
+            base, [argv] = self.export(real, data_origin=origin)
+            self.assertEqual(argv[:5], ['cli', 'lab-input', '--tool-driven', '--data-origin', origin])
+            self.assertEqual(base, real)
+            # A real-data input on disk (here written by the fake) is never used without its own origin.
+            for other in (None, *({'public-dataset', 'work-export'} - {origin})):
+                with self.subTest(origin=origin, other=other), self.assertRaises(SystemExit):
+                    self.export(real, data_origin=other)
         with self.assertRaises(SystemExit):
-            self.export(public)
+            self.export(synthetic, data_origin='work-export')
 
     def test_a_new_brief_keeps_the_base_origin(self):
-        public = {'scope': PUBLIC_SCOPE, 'synthetic_only': False, 'data_origin': 'public-dataset'}
-        self.assertEqual(tl.build_input(public, 'new brief', {}, 'dedale-001')['scope'],
-                         'Public research dataset dedale-001 (real lab telemetry, no customer data) only; new brief')
+        for scope, origin in ((PUBLIC_SCOPE, 'public-dataset'), (WORK_SCOPE, 'work-export')):
+            real = {'scope': scope, 'synthetic_only': False, 'data_origin': origin}
+            self.assertEqual(tl.build_input(real, 'new brief', {}, 'dedale-001')['scope'],
+                             scope.replace('case brief', 'new brief'))
         synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
         self.assertEqual(tl.build_input(synthetic, 'new brief', {}, 'dedale-001')['scope'],
                          'Synthetic dedale-001 only; new brief')

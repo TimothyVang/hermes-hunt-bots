@@ -225,7 +225,26 @@ def public_input(**overrides) -> dict:
     return {**raw, **overrides}
 
 
-class PublicDatasetHuntTests(unittest.TestCase):
+WORK_TEXT = "work log export (real telemetry from the operator's environment; unclassified work data)"
+
+
+def work_input(**overrides) -> dict:
+    """A tool-driven input over the operator's unclassified work export, as lab-input exports it."""
+    case = {"case_id": "work-001", "question": "What happened in this environment during the window?",
+            "schema_version": 1, "network_capture": "none", "data_origin": "work-export",
+            "sources": [{"artifact": "events.jsonl", "coverage": "Real ECS records exported from the operator's work Elastic"}],
+            "time_range_utc": {"start_inclusive": "2026-11-01T00:00:00Z", "end_exclusive": "2026-11-01T06:00:00Z"}}
+    raw = tool_input(
+        "work-001",
+        scope="Work log export work-001 (real telemetry from the operator's environment; unclassified work data) only; "
+              "cite every event.id.",
+        evidence=[{"source_id": "lab-case-1", "locator": "work-001:summary/case",
+                   "content": f"Untrusted {WORK_TEXT} lab case metadata:\n" + json.dumps({"case": case})}],
+        synthetic_only=False, data_origin="work-export")
+    return {**raw, **overrides}
+
+
+class DataOriginHuntTests(unittest.TestCase):
     def test_public_dataset_hunt_states_its_origin_and_never_calls_it_synthetic(self) -> None:
         for raw in (public_input(), public_input(parallel=True, follow_ups=2)):
             request = supplied_evidence_hunt(raw)
@@ -244,16 +263,33 @@ class PublicDatasetHuntTests(unittest.TestCase):
             self.assertIn("on the loaded synthetic lab case", step.prompt)
             self.assertNotIn("public research dataset", step.prompt)
 
-    def test_public_dataset_origin_is_explicit_and_validated(self) -> None:
+    def test_work_export_hunt_states_its_origin_and_never_calls_it_synthetic(self) -> None:
+        for raw in (work_input(), work_input(parallel=True, follow_ups=2)):
+            request = supplied_evidence_hunt(raw)
+            self.assertIs(request.synthetic_only, False)
+            self.assertEqual(request.data_origin, "work-export")
+            for step in request.steps:
+                with self.subTest(step=step.step_id):
+                    self.assertNotIn("synthetic", step.prompt.lower())
+                    self.assertNotIn("public research dataset", step.prompt)
+                    self.assertIn("Work log export tool-driven hunt: the loaded lab case is a " + WORK_TEXT, step.prompt)
+                    self.assertIn(f"Ontology-scoped {WORK_TEXT} evidence context.", step.prompt)
+
+    def test_data_origin_is_explicit_and_validated(self) -> None:
         inline = {key: value for key, value in public_input().items() if key != "mode"}
         bad_inputs = (
             public_input(data_origin="synthetic"), public_input(data_origin="customer"),
-            tool_input(data_origin="public-dataset"),
+            public_input(data_origin=["public-dataset"]),
+            tool_input(data_origin="public-dataset"), tool_input(data_origin="work-export"),
             {key: value for key, value in public_input().items() if key != "synthetic_only"},
+            {key: value for key, value in work_input().items() if key != "synthetic_only"},
             tool_input(synthetic_only=False),
             inline,
+            {key: value for key, value in work_input().items() if key != "mode"},
             public_input(scope="Synthetic dedale-001 only; cite every event.id."),
             public_input(stage_guidance={"evidence": "Treat this synthetic case as invented."}),
+            work_input(scope="Synthetic work-001 only; cite every event.id."),
+            work_input(stage_guidance={"evidence": "Treat this SYNTHETIC case as invented."}),
         )
         for raw in bad_inputs:
             with self.subTest(raw=raw), self.assertRaises(ValueError):
@@ -261,10 +297,13 @@ class PublicDatasetHuntTests(unittest.TestCase):
 
     def test_workflow_request_binds_synthetic_only_to_the_origin(self) -> None:
         step = HermesStep("one", "prompt")
-        self.assertEqual(WorkflowRequest([step], synthetic_only=False, tool_driven=True,
-                                         data_origin="public-dataset").data_origin, "public-dataset")
+        for origin in ("public-dataset", "work-export"):
+            self.assertEqual(WorkflowRequest([step], synthetic_only=False, tool_driven=True,
+                                             data_origin=origin).data_origin, origin)
         for kwargs in ({"data_origin": "public-dataset", "tool_driven": True},
                        {"data_origin": "public-dataset", "synthetic_only": False},
+                       {"data_origin": "work-export", "tool_driven": True},
+                       {"data_origin": "work-export", "synthetic_only": False},
                        {"data_origin": "customer", "synthetic_only": False, "tool_driven": True},
                        {"synthetic_only": False, "tool_driven": True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):

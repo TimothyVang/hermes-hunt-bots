@@ -90,7 +90,7 @@ def last_seq(url):
 
 def build_input(base, brief, guidance, case_id):
     raw = json.loads(json.dumps(base))
-    # A public research dataset keeps the origin label lab-input gave it; never relabel it synthetic.
+    # A real-data case (public dataset or work export) keeps the origin label lab-input gave it; never relabel it synthetic.
     origin = base['scope'].split(' only; ', 1)[0] if 'data_origin' in base else f'Synthetic {case_id}'
     raw['scope'] = f'{origin} only; ' + brief
     if guidance:
@@ -150,22 +150,24 @@ def workflow_id(name, case_id, lane=DEFAULT_LANE):
     return f'{name}{RUN_TAG}-{lane.name + "-" if lane.name else ""}{case_id}'
 
 
-def base_input(case_id, lane=DEFAULT_LANE, *, allow_public_dataset=False):
+def base_input(case_id, lane=DEFAULT_LANE, *, data_origin=None):
     """The case loaded in this lane's lab as a tool-driven hunt input, made once per case and lane and cached in TOOL_LOOPS.
 
-    A public research dataset case (data_origin public-dataset) is exported only with allow_public_dataset."""
+    data_origin (public-dataset or work-export) is the operator's approval of a real-data case and must equal the
+    case's declared origin; a cached input of another origin is refused."""
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
     base_path = TOOL_LOOPS / f'base-{case_id}{"-" + lane.name if lane.name else ""}.json'
     if not base_path.exists():
-        approval = ['--allow-public-dataset'] if allow_public_dataset else []
+        approval = ['--data-origin', data_origin] if data_origin else []
         r = subprocess.run([*lane.temporal_cli(), 'lab-input', '--tool-driven', *approval, '--state-dir', str(lane.state_dir),
                             '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True,
                            encoding='utf-8', errors='replace', timeout=120)
         if r.returncode:
             raise SystemExit('lab-input failed: ' + r.stderr[-300:])
     base = json.loads(base_path.read_text(encoding='utf-8'))
-    if 'data_origin' in base and not allow_public_dataset:
-        raise SystemExit(f'{base_path.name} is a public research dataset input; pass allow_public_dataset=True to use it')
+    if base.get('data_origin') != data_origin:
+        raise SystemExit(f'{base_path.name} has data origin {base.get("data_origin") or "synthetic"}; '
+                         f'pass data_origin={base.get("data_origin")!r} to use it')
     return base
 
 

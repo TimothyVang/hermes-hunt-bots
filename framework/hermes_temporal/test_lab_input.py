@@ -33,6 +33,14 @@ PUBLIC_CASE = {
     "sources": [{"artifact": "events.jsonl", "coverage": "Real Windows winlogbeat ECS records from 2 hosts of a lab network"}],
     "time_range_utc": {"start_inclusive": "2022-01-01T00:00:00Z", "end_exclusive": "2022-01-01T06:00:00Z"},
 }
+# As hunt_lab.import_elastic writes it; nothing in it calls the data synthetic.
+WORK_CASE = {
+    "case_id": "work-001", "schema_version": 1, "network_capture": "none", "data_origin": "work-export",
+    "question": "What happened in this environment during the window? Cite event.id values.",
+    "sources": [{"artifact": "events.jsonl", "coverage": "Real ECS records exported from the operator's work Elastic"}],
+    "time_range_utc": {"start_inclusive": "2026-11-01T00:00:00Z", "end_exclusive": "2026-11-01T06:00:00Z"},
+}
+WORK_TEXT = "work log export (real telemetry from the operator's environment; unclassified work data)"
 
 
 class FakeLab:
@@ -278,7 +286,7 @@ class LabInputTests(unittest.TestCase):
             with patch.object(lab_input, "collect_lab_input", return_value={"synthetic_only": True}):
                 with self.assertRaises(FileExistsError):
                     asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=False,
-                                                                  allow_public_dataset=False)))
+                                                                  data_origin=None)))
             self.assertEqual(path.read_text(encoding="utf-8"), "keep")
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
@@ -292,29 +300,35 @@ class LabInputTests(unittest.TestCase):
             with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool, \
                     patch.object(lab_input, "collect_lab_input") as inline:
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
-                                                              allow_public_dataset=False)))
-            tool.assert_called_once_with("state", allow_public_dataset=False)
+                                                              data_origin=None)))
+            tool.assert_called_once_with("state", data_origin=None)
             inline.assert_not_called()
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"mode": "tool_driven"})
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
-    def test_lab_input_cli_passes_public_dataset_approval_only_for_tool_driven(self):
+    def test_lab_input_cli_passes_the_data_origin_only_for_tool_driven(self):
         from . import cli
 
-        args = cli._parser().parse_args(["lab-input", "--state-dir", "state", "--output", "x.json", "--tool-driven",
-                                         "--allow-public-dataset"])
-        self.assertTrue(args.allow_public_dataset)
-        self.assertFalse(cli._parser().parse_args(["lab-input", "--state-dir", "s", "--output", "x"]).allow_public_dataset)
+        for origin in ("public-dataset", "work-export"):
+            args = cli._parser().parse_args(["lab-input", "--state-dir", "state", "--output", "x.json", "--tool-driven",
+                                             "--data-origin", origin])
+            self.assertEqual(args.data_origin, origin)
+        self.assertIsNone(cli._parser().parse_args(["lab-input", "--state-dir", "s", "--output", "x"]).data_origin)
+        for origin in ("synthetic", "customer"):
+            with self.subTest(origin=origin), self.assertRaises(SystemExit), \
+                    patch("sys.stderr"):
+                cli._parser().parse_args(["lab-input", "--state-dir", "s", "--output", "x", "--tool-driven",
+                                          "--data-origin", origin])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tool.json"
             with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool:
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
-                                                              allow_public_dataset=True)))
-            tool.assert_called_once_with("state", allow_public_dataset=True)
+                                                              data_origin="work-export")))
+            tool.assert_called_once_with("state", data_origin="work-export")
             inline = Path(directory) / "inline.json"
             with patch.object(lab_input, "collect_lab_input") as collect, self.assertRaises(ValueError):
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(inline), tool_driven=False,
-                                                              allow_public_dataset=True)))
+                                                              data_origin="public-dataset")))
             collect.assert_not_called()
             self.assertFalse(inline.exists())
 
@@ -364,9 +378,9 @@ class ToolDrivenInputTests(unittest.TestCase):
     def test_public_dataset_case_is_refused_without_operator_approval(self):
         lab = FakeLab(case=PUBLIC_CASE)
         self.addCleanup(lab.close)
-        with self.assertRaises(lab_input.LabInputError):
+        with self.assertRaisesRegex(lab_input.LabInputError, "--data-origin public-dataset"):
             self.collect(lab)
-        raw, _runtime = self.collect(lab, allow_public_dataset=True)
+        raw, _runtime = self.collect(lab, data_origin="public-dataset")
         self.assertIs(raw["synthetic_only"], False)
         self.assertEqual(raw["data_origin"], "public-dataset")
         self.assertTrue(raw["scope"].startswith(
@@ -379,20 +393,44 @@ class ToolDrivenInputTests(unittest.TestCase):
             self.assertNotIn("synthetic", step.prompt.lower())
             self.assertIn("public research dataset (real lab telemetry, no customer data)", step.prompt)
 
-    def test_approval_does_not_change_a_synthetic_export(self):
+    def test_work_export_case_is_exported_only_with_its_own_origin(self):
+        lab = FakeLab(case=WORK_CASE)
+        self.addCleanup(lab.close)
+        for approval in ({}, {"data_origin": "public-dataset"}, {"data_origin": "synthetic"}):
+            with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError):
+                self.collect(lab, **approval)
+        raw, _runtime = self.collect(lab, data_origin="work-export")
+        self.assertIs(raw["synthetic_only"], False)
+        self.assertEqual(raw["data_origin"], "work-export")
+        self.assertTrue(raw["scope"].startswith(
+            "Work log export work-001 (real telemetry from the operator's environment; unclassified work data) only; "))
+        self.assertTrue(raw["evidence"][0]["content"].startswith("Untrusted " + WORK_TEXT + " lab case metadata"))
+        bot_visible = {key: value for key, value in raw.items() if key != "synthetic_only"}
+        self.assertNotIn("synthetic", json.dumps(bot_visible).lower())
+        self.assertNotIn("public research dataset", json.dumps(bot_visible).lower())
+        for request in (supplied_evidence_hunt(raw), supplied_evidence_hunt(dict(raw, parallel=True, follow_ups=2))):
+            self.assertEqual((request.synthetic_only, request.data_origin), (False, "work-export"))
+            for step in request.steps:
+                with self.subTest(step=step.step_id):
+                    self.assertNotIn("synthetic", step.prompt.lower())
+                    self.assertIn("Work log export tool-driven hunt: the loaded lab case is a " + WORK_TEXT, step.prompt)
+
+    def test_a_synthetic_case_is_refused_with_a_data_origin(self):
         lab = FakeLab()
         self.addCleanup(lab.close)
-        raw, _runtime = self.collect(lab, allow_public_dataset=True)
-        self.assertEqual(raw, self.collect(lab)[0])
+        for origin in ("public-dataset", "work-export"):
+            with self.subTest(origin=origin), self.assertRaisesRegex(lab_input.LabInputError, "synthetic"):
+                self.collect(lab, data_origin=origin)
+        raw, _runtime = self.collect(lab)
         self.assertIs(raw["synthetic_only"], True)
         self.assertNotIn("data_origin", raw)
 
     def test_unknown_data_origin_is_refused(self):
-        for origin in ("synthetic", "customer", "", None):
+        for origin in ("synthetic", "customer", "", None, ["work-export"]):
             lab = FakeLab(case={**PUBLIC_CASE, "data_origin": origin})
             self.addCleanup(lab.close)
             with self.subTest(origin=origin), self.assertRaises(lab_input.LabInputError):
-                self.collect(lab, allow_public_dataset=True)
+                self.collect(lab, data_origin="public-dataset")
 
     def test_export_refuses_unowned_unsafe_or_malformed_lab(self):
         endpoint_faults = ({"state": "stopped"}, {"profile": "framework-researcher"},

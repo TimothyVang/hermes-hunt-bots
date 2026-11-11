@@ -12,6 +12,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError
 
 from .contracts import (
+    DATA_ORIGINS,
     ExecutionRequest,
     ExecutionResult,
     HandoffRejection,
@@ -19,7 +20,6 @@ from .contracts import (
     MAX_PROMPT_BYTES,
     MAX_STEPS,
     MAX_TEAM_STEPS,
-    PUBLIC_DATASET,
     SAFE_STEP_ID,
     SYNTHETIC,
     StepState,
@@ -279,9 +279,9 @@ class HermesWorkflow:
         # The external contract validates before start; repeat essential bounds at workflow boundary.
         if not isinstance(request, WorkflowRequest):
             raise ValueError("workflow input must be WorkflowRequest")
-        # Synthetic, or an explicitly authorized tool-driven public-dataset hunt; never mislabelled.
+        # Synthetic, or an explicitly authorized tool-driven hunt over a DATA_ORIGINS case; never mislabelled.
         origin_ok = ((request.data_origin == SYNTHETIC and request.synthetic_only is True)
-                     or (request.data_origin == PUBLIC_DATASET and request.synthetic_only is False
+                     or (request.data_origin in tuple(DATA_ORIGINS) and request.synthetic_only is False
                          and request.tool_driven is True))
         if not origin_ok or not 1 <= len(request.steps) <= (
                 MAX_TEAM_STEPS if request.parallel else MAX_STEPS):

@@ -29,10 +29,22 @@ PROFILES = frozenset({
     "framework-librarian",
     "framework-network-analyst",
 })
-# A case is synthetic unless its case.json says "data_origin": "public-dataset": a public research
-# dataset the operator approved for the lab (HUNT-BOTS.md rule 1). No other origin exists.
+# A case is synthetic unless its case.json names one of DATA_ORIGINS (HUNT-BOTS.md rule 1): a public
+# research dataset or the operator's unclassified work export. Each maps to the (name, detail) every
+# bot-visible text uses for that origin, "<name> (<detail>)", instead of calling the data synthetic.
+# The guest console mirrors this table (test_lab_server keeps them equal).
 SYNTHETIC = "synthetic"
 PUBLIC_DATASET = "public-dataset"
+WORK_EXPORT = "work-export"
+DATA_ORIGINS = {
+    PUBLIC_DATASET: ("public research dataset", "real lab telemetry, no customer data"),
+    WORK_EXPORT: ("work log export", "real telemetry from the operator's environment; unclassified work data"),
+}
+
+
+def origin_text(origin: str) -> str:
+    name, detail = DATA_ORIGINS[origin]
+    return f"{name} ({detail})"
 
 
 def validate_loopback_address(address: str) -> str:
@@ -113,17 +125,17 @@ class WorkflowRequest:
     # Steps whose dependencies are reviewed run together as one wave behind one execute and one
     # review decision. Defaults off so earlier histories deserialize and replay unchanged.
     parallel: bool = False
-    # Only an explicitly authorized tool-driven hunt over a public research dataset sets this;
+    # Only an explicitly authorized tool-driven hunt over a DATA_ORIGINS case sets this;
     # synthetic_only must then be False. Defaults to synthetic so earlier histories deserialize unchanged.
     data_origin: str = SYNTHETIC
 
     def __post_init__(self) -> None:
-        if self.data_origin not in (SYNTHETIC, PUBLIC_DATASET):
-            raise ValueError("data_origin must be synthetic or public-dataset")
+        if self.data_origin not in (SYNTHETIC, *DATA_ORIGINS):
+            raise ValueError("data_origin must be synthetic or one of " + ", ".join(DATA_ORIGINS))
         if self.data_origin == SYNTHETIC and self.synthetic_only is not True:
             raise ValueError("this integration accepts synthetic-only workflows")
-        if self.data_origin == PUBLIC_DATASET and (self.synthetic_only is not False or self.tool_driven is not True):
-            raise ValueError("a public-dataset workflow must be tool_driven and not synthetic_only")
+        if self.data_origin != SYNTHETIC and (self.synthetic_only is not False or self.tool_driven is not True):
+            raise ValueError(f"a {self.data_origin} workflow must be tool_driven and not synthetic_only")
         limit = MAX_TEAM_STEPS if self.parallel is True else MAX_STEPS
         if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= limit:
             raise ValueError(f"steps must contain 1 through {limit} Hermes steps")

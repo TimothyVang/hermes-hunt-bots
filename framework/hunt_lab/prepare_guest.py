@@ -44,9 +44,10 @@ OPTIONAL_EVIDENCE_FILES = ("intel.jsonl",)
 # case.json "network_capture": "none" declares a case without traffic.pcap; no other value is accepted.
 CAPTURE_FILE = "traffic.pcap"
 NO_CAPTURE = "none"
-# case.json "data_origin": "public-dataset" marks an approved public research dataset (HUNT-BOTS.md
-# rule 1); absent means synthetic. No other value is accepted.
-PUBLIC_DATASET = "public-dataset"
+# case.json "data_origin" marks an approved real-data case (HUNT-BOTS.md rule 1): a public research
+# dataset or the operator's unclassified work export; absent means synthetic. No other value is accepted.
+# Equal to hermes_temporal.contracts.DATA_ORIGINS (test_hunt_lab_managed keeps them equal).
+DATA_ORIGINS = ("public-dataset", "work-export")
 INSTANCE_ID = "hermes-framework-network-analyst-native-v1"
 CASE_ID_PATTERN = re.compile(r"[a-z0-9-]{3,64}")
 DEPLOYMENT_KEYS = frozenset({"qemu", "disk", "seed", "memory_mib", "cpus", "accel"})
@@ -365,8 +366,8 @@ def case_metadata(path: Path) -> dict:
         raise PreparationError("case.json time_range_utc needs ISO start_inclusive < end_exclusive")
     if "network_capture" in case and case["network_capture"] != NO_CAPTURE:
         raise PreparationError(f'case.json network_capture may only be "{NO_CAPTURE}"')
-    if "data_origin" in case and case["data_origin"] != PUBLIC_DATASET:
-        raise PreparationError(f'case.json data_origin may only be "{PUBLIC_DATASET}"')
+    if "data_origin" in case and case["data_origin"] not in DATA_ORIGINS:
+        raise PreparationError("case.json data_origin may only be " + " or ".join(f'"{origin}"' for origin in DATA_ORIGINS))
     return case
 
 
