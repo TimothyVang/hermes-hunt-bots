@@ -1,10 +1,15 @@
 """drive_gates behavior that an unattended loop round depends on."""
 import argparse
+import copy
+import hashlib
 import io
+import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import drive_gates as dg
@@ -39,11 +44,18 @@ SCOPE = step('scope', 'done', 'x:scope', wave=1)
 SCOPE_RESULT = result('x:scope', 'scope report')
 
 
-def drive(states, args=None):
+COMPLETED_CHILD = {'stage': 'completed', 'step_id': None, 'execution_id': None, 'temporal_status': 'COMPLETED',
+                   'results': [], 'handoff_rejections': []}
+
+
+def run(states, args=None, on_status=None, sleep=None):
     """Run the driver over these child statuses; the parent reports completed once they are used up.
-    Without args it runs in delegated mode with the note 'NOTE'.
-    Returns (exit code, decisions sent, saved outputs by file name, log messages)."""
-    states, decisions = list(states), []
+    Without args it runs in delegated mode with the note 'NOTE'. on_status(call number, decision folder) runs
+    before each child status read is answered, as a bridge acting meanwhile would; sleep replaces time.sleep.
+    Returns the exit code, decisions sent, saved outputs, log messages, printed text, decision-log lines,
+    the pending records seen at each status read and the pending records left at the end."""
+    states, decisions, seen = list(states), [], []
+    folder = None
 
     def fake_cli(*args):
         if args[0] == 'practice-status':
@@ -51,21 +63,38 @@ def drive(states, args=None):
                 return {'temporal_status': 'RUNNING', 'stage': 'running_round', 'child_workflow_id': CHILD}
             return {'temporal_status': 'COMPLETED', 'stage': 'completed'}
         if args[0] == 'status':
-            return states.pop(0)
+            seen.append({path.name: json.loads(path.read_text(encoding='utf-8'))
+                         for path in (folder / 'pending').glob('*.json')})
+            if on_status:
+                on_status(len(seen), folder)
+            return states.pop(0) if states else dict(COMPLETED_CHILD)
         options = dict(zip(args[2::2], args[3::2]))
         decisions.append((options['--step-id'], options['--phase'], options['--decision-id'],
                           options['--evidence-note']))
         return {'signal_sent': True}
 
     args = args or argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop',
-                                      operator=None, note='NOTE')
+                                      operator=None, note='NOTE', card_summary=False)
+    printed = io.StringIO()
     with tempfile.TemporaryDirectory() as tmp, patch.object(dg, 'GATE_RUNS', Path(tmp)), \
             patch.object(dg, 'LOG', Path(tmp) / 'driver.log'), patch.object(dg, 'cli', fake_cli), \
-            patch.object(dg.time, 'sleep'):
+            patch.object(dg.time, 'sleep', side_effect=sleep), redirect_stdout(printed):
+        folder = args.decision_dir = Path(tmp) / 'operator-decisions'
         code = dg.main(args)
         saved = {path.name: path.read_text(encoding='utf-8') for path in (Path(tmp) / 'outputs' / 'loop-wf').iterdir()}
         log = (Path(tmp) / 'driver.log').read_text(encoding='utf-8').splitlines()
-    return code, decisions, saved, [line.split(' ', 1)[1] for line in log]
+        decision_log = folder / 'decisions.jsonl'
+        lines = ([json.loads(line) for line in decision_log.read_text(encoding='utf-8').splitlines()]
+                 if decision_log.exists() else [])
+        left = sorted(path.name for path in (folder / 'pending').glob('*'))
+    return SimpleNamespace(code=code, decisions=decisions, saved=saved, messages=[line.split(' ', 1)[1] for line in log],
+                           printed=printed.getvalue(), lines=lines, seen=seen, left=left)
+
+
+def drive(states, args=None):
+    """(exit code, decisions sent, saved outputs by file name, log messages) of run()."""
+    result = run(states, args)
+    return result.code, result.decisions, result.saved, result.messages
 
 
 class RetryGateTest(unittest.TestCase):
@@ -96,6 +125,7 @@ class RetryGateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(dg, 'GATE_RUNS', Path(tmp)), \
                 patch.object(dg, 'LOG', Path(tmp) / 'driver.log'), patch.object(dg, 'cli', fake_cli), \
                 patch.object(dg.time, 'sleep'):
+            args.decision_dir = Path(tmp) / 'operator-decisions'
             self.assertEqual(dg.main(args), 0)
             saved = (Path(tmp) / 'outputs' / 'loop-wf' / '001-evidence.txt').read_text(encoding='utf-8')
         self.assertEqual(decisions, [
@@ -235,10 +265,8 @@ def serial(stage, step_id, rejections=(), results=()):
 
 
 def drive_two_decisions(states):
-    printed = io.StringIO()
-    with redirect_stdout(printed):
-        code, decisions, saved, messages = drive(states, two_decisions())
-    return code, decisions, saved, messages, printed.getvalue()
+    result = run(states, two_decisions())
+    return result.code, result.decisions, result.saved, result.messages, result.printed
 
 
 def waiting(messages):
@@ -337,6 +365,7 @@ class ModeChoiceTest(unittest.TestCase):
             'blank operator': ['--two-decisions', '--operator', '  '],
             'delegated without a reason': ['--delegated-by', 'Ada'],
             'delegated with a blank reason': ['--delegated-by', 'Ada', '--reason', ' '],
+            'card summary in delegated mode': ['--delegated-by', 'Ada', '--reason', 'loop', '--card-summary'],
         }
         for case, argv in rejected.items():
             with self.subTest(case), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
@@ -350,6 +379,146 @@ class ModeChoiceTest(unittest.TestCase):
         self.assertEqual(delegated.note, 'Delegated approval by Ada: synthetic loop. Recorded automatically by '
                                          'operator/drive_gates.py on their behalf; this is not a human review of the '
                                          'content.')
+
+
+SCOPE_RECORD = 'loop-wf_round_001__wave-1__review.json'
+REPORT_RECORD = 'loop-wf_round_001__wave-4__review.json'
+OUTSIDE = 'operator (outside driver)'
+
+
+def parallel_hunt():
+    """Status reads of a parallel hunt in which the operator decides both gates while the driver waits."""
+    scope_review = hunt('awaiting_review', 'wave-1', scope='awaiting_review')
+    report_review = hunt('awaiting_review', 'wave-4', incident='awaiting_review')
+    return [hunt('awaiting_execution_approval', 'wave-1', scope='awaiting_approval'),
+            scope_review, scope_review, scope_review,
+            hunt('awaiting_execution_approval', 'wave-2', evidence='awaiting_approval', network='awaiting_approval'),
+            hunt('awaiting_review', 'wave-2', evidence='awaiting_review', network='awaiting_review'),
+            hunt('awaiting_execution_approval', 'wave-3', analysis='awaiting_approval'),
+            hunt('awaiting_review', 'wave-3', analysis='awaiting_review'),
+            hunt('awaiting_execution_approval', 'wave-4', incident='awaiting_approval'),
+            report_review, report_review]
+
+
+def with_output(state, name, text):
+    state = copy.deepcopy(state)
+    for item in state['results']:
+        if item['execution_id'] == f'x:{name}':
+            item['output'] = text
+    return state
+
+
+def outside(lines):
+    return [(line['gate'], line['choice'], line['channel'], line['decision_id'])
+            for line in lines if line['decided_by'] == OUTSIDE]
+
+
+def slack_line(folder, nonce):
+    dg.append_decision(folder, workflow='loop-wf', child=CHILD, gate='wave-1', phase='review', choice='approve',
+                       decided_by='human: Ada Lovelace', channel='slack', slack_user='U0ADA',
+                       decision_id=f'{CHILD}:wave-1:review:{nonce}', note_sha256='0' * 64)
+
+
+class DecisionLogTest(unittest.TestCase):
+    def test_every_decision_the_driver_sends_is_logged_with_who_decided_and_through_which_channel(self):
+        hunted = run(parallel_hunt(), two_decisions())
+        sent = [line for line in hunted.lines if line['channel'] == 'drive_gates']
+        self.assertEqual([(line['gate'], line['phase'], line['decision_id']) for line in sent],
+                         [decision[:3] for decision in hunted.decisions])
+        for line, decision in zip(sent, hunted.decisions):
+            self.assertEqual((line['workflow'], line['child'], line['choice'], line['decided_by']),
+                             ('loop-wf', CHILD, 'approve', 'automated'))
+            self.assertEqual(line['note_sha256'], hashlib.sha256(decision[3].encode('utf-8')).hexdigest())
+            self.assertRegex(line['ts'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        delegated = run([child('awaiting_execution_approval')])
+        self.assertEqual([(line['decided_by'], line['channel'], line['phase'], line['decision_id'])
+                          for line in delegated.lines],
+                         [('delegated: Ada', 'drive_gates', 'execute', f'{CHILD}:evidence:execute')])
+
+    def test_a_pending_record_is_written_once_per_operator_gate_and_deleted_when_the_gate_moves_on(self):
+        hunted = run(parallel_hunt(), two_decisions())
+        # Status read 2 opens the scope gate and read 5 shows wave 2; read 10 opens the report gate.
+        self.assertEqual([SCOPE_RECORD in seen for seen in hunted.seen], [False] * 2 + [True] * 3 + [False] * 7)
+        self.assertEqual([REPORT_RECORD in seen for seen in hunted.seen], [False] * 10 + [True] * 2)
+        self.assertEqual(hunted.left, [])
+        scope = [seen[SCOPE_RECORD] for seen in hunted.seen if SCOPE_RECORD in seen]
+        report = [seen[REPORT_RECORD] for seen in hunted.seen if REPORT_RECORD in seen]
+        self.assertEqual(len({record['nonce'] for record in scope}), 1)
+        self.assertEqual(len({record['nonce'] for record in report}), 1)
+        self.assertNotEqual(scope[0]['nonce'], report[0]['nonce'])
+        for record, gate, kind in ((scope[0], 'wave-1', 'scope'), (report[0], 'wave-4', 'report')):
+            self.assertRegex(record['nonce'], r'^[0-9a-f]{32}$')
+            self.assertEqual({key: record[key] for key in ('child', 'workflow', 'gate', 'phase', 'kind')},
+                             {'child': CHILD, 'workflow': 'loop-wf', 'gate': gate, 'phase': 'review', 'kind': kind})
+            self.assertEqual(record['decision_cli'][-6:], ['decision', CHILD, '--step-id', gate, '--phase', 'review'])
+            self.assertNotIn('--evidence-note', record['decision_cli'])
+            self.assertNotIn('--choice', record['decision_cli'])
+            self.assertTrue(record['outputs_dir'].endswith(str(Path('outputs', 'loop-wf'))))
+            self.assertNotIn('summary', record)
+        # Nobody logged these two decisions through the bridge, so the driver names them as made outside it.
+        self.assertEqual(outside(hunted.lines), [('wave-1', 'approve', 'unknown', None),
+                                                 ('wave-4', 'approve', 'unknown', None)])
+
+    def test_a_decision_the_bridge_logged_gets_no_outside_driver_line(self):
+        def bridge(call, folder):
+            pending = folder / 'pending' / SCOPE_RECORD
+            if call == 4:
+                nonce = json.loads(pending.read_text(encoding='utf-8'))['nonce']
+                pending.unlink()
+                slack_line(folder, nonce)
+
+        hunted = run(parallel_hunt(), two_decisions(), on_status=bridge)
+        self.assertEqual(outside(hunted.lines), [('wave-4', 'approve', 'unknown', None)])
+        self.assertEqual([line['channel'] for line in hunted.lines if line['decided_by'].startswith('human')],
+                         ['slack'])
+        self.assertIn(f'scope review of {CHILD} wave-1 decided via slack by human: Ada Lovelace: approve',
+                      hunted.messages)
+
+    def test_a_record_the_bridge_claimed_is_given_time_to_be_logged_before_anything_is_written(self):
+        claim = {}
+
+        def bridge_claims(call, folder):
+            if call == 5:
+                claim['path'] = folder / 'claimed' / SCOPE_RECORD
+                claim['folder'] = folder
+                claim['path'].parent.mkdir(parents=True, exist_ok=True)
+                claim['nonce'] = json.loads((folder / 'pending' / SCOPE_RECORD).read_text(encoding='utf-8'))['nonce']
+                (folder / 'pending' / SCOPE_RECORD).rename(claim['path'])
+
+        def bridge_finishes(_seconds):
+            if claim.get('path') and claim['path'].exists():
+                slack_line(claim['folder'], claim['nonce'])
+                claim['path'].unlink()
+
+        hunted = run(parallel_hunt(), two_decisions(), on_status=bridge_claims, sleep=bridge_finishes)
+        self.assertEqual(outside(hunted.lines), [('wave-4', 'approve', 'unknown', None)])
+        self.assertEqual(len([line for line in hunted.lines if line['channel'] == 'slack']), 1)
+
+    def test_the_observed_outcome_of_an_outside_decision_is_logged_and_a_timeout_is_not_a_decision(self):
+        scope_review = hunt('awaiting_review', 'wave-1', scope='awaiting_review')
+        for stage, expected in (('rejected', [('wave-1', 'deny', 'unknown', None)]), ('timed_out', [])):
+            with self.subTest(stage):
+                hunted = run([hunt('awaiting_execution_approval', 'wave-1', scope='awaiting_approval'),
+                              scope_review, scope_review, hunt(stage, 'wave-1', scope='awaiting_review')],
+                             two_decisions())
+                self.assertEqual((hunted.code, outside(hunted.lines), hunted.left), (1, expected, []))
+
+    def test_a_card_summary_is_written_only_with_card_summary_capped_and_without_control_characters(self):
+        scope_text = 'Scope: hosts ws-01 and ws-02.\x1b[31m\u202e' + 'x' * 5000
+        report_text = 'The report:\n' + json.dumps({'claims': [{'statement': f'claim {n}'} for n in range(1, 6)],
+                                                    'disposition': 'review_ready'})
+        states = [with_output(with_output(state, 'scope', scope_text), 'incident', report_text)
+                  for state in parallel_hunt()]
+        args = dg.parse_args(['loop-wf', '--two-decisions', '--operator', 'Ada', '--card-summary'])
+        hunted = run(states, args)
+        scope = next(seen[SCOPE_RECORD] for seen in hunted.seen if SCOPE_RECORD in seen)['summary']
+        report = next(seen[REPORT_RECORD] for seen in hunted.seen if REPORT_RECORD in seen)['summary']
+        self.assertTrue(scope.startswith('Bot-written, unverified: Scope: hosts ws-01 and ws-02.[31mxxx'), scope[:80])
+        self.assertEqual(len(scope), dg.SUMMARY_LIMIT)
+        self.assertFalse(re.search('[\x00-\x09\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]', scope))
+        self.assertEqual(report, 'Bot-written, unverified: Verdict: review_ready\n- claim 1\n- claim 2\n- claim 3')
+        plain = run(states, two_decisions())
+        self.assertFalse(any('summary' in record for seen in plain.seen for record in seen.values()))
 
 
 if __name__ == '__main__':
