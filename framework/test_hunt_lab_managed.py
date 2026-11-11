@@ -167,6 +167,15 @@ class PayloadSourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(prepare_guest.PreparationError, 'network_capture'):
                     prepare_guest.payload_sources(self.evidence)
 
+    def test_data_origin_is_absent_or_public_dataset_and_nothing_else(self):
+        self.write_case(data_origin='public-dataset')
+        self.assertEqual(prepare_guest.case_metadata(self.evidence / 'case.json')['data_origin'], 'public-dataset')
+        for value in ('synthetic', 'customer', '', None, ['public-dataset']):
+            with self.subTest(value=value):
+                self.write_case(data_origin=value)
+                with self.assertRaisesRegex(prepare_guest.PreparationError, 'data_origin'):
+                    prepare_guest.case_metadata(self.evidence / 'case.json')
+
 
 try:
     import pycdlib
