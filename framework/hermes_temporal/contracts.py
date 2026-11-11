@@ -55,7 +55,7 @@ class HermesStep:
     optional: bool = False
     # Parallel workflows only: (predecessor step_id, claim index). The step receives that one claim of
     # the predecessor's reviewed handoff instead of the predecessor's whole output, and is dropped
-    # when the predecessor has no such claim. The predecessor must be in depends_on.
+    # when the predecessor has no such claim. The predecessor must be in depends_on and carry a hunt_context.
     focus: tuple[str, int] | None = None
     def __post_init__(self) -> None:
         if not isinstance(self.step_id, str) or SAFE_STEP_ID.fullmatch(self.step_id) is None:
@@ -148,6 +148,9 @@ class WorkflowRequest:
             raise ValueError("wave-<n> step IDs are reserved for wave gates in a parallel workflow")
         if not self.parallel and any(step.focus is not None for step in self.steps):
             raise ValueError("focus steps require a parallel workflow")
+        typed = {step.step_id for step in self.steps if step.hunt_context is not None}
+        if any(step.focus is not None and step.focus[0] not in typed for step in self.steps):
+            raise ValueError("focus must name a predecessor with a hunt_context")
 
 
 def _validate_execution_id(value: str) -> None:
