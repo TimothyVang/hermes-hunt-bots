@@ -14,7 +14,7 @@ There is no hosted CI and no paid review service. The gate runs locally, and rev
 1. **Start in deep-mode.** Run `/deep-mode:poteto <task>`, or read `skill://deep-mode` and follow its Route. It restates the goal, picks the playbook (Bug fix, Feature, Refactoring, Multi-phase plan, and so on) and sizes the work. Open the PR's `## Why` with the same goal.
 2. **Branch from `hunt-bots`.** `git fetch origin` then `git switch -c <type>/<short-topic> origin/hunt-bots`. A PR that builds on another one branches from that PR's branch, and its PR targets that branch (a stack).
 3. **Keep to the rules while you work.**
-   - Synthetic data only. Never add credentials, tokens, cookies, session stores, real logs, or CUI/NSS material. Lab state stays in `runtime/` next to the clone, never inside it.
+   - Commit synthetic data only: a public dataset or work export used for a case stays in `runtime/` next to the clone, never inside it (HUNT-BOTS.md rule 1). Never add credentials, tokens, cookies, session stores, real logs, or CUI/NSS material.
    - Bot tools stay read-only and lab-local, and browser automation stays on lab origins.
    - Copied code keeps its license and gets a row in `THIRD-PARTY-NOTICES.md`.
    - A new file under `framework/` gets a line in `framework/TRACKED-FILES.txt`, and a shipped one also goes in the portable package lists.

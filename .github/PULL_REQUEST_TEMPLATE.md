@@ -28,7 +28,7 @@
 
 <!--
 Checklist (HUNT-BOTS.md):
-- Synthetic data only; no credentials, tokens, cookies, session stores, CUI/NSS.
+- Commits carry synthetic data only (real or work data stays in runtime/); no credentials, tokens, cookies, session stores, CUI/NSS.
 - Bot tools stay read-only and lab-local; browser automation stays on lab origins.
 - No fabricated approvals, evidence, scores or test results; "enforced" claims have a runtime test.
 - New framework/ files are in framework/TRACKED-FILES.txt; copied code has its license and a THIRD-PARTY-NOTICES.md entry.
