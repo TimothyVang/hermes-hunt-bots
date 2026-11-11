@@ -535,7 +535,7 @@ def frame(number, fields=None):
     return {'frame.number': str(number), 'frame.time_epoch': '%d.000000000' % (START_S + number), **(fields or {})}
 
 
-class PublicDatasetConsoleTests(ServerCase):
+class DataOriginConsoleTests(ServerCase):
     case = dict(CASE, network_capture='none', data_origin='public-dataset', question='What happened in the window?')
 
     def test_console_states_the_case_origin(self):
@@ -545,8 +545,18 @@ class PublicDatasetConsoleTests(ServerCase):
         self.assertIn('Public research dataset (real lab telemetry, no customer data). Read-only.', body)
         self.assertNotIn('ynthetic', body)
         self.assertEqual(self.request('/case')[1]['data_origin'], 'public-dataset')
+        self.server.case = dict(self.case, data_origin='work-export')
+        body = self.page('/')[2]
+        self.assertIn("<p>Work log export (real telemetry from the operator's environment; unclassified work data). "
+                      'Read-only. No live capture.</p>', body)
+        self.assertNotIn('ynthetic', body)
+        self.assertEqual(self.request('/case')[1]['data_origin'], 'work-export')
         self.server.case = CASE
         self.assertIn('<p>Synthetic data only. Read-only. No live capture.</p>', self.page('/')[2])
+
+    def test_console_wording_is_the_hunt_wording(self):
+        from hermes_temporal.contracts import DATA_ORIGINS
+        self.assertEqual(lab_server.DATA_ORIGINS, DATA_ORIGINS)
 
 
 class FakeTsharkPipe:
@@ -812,10 +822,11 @@ class LoadCaseTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load(network_capture=value)
 
-    def test_data_origin_is_absent_or_public_dataset_and_nothing_else(self):
+    def test_data_origin_is_absent_or_a_known_origin_and_nothing_else(self):
         self.assertNotIn('data_origin', self.load())
-        self.assertEqual(self.load(data_origin='public-dataset')['data_origin'], 'public-dataset')
-        for value in ('synthetic', 'customer', '', None, False):
+        for value in ('public-dataset', 'work-export'):
+            self.assertEqual(self.load(data_origin=value)['data_origin'], value)
+        for value in ('synthetic', 'customer', '', None, False, ['work-export']):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load(data_origin=value)
 

@@ -82,6 +82,40 @@ The scripted synthetic verification reached the existing prepared Elastic/Arkime
 
 [`hunt_lab/case.py`](hunt_lab/case.py) supplies operator-side deterministic generation/scoring; it and generated grading keys are excluded from the installed bot package and guest. The source kit includes the grader, so same-account host tools are not blind-test isolation. [Setup details](hermes-setup.md#built-in-hunting-lab) describe the native component layout and version boundary.
 
+### Loading a work export
+
+Real work hunts take one time window of the operator's own **unclassified** work logs from the work Elastic and hunt it in the lab unchanged (HUNT-BOTS.md rule 1; planning tickets 01 and 06). CUI/NSS data never goes this way without a named, approved boundary for it. Exports and the cases built from them stay under the repository's Git-ignored `runtime/` folder (or another folder outside the repository), never in tracked files. `hunt_lab/import_elastic.py` does both steps with the standard library only.
+
+1. **Export** the window, read-only. Point-in-time search needs Elasticsearch 7.12 or later (8.x recommended); older versions and OpenSearch are refused. Use an API key that can only read: the `read` index privilege on the index pattern, plus the `monitor` cluster privilege that the version check (`GET /`) needs. Put the key (the base64 `id:api_key` value Elasticsearch shows as `encoded`) in an environment variable for this one shell, never in a file or on the command line; the exporter reads it only from the variable named by `--api-key-env` (default `HUNT_ELASTIC_API_KEY`), sends it only as `Authorization: ApiKey ...`, and never prints, logs or writes it. Errors from Elasticsearch are reported as their HTTP status and error type only. TLS is always verified, against the system trust store or, with `--ca-file`, your internal CA bundle alone; redirects are refused. With `--ca-file` the chain and host name are verified but OpenSSL's strict RFC 5280 extension checks are off, because Elasticsearch 8's auto-generated `http_ca.crt` has no keyUsage extension and would otherwise be refused. Live run (2026-11-11, Elasticsearch 8.15.3 in a throwaway container with security on, synthetic events): an API key with only `read` and `view_index_metadata` on the index pattern and cluster `monitor` exported all 20,845 documents of the window; a wrong key was reported as `HTTP 401 (security_exception)`, a window over `--max-events` was refused before any download, and the key appeared in no output.
+
+   ```powershell
+   $env:HUNT_ELASTIC_API_KEY = Read-Host -MaskInput 'Elastic API key'   # PowerShell 7
+   py -3 -m hunt_lab.import_elastic export --url https://elastic.example.internal:9243 --index 'logs-*' `
+       --start 2026-11-03T08:00:00Z --end 2026-11-03T12:00:00Z --hosts WS-0142,WS-0177 `
+       --output ..\runtime\work-exports\2026-11-03-am.ndjson
+   Remove-Item Env:HUNT_ELASTIC_API_KEY
+   ```
+
+   The window is `[start, end)` on `@timestamp`; `--hosts` keeps only those exact `host.name` values (default: every host). The exporter opens one point in time, pages it 5,000 documents at a time sorted on `@timestamp` and `_shard_doc` with `search_after`, and closes it, also when the export fails. A window holding more than `--max-events` documents (default 200,000) is refused before any document is downloaded and nothing is written: narrow the window or hosts, or raise the cap. The output holds one `{"_index", "_id", "_source"}` object per line; `<output>.meta.json` beside it records the cluster host (no credentials), index pattern, window, hosts, count, Elasticsearch version and the NDJSON's SHA-256. Neither file may exist yet.
+
+2. **Import** it as a lab case. The input may also be NDJSON of raw `_source` documents or one saved `_search` response with `hits.hits`, for example from Kibana's Inspect panel.
+
+   ```powershell
+   py -3 -m hunt_lab.import_elastic import --input ..\runtime\work-exports\2026-11-03-am.ndjson `
+       --case-id work-2026-11-03-am --start 2026-11-03T08:00:00Z --end 2026-11-03T12:00:00Z `
+       --evidence-dir ..\runtime\cases\work-2026-11-03-am\evidence
+   ```
+
+   Records with `@timestamp` in the window are sorted by (`@timestamp`, `host.name`, `_index`, `_id`) and numbered `event.id` `evt-000001` onwards in that order; a source `event.id` moves to `event.original_id`, and `event.dataset` becomes the case ID, as the lab requires. Dotted field names are nested as Elasticsearch reads them; `_index`, `_id` and other search metadata are dropped. The evidence directory, which must not exist yet, gets `events.jsonl` and a `case.json` with `"data_origin": "work-export"` and the same question as the other real-data cases. There is no answer key, so the scorer does not apply: the operator's review of the report is the evaluation. The output is byte-identical for the same input and arguments, and the printed summary's input SHA-256 matches the export's `.meta.json`.
+
+3. **Load and hunt** it like any other case. With the VM stopped (`py -3 .\bot.py lab stop`), `py -3 .\hunt_lab\prepare_guest.py reseed --evidence-dir ..\runtime\cases\work-2026-11-03-am\evidence --state-dir <analyst-home>\hunt-lab-vm --profile framework-network-analyst --update-deployment` switches the lab to the case, and `py -3 .\bot.py lab start` serves it. Export the hunt input with the operator's approval of that origin; without `--data-origin work-export`, or with another origin, `lab-input` refuses the case:
+
+   ```powershell
+   py -3 -m hermes_temporal.cli lab-input --tool-driven --data-origin work-export --state-dir <analyst-home>\hunt-lab-vm --output ..\runtime\work-hunt.json
+   ```
+
+   The bots are told the case is a work log export (real telemetry from the operator's environment; unclassified work data), never synthetic, and the lab console says the same. Use the Slack bridge's minimal cards for these hunts (HUNT-BOTS.md rule 4).
+
 ### Operator scoring
 
 From this framework directory, generate into **new, separate external directories**, never a live profile or source fixture:
