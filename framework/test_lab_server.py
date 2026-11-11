@@ -265,20 +265,26 @@ class EndpointTests(ServerCase):
         self.assertEqual(value['unmatched'], ['198.51.100.7'])
 
     def test_aggregations_terms_and_bounded_histogram(self):
+        sample = {'hits': {'hits': [{'_source': {'event.id': 'evt-000007'}}]}}
         self.elastic.response = {'hits': {'total': {'value': 12, 'relation': 'eq'}, 'hits': []},
                                  'aggregations': {'values': {'sum_other_doc_count': 2, 'buckets': [
-                                     {'key': 'ws-01', 'doc_count': 10}]}}}
+                                     {'key': 'ws-01', 'doc_count': 10, 'sample': sample}]}}}
         status, value = self.request('/es/aggs?field=host.name&size=5&q=event.action:logon')
         self.assertEqual(status, 200)
-        self.assertEqual(self.elastic.calls[0]['body']['aggs']['values'], {'terms': {'field': 'host.name', 'size': 5}})
-        self.assertEqual((value['total'], value['buckets'], value['other']), (12, [{'key': 'ws-01', 'count': 10}], 2))
+        self.assertEqual(self.elastic.calls[0]['body']['aggs']['values'], {
+            'terms': {'field': 'host.name', 'size': 5},
+            'aggs': {'sample': {'top_hits': {'size': 1, '_source': ['event.id'],
+                                             'sort': [{'@timestamp': 'asc'}, {'event.id': 'asc'}]}}}})
+        self.assertEqual((value['total'], value['buckets'], value['other']),
+                         (12, [{'key': 'ws-01', 'count': 10, 'sample_event_id': 'evt-000007'}], 2))
         self.elastic.response = {'hits': {'total': {'value': 3, 'relation': 'eq'}, 'hits': []},
                                  'aggregations': {'values': {'buckets': [
                                      {'key': 1, 'key_as_string': '2026-03-02T00:00:00Z', 'doc_count': 3}]}}}
         status, value = self.request('/es/aggs?field=@timestamp&interval=1h')
         histogram = self.elastic.calls[1]['body']['aggs']['values']['date_histogram']
         self.assertEqual(histogram['hard_bounds'], {'min': START_S * 1000, 'max': END_S * 1000 - 1})
-        self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3}])
+        self.assertIn('sample', self.elastic.calls[1]['body']['aggs']['values']['aggs'])
+        self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3, 'sample_event_id': None}])
 
     def test_detect_reports_hosts_bounds_and_sample(self):
         response = es_hits([{'@timestamp': '2026-03-02T01:00:00Z', 'event': {'id': 'evt-000003'},

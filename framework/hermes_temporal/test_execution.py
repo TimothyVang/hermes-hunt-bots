@@ -283,6 +283,12 @@ class ExecutionReceiptTests(unittest.TestCase):
             f'HTTPError: 403 for https://api.example.test/v1/models?key={value}&alt=json',
             f'KeyError: api_key="{value}"',
             f'ValueError: OPENAI_API_KEY={value} rejected',
+            f'RuntimeError: api_key "{value}"',
+            f"RuntimeError: client_secret '{value} {value}'",
+            f'RuntimeError: password "it\'s {value}"',
+            f'RuntimeError: token "{value}',
+            f'Error: token is sk_live_{value}',
+            f'stripe.error.PermissionError: restricted key rk_test_{value} lacks access',
             f'ValueError: digest {long_hex}',
             f'ValueError: blob {long_base64}',
         ]
@@ -295,6 +301,19 @@ class ExecutionReceiptTests(unittest.TestCase):
                     self.assertNotIn(secret, diagnostic)
         result = self.invoke_plain(StreamProcess(b'', 2, ('\n'.join(lines) + '\n').encode('utf-8')))
         self.assertEqual(result.diagnostic, 'exit code 2: ValueError: blob [redacted]')
+
+    def test_redaction_keeps_ordinary_words_and_identifiers(self):
+        lines = [
+            'RuntimeError: token limit exceeded',
+            'ValueError: password incorrect for user operator',
+            'KeyError: secret manager unavailable',
+            'sqlite3.IntegrityError: UNIQUE constraint failed: pk_receipts_execution',
+            'RuntimeError: max_tokens "4096" is too large',
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False),
+                                 'exit code 1: ' + line)
 
     def test_diagnostic_is_printable_ascii(self):
         errors = b'\x1b[31mRuntimeError: caf\xc3\xa9\t\xff failed\x1b[0m\n'
@@ -428,14 +447,15 @@ class ExecutionReceiptTests(unittest.TestCase):
             self.assertEqual(execute(self.config, request()), completed)
         self.assertEqual(invoke.call_count, 1)
 
-    def test_unknown_receipt_keeps_recorded_spend_without_dispatching_again(self):
+    def test_unknown_receipt_keeps_recorded_spend_and_cause_without_dispatching_again(self):
         req = request()
-        failed_run = ExecutionResult('unknown', req.execution_id, '', 'native_nonzero', 'local-synthetic', USAGE)
+        cause = 'exit code 1: model declined to respond (finish_reason=content_filter, category cyber)'
+        failed_run = ExecutionResult('unknown', req.execution_id, '', 'native_nonzero', 'local-synthetic', USAGE, cause)
         with patch.object(execution_module, '_invoke', return_value=failed_run) as invoke:
             self.assertEqual(execute(self.config, req), failed_run)
             repeated = execute(self.config, req)
         self.assertEqual(repeated, ExecutionResult('unknown', req.execution_id, '', 'previous_dispatch_unknown',
-                                                   'local-synthetic', USAGE))
+                                                   'local-synthetic', USAGE, cause))
         self.assertEqual(invoke.call_count, 1)
 
     def test_five_column_receipt_database_is_migrated_and_keeps_old_receipts(self):
@@ -458,7 +478,28 @@ class ExecutionReceiptTests(unittest.TestCase):
         self.assertEqual(invoke.call_count, 1)
         with closing(sqlite3.connect(self.path)) as db:
             columns = [row[1] for row in db.execute('PRAGMA table_info(receipts)')]
-        self.assertEqual(columns, ['execution_id', 'fingerprint', 'status', 'reason', 'output', 'usage', 'session_id'])
+        self.assertEqual(columns, ['execution_id', 'fingerprint', 'status', 'reason', 'output', 'usage', 'session_id',
+                                   'diagnostic'])
+
+    def test_seven_column_receipt_database_gains_the_diagnostic_and_keeps_old_receipts(self):
+        old = request()
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('CREATE TABLE receipts ('
+                       'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
+                       'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL, '
+                       'usage TEXT, session_id TEXT)')
+            db.execute('INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?)',
+                       (old.execution_id, execution_module._fingerprint(old), 'unknown', 'native_nonzero', '',
+                        json.dumps(USAGE), 'local-synthetic'))
+            db.commit()
+        with patch.object(execution_module, '_invoke') as invoke:
+            self.assertEqual(execute(self.config, old),
+                             ExecutionResult('unknown', old.execution_id, '', 'previous_dispatch_unknown',
+                                             'local-synthetic', USAGE))
+        invoke.assert_not_called()
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual([row[1] for row in db.execute('PRAGMA table_info(receipts)')][5:],
+                             ['usage', 'session_id', 'diagnostic'])
 
     def test_invoke_step_dispatches_every_call_without_a_receipt(self):
         completed = ExecutionResult('completed', 'workflow/0', 'READY', 'completed', 'local-synthetic', USAGE)

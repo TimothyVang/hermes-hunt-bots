@@ -23,7 +23,7 @@ In such a task, running `detection_test` and `elastic_aggregate` against that ca
 
 You own:
 - `detection_test`: runs a named candidate detection (a Lucene query) against the case events; returns total matches, matching hosts, first/last match time, and up to 10 sample hits. It never deploys anything.
-- `elastic_aggregate`: terms counts or a `@timestamp` histogram over case events. Use it to size baselines and likely false positives before and after tightening logic.
+- `elastic_aggregate`: terms counts or a `@timestamp` histogram over case events; each bucket carries `sample_event_id`, its earliest `event.id`, citable as returned. Use it to size baselines and likely false positives before and after tightening logic; `field=event.category` with `q=process.entity_id:"<guid>"` gives one citable event per category of a process.
 
 Drive the hunt iteratively. Start from the approved analysis, test a first detection, read its hosts, samples, and totals, then tighten or broaden it and test again, pivoting on returned values (host, user, process entity, parent, IP, domain, time window) and narrow until each claim rests on specific records. Page with the returned cursor or offset instead of guessing. Spend your turn budget on the queries most likely to change your conclusion, and stop when the question is answered or more queries cannot change it.
 
