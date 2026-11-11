@@ -26,7 +26,8 @@ goes on.
 
 Decision log (ADR 0004): every decision the driver sends is appended to <decision-dir>/decisions.jsonl
 with who decided (automated, or delegated: <name>) and through which channel. In two-decision mode the
-driver also writes pending/<child>__<gate>__review.json, with a one-time nonce, while it waits at one of
+driver also writes pending/<child>__<gate>__<digest>__review.json (digest: 16 hex of SHA-256 over the exact
+child and gate, so IDs that sanitize alike never share a record), with a one-time nonce, while it waits at one of
 the operator's two gates; operator/slack_gates.py turns that record into a Slack card. When the gate moves
 on, the driver deletes the record and, unless the bridge logged the decision, appends a line that says the
 operator decided outside the driver.
@@ -163,8 +164,10 @@ def write_json_atomic(path, value):
 
 
 def record_name(child, gate):
+    # The readable part replaces unsafe characters, so the digest of the exact IDs keeps names unique.
     unsafe = re.compile(r'[^A-Za-z0-9._-]')
-    return f'{unsafe.sub("_", child)}__{unsafe.sub("_", gate)}__review.json'
+    digest = hashlib.sha256(f'{child}\0{gate}'.encode()).hexdigest()[:16]
+    return f'{unsafe.sub("_", child)[:120]}__{unsafe.sub("_", gate)[:64]}__{digest}__review.json'
 
 
 def pending_record(workflow, child, gate, kind, outputs_dir, summary=None):
