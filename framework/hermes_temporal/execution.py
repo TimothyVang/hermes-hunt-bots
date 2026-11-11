@@ -34,6 +34,12 @@ MAX_STREAM_LINE_BYTES = 1024 * 1024
 MAX_STDERR_TAIL_BYTES = 4096
 MAX_CAUSE_CHARS = 600
 _DIAGNOSED_REASONS = frozenset({'native_nonzero', 'output_unavailable', 'subprocess_timeout'})
+# Hermes logs a provider refusal only in the profile's agent.log, tagged with the session ID; its
+# stream record shows just a zero-token failure.
+_DECLINED = re.compile(r"\[(?P<session>[A-Za-z0-9_-]{1,128})\] agent\.conversation_loop: Model declined to respond "
+                       r"\(finish_reason=(?P<reason>[a-z_]{1,40})\)(?:.*?'category': '(?P<category>[a-z_]{1,40})')?")
+_SESSION_ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
+MAX_LOG_SCAN_BYTES = 4 * 1024 * 1024
 _ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 _EXCEPTION_LINE = re.compile(r'(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|Exit|Interrupt|Failure)\b(?::.*)?\Z')
 _ERROR_LINE = re.compile(r'(?i)\b(?:error|fatal|failed)\b')
@@ -456,7 +462,28 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
     if exit_code == 0 and stream is not None and stream.record is not None \
             and type(stream.record.get('exit_code')) is int:
         exit_code = stream.record['exit_code']
+    declined = _declined(config.hermes_home, step.profile, result.session_id)
+    if declined is not None:
+        return replace(result, diagnostic=f'exit code {exit_code}: {declined}')
     return replace(result, diagnostic=_diagnostic(exit_code, *stderr_tail))
+
+
+def _declined(home: str, profile: str, session_id: str | None) -> str | None:
+    """The refusal Hermes logged for this session in the profile's agent.log, if any."""
+    if not isinstance(session_id, str) or not _SESSION_ID.match(session_id):
+        return None
+    try:
+        with open(Path(home) / 'profiles' / profile / 'logs' / 'agent.log', 'rb') as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - MAX_LOG_SCAN_BYTES))
+            text = log.read().decode('utf-8', errors='replace')
+    except (OSError, TypeError, ValueError):
+        return None
+    found = [match for match in _DECLINED.finditer(text) if match['session'] == session_id]
+    if not found:
+        return None
+    category = f", category {found[-1]['category']}" if found[-1]['category'] else ''
+    return f"model declined to respond (finish_reason={found[-1]['reason']}{category})"
 
 
 def _refusal(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult | None:
