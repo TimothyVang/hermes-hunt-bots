@@ -943,6 +943,17 @@ class ParallelBoardTests(unittest.TestCase):
         self.assertEqual(_states(reviewed)[3:5], ["done", "dropped"])
         self.assertEqual(reviewed["steps"][3]["usage"], _tokens(4000))
 
+    def test_a_dropped_step_carries_its_failure_diagnostic_to_its_view_and_card(self) -> None:
+        cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
+        refused = self.result(4, status="unknown", output="", reason_code="native_nonzero", diagnostic=cause)
+        child = _wave_child({"scope": "done", "evidence": "awaiting_review", "intel": ("dropped", "native_nonzero")},
+                            [self.result(0), self.result(1), refused])
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual([step["result"] and step["result"]["diagnostic"] for step in state["steps"][:5]],
+                         [None, None, None, None, cause])
+        self.assertEqual({item["step_id"]: item["diagnostic"] for item in state["feed"]},
+                         {"scope": None, "evidence": None, "intel": cause})
+
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],
                            stage="awaiting_execution_approval")
