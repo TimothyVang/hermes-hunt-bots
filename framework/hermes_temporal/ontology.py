@@ -174,14 +174,17 @@ def select_snapshot(snapshot: object, evidence_ids: Iterable[str]) -> dict:
 
 def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[str], step_id: str,
                      profile: str, predecessors: Iterable[dict] = (), note_limit: int = 512,
-                     handoff_limit: int = MAX_HANDOFF_BYTES, ancestor_claims: Iterable[str] = ()) -> dict:
+                     handoff_limit: int = MAX_HANDOFF_BYTES, ancestor_claims: Iterable[str] = (),
+                     explained: bool = True) -> dict:
     """Validate a handoff; caller supplies predecessors only after its human-review gate.
 
     ``note_limit`` bounds each limitation/requested-decision string in UTF-8 bytes and
     ``handoff_limit`` bounds the whole normalized handoff. Predecessors are always held to
     MAX_HANDOFF_BYTES, because only a final step (never forwarded) may use a larger limit.
     ``ancestor_claims`` are claim IDs of other human-reviewed earlier steps; they are valid
-    contradiction targets only (never review targets), since a step sees them quoted upstream."""
+    contradiction targets only (never review targets), since a step sees them quoted upstream.
+    ``explained`` selects rejection messages that say what to fix; a workflow history recorded
+    before them (a rejection reason is part of its retry prompt) passes False to keep the old text."""
     supplied = _evidence_set(evidence_ids)
     if type(step_id) is not str or not _STEP_ID.fullmatch(step_id):
         raise ValueError("invalid step_id")
@@ -195,8 +198,8 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     if case_id != snap["case_id"]:
         raise ValueError("handoff case_id does not match snapshot")
     if raw["step_id"] != step_id or raw["profile"] != profile:
-        raise ValueError(f"handoff identity does not match execution context (expected step_id {step_id}, "
-                         f"profile {profile})")
+        raise ValueError("handoff identity does not match execution context" + (
+            f" (expected step_id {step_id}, profile {profile})" if explained else ""))
     entities = {item["entity_id"] for item in snap["entities"]}
     prior_claims: set[str] = set()
     prior_claim_profiles: dict[str, str] = {}
@@ -234,13 +237,13 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     for item in claims_raw:
         _obj(item, _CLAIM_FIELDS, "claim")
         claim_id = _text(item["claim_id"], "claim_id", 192, ident=True)
-        if not claim_id.startswith(step_id + ":") or claim_id in claim_ids:
-            raise ValueError(f"claim ID must be uniquely namespaced by step_id (expected prefix {step_id}:)")
+        _check_namespaced(claim_id, "claim", step_id, claim_ids, explained)
         claim_ids.add(claim_id)
         current_claim_ids.add(claim_id)
         kind = item["kind"]
         if type(kind) is not str or kind not in CLAIM_KINDS:
-            raise ValueError(f"unknown claim kind in {claim_id} (allowed: {', '.join(sorted(CLAIM_KINDS))})")
+            raise ValueError("unknown claim kind" + (
+                f" in {claim_id} (allowed: {', '.join(sorted(CLAIM_KINDS))})" if explained else ""))
         statement = _text(item["statement"], "claim statement", 2048)
         refs = _ids(item["evidence_ids"], "evidence ID", supplied, maximum=32)
         refs_entities = _optional_ids(item["entity_ids"], "entity ID", entities, maximum=64)
@@ -254,8 +257,10 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     for claim in claims:
         for target in claim["contradicts"]:
             if target not in current_claim_ids and target not in prior_claims and target not in ancestors:
-                raise ValueError(f"contradiction target {target} in {claim['claim_id']} is not a claim of this "
-                                 f"step or of a human-reviewed earlier step")
+                # Fixed text first: the correction notice keeps only 300 characters, and IDs can be long.
+                raise ValueError(f"contradiction target is not a claim of this step or of a human-reviewed earlier "
+                                 f"step: {target} in {claim['claim_id']}" if explained
+                                 else "contradiction target is not a current or predecessor claim")
     disposition = raw["disposition"]
     if type(disposition) is not str or disposition not in HANDOFF_DISPOSITIONS:
         raise ValueError("invalid handoff disposition")
@@ -268,8 +273,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     for item in reviews_raw:
         _obj(item, _REVIEW_FIELDS, "review")
         review_id = _text(item["review_id"], "review_id", 192, ident=True)
-        if not review_id.startswith(step_id + ":") or review_id in review_ids:
-            raise ValueError(f"review ID must be uniquely namespaced by step_id (expected prefix {step_id}:)")
+        _check_namespaced(review_id, "review", step_id, review_ids, explained)
         review_ids.add(review_id)
         reviewed_claims = _ids(
             item["claim_ids"], "claim ID",
@@ -289,6 +293,16 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     _encoded_size(result, handoff_limit, "handoff")
     return result
 
+
+
+def _check_namespaced(ident: str, kind: str, step_id: str, taken: set[str], explained: bool) -> None:
+    if ident.startswith(step_id + ":") and ident not in taken:
+        return
+    if not explained:
+        raise ValueError(f"{kind} ID must be uniquely namespaced by step_id")
+    if ident in taken:
+        raise ValueError(f"duplicate {kind} ID {ident}")
+    raise ValueError(f"{kind} ID {ident} must start with {step_id}:")
 
 
 def _optional_text_ids(value: object, name: str, maximum: int) -> list[str]:

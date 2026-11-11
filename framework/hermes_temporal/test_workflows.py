@@ -1950,8 +1950,8 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
         spent a step's one retry. Both now pass, behind new patch IDs; histories without them replay."""
         from temporalio import workflow as temporal_workflow
         from unittest import mock
-        from .workflows import (_ANCESTOR_CONTRADICTION_PATCH, _FALLBACK_FRAME_PREFIX, _MERGE_FALLBACK_PATCH,
-                                _WHOLE_CHECK_PATCH, _WHOLE_CHECK_SUFFIX)
+        from .workflows import (_ANCESTOR_CONTRADICTION_PATCH, _EXPLAINED_REJECTIONS_PATCH, _FALLBACK_FRAME_PREFIX,
+                                _MERGE_FALLBACK_PATCH, _WHOLE_CHECK_PATCH, _WHOLE_CHECK_SUFFIX)
         context = _ontology_context()
         request = WorkflowRequest([
             HermesStep("evidence", "base-evidence", "framework-researcher", hunt_context=context),
@@ -1980,7 +1980,7 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "purple": _handoff("purple", "framework-reviewer", reviewer=True, review_claim_ids=["analysis:claim"]),
             "incident": _handoff("incident", "framework-coordinator"),
         }
-        new_ids = {_ANCESTOR_CONTRADICTION_PATCH, _MERGE_FALLBACK_PATCH, _WHOLE_CHECK_PATCH}
+        new_ids = {_ANCESTOR_CONTRADICTION_PATCH, _EXPLAINED_REJECTIONS_PATCH, _MERGE_FALLBACK_PATCH, _WHOLE_CHECK_PATCH}
         real_patched = temporal_workflow.patched
         for mode in ("new", "recorded-before"):
             with self.subTest(mode=mode):
@@ -2009,10 +2009,10 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(states["merge"], ("dropped", "native_failed"))
                 rejections = [(item.step_id, item.outcome) for item in state.handoff_rejections]
                 purple, incident = prompts["4"], prompts["5"]
-                self.assertEqual(state.handoff_rejections[0].reason, "ValueError: unknown claim kind in "
-                                 "evidence:claim (allowed: finding, hypothesis, inference, observed)")
                 if mode == "new":
                     self.assertEqual(rejections, [("evidence", "retried")])
+                    self.assertEqual(state.handoff_rejections[0].reason, "ValueError: unknown claim kind in "
+                                     "evidence:claim (allowed: finding, hypothesis, inference, observed)")
                     self.assertTrue(prompts["0:retry"].endswith(_WHOLE_CHECK_SUFFIX))
                     for prompt in (purple, incident):
                         self.assertIn("\n\nDropped predecessor [merge]: no reviewed output (native_failed)."
@@ -2023,8 +2023,10 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                                                   ("purple", "retried"), ("incident", "retried")])
                     self.assertNotIn(_FALLBACK_FRAME_PREFIX, purple + incident)
                     self.assertNotIn(_WHOLE_CHECK_SUFFIX, prompts["0:retry"] + prompts["2:retry"])
-                    self.assertIn("contradiction target evidence:claim in follow-1:claim",
-                                  state.handoff_rejections[1].reason)
+                    # Older histories keep the reasons (and so the retry prompts) they recorded.
+                    self.assertEqual([item.reason for item in state.handoff_rejections[:2]], [
+                        "ValueError: unknown claim kind",
+                        "ValueError: contradiction target is not a current or predecessor claim"])
 
     def test_fallback_inputs_are_unique_and_keep_within_the_predecessor_limit(self) -> None:
         from temporalio import workflow as temporal_workflow
@@ -2039,3 +2041,55 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(temporal_workflow, "patched", lambda patch_id: True):
             sources = flow._fallback_inputs(reader)
         self.assertEqual(sources, hunters[:MAX_PREDECESSORS - 1])
+
+    def _fallback_flow(self, claims_by_source: dict[str, list[str]]) -> HermesWorkflow:
+        flow = HermesWorkflow()
+        for source, statements in claims_by_source.items():
+            handoff = _handoff(source, "framework-researcher")
+            handoff["claims"] = [dict(handoff["claims"][0], claim_id=f"{source}:c{number}", statement=statement)
+                                 for number, statement in enumerate(statements, 1)]
+            flow._reviewed_handoffs[source] = handoff
+        return flow
+
+    def test_the_fallback_frame_keeps_claim_order_and_counts_what_it_leaves_out(self) -> None:
+        from .workflows import _FALLBACK_FRAME_PREFIX, _RETRY_NOTICE_RESERVE, _claim_text, _hidden_note
+        flow = self._fallback_flow({"follow-1": ["short one", "x" * 2000, "short three"], "follow-2": ["short two"]})
+        claims = {claim["claim_id"]: "\n" + _claim_text(claim)
+                  for handoff in flow._reviewed_handoffs.values() for claim in handoff["claims"]}
+        base = len((_FALLBACK_FRAME_PREFIX + _hidden_note(4, 4)).encode("utf-8")) + _RETRY_NOTICE_RESERVE
+        sources = ("follow-1", "follow-2")
+        everything = base + sum(len(line.encode("utf-8")) for line in claims.values())
+        self.assertEqual(flow._fallback_frame(sources, everything), _FALLBACK_FRAME_PREFIX + "".join(
+            claims[claim_id] for claim_id in ("follow-1:c1", "follow-2:c1", "follow-1:c2", "follow-1:c3")))
+        # follow-1:c3 would fit, but never ahead of follow-1:c2, which does not.
+        room = everything - len(claims["follow-1:c3"].encode("utf-8")) - 1
+        self.assertEqual(flow._fallback_frame(sources, room), _FALLBACK_FRAME_PREFIX + claims["follow-1:c1"]
+                         + claims["follow-2:c1"] + _hidden_note(2, 4))
+        self.assertEqual(flow._fallback_frame(sources, base), _FALLBACK_FRAME_PREFIX + _hidden_note(4, 4))
+        self.assertEqual(flow._fallback_frame(sources, base - 1), "")
+
+    def test_a_filled_fallback_frame_leaves_the_incident_room_for_its_retry_notice(self) -> None:
+        from temporalio import workflow as temporal_workflow
+        from unittest import mock
+        from .contracts import MAX_PROMPT_BYTES
+        from .workflows import (_CORRECTION_PREFIX, _CORRECTION_SUFFIX, _FALLBACK_FRAME_PREFIX,
+                                _REJECTION_REASON_CHARS, _WHOLE_CHECK_SUFFIX)
+        follows = [f"follow-{number}" for number in range(1, 13)]
+        flow = self._fallback_flow({follow: [f"{follow} claim {rank} " + "y" * 1900 for rank in range(16)]
+                                    for follow in follows})
+        flow._reviewed_outputs = {"analysis": "a" * 20000}
+        flow._aggregator_inputs = {"merge": tuple(follows)}
+        flow._step_states = [StepState("merge", "dropped", 5, reason="native_nonzero")]
+        incident = HermesStep("incident", "base-incident", depends_on=("analysis", "merge"),
+                              hunt_context=_ontology_context())
+        # The prompt reads the request only for a capped step; incident is the uncapped final step.
+        request = WorkflowRequest([HermesStep("analysis", "base-analysis")], parallel=True)
+        with mock.patch.object(temporal_workflow, "patched", lambda patch_id: True):
+            prompt = flow._wave_prompt(request, incident, None, True)
+        retry = prompt + _CORRECTION_PREFIX + "x" * _REJECTION_REASON_CHARS + _CORRECTION_SUFFIX + _WHOLE_CHECK_SUFFIX
+        self.assertLessEqual(len(retry.encode("utf-8")), MAX_PROMPT_BYTES)
+        self.assertGreater(len(prompt.encode("utf-8")), MAX_PROMPT_BYTES - 3500)
+        frame = prompt.partition(_FALLBACK_FRAME_PREFIX)[2]
+        self.assertIn("Not shown (prompt limit): ", frame)
+        # Every follow-up's first claim comes before any second claim.
+        self.assertLess(frame.index("follow-12 claim 0 "), frame.index("follow-1 claim 1 "))

@@ -49,12 +49,12 @@ class OntologyTests(unittest.TestCase):
         common = dict(snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="follow-2",
                       profile="framework-researcher", predecessors=[analysis])
         # Live (team-k6-131024 follow-2): a grandparent target was rejected, which spent the one retry.
-        with self.assertRaisesRegex(ValueError, r"^contradiction target evidence:c8 in follow-2:c1 is not a claim "
-                                                r"of this step or of a human-reviewed earlier step$"):
+        with self.assertRaisesRegex(ValueError, r"^contradiction target is not a claim of this step or of a "
+                                                r"human-reviewed earlier step: evidence:c8 in follow-2:c1$"):
             validate_handoff(follow, **common)
         accepted = validate_handoff(follow, **common, ancestor_claims=["evidence:c8", "hypotheses:c1"])
         self.assertEqual(accepted["claims"][0]["contradicts"], ["evidence:c8"])
-        with self.assertRaisesRegex(ValueError, "contradiction target evidence:c8 in follow-2:c1"):
+        with self.assertRaisesRegex(ValueError, "evidence:c8 in follow-2:c1$"):
             validate_handoff(follow, **common, ancestor_claims=["evidence:c9", "hypotheses:c1"])
         with self.assertRaisesRegex(ValueError, "cannot contradict itself"):
             validate_handoff(handoff("follow-2", "framework-researcher",
@@ -77,8 +77,33 @@ class OntologyTests(unittest.TestCase):
         # Live (team-k3-234711): the retry repeated step_id "hunt" because the error named no expectation.
         with self.assertRaisesRegex(ValueError, r"\(expected step_id evidence, profile framework-researcher\)$"):
             validate_handoff(handoff("hunt", "framework-researcher", claims=[claim("hunt:c1")]), **common)
-        with self.assertRaisesRegex(ValueError, r"\(expected prefix evidence:\)$"):
+        with self.assertRaisesRegex(ValueError, r"^claim ID hunt:c1 must start with evidence:$"):
             validate_handoff(handoff("evidence", "framework-researcher", claims=[claim("hunt:c1")]), **common)
+        with self.assertRaisesRegex(ValueError, r"^duplicate claim ID evidence:c1$"):
+            validate_handoff(handoff("evidence", "framework-researcher",
+                                     claims=[claim("evidence:c1"), claim("evidence:c1")]), **common)
+        prior = validate_handoff(handoff("scope", "framework-coordinator", claims=[claim("scope:c1")]),
+                                 **dict(common, step_id="scope", profile="framework-coordinator"))
+        review = {"review_id": "evidence:r1", "claim_ids": ["scope:c1"], "disposition": "review_ready",
+                  "rationale": "Reviewed.", "evidence_ids": []}
+        with self.assertRaisesRegex(ValueError, r"^duplicate review ID evidence:r1$"):
+            validate_handoff(handoff("evidence", "framework-reviewer", reviews=[review, review]),
+                             **dict(common, profile="framework-reviewer", predecessors=[prior]))
+
+    def test_unexplained_rejections_keep_the_text_older_workflow_histories_recorded(self):
+        common = dict(snapshot=SNAPSHOT, evidence_ids=EVIDENCE, step_id="evidence",
+                      profile="framework-researcher", explained=False)
+        for raw, message in (
+            (handoff("hunt", "framework-researcher"), "handoff identity does not match execution context"),
+            (handoff("evidence", "framework-researcher", claims=[claim("hunt:c1")]),
+             "claim ID must be uniquely namespaced by step_id"),
+            (handoff("evidence", "framework-researcher", claims=[claim("evidence:c1", kind="unresolved")]),
+             "unknown claim kind"),
+            (handoff("evidence", "framework-researcher", claims=[claim("evidence:c1", contradicts=("x:c1",))]),
+             "contradiction target is not a current or predecessor claim"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, f"^{message}$"):
+                validate_handoff(raw, **common)
 
     def test_instructions_state_every_enforced_enum_and_prefix_rule(self):
         # Live native runs failed validation on rules the prompt never stated
