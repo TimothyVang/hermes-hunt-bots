@@ -5,6 +5,8 @@ Run from the repository root: python -m unittest discover -s operator -p "test_*
 import base64
 import json
 import queue
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -207,7 +209,100 @@ SAMPLES = [(T0 - 5, steps()), (T0 + 2, steps('awaiting_approval')), (T0 + 10, st
 def stage_plan(speed, actions=(), captions=False):
     stages = cutter.stage_timings(SAMPLES, T0, T0 + 120)
     return cutter.plan(120, T0, stages, list(actions), cutter.Knobs(speed=speed, captions=captions), speed,
-                       cutter.stage_count(SAMPLES))
+                       cutter.wave_count(SAMPLES))
+
+
+# The steps of a real parallel round's final status (team-k6-131024-real-win-002:round:001, through the board's
+# build_state): (step_id, role, wave, final state, reason). follow-2 was dropped after its retry.
+PARALLEL = [('scope', 'Incident Response Lead', 1, 'done', ''), ('evidence', 'Threat Hunter', 2, 'done', ''),
+            ('hypotheses', 'Threat Hunter', 2, 'done', ''), ('network', 'Network Analyst', 2, 'done', ''),
+            ('intel', 'Threat Intelligence Analyst', 2, 'done', ''), ('analysis', 'Incident Response Lead', 3, 'done', ''),
+            ('follow-1', 'Threat Hunter', 4, 'done', ''), ('follow-2', 'Threat Hunter', 4, 'dropped', 'retry_exhausted'),
+            ('follow-3', 'Threat Hunter', 4, 'done', ''), ('follow-4', 'Threat Hunter', 4, 'done', ''),
+            ('follow-5', 'Threat Hunter', 4, 'done', ''), ('follow-6', 'Threat Hunter', 4, 'done', ''),
+            ('merge', 'Incident Response Lead', 5, 'done', ''), ('detection', 'Detection Engineer', 6, 'done', ''),
+            ('purple', 'Purple Team Analyst', 7, 'done', ''), ('incident', 'Incident Response Lead', 8, 'done', '')]
+
+
+def wave_steps(open_wave, closed, working=None):
+    """The parallel round's board steps: closed waves in their final state, open_wave's steps working (or
+    working[step_id] when given), the rest pending."""
+    out = []
+    for i, (step_id, role, wave, final, reason) in enumerate(PARALLEL):
+        state = final if wave in closed else (working or {}).get(step_id, 'working') if wave == open_wave else 'pending'
+        out.append({'index': i, 'step_id': step_id, 'role': role, 'profile': 'p', 'state': state, 'wave': wave,
+                    'reason': reason if state == final else ''})
+    return out
+
+
+# Each wave opens 2 s after the previous one closes and lasts 60 s; the round's footage ends at 500 s.
+PAR_SAMPLES = [(T0 - 5, wave_steps(None, set()))]
+for _k in range(8):
+    PAR_SAMPLES += [(T0 + 62 * _k + 2, wave_steps(_k + 1, set(range(1, _k + 1)))),
+                    (T0 + 62 * _k + 62, wave_steps(None, set(range(1, _k + 2))))]
+
+
+class ParallelFilmTest(unittest.TestCase):
+    def test_a_dropped_step_ends_with_its_reason(self):
+        stages = {s.step_id: s for s in cutter.stage_timings(PAR_SAMPLES, T0, T0 + 500)}
+        self.assertEqual(len(stages), 16)
+        drop = stages['follow-2']
+        self.assertEqual((drop.wave, drop.finished, drop.end - T0, drop.state, drop.reason),
+                         (4, True, 248, 'dropped', 'retry_exhausted'))
+
+    def test_one_chapter_card_per_wave_counted_from_the_steps(self):
+        items = cutter.plan(500, T0, cutter.stage_timings(PAR_SAMPLES, T0, T0 + 500), [], cutter.Knobs(captions=False),
+                            5, cutter.wave_count(PAR_SAMPLES))
+        chapters = [s for s in cutter.timeline(items) if s['kind'] == 'chapter']
+        self.assertEqual([(c['wave'], c['at']) for c in chapters], [(w, 62 * (w - 1) + 2) for w in range(1, 9)])
+        follow = chapters[3]
+        self.assertEqual(follow['step_ids'], [f'follow-{n}' for n in range(1, 7)])
+        self.assertEqual(follow['lines'][:2], ['Wave 4 of 8 · Follow-1, Follow-2, Follow-3, Follow-4, Follow-5, Follow-6',
+                                               'Threat Hunter'])
+        self.assertEqual(follow['lines'][3:], ['1 min 00 s', 'Follow-2 dropped (retry exhausted)'])
+        self.assertEqual(chapters[1]['lines'][1], 'Threat Hunter · Network Analyst · Threat Intelligence Analyst')
+        self.assertFalse(any('not finished' in c['lines'][2] for c in chapters))
+
+    def test_the_outro_counts_the_real_steps(self):
+        self.assertEqual(cutter.steps_line(PAR_SAMPLES[-1][1]),
+                         '15 of 16 steps done in 8 waves · 1 dropped (follow-2: retry exhausted)')
+        self.assertEqual(cutter.steps_line(steps(*['done'] * 9)), '9 of 9 steps done')
+
+    def test_the_recorder_keeps_wave_and_reason(self):
+        kept = record.steps_of({'steps': PAR_SAMPLES[-1][1]})[7]
+        self.assertEqual((kept['wave'], kept['state'], kept['reason']), (4, 'dropped', 'retry_exhausted'))
+
+
+JS = shutil.which('bun') or shutil.which('node')
+
+
+@unittest.skipUnless(JS, 'needs bun or node')
+class ToolcamProgressTest(unittest.TestCase):
+    def progress(self, steps):
+        url = (Path(__file__).parent / 'toolcam' / 'progress.mjs').resolve().as_uri()
+        code = (f'import {{ pipeline, endSummary }} from {json.dumps(url)};'
+                f'const s = {json.dumps(steps)}; console.log(JSON.stringify([pipeline(s), endSummary(s)]));')
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / 'p.mjs'
+            script.write_text(code, encoding='utf-8')
+            out = subprocess.run([JS, str(script)], capture_output=True, text=True, encoding='utf-8', check=True)
+        return json.loads(out.stdout)
+
+    def test_every_open_step_of_the_wave_and_dropped_counts_as_ended(self):
+        mid = wave_steps(4, {1, 2, 3}, {'follow-1': 'done', 'follow-2': 'dropped', 'follow-3': 'awaiting_review'})
+        mid[7]['reason'] = 'retry_exhausted'
+        line, _ = self.progress(mid)
+        self.assertEqual(line, 'Wave 4/8 · follow-3 awaiting_review, follow-4 working, follow-5 working, follow-6 working'
+                               ' · 7/16 steps done · follow-2 dropped: retry exhausted')
+
+    def test_the_end_card_counts_the_real_steps(self):
+        self.assertEqual(self.progress(PAR_SAMPLES[-1][1]),
+                         ['15/16 steps done · follow-2 dropped: retry exhausted',
+                          '15/16 steps done · follow-2 dropped: retry exhausted. Final report written by the Incident '
+                          'Response Lead.'])
+
+    def test_a_serial_round_shows_its_one_open_step(self):
+        self.assertEqual(self.progress(steps('done', 'working'))[0], 'Step 2/9 · Role 1 working')
 
 
 class StageTimingTest(unittest.TestCase):
@@ -231,7 +326,7 @@ class StageTimingTest(unittest.TestCase):
             samples = cutter.read_states(path)
         self.assertEqual(poller.samples, 2)
         self.assertEqual([s[1][0]['state'] for s in samples], ['pending', 'working'])
-        self.assertEqual(set(samples[0][1][0]), {'index', 'step_id', 'role', 'profile', 'state'})
+        self.assertEqual(set(samples[0][1][0]), {'index', 'step_id', 'role', 'profile', 'state', 'wave', 'reason'})
 
     def test_the_board_is_started_for_the_round_lane_and_its_live_browsers(self):
         lane = Lane('l2', Path('home2'), 'q2')
@@ -262,9 +357,9 @@ class EditPlanTest(unittest.TestCase):
         self.assertEqual([i.at for _, i in chapters], [2, 40, 90])
         for k, chapter in chapters:
             self.assertEqual(items[k + 1].start, chapter.at)
-        first = cutter.chapter_lines(chapters[0][1].stage, chapters[0][1].total)
-        self.assertEqual((first[0], first[1], first[3]), ('Stage 1 of 9 · Scope', 'Role 0', '38 s'))
-        self.assertIn('not finished', cutter.chapter_lines(chapters[2][1].stage, 9)[2])
+        first = cutter.chapter_lines(chapters[0][1])
+        self.assertEqual((first[0], first[1], first[3]), ('Wave 1 of 9 · Scope', 'Role 0', '38 s'))
+        self.assertIn('not finished', cutter.chapter_lines(chapters[2][1])[2])
 
     def test_option_a_footage_lasts_exactly_as_long_as_the_round(self):
         segs = cutter.timeline(stage_plan(speed=1))
@@ -275,7 +370,7 @@ class EditPlanTest(unittest.TestCase):
         items = stage_plan(speed=5, actions=acts.from_activity([activity(T0 + 30, TH, 'elastic_search', q='a')]),
                            captions=True)
         segs = cutter.timeline(items)
-        cards = {'intro': 'intro.jpg', 'outro': 'outro.jpg'} | {i: f'ch-{i.stage.number}.jpg' for i in items
+        cards = {'intro': 'intro.jpg', 'outro': 'outro.jpg'} | {i: f'ch-{i.wave}.jpg' for i in items
                                                               if isinstance(i, cutter.Chapter)}
         entries = cutter.listing(items, [(-1, 'f0.jpg'), (10, 'f1.jpg'), (70, 'f2.jpg')], cards, 5)
         self.assertEqual((entries[0][0], entries[-1][0]), ('intro.jpg', 'outro.jpg'))

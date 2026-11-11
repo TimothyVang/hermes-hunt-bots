@@ -33,7 +33,7 @@ BAR = 64
 BACKGROUND = '0x0b1220'
 SIZE = (1920, 1080)
 WAITING = {'pending', 'not_reached'}
-ENDED = {'done', 'stopped'}
+ENDED = {'done', 'stopped', 'dropped'}
 # A blank page (about:blank, a page mid-load) encodes to ~7 KB at 1280x960; lab pages with content were 86 KB+.
 MIN_FRAME_BYTES = 16_000
 
@@ -95,14 +95,17 @@ class Caption:
 
 @dataclass(frozen=True)
 class Stage:
-    """One stage as the board showed it: number (1-based), step, owner bot, epoch start and end, and whether it
-    ended inside the round (else end is the round's end)."""
+    """One step as the board showed it: number (1-based), step, owner bot, wave, epoch start and end, whether it
+    ended inside the round (else end is the round's end), and its last state and reason (a drop's or stop's code)."""
     number: int
     step_id: str
     role: str
+    wave: int
     start: float
     end: float
     finished: bool
+    state: str = ''
+    reason: str = ''
 
     @property
     def seconds(self):
@@ -124,8 +127,10 @@ class Segment:
 
 @dataclass(frozen=True)
 class Chapter:
+    """One card per wave, at its first step's start; a serial round has one step per wave."""
     at: float
-    stage: Stage
+    wave: int
+    stages: tuple
     total: int
 
     out_seconds = CHAPTER_SECONDS
@@ -146,12 +151,17 @@ def read_states(path):
     return sorted(out, key=lambda x: x[0])
 
 
-def stage_timings(samples, start, end):
-    """Stages the board showed starting within [start, end] epoch seconds, in start order.
+def _wave(step):
+    # A serial status lists no waves: each step is its own wave, in step order.
+    return step['wave'] if type(step.get('wave')) is int else int(step.get('index')) + 1
 
-    A stage starts at the first sample showing it past pending (its gate open, running, under review or over)
+
+def stage_timings(samples, start, end):
+    """Steps the board showed starting within [start, end] epoch seconds, in start order.
+
+    A step starts at the first sample showing it past pending (its gate open, running, under review or over)
     after a sample showing it pending; one already under way at the first sample has no observed start and is
-    left out. It ends at the first later sample showing it done or stopped."""
+    left out. It ends at the first later sample showing it done, stopped or dropped."""
     waited, starts, ends, info = set(), {}, {}, {}
     for t, steps in samples:
         for s in steps:
@@ -170,13 +180,31 @@ def stage_timings(samples, start, end):
             continue
         e = ends.get(key)
         finished = e is not None and e <= end
-        out.append(Stage(int(key) + 1, str(info[key].get('step_id')), str(info[key].get('role')), round(t, 3),
-                         round(e if finished else end, 3), finished))
+        s = info[key]
+        out.append(Stage(int(key) + 1, str(s.get('step_id')), str(s.get('role')), _wave(s), round(t, 3),
+                         round(e if finished else end, 3), finished, str(s.get('state')) if finished else '',
+                         str(s.get('reason') or '') if finished else ''))
     return out
 
 
 def stage_count(samples):
     return len(samples[-1][1]) if samples else 0
+
+
+def wave_count(samples):
+    return len({_wave(s) for s in samples[-1][1]}) if samples else 0
+
+
+def steps_line(steps):
+    """The end card's count of the round's last board state: steps done, dropped (with reasons) and waves."""
+    done = sum(1 for s in steps if s.get('state') == 'done')
+    dropped = [s for s in steps if s.get('state') == 'dropped']
+    waves = len({_wave(s) for s in steps})
+    line = f'{done} of {len(steps)} steps done' + (f' in {waves} waves' if waves != len(steps) else '')
+    if dropped:
+        line += f' · {len(dropped)} dropped (' + ', '.join(
+            f'{s.get("step_id")}: {str(s.get("reason") or "no reason").replace("_", " ")}' for s in dropped) + ')'
+    return line
 
 
 def _clock(t):
@@ -188,10 +216,18 @@ def _span(seconds):
     return f'{m} min {s:02d} s' if m else f'{s} s'
 
 
-def chapter_lines(stage, total):
-    end = f'{_clock(stage.end)}' if stage.finished else f'{_clock(stage.end)} (round end, stage not finished)'
-    return [f'Stage {stage.number} of {total} · {stage.step_id.capitalize()}', stage.role,
-            f'{_clock(stage.start)} – {end}', _span(stage.seconds)]
+def chapter_lines(chapter):
+    stages = chapter.stages
+    end = max(s.end for s in stages)
+    open_ = not all(s.finished for s in stages)
+    roles = list(dict.fromkeys(s.role for s in stages))
+    lines = [f'Wave {chapter.wave} of {chapter.total} · ' + ', '.join(s.step_id.capitalize() for s in stages),
+             ' · '.join(roles),
+             f'{_clock(min(s.start for s in stages))} – {_clock(end)}' + (' (round end, wave not finished)' if open_ else ''),
+             _span(end - min(s.start for s in stages))]
+    lines += [f'{s.step_id.capitalize()} {s.state} ({s.reason.replace("_", " ") or "no reason given"})'
+              for s in stages if s.state in ('dropped', 'stopped')]
+    return lines
 
 
 def _caption_spans(times_texts, hold, duration):
@@ -212,18 +248,21 @@ def _clip_captions(spans, s, e, speed):
     return tuple(out)
 
 
-def plan(duration, start, stages, actions, knobs, speed, total=9):
+def plan(duration, start, stages, actions, knobs, speed, total):
     """The round's [0, duration] seconds (epoch start) as board Segments at one constant speed, with a Chapter
-    before the footage at each stage's real start."""
+    before the footage at each wave's real start (its first step's start); total is the round's wave count."""
     rel = sorted((a.t - start, a.caption) for a in actions if 0 <= a.t - start <= duration)
     spans = _caption_spans(rel, CAPTION_HOLD * speed, duration) if knobs.captions else []
+    waves = {}
+    for stage in sorted(stages, key=lambda s: (s.start, s.number)):
+        waves.setdefault(stage.wave, []).append(stage)
     items, pos = [], 0.0
-    for stage in sorted(stages, key=lambda s: s.start):
-        at = round(min(max(stage.start - start, 0.0), duration), 3)
+    for wave, group in sorted(waves.items(), key=lambda kv: kv[1][0].start):
+        at = round(min(max(group[0].start - start, 0.0), duration), 3)
         if at > pos:
             items.append(Segment(round(pos, 3), at, speed, _clip_captions(spans, pos, at, speed)))
             pos = at
-        items.append(Chapter(at, stage, total))
+        items.append(Chapter(at, wave, tuple(group), total))
     if duration > pos:
         items.append(Segment(round(pos, 3), round(duration, 3), speed, _clip_captions(spans, pos, duration, speed)))
     return items
@@ -235,8 +274,8 @@ def timeline(items):
     for item in items:
         end = pos + item.out_seconds
         if isinstance(item, Chapter):
-            out.append({'kind': 'chapter', 'at': item.at, 'stage': item.stage.number, 'step_id': item.stage.step_id,
-                        'lines': chapter_lines(item.stage, item.total), 'out_start': round(pos, 3), 'out_end': round(end, 3)})
+            out.append({'kind': 'chapter', 'at': item.at, 'wave': item.wave, 'step_ids': [s.step_id for s in item.stages],
+                        'lines': chapter_lines(item), 'out_start': round(pos, 3), 'out_end': round(end, 3)})
         else:
             out.append({'kind': 'board', **asdict(item), 'out_start': round(pos, 3), 'out_end': round(end, 3)})
         pos = end
@@ -288,7 +327,8 @@ def overlay(segments, speed):
     return label(speed), captions
 
 
-def card_lines(result, cov, knobs, case_id):
+def card_lines(result, cov, knobs, case_id, steps=()):
+    """Intro and outro lines; steps is the round's last board state, counted on the outro when known."""
     first = result['rounds'][0] if result.get('rounds') else {}
     owners = cov['owners']
     typed = sum(o['typed_searches'] for o in owners.values())
@@ -299,6 +339,8 @@ def card_lines(result, cov, knobs, case_id):
              f'{result.get("halts", 0)} halted rounds',
              f'{result.get("minutes", 0)} min · {result.get("tool_calls", 0)} API tool calls · {typed} searches typed on screen',
              'Driving coverage ' + f'{cov["coverage"]:.0%}: ' + ', '.join(f'{o["role"]} {o["coverage"]:.0%}' for o in owners.values())]
+    if steps:
+        outro.append(steps_line(steps))
     return intro, outro
 
 
@@ -381,7 +423,7 @@ def render(r, name, items, frames, intro, outro, speed, out):
     r.card(outro, cards['outro'])
     for i, item in enumerate(x for x in items if isinstance(x, Chapter)):
         cards[item] = r.work / f'{name}-chapter-{i:02d}.jpg'
-        r.card(chapter_lines(item.stage, item.total), cards[item])
+        r.card(chapter_lines(item), cards[item])
     segs = timeline(items)
     r.video(listing(items, frames, cards, speed), speed, overlay(segs, speed), out)
     return segs
@@ -399,9 +441,9 @@ def cut(d, rec, actions, knobs, cov, out_dir=None):
     start, end = max(rec['round_start'], frames[0][0]), rec['round_end']
     duration = round(end - start, 3)
     samples = read_states(d / rec['board_state'])
-    stages, total = stage_timings(samples, start, end), stage_count(samples)
+    stages, total = stage_timings(samples, start, end), wave_count(samples)
     rel = [(t - start, p) for t, p in frames]
-    intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'])
+    intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'], samples[-1][1] if samples else ())
     r = Renderer(out_dir / 'edit-work')
     cuts = {}
     for name, speed, video in (('full', 1.0, 'video-full.mp4'), ('reviewed', knobs.speed, 'video.mp4')):
@@ -415,7 +457,8 @@ def cut(d, rec, actions, knobs, cov, out_dir=None):
             'label': label(knobs.speed), 't0': rec['t0'], 'round_start': start, 'round_end': end,
             'round_seconds': duration, 'out_seconds': cuts['reviewed']['out_seconds'], 'intro': intro, 'outro': outro,
             'segments': cuts['reviewed']['segments'], 'full': cuts['full'],
-            'stages': [asdict(s) | {'seconds': round(s.seconds, 3)} for s in stages], 'stage_count': total,
+            'stages': [asdict(s) | {'seconds': round(s.seconds, 3)} for s in stages], 'stage_count': stage_count(samples),
+            'wave_count': total,
             'board_frames': len(frames), 'longest_board_hold_seconds': longest_hold(times, start, end),
             'screencast_frames': {p: len(v) for p, v in browsers.items()},
             'browser_active_seconds': {p: active_seconds([t for t, _ in v], start, end) for p, v in browsers.items()},
