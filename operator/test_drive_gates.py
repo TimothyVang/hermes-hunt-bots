@@ -381,9 +381,17 @@ class ModeChoiceTest(unittest.TestCase):
                                          'content.')
 
 
-SCOPE_RECORD = 'loop-wf_round_001__wave-1__review.json'
-REPORT_RECORD = 'loop-wf_round_001__wave-4__review.json'
+SCOPE_RECORD = dg.record_name(CHILD, 'wave-1')
+REPORT_RECORD = dg.record_name(CHILD, 'wave-4')
 OUTSIDE = 'operator (outside driver)'
+
+
+class RecordNameTest(unittest.TestCase):
+    def test_ids_that_sanitize_alike_get_different_records(self):
+        a, b = dg.record_name('loop-wf:round:001', 'wave-1'), dg.record_name('loop-wf/round/001', 'wave-1')
+        self.assertTrue(a.startswith('loop-wf_round_001__wave-1__') and a.endswith('__review.json'), a)
+        self.assertNotEqual(a, b)
+        self.assertLessEqual(len(dg.record_name('x' * 300, 'g' * 64)), 255)
 
 
 def parallel_hunt():

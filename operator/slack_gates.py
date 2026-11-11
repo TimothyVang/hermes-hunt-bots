@@ -1,6 +1,6 @@
 """The operator's Slack bridge for the two human decisions per hunt (ADR 0004). Opt-in; operator-side only.
 
-drive_gates.py --two-decisions writes pending/<child>__<gate>__review.json under the decision folder while a
+drive_gates.py --two-decisions writes pending/<child>__<gate>__<digest>__review.json under the decision folder while a
 hunt waits at the scope or final-report review. This long-running service posts one Slack card per record
 and turns an allowlisted operator's answer into the existing hermes_temporal.cli decision on loopback:
 
@@ -46,7 +46,7 @@ VERBS = {('scope', 'approve'): 'Approve scope', ('scope', 'deny'): 'Reject scope
          ('report', 'approve'): 'Accept report', ('report', 'deny'): 'Reject report'}
 DONE = {('scope', 'approve'): 'Scope approved', ('scope', 'deny'): 'Scope rejected',
         ('report', 'approve'): 'Report accepted', ('report', 'deny'): 'Report rejected'}
-RECORD_NAME = re.compile(r'[A-Za-z0-9._-]{1,200}__[A-Za-z0-9_-]{1,64}__review\.json\Z')
+RECORD_NAME = re.compile(r'[A-Za-z0-9._-]{1,120}__[A-Za-z0-9_-]{1,64}__[0-9a-f]{16}__review\.json\Z')
 NONCE = re.compile(r'[0-9a-f]{32}\Z')
 USER_ID = re.compile(r'[UW][A-Z0-9]{2,20}\Z')
 CHANNEL_ID = re.compile(r'[CDG][A-Z0-9]{2,20}\Z')

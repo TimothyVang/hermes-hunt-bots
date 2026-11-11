@@ -318,6 +318,16 @@ class BridgeTest(unittest.TestCase):
                 self.assertEqual(self.cli.calls, [])
         self.assertTrue(any(line.split(' ', 1)[1].startswith(f'record ignored ({name})') for line in self.lines))
 
+    def test_a_record_is_accepted_only_under_its_own_digest_name(self):
+        record = dg.pending_record('loop-wf', CHILD, 'wave-1', 'scope', self.folder / 'outputs')
+        name = dg.record_name(CHILD, 'wave-1')
+        self.assertEqual(sg.check_record(name, record), record)
+        twin = dg.record_name(CHILD.replace(':', '/'), 'wave-1')
+        self.assertNotEqual(twin, name)
+        for wrong in (twin, 'loop-wf_round_001__wave-1__review.json'):
+            with self.subTest(wrong), self.assertRaises(ValueError):
+                sg.check_record(wrong, record)
+
     def test_a_card_whose_record_disappears_is_closed(self):
         name, _ = self.open_gate()
         bridge = self.bridge()
