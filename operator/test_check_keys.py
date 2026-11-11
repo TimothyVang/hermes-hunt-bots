@@ -132,6 +132,8 @@ class CheckKeys(unittest.TestCase):
 
         def run(command, cwd=None, **options):
             if command[1:3] == ['config', 'get']:
+                # Read from an empty folder, as the reviewer runs, so no project .omp/ settings apply.
+                seen.setdefault('config_dirs', []).append(sorted(Path(cwd).iterdir()))
                 value = settings.get(command[3])
                 return SimpleNamespace(returncode=0 if value is not None else 1, stdout=json.dumps({'value': value}), stderr='')
             seen.update(command=command, files=sorted(path.name for path in Path(cwd).iterdir()),
@@ -153,6 +155,7 @@ class CheckKeys(unittest.TestCase):
         self.assertEqual(seen['overlay']['disabledProviders'],
                          ['google', {'path': '/w', 'id': 'github'}] + list(ck.DISCOVERY_PROVIDERS) + ['cursor'])
         self.assertEqual(review.model, 'claude-opus-5-5')
+        self.assertEqual(seen['config_dirs'], [[], []])
 
     def test_a_cursor_reviewer_model_keeps_cursor_and_the_default_model_is_recorded(self):
         review, seen = self.omp({'modelRoles': {'default': 'cursor/composer-2'}}, None)

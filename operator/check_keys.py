@@ -170,10 +170,12 @@ def parse_reply(text):
 
 
 def omp_setting(key):
-    """The value omp reports for one user setting (`omp config get KEY --json`), or None when it reports none."""
+    """The value omp reports for one user setting (`omp config get KEY --json`), or None when it reports none. It
+    runs from an empty folder, as the reviewer does, so a project's .omp/config.yml cannot change the answer."""
     try:
-        result = subprocess.run(['omp', 'config', 'get', key, '--json'], check=False, capture_output=True, text=True,
-                                encoding='utf-8', errors='replace', timeout=60)
+        with tempfile.TemporaryDirectory(prefix='check-keys-') as empty:
+            result = subprocess.run(['omp', 'config', 'get', key, '--json'], check=False, cwd=empty,
+                                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         return json.loads(result.stdout).get('value') if result.returncode == 0 else None
     except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
         return None
