@@ -87,6 +87,8 @@ export interface InstallStamp {
   displayVersion: string | null
   distance: number | null
   payload: ArtifactKind
+  /** The fork product this artifact is (its build identity); absent on Hermes builds. */
+  product?: 'hunt-bots'
   /** Present on bundled artifacts. Validated at build time, never discovered at boot. */
   runtime?: PayloadRuntime
   /** Complete channel inputs, absent on legacy releases and one-off builds. */

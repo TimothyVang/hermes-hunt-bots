@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
 import {
@@ -137,5 +138,23 @@ test('commit builds retain exact provenance without entering an update channel',
     assert.throws(() => buildStampPayload(baseStamp, { ...env, HERMES_BUILD_COMMIT: 'a'.repeat(40) }, platform, { runtime }), /commit/i)
     assert.throws(() => buildStampPayload(baseStamp, { ...env, HERMES_PAYLOAD_TAG: 'v1.2.3' }, platform, { runtime }), /tag/i)
   }
+})
+
+test('a hunt-bots stamp bakes the Hunt Bots identity and never updates in-app', async () => {
+  // The packaged identity is derived from the stamp, not the build env: a
+  // stamp that dropped the variant would ship Hunt Bots named Hermes.
+  const { productIdentity } = await import('./bundle-electron-main.mjs')
+  const repo = new URL('../../../', import.meta.url)
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: 'hunt-bots' }, platform)
+    assert.equal(stamp.payload, 'bootstrap')
+    assert.equal(stamp.product, 'hunt-bots')
+    assert.equal(stamp.updateMechanism, 'external')
+    const identity = JSON.parse(productIdentity(fileURLToPath(repo), stamp))
+    assert.equal(identity.displayName, 'Hunt Bots')
+    assert.equal(identity.fork, true)
+  }
+  assert.equal(buildStampPayload(baseStamp, {}).product, undefined)
+  assert.equal(JSON.parse(productIdentity(fileURLToPath(repo), buildStampPayload(baseStamp, {}))).displayName, 'Hermes')
 })
 

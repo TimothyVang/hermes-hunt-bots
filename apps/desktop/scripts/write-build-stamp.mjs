@@ -253,7 +253,9 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     bootstrap: 'self',
     store: 'microsoft-store',
     bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
-    light: platform === 'darwin' ? 'electron-updater' : 'external'
+    light: platform === 'darwin' ? 'electron-updater' : 'external',
+    // The fork is rebuilt from its own repository; no in-app path may update it into Hermes.
+    'hunt-bots': 'external'
   }[variant]
   if (!updateMechanism) throw new Error(`Unknown desktop variant: ${variant}`)
   if (channelBuild && updateMechanism === 'external') throw new Error('Channel builds require a supported native update owner')
@@ -263,7 +265,9 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   }
   return {
     ...base,
-    payload: variant === "store" ? "bundled" : variant || "bootstrap",
+    payload: variant === "store" ? "bundled" : variant === "hunt-bots" ? "bootstrap" : variant || "bootstrap",
+    // A fork runs as a source-runtime client, so the payload alone cannot name its identity.
+    ...(variant === "hunt-bots" ? { product: "hunt-bots" } : {}),
     distribution: "desktop-app",
 
     updateMechanism: commitBuild ? 'external' : updateMechanism,
