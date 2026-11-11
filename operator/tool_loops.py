@@ -38,6 +38,8 @@ GATE_ARGS = []
 LOG = TOOL_LOOPS / 'loop.log'
 REQUIRED = ('untrusted', 'no truth, scoring, intent or outcome claims')
 STEPS = ('scope', 'evidence', 'hypotheses', 'network', 'intel', 'analysis', 'detection', 'purple', 'incident')
+# STEPS names serial results by position; follow and merge take guidance only in a hunt with follow_ups.
+GUIDANCE_STAGES = STEPS + ('follow', 'merge')
 GENERIC = {'powershell.exe', 'cmd.exe', 'svchost.exe', 'lsass.exe', 'explorer.exe', 'winword.exe', 'outlook.exe',
            'w3wp.exe', 'rundll32.exe', 'schtasks.exe', 'wmiprvse.exe', 'msedge.exe', 'chrome.exe', 'system'}
 
@@ -101,7 +103,7 @@ def check_candidate(base, brief, guidance, case_id, forbidden):
     if len(brief.encode()) > 1200:
         problems.append('brief over 1200 bytes')
     for step, text in (guidance or {}).items():
-        if step not in STEPS:
+        if step not in GUIDANCE_STAGES:
             problems.append(f'unknown stage {step}')
         elif not isinstance(text, str) or not 1 <= len(text) <= 600:
             problems.append(f'guidance for {step} must be 1..600 characters')
@@ -159,6 +161,30 @@ def base_input(case_id, lane=DEFAULT_LANE):
     return json.loads(base_path.read_text(encoding='utf-8'))
 
 
+def result_sizes(st):
+    """(step, status, reason code, output bytes) per step of a round's status. A parallel status lists every
+    step and names its result by execution ID; a step without a result shows its state and reason with size 0.
+    A serial status has only results, in the order of the fixed stages."""
+    if not st.get('steps'):
+        return [(STEPS[i], r['status'], r['reason_code'], len(r['output'].encode())) for i, r in enumerate(st['results'])]
+    results = {r['execution_id']: r for r in st['results']}
+    sizes = []
+    for s in st['steps']:
+        r = results.get(s['execution_id'])
+        sizes.append((s['step_id'], r['status'], r['reason_code'], len(r['output'].encode())) if r
+                     else (s['step_id'], s['state'], s['reason'], 0))
+    return sizes
+
+
+def usage_total(results):
+    """Each usage key summed over the results that recorded usage, with how many did not; None when none did."""
+    recorded = [r['usage'] for r in results if r.get('usage')]
+    if not recorded:
+        return None
+    return ({key: sum(u[key] for u in recorded) for key in recorded[0]}
+            | {'steps_without_usage': len(results) - len(recorded)})
+
+
 def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT_LANE):
     """Run ROUNDS rounds on this lane's lab and queue; return per-round scores and observations.
     Artifacts go to d (default TOOL_LOOPS/name)."""
@@ -184,12 +210,17 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
             rounds.append({'round': n, 'completed': False, 'stage': 'not_started', 'found': 0})
             continue
         st = json.loads(out)
-        sizes = [(STEPS[i], r['status'], r['reason_code'], len(r['output'].encode())) for i, r in enumerate(st['results'])]
         rep = GATE_RUNS / 'outputs' / wf / f'{n:03d}-incident.txt'
         entry = {'round': n, 'stage': st['stage'], 'halted_at': None if st['stage'] == 'completed' else st['step_id'],
-                 'completed': st['stage'] == 'completed' and rep.exists(), 'sizes': sizes,
+                 'completed': st['stage'] == 'completed' and rep.exists(), 'sizes': result_sizes(st),
                  'handoff_rejections': [{key: item[key] for key in ('step_id', 'outcome', 'reason')}
                                         for item in st.get('handoff_rejections', [])]}
+        if st.get('steps'):
+            entry['dropped'] = [{'step_id': s['step_id'], 'reason': s['reason']}
+                                for s in st['steps'] if s['state'] == 'dropped']
+        usage = usage_total(st['results'])
+        if usage:
+            entry['usage'] = usage
         if entry['completed']:
             s = score(truth, rep)
             entry.update(found=s['found'], total=s['total'], misattributed=len(s['misattributed_decoys']),
@@ -208,9 +239,12 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
               'misattributed': sum(r.get('misattributed', 0) for r in rounds),
               'driver_tail': drv.stdout[-600:]}
     (d / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    dropped = [len(r['dropped']) for r in rounds if 'dropped' in r]
+    tokens = [r['usage']['total_tokens'] for r in rounds if 'usage' in r]
     log(f'{name}: mean {result["mean_found"]:.1f}/18 rounds {[r["found"] for r in rounds]} halts {result["halts"]} '
         f'handoff retries {result["handoff_retries"]} misattributed {result["misattributed"]} calls {len(calls)} '
-        f'in {minutes} min')
+        + (f'dropped {sum(dropped)} ' if dropped else '') + (f'tokens {sum(tokens)} ' if tokens else '')
+        + f'in {minutes} min')
     return result, calls
 
 

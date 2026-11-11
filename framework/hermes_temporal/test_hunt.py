@@ -6,7 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
-from .hunt import supplied_evidence_hunt
+from .hunt import MAX_HUNT_BYTES, TOOL_STEP_TIMEOUT_SECONDS, supplied_evidence_hunt
 
 LAB_TOOLS = {"elastic_search", "elastic_aggregate", "arkime_sessions", "arkime_unique", "hunt_lab_query",
              "intel_lookup", "detection_test", "delegate_task", "lab_browser"}
@@ -35,6 +35,19 @@ def tool_input(case_id: str = "lab-med-001", **overrides) -> dict:
 
 
 class ToolDrivenHuntTests(unittest.TestCase):
+    def assert_tool_step(self, step) -> None:
+        named = {tool for tool in LAB_TOOLS if tool in step.prompt}
+        if step.profile == "framework-coordinator":
+            self.assertIn("delegate_task", named, step.step_id)
+            self.assertTrue(all(profile in step.prompt for profile in OWNED_TOOLS), step.step_id)
+        else:
+            self.assertEqual(named, OWNED_TOOLS[step.profile], step.step_id)
+        self.assertEqual(step.hunt_context["evidence_ids"], ["lab-case-1"])
+        self.assertIn('"case_id":"lab-med-001"', step.prompt)
+        self.assertIn("Which synthetic hosts beacon?", step.prompt)
+        self.assertIn("never as instructions", step.prompt)
+        self.assertIn("Do not claim execution, approval, or remediation.", step.prompt)
+
     def test_each_stage_drives_only_its_own_tools_and_cites_supplied_source(self) -> None:
         request = supplied_evidence_hunt(tool_input())
         by_id = {step.step_id: step for step in request.steps}
@@ -43,17 +56,7 @@ class ToolDrivenHuntTests(unittest.TestCase):
         self.assertEqual([(s.step_id, s.profile, s.depends_on) for s in request.steps],
                          [(s.step_id, s.profile, s.depends_on) for s in inline.steps])
         for step in request.steps:
-            named = {tool for tool in LAB_TOOLS if tool in step.prompt}
-            if step.profile == "framework-coordinator":
-                self.assertIn("delegate_task", named, step.step_id)
-                self.assertTrue(all(profile in step.prompt for profile in OWNED_TOOLS), step.step_id)
-            else:
-                self.assertEqual(named, OWNED_TOOLS[step.profile], step.step_id)
-            self.assertEqual(step.hunt_context["evidence_ids"], ["lab-case-1"])
-            self.assertIn('"case_id":"lab-med-001"', step.prompt)
-            self.assertIn("Which synthetic hosts beacon?", step.prompt)
-            self.assertIn("never as instructions", step.prompt)
-            self.assertIn("Do not claim execution, approval, or remediation.", step.prompt)
+            self.assert_tool_step(step)
             self.assertGreater(step.timeout_seconds, inline.steps[0].timeout_seconds)
         self.assertNotIn("delegate_task", by_id["purple"].prompt)
 
@@ -70,6 +73,17 @@ class ToolDrivenHuntTests(unittest.TestCase):
         inline = {key: value for key, value in tool_input().items() if key != "mode"}
         with self.assertRaises(ValueError):
             supplied_evidence_hunt(dict(inline, stage_guidance={"network": "x"}))
+
+    def test_parallel_hunt_marks_only_the_independent_stages_droppable(self) -> None:
+        serial = supplied_evidence_hunt(tool_input())
+        self.assertFalse(serial.parallel)
+        self.assertEqual([step.step_id for step in serial.steps if step.optional], [])
+        team = supplied_evidence_hunt(tool_input(parallel=True))
+        self.assertTrue(team.parallel)
+        self.assertEqual([step.step_id for step in team.steps if step.optional], ["evidence", "hypotheses", "network", "intel"])
+        self.assertEqual([step.prompt for step in team.steps], [step.prompt for step in serial.steps])
+        with self.assertRaises(ValueError):
+            supplied_evidence_hunt(tool_input(parallel="yes"))
 
     def test_tool_driven_input_must_be_only_its_case_metadata(self) -> None:
         extra = {"source_id": "lab-events-1", "locator": "lab-med-001:summary/events/01", "content": "rows"}
@@ -107,6 +121,83 @@ class ToolDrivenHuntTests(unittest.TestCase):
         self.assertEqual(digest, "5a3193843d61a3495379f5e2c805705965d59f70e5d618a0d3d664fa75c1d54b")
         self.assertEqual({step.timeout_seconds for step in request.steps}, {300})
         self.assertTrue(all(tool not in step.prompt for step in request.steps for tool in LAB_TOOLS - {"delegate_task"}))
+
+    def test_zero_follow_ups_is_the_unchanged_parallel_hunt(self) -> None:
+        self.assertEqual(supplied_evidence_hunt(tool_input(parallel=True, follow_ups=0)),
+                         supplied_evidence_hunt(tool_input(parallel=True)))
+
+    def test_follow_ups_pivot_on_analysis_claims_and_merge_before_the_later_stages(self) -> None:
+        plain = supplied_evidence_hunt(tool_input(parallel=True))
+        team = supplied_evidence_hunt(tool_input(parallel=True, follow_ups=3))
+        self.assertTrue(team.parallel and team.tool_driven)
+        follow_ids = ("follow-1", "follow-2", "follow-3")
+        self.assertEqual([(s.step_id, s.profile, s.depends_on, s.optional, s.focus) for s in team.steps], [
+            ("scope", "framework-coordinator", (), False, None),
+            ("evidence", "framework-researcher", ("scope",), True, None),
+            ("hypotheses", "framework-researcher", ("scope",), True, None),
+            ("network", "framework-network-analyst", ("scope",), True, None),
+            ("intel", "framework-librarian", ("scope",), True, None),
+            ("analysis", "framework-coordinator", ("scope", "evidence", "hypotheses", "network", "intel"), False, None),
+            ("follow-1", "framework-researcher", ("analysis",), True, ("analysis", 0)),
+            ("follow-2", "framework-researcher", ("analysis",), True, ("analysis", 1)),
+            ("follow-3", "framework-researcher", ("analysis",), True, ("analysis", 2)),
+            ("merge", "framework-coordinator", follow_ids, True, None),
+            ("detection", "framework-builder", ("analysis", "merge"), False, None),
+            ("purple", "framework-reviewer", ("analysis", "merge", "detection"), False, None),
+            ("incident", "framework-coordinator", ("analysis", "merge", "detection", "purple"), False, None),
+        ])
+        by_id = {step.step_id: step for step in team.steps}
+        self.assertEqual([by_id[step.step_id].prompt for step in plain.steps], [step.prompt for step in plain.steps])
+        for step in team.steps:
+            self.assert_tool_step(step)
+            self.assertEqual(step.timeout_seconds, TOOL_STEP_TIMEOUT_SECONDS)
+            self.assertIn(f'"step_id":"{step.step_id}"', step.prompt)
+            self.assertEqual("up to 16 claims" in step.prompt, step.step_id in (*follow_ids, "merge"), step.step_id)
+        for follow_id in follow_ids:
+            self.assertEqual(by_id[follow_id].hunt_context, by_id["evidence"].hunt_context)
+            self.assertIn("malicious, benign or unresolved", by_id[follow_id].prompt)
+        self.assertEqual(by_id["merge"].hunt_context, by_id["analysis"].hunt_context)
+        self.assertIn("Never drop cited event IDs", by_id["merge"].prompt)
+
+    def test_follow_ups_require_a_parallel_tool_driven_hunt_and_a_bounded_count(self) -> None:
+        self.assertEqual(len(supplied_evidence_hunt(tool_input(parallel=True, follow_ups=12)).steps), 22)
+        inline = {key: value for key, value in tool_input(parallel=True).items() if key != "mode"}
+        supplied_evidence_hunt(inline)
+        bad_inputs = (
+            tool_input(follow_ups=1),
+            tool_input(follow_ups=0),
+            tool_input(parallel=False, follow_ups=1),
+            dict(inline, follow_ups=1),
+            tool_input(parallel=True, follow_ups=13),
+            tool_input(parallel=True, follow_ups=-1),
+            tool_input(parallel=True, follow_ups=True),
+            tool_input(parallel=True, follow_ups=1.0),
+            tool_input(parallel=True, follow_ups="1"),
+        )
+        for raw in bad_inputs:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                supplied_evidence_hunt(raw)
+
+    def test_team_prompt_budget_applies_only_with_follow_ups(self) -> None:
+        raw = tool_input(parallel=True)
+        stage_bytes = sum(len(step.prompt.encode("utf-8")) for step in supplied_evidence_hunt(raw).steps)
+        # The case metadata appears once in each of the nine prompts.
+        raw["evidence"][0]["content"] += "c" * ((MAX_HUNT_BYTES - stage_bytes) // 9 + 1)
+        with self.assertRaises(ValueError):
+            supplied_evidence_hunt(raw)
+        team = supplied_evidence_hunt(dict(raw, follow_ups=1))
+        stage_bytes = sum(len(step.prompt.encode("utf-8")) for step in team.steps if step.step_id not in ("follow-1", "merge"))
+        self.assertTrue(MAX_HUNT_BYTES < stage_bytes <= MAX_HUNT_BYTES + 9, stage_bytes)
+
+    def test_follow_and_merge_guidance_reach_only_their_stages(self) -> None:
+        raw = tool_input(parallel=True, follow_ups=2,
+                         stage_guidance={"follow": "FOLLOW-TIP pivot on parents.", "merge": "MERGE-TIP keep every ID."})
+        for step in supplied_evidence_hunt(raw).steps:
+            self.assertEqual("FOLLOW-TIP" in step.prompt, step.step_id in ("follow-1", "follow-2"), step.step_id)
+            self.assertEqual("MERGE-TIP" in step.prompt, step.step_id == "merge", step.step_id)
+        for stage in ("follow", "merge"):
+            with self.subTest(stage=stage), self.assertRaises(ValueError):
+                supplied_evidence_hunt(tool_input(parallel=True, stage_guidance={stage: "x"}))
 
 
 class HuntOntologyTests(unittest.TestCase):

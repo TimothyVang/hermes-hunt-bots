@@ -6,10 +6,20 @@ import re
 
 
 MAX_STEPS = 16
+# A parallel hunt adds hunter and follow-up steps around the fixed stages.
+MAX_TEAM_STEPS = 32
 MAX_STEP_TIMEOUT_SECONDS = 3600
 MAX_APPROVAL_TIMEOUT_SECONDS = 86400
 MAX_PROMPT_BYTES = 65536
+# A handoff holds at most 16 claims (ontology.validate_handoff).
+MAX_FOCUS_CLAIMS = 16
 SAFE_STEP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+# In a parallel workflow one decision opens or reviews a whole wave; its gate is addressed by this ID.
+WAVE_GATE_ID = re.compile(r"wave-[1-9][0-9]?\Z")
+USAGE_KEYS = frozenset({"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                        "total_tokens", "duration_ms"})
+STEP_STATES = frozenset({"not_reached", "awaiting_approval", "working", "awaiting_review", "done",
+                         "dropped", "stopped"})
 PROFILES = frozenset({
     "framework-coordinator",
     "framework-researcher",
@@ -36,6 +46,13 @@ class HermesStep:
     timeout_seconds: int = 300
     depends_on: tuple[str, ...] = ()
     hunt_context: dict | None = None
+    # A parallel workflow drops an optional step that does not produce a reviewed result instead
+    # of ending the hunt. Defaults off so earlier histories deserialize unchanged.
+    optional: bool = False
+    # Parallel workflows only: (predecessor step_id, claim index). The step receives that one claim of
+    # the predecessor's reviewed handoff instead of the predecessor's whole output, and is dropped
+    # when the predecessor has no such claim. The predecessor must be in depends_on and carry a hunt_context.
+    focus: tuple[str, int] | None = None
     def __post_init__(self) -> None:
         if not isinstance(self.step_id, str) or SAFE_STEP_ID.fullmatch(self.step_id) is None:
             raise ValueError("step_id must be a safe 1-64 character identifier")
@@ -70,6 +87,14 @@ class HermesStep:
                 raise ValueError("hunt_context evidence IDs must be valid UTF-8 text") from exc
             from .ontology import validate_snapshot
             validate_snapshot(self.hunt_context["snapshot"], set(evidence_ids))
+        if type(self.optional) is not bool:
+            raise ValueError("optional must be a boolean")
+        if self.focus is not None and (
+                not isinstance(self.focus, tuple) or len(self.focus) != 2
+                or not isinstance(self.focus[0], str) or SAFE_STEP_ID.fullmatch(self.focus[0]) is None
+                or type(self.focus[1]) is not int or not 0 <= self.focus[1] < MAX_FOCUS_CLAIMS
+                or self.focus[0] not in self.depends_on or self.hunt_context is None):
+            raise ValueError("focus must be (a typed step's depends_on entry, a claim index from 0 through 15)")
 
 
 @dataclass(frozen=True)
@@ -80,12 +105,16 @@ class WorkflowRequest:
     # Stages drive their own lab tools; their reports run longer, so the workflow states
     # a lower output target. Defaults off so earlier histories deserialize unchanged.
     tool_driven: bool = False
+    # Steps whose dependencies are reviewed run together as one wave behind one execute and one
+    # review decision. Defaults off so earlier histories deserialize and replay unchanged.
+    parallel: bool = False
 
     def __post_init__(self) -> None:
         if self.synthetic_only is not True:
             raise ValueError("this integration accepts synthetic-only workflows")
-        if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= MAX_STEPS:
-            raise ValueError("steps must contain 1 through 16 Hermes steps")
+        limit = MAX_TEAM_STEPS if self.parallel is True else MAX_STEPS
+        if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= limit:
+            raise ValueError(f"steps must contain 1 through {limit} Hermes steps")
         if any(not isinstance(step, HermesStep) for step in self.steps):
             raise ValueError("every step must be a HermesStep")
         ids = [step.step_id for step in self.steps]
@@ -100,6 +129,17 @@ class WorkflowRequest:
             raise ValueError("approval_timeout_seconds must be an integer from 1 through 86400")
         if type(self.tool_driven) is not bool:
             raise ValueError("tool_driven must be a boolean")
+        if type(self.parallel) is not bool:
+            raise ValueError("parallel must be a boolean")
+        if not self.parallel and any(step.optional for step in self.steps):
+            raise ValueError("optional steps require a parallel workflow")
+        if self.parallel and any(WAVE_GATE_ID.fullmatch(step.step_id) for step in self.steps):
+            raise ValueError("wave-<n> step IDs are reserved for wave gates in a parallel workflow")
+        if not self.parallel and any(step.focus is not None for step in self.steps):
+            raise ValueError("focus steps require a parallel workflow")
+        typed = {step.step_id for step in self.steps if step.hunt_context is not None}
+        if any(step.focus is not None and step.focus[0] not in typed for step in self.steps):
+            raise ValueError("focus must name a predecessor with a hunt_context")
 
 
 def _validate_execution_id(value: str) -> None:
@@ -131,6 +171,8 @@ class ExecutionResult:
     output: str
     reason_code: str
     session_id: str | None = None
+    # Token counts and wall time of the native run, when the worker records them.
+    usage: dict | None = None
 
     def __post_init__(self) -> None:
         _validate_execution_id(self.execution_id)
@@ -153,6 +195,10 @@ class ExecutionResult:
             "receipt_write_failed",
         }:
             raise ValueError("invalid execution reason_code")
+        if self.usage is not None and (
+                not isinstance(self.usage, dict) or set(self.usage) != USAGE_KEYS
+                or any(type(value) is not int or value < 0 for value in self.usage.values())):
+            raise ValueError("usage must map exactly the usage keys to non-negative integers")
 
 
 @dataclass(frozen=True)
@@ -182,9 +228,31 @@ class HandoffRejection:
 
 
 @dataclass(frozen=True)
+class StepState:
+    """One step of a parallel workflow as its status query reports it.
+
+    ``execution_id`` names the step's latest result in ``WorkflowStatus.results``. ``reason``
+    is the reason code or rejection outcome of a ``dropped`` or ``stopped`` step, else empty.
+    """
+    step_id: str
+    state: str
+    wave: int
+    execution_id: str | None = None
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.state not in STEP_STATES:
+            raise ValueError("invalid step state")
+
+
+
+@dataclass(frozen=True)
 class WorkflowStatus:
     stage: str
     step_id: str | None
     execution_id: str | None
     results: list[ExecutionResult]
     handoff_rejections: list[HandoffRejection] = field(default_factory=list)
+    # Parallel workflows only: every step's state. ``step_id`` then holds the open wave's gate
+    # ID (``wave-<n>``), or the step awaiting reconciliation.
+    steps: list[StepState] = field(default_factory=list)

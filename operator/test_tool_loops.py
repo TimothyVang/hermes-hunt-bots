@@ -1,7 +1,10 @@
 """Operator tool_loops behavior that a live loop depends on."""
+import json
 import sys
+import tempfile
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import tool_loops as tl
 
@@ -16,6 +19,96 @@ class ChildOutputTest(unittest.TestCase):
         rc, out, err = tl.tcli(lane=Mock(temporal_cli=lambda: child))
         self.assertEqual(rc, 0, err)
         self.assertIn(text, out)
+
+
+def step(step_id, state, wave, execution_id=None, reason=''):
+    return {'step_id': step_id, 'state': state, 'wave': wave, 'execution_id': execution_id, 'reason': reason}
+
+
+def result(execution_id, output, status='completed', reason_code='completed', usage=None):
+    return {'status': status, 'execution_id': execution_id, 'output': output, 'reason_code': reason_code,
+            'session_id': None, 'usage': usage}
+
+
+def usage(total, duration_ms):
+    return {'input_tokens': total - 10, 'output_tokens': 10, 'cache_read_tokens': 3, 'cache_write_tokens': 1,
+            'total_tokens': total, 'duration_ms': duration_ms}
+
+
+def run_rounds(statuses):
+    """run_config over these final round statuses, with the lab, Temporal, the gate driver and the scorer
+    faked. A completed round has its saved final report. Returns (run result, summary log line)."""
+    def fake_tcli(*args, lane=None, timeout=180):
+        if args[0] == 'practice':
+            return 0, '', ''
+        return 0, json.dumps(statuses[int(args[1].rsplit(':', 1)[-1]) - 1]), ''
+
+    scored = {'found': 18, 'total': 18, 'misattributed_decoys': [], 'facts': []}
+    with tempfile.TemporaryDirectory() as tmp, patch.object(tl, 'GATE_RUNS', Path(tmp)), \
+            patch.object(tl, 'ROUNDS', len(statuses)), patch.object(tl, 'tcli', fake_tcli), \
+            patch.object(tl, 'lab_url', return_value='http://lab'), patch.object(tl, 'last_seq', return_value=0), \
+            patch.object(tl, 'activity_since', return_value=[]), patch.object(tl, 'score', return_value=scored), \
+            patch.object(tl.subprocess, 'run', return_value=Mock(stdout='')), patch.object(tl, 'log') as log:
+        outputs = Path(tmp) / 'outputs' / tl.workflow_id('loop-t', 'case-1')
+        outputs.mkdir(parents=True)
+        for n, status in enumerate(statuses, 1):
+            if status['stage'] == 'completed':
+                (outputs / f'{n:03d}-incident.txt').write_text('report', encoding='utf-8')
+        run, _calls = tl.run_config('loop-t', {}, 'brief', {}, 'case-1', 'truth.json', d=Path(tmp) / 'loop-t')
+    return run, log.call_args.args[0]
+
+
+class RoundRecordTest(unittest.TestCase):
+    def test_a_parallel_round_is_read_by_execution_id_with_its_dropped_steps_and_summed_usage(self):
+        finished = {
+            'stage': 'completed', 'step_id': None, 'execution_id': None, 'handoff_rejections': [],
+            'steps': [step('scope', 'done', 1, 'x:scope'), step('evidence', 'done', 2, 'x:evidence:retry'),
+                      step('intel', 'dropped', 2, 'x:intel', 'timeout'), step('incident', 'done', 3, 'x:incident')],
+            # Not in step order: position says nothing about whose result each one is.
+            'results': [result('x:incident', 'final report', usage=usage(700, 4000)),
+                        result('x:intel', '', 'failed', 'timeout'),
+                        result('x:scope', 'sc', usage=usage(100, 1000)),
+                        result('x:evidence:retry', 'ev-out', usage=usage(200, 2000))]}
+        halted = {
+            'stage': 'rejected', 'step_id': 'wave-2', 'execution_id': None, 'handoff_rejections': [],
+            'steps': [step('scope', 'done', 1, 'y:scope'), step('evidence', 'stopped', 2, 'y:evidence', 'native_failed'),
+                      step('incident', 'not_reached', 3)],
+            'results': [result('y:evidence', '', 'failed', 'native_failed'), result('y:scope', 'sc')]}
+        run, summary = run_rounds([finished, halted])
+        first, second = run['rounds']
+        self.assertEqual(first['sizes'], [('scope', 'completed', 'completed', 2), ('evidence', 'completed', 'completed', 6),
+                                          ('intel', 'failed', 'timeout', 0), ('incident', 'completed', 'completed', 12)])
+        self.assertEqual(first['dropped'], [{'step_id': 'intel', 'reason': 'timeout'}])
+        self.assertEqual(first['usage'], {'input_tokens': 970, 'output_tokens': 30, 'cache_read_tokens': 9,
+                                          'cache_write_tokens': 3, 'total_tokens': 1000, 'duration_ms': 7000,
+                                          'steps_without_usage': 1})
+        # A dropped optional step does not make a completed round a halt.
+        self.assertTrue(first['completed'])
+        self.assertEqual(first['found'], 18)
+        self.assertEqual(second['sizes'], [('scope', 'completed', 'completed', 2), ('evidence', 'failed', 'native_failed', 0),
+                                           ('incident', 'not_reached', '', 0)])
+        self.assertEqual(second['dropped'], [])
+        self.assertNotIn('usage', second)
+        self.assertEqual(run['halts'], 1)
+        self.assertIn(' calls 0 dropped 1 tokens 1000 in ', summary)
+
+    def test_a_serial_round_is_still_read_in_stage_order(self):
+        results = [result('w:0', 'sc'), result('w:1', 'ev-out'), result('w:2', '', 'failed', 'timeout')]
+        before_usage = [{key: value for key, value in item.items() if key != 'usage'} for item in results]
+        cases = {'a status from before steps and usage existed': {'results': before_usage},
+                 'a serial status with an empty steps list': {'results': results, 'steps': []}}
+        for name, shape in cases.items():
+            with self.subTest(name):
+                halted = {'stage': 'rejected', 'step_id': 'hypotheses', 'execution_id': 'w:2',
+                          'handoff_rejections': [], **shape}
+                run, summary = run_rounds([halted])
+                entry = run['rounds'][0]
+                self.assertEqual(entry['sizes'], [('scope', 'completed', 'completed', 2),
+                                                  ('evidence', 'completed', 'completed', 6),
+                                                  ('hypotheses', 'failed', 'timeout', 0)])
+                self.assertNotIn('dropped', entry)
+                self.assertNotIn('usage', entry)
+                self.assertRegex(summary, r' misattributed 0 calls 0 in [0-9.]+ min$')
 
 
 if __name__ == '__main__':

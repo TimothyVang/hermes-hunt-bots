@@ -2,10 +2,16 @@
 
 Opt-in only: it refuses to run without --delegated-by and --reason. Every approval it records
 says it is a delegated approval by that person and not a human review of the content. It never
-retries on its own and stops on the first non-completed outcome. When the workflow re-offers a
-step once after handoff validation rejected its output, that new execute gate is approved like
-any other, under its own decision ID and a note that names it a retry approval. Stage outputs
-are saved under runtime/practice/gate-runs/outputs/<workflow_id>/.
+retries on its own and stops on the first non-completed outcome of a required step. When the
+workflow re-offers a step once after handoff validation rejected its output, that new execute
+gate is approved like any other, under its own decision ID and a note that names it a retry
+approval. Stage outputs are saved under runtime/practice/gate-runs/outputs/<workflow_id>/.
+
+A parallel hunt gates a whole wave of steps at once (gate ID wave-<n>). The driver sends one
+execute approval each time the wave's execute gate opens (once, and once more for the steps the
+workflow retries) and one review approval, after saving the output of every step awaiting
+review under that step's own ID. An optional step the workflow dropped is logged and the run
+goes on.
 
 Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<person>" --reason "<text>"
 """
@@ -76,7 +82,7 @@ def main(args):
     out.mkdir(parents=True, exist_ok=True)
     log(f'DELEGATED APPROVALS for {args.workflow_id}: every execute and review gate is approved on behalf of '
         f'{args.delegated_by} ({args.reason}). These approvals are not human reviews of the content.')
-    handled = set()
+    handled, dropped = set(), set()
     while True:
         parent = cli('practice-status', args.workflow_id)
         if parent['temporal_status'] != 'RUNNING':
@@ -88,25 +94,48 @@ def main(args):
             continue
         state = cli('status', child)
         stage, step = state['stage'], state['step_id']
-        rejections = [item for item in state.get('handoff_rejections', []) if item['step_id'] == step]
-        retry = sum(item['outcome'] == 'retried' for item in rejections)
+        # Only a parallel hunt lists its steps; its gate (step) is then a whole wave, wave-<n>.
+        steps = state.get('steps') or []
+        for item in steps:
+            if item['state'] == 'dropped' and (child, item['step_id']) not in dropped:
+                dropped.add((child, item['step_id']))
+                log(f'DROPPED {child} {item["step_id"]}: {item["reason"]}')
+        gated = {item['step_id'] for item in steps if item['state'] == 'awaiting_approval'} if steps else {step}
+        retries = [item for item in state.get('handoff_rejections', [])
+                   if item['step_id'] in gated and item['outcome'] == 'retried']
+        # A step is retried once and a wave re-opens once for all its retried steps, so the retry number is 0 or 1.
+        retry = int(bool(retries))
         key = (child, step, stage, retry)
         if key in handled:
             time.sleep(3)
             continue
         if stage == 'awaiting_execution_approval':
             if retry:
-                log(f'{child} {step} handoff rejected; the workflow offers one retry: {rejections[-1]["reason"]}')
+                why = ('; '.join(f'{item["step_id"]}: {item["reason"]}' for item in retries) if steps
+                       else retries[-1]['reason'])
+                log(f'{child} {step} handoff rejected; the workflow offers one retry: {why}')
             decide(child, step, 'execute', args.note, retry)
             handled.add(key)
         elif stage == 'awaiting_review':
-            result = state['results'][-1]
-            if result['status'] != 'completed':
-                log(f'STOP {child} {step}: result {result["status"]}/{result["reason_code"]}')
-                return 1
-            name = f"{child.rsplit(':', 1)[-1]}-{step}.txt"
-            (out / name).write_text(result['output'], encoding='utf-8')
-            log(f'{child} {step} output saved ({len(result["output"].encode())} bytes) -> {out / name}')
+            if steps:
+                results = {item['execution_id']: item for item in state['results']}
+                reviews = [(item['step_id'], results.get(item['execution_id']))
+                           for item in steps if item['state'] == 'awaiting_review']
+                if not reviews:
+                    log(f'STOP {child} {step}: no step is awaiting review; nothing was approved')
+                    return 1
+            else:
+                reviews = [(step, state['results'][-1])]
+            # Nothing of a wave is saved unless all of it can be approved, and nothing is approved unsaved.
+            for step_id, result in reviews:
+                if result is None or result['status'] != 'completed':
+                    log(f'STOP {child} {step_id}: ' + (f'result {result["status"]}/{result["reason_code"]}'
+                                                       if result else 'awaiting review without a result'))
+                    return 1
+            for step_id, result in reviews:
+                name = f"{child.rsplit(':', 1)[-1]}-{step_id}.txt"
+                (out / name).write_text(result['output'], encoding='utf-8')
+                log(f'{child} {step_id} output saved ({len(result["output"].encode())} bytes) -> {out / name}')
             decide(child, step, 'review', args.note)
             handled.add(key)
         elif stage in ('needs_reconciliation', 'rejected', 'handoff_validation_rejected',

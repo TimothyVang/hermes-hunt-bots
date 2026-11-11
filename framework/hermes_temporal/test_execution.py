@@ -1,23 +1,56 @@
 """Durable dispatch boundaries without running Hermes or a provider."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, redirect_stderr, redirect_stdout
 from dataclasses import replace
+import importlib.util
 import io
+import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from . import execution as execution_module
 from .contracts import ExecutionRequest, ExecutionResult, HermesStep
-from .execution import ExecutionConfig, ReceiptStore, _environment, _invoke, execute
+from .execution import ExecutionConfig, ReceiptStore, _ResultStream, _environment, _invoke, execute, invoke_step
+
+RESULT = {'type': 'result', 'session_id': 'local-synthetic', 'exit_code': 0, 'text': 'READY',
+          'tokens': {'input': 10514, 'output': 4, 'total': 10518, 'cache_read': 10512, 'cache_write': 0},
+          'duration_ms': 2660, 'timestamp': 1794276152131}
+USAGE = {'input_tokens': 10514, 'output_tokens': 4, 'cache_read_tokens': 10512, 'cache_write_tokens': 0,
+         'total_tokens': 10518, 'duration_ms': 2660}
+INIT = {'type': 'system', 'subtype': 'init'}
 
 
 def request(prompt='synthetic prompt', execution_id='workflow/0', hunt_context=None):
     return ExecutionRequest(execution_id=execution_id, step=HermesStep(
         step_id='first', prompt=prompt, profile='framework-coordinator', timeout_seconds=10,
         hunt_context=hunt_context))
+
+
+def stream(*lines):
+    return b''.join((line if isinstance(line, bytes) else json.dumps(line).encode('utf-8')) + b'\n'
+                    for line in lines)
+
+
+class StreamProcess:
+    def __init__(self, output, returncode=0):
+        self.returncode = returncode
+        self.killed = False
+        self.stdin = io.BytesIO()
+        self.stdout = tempfile.TemporaryFile()
+        self.stdout.write(output)
+        self.stdout.seek(0)
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
 
 class ExecutionReceiptTests(unittest.TestCase):
     def setUp(self):
@@ -28,6 +61,12 @@ class ExecutionReceiptTests(unittest.TestCase):
         home.mkdir()
         self.path = str(root / 'receipts.sqlite3')
         self.config = ExecutionConfig(True, str(Path(sys.executable).resolve()), str(home), str(root), self.path)
+
+    def run_stream(self, output, returncode=0):
+        process = StreamProcess(output, returncode)
+        with patch.object(execution_module.subprocess, 'Popen', return_value=process) as popen:
+            result = _invoke(replace(self.config, record_usage=True), request())
+        return result, popen.call_args.args[0], process
 
     def test_default_refusal_does_not_create_receipt_or_dispatch(self):
         with patch.object(execution_module, '_invoke') as invoke:
@@ -156,6 +195,172 @@ class ExecutionReceiptTests(unittest.TestCase):
                 self.assertEqual(_invoke(config, request()).status, 'completed')
             command = popen.call_args.args[0]
             self.assertEqual(command[command.index('--source') + 1], source)
+
+    def test_recorded_usage_comes_from_the_final_result_record(self):
+        output = stream(INIT, {'type': 'tool_use', 'name': 'lab_search', 'input': {'query': 'synthetic'}},
+                        {'type': 'tool_result', 'output': 'synthetic rows'},
+                        {'type': 'tool_use', 'name': 'lab_read', 'input': {'evidence_id': 'source-1'}},
+                        b'\xff not json', b'[1, 2]', {'type': 'text', 'text': 'READY'}, RESULT)
+        result, command, _ = self.run_stream(output)
+        self.assertEqual(result, ExecutionResult('completed', 'workflow/0', 'READY', 'completed',
+                                                 'local-synthetic', USAGE))
+        self.assertEqual(command[-2:], ['--format', 'stream-json'])
+
+    def test_result_record_survives_any_read_boundary(self):
+        data = stream(INIT, {**RESULT, 'text': 'EARLIER'}, b'not json', RESULT)[:-1]
+        for cut in range(len(data) + 1):
+            parsed = _ResultStream()
+            parsed.feed(data[:cut])
+            parsed.feed(data[cut:])
+            parsed.end_line()
+            self.assertEqual(parsed.record, RESULT, cut)
+
+    def test_stream_without_usable_result_text_is_ambiguous(self):
+        for output, usage in ((stream(INIT, {'type': 'text', 'text': 'READY'}), None), (b'', None),
+                              (stream(INIT, {**RESULT, 'text': '  \n'}), USAGE),
+                              (stream(INIT, {**RESULT, 'text': None}), USAGE)):
+            with self.subTest(output=output):
+                result, _, _ = self.run_stream(output)
+                self.assertEqual((result.status, result.reason_code, result.output, result.usage),
+                                 ('unknown', 'output_unavailable', '', usage))
+
+    def test_nonzero_exit_keeps_recorded_spend(self):
+        for record, returncode in (({**RESULT, 'exit_code': 1}, 0), (RESULT, 1)):
+            with self.subTest(exit_code=record['exit_code'], returncode=returncode):
+                result, _, _ = self.run_stream(stream(INIT, record), returncode)
+                self.assertEqual(result, ExecutionResult('unknown', 'workflow/0', '', 'native_nonzero',
+                                                         'local-synthetic', USAGE))
+
+    def test_malformed_token_values_leave_usage_unrecorded(self):
+        tokens = RESULT['tokens']
+        for record in ({**RESULT, 'tokens': {**tokens, 'input': -1}},
+                       {**RESULT, 'tokens': {**tokens, 'output': True}},
+                       {**RESULT, 'tokens': {**tokens, 'total': 1.5}},
+                       {**RESULT, 'tokens': {**tokens, 'cache_read': '7'}},
+                       {**RESULT, 'tokens': {key: value for key, value in tokens.items() if key != 'cache_write'}},
+                       {**RESULT, 'tokens': None},
+                       {**RESULT, 'duration_ms': None}):
+            with self.subTest(record=record):
+                result, _, _ = self.run_stream(stream(INIT, record))
+                self.assertEqual((result.status, result.output, result.usage, result.session_id),
+                                 ('completed', 'READY', None, 'local-synthetic'))
+
+    def test_stream_over_its_bound_is_cut_off(self):
+        output = stream(INIT, *[{'type': 'tool_use', 'name': 'lab_search', 'input': {'query': 'synthetic'}}] * 8,
+                        RESULT)
+        with patch.object(execution_module, 'MAX_STREAM_BYTES', 256):
+            result, _, process = self.run_stream(output)
+        self.assertEqual(result, ExecutionResult('unknown', 'workflow/0', '', 'output_limit'))
+        self.assertTrue(process.killed)
+
+    def test_final_text_over_the_output_cap_is_refused_with_its_spend(self):
+        result, _, process = self.run_stream(stream(INIT, {**RESULT, 'text': 'x' * 65537}))
+        self.assertEqual(result, ExecutionResult('unknown', 'workflow/0', '', 'output_limit',
+                                                 'local-synthetic', USAGE))
+        self.assertFalse(process.killed)
+
+    def test_overlong_line_is_dropped_instead_of_buffered(self):
+        with patch.object(execution_module, 'MAX_STREAM_LINE_BYTES', 512):
+            kept, _, _ = self.run_stream(stream(INIT, {'type': 'tool_result', 'output': 'x' * 20000}, RESULT))
+            lost, _, _ = self.run_stream(stream(INIT, {**RESULT, 'text': 'x' * 20000}))
+        self.assertEqual(kept, ExecutionResult('completed', 'workflow/0', 'READY', 'completed',
+                                               'local-synthetic', USAGE))
+        self.assertEqual(lost, ExecutionResult('unknown', 'workflow/0', '', 'output_limit'))
+
+    def test_usage_recording_off_keeps_command_and_raw_output(self):
+        raw = stream(INIT, RESULT)
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            result = _invoke(self.config, request())
+        self.assertEqual(popen.call_args.args[0], [
+            self.config.executable, '-p', 'framework-coordinator', 'chat', '--oneshot', '--quiet',
+            '--query-file', '-', '--source', 'tool', '--max-turns', '32'])
+        self.assertEqual(result, ExecutionResult('completed', 'workflow/0', raw.decode('utf-8'), 'completed'))
+
+    def test_receipt_returns_usage_and_session_on_repeat(self):
+        req = request()
+        completed = ExecutionResult('completed', req.execution_id, 'READY', 'completed', 'local-synthetic', USAGE)
+        with patch.object(execution_module, '_invoke', return_value=completed) as invoke:
+            self.assertEqual(execute(self.config, req), completed)
+            self.assertEqual(execute(self.config, request()), completed)
+        self.assertEqual(invoke.call_count, 1)
+
+    def test_unknown_receipt_keeps_recorded_spend_without_dispatching_again(self):
+        req = request()
+        failed_run = ExecutionResult('unknown', req.execution_id, '', 'native_nonzero', 'local-synthetic', USAGE)
+        with patch.object(execution_module, '_invoke', return_value=failed_run) as invoke:
+            self.assertEqual(execute(self.config, req), failed_run)
+            repeated = execute(self.config, req)
+        self.assertEqual(repeated, ExecutionResult('unknown', req.execution_id, '', 'previous_dispatch_unknown',
+                                                   'local-synthetic', USAGE))
+        self.assertEqual(invoke.call_count, 1)
+
+    def test_five_column_receipt_database_is_migrated_and_keeps_old_receipts(self):
+        old = request()
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('CREATE TABLE receipts ('
+                       'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
+                       'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL)')
+            db.execute('INSERT INTO receipts VALUES (?, ?, ?, ?, ?)',
+                       (old.execution_id, execution_module._fingerprint(old), 'completed', 'completed', 'old reply'))
+            db.commit()
+        new = request(execution_id='workflow/1')
+        completed = ExecutionResult('completed', new.execution_id, 'READY', 'completed', 'local-synthetic', USAGE)
+        with patch.object(execution_module, '_invoke', return_value=completed) as invoke:
+            self.assertEqual(execute(self.config, old),
+                             ExecutionResult('completed', old.execution_id, 'old reply', 'completed'))
+            invoke.assert_not_called()
+            self.assertEqual(execute(self.config, new), completed)
+            self.assertEqual(execute(self.config, new), completed)
+        self.assertEqual(invoke.call_count, 1)
+        with closing(sqlite3.connect(self.path)) as db:
+            columns = [row[1] for row in db.execute('PRAGMA table_info(receipts)')]
+        self.assertEqual(columns, ['execution_id', 'fingerprint', 'status', 'reason', 'output', 'usage', 'session_id'])
+
+    def test_invoke_step_dispatches_every_call_without_a_receipt(self):
+        completed = ExecutionResult('completed', 'workflow/0', 'READY', 'completed', 'local-synthetic', USAGE)
+        with patch.object(execution_module, '_invoke', return_value=completed) as invoke, \
+                patch.object(execution_module, 'ReceiptStore') as store:
+            self.assertEqual(invoke_step(self.config, request()), completed)
+            self.assertEqual(invoke_step(self.config, request()), completed)
+            disabled = invoke_step(ExecutionConfig(), request())
+            misconfigured = invoke_step(replace(self.config, hermes_home=None), request())
+        self.assertEqual(invoke.call_count, 2)
+        self.assertEqual((disabled.status, disabled.reason_code), ('failed', 'execution_disabled'))
+        self.assertEqual((misconfigured.status, misconfigured.reason_code), ('failed', 'invalid_configuration'))
+        store.assert_not_called()
+        self.assertFalse(Path(self.path).exists())
+
+
+@unittest.skipUnless(importlib.util.find_spec('temporalio') is not None, 'Temporal SDK is optional')
+class WorkerOptionTests(unittest.TestCase):
+    def start_worker(self, *argv):
+        from . import worker
+
+        with patch.object(worker, 'Client') as client, patch.object(worker, 'Worker') as temporal_worker, \
+                patch.object(worker, 'ThreadPoolExecutor') as pool, \
+                patch.object(worker, 'HermesActivities') as activities, redirect_stdout(io.StringIO()):
+            client.connect = AsyncMock()
+            temporal_worker.return_value.run = AsyncMock()
+            self.assertEqual(worker.main(list(argv)), 0)
+        return pool.call_args.kwargs, temporal_worker.call_args.kwargs, activities.call_args.args[0]
+
+    def test_defaults_keep_four_activity_threads_and_no_usage_recording(self):
+        pool, options, config = self.start_worker()
+        self.assertEqual((pool, options['max_concurrent_activities']), ({'max_workers': 4}, 4))
+        self.assertIs(config.record_usage, False)
+
+    def test_team_options_reach_the_pool_the_worker_and_the_execution_config(self):
+        pool, options, config = self.start_worker('--record-usage', '--activity-threads', '10')
+        self.assertEqual((pool, options['max_concurrent_activities']), ({'max_workers': 10}, 10))
+        self.assertIs(config.record_usage, True)
+
+    def test_activity_threads_outside_one_through_thirty_two_are_rejected(self):
+        from . import worker
+
+        for value in ('0', '33', '-1', 'many'):
+            with self.subTest(value=value), patch.object(worker, '_run'), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                worker.main(['--activity-threads', value])
 
 
 if __name__ == '__main__':

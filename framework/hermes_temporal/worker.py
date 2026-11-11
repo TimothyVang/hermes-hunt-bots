@@ -31,16 +31,21 @@ def _parser() -> argparse.ArgumentParser:
                         help="explicitly permit --hermes-home to be the operator's own signed-in Hermes home")
     parser.add_argument('--visible-sessions', action='store_true',
                         help='show dispatched native chats in Hermes session lists (default: hidden tool sessions)')
+    parser.add_argument('--record-usage', action='store_true',
+                        help="record token counts and wall time per step by reading Hermes's stream-json output")
+    parser.add_argument('--activity-threads', type=int, default=4, metavar='N',
+                        help='how many steps may run at the same time, 1 through 32 (default: 4)')
     return parser
 
 
 async def _run(args: argparse.Namespace, config: ExecutionConfig) -> None:
     client = await Client.connect(args.address)
     activities = HermesActivities(config)
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=args.activity_threads) as executor:
         worker = Worker(client, task_queue=args.task_queue,
                         workflows=[HermesWorkflow, PracticeRoundWorkflow, PracticeWorkflow],
-                        activities=[activities.execute_hermes_step], activity_executor=executor)
+                        activities=[activities.execute_hermes_step], activity_executor=executor,
+                        max_concurrent_activities=args.activity_threads)
         print('Temporal worker ready.', flush=True)
         await worker.run()
 
@@ -50,10 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.task_queue.strip():
         parser.error('task queue must not be empty')
+    if not 1 <= args.activity_threads <= 32:
+        parser.error('activity threads must be from 1 through 32')
     config = ExecutionConfig(enabled=args.enable_hermes, executable=args.hermes_executable,
                              hermes_home=args.hermes_home, working_directory=args.working_directory,
                              receipt_db=args.receipt_db, allow_operator_home=args.allow_operator_home,
-                             visible_sessions=args.visible_sessions)
+                             visible_sessions=args.visible_sessions, record_usage=args.record_usage)
     if config.enabled and not _valid_config(config):
         parser.error('execution requires an explicit executable, separately provisioned home, working directory, and receipt database')
     try:

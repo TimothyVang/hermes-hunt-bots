@@ -1,12 +1,14 @@
 """Consumer-visible behavior of the read-only hunt board (no Temporal server needed)."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import http.client
 import importlib.util
 import json
 import tempfile
 import threading
+import types
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -16,8 +18,8 @@ from urllib import parse
 if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run hunt board tests.")
 
-from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, activity_spans,  # noqa: E402
-                    browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
+from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
+                    activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import FakeLab  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
@@ -207,6 +209,28 @@ class BoardDerivationTests(unittest.TestCase):
         self.assertTrue(broken["input_errors"])
         self.assertEqual(broken["steps"], [])
 
+    def test_serial_round_keeps_its_shape_and_gains_the_wave_keys_with_serial_defaults(self) -> None:
+        child = _mid_run(self.child, 5, "awaiting_review", "intel")
+        child["results"][1] = dict(child["results"][1], usage=_tokens(1500))
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual(set(state), {
+            "board_version", "mode", "case", "scope", "input_errors", "run", "round", "steps", "team",
+            "latest_conclusion", "browsers", "timeline", "graph", "network", "feed", "cited_event_count",
+            "pending_event_ids", "tools", "stage_time", "waves"})
+        steps = state["steps"]
+        for step in steps:
+            self.assertEqual(set(step), {
+                "index", "step_id", "name", "profile", "role", "monogram", "state", "reason", "result", "claims",
+                "timing", "handoff_rejections", "wave", "optional", "usage"})
+        self.assertEqual([step["wave"] for step in steps], list(range(1, 10)))
+        self.assertEqual([step["optional"] for step in steps], [False] * 9)
+        self.assertEqual([step["reason"] for step in steps], [""] * 9)
+        self.assertEqual([step["usage"] for step in steps], [None, _tokens(1500)] + [None] * 7)
+        self.assertEqual(state["run"]["usage_total"], _tokens(1500))
+        self.assertEqual(state["run"]["dropped"], [])
+        self.assertEqual([member["open_steps"] for member in state["team"] if member["open_steps"]],
+                         [[{"step_id": "intel", "state": "awaiting_review"}]])
+
 
 ROUND = "practice-1:round:001"
 START_ISO, START_MS = "2026-11-08T19:14:33.250000+00:00", 1_794_165_273_250
@@ -282,6 +306,15 @@ class HuntLiveDerivationTests(unittest.TestCase):
         self.assertEqual(timings[3:], [unknown] * 6)
         unread = build_state(self.raw, self.parent, self.running(activity_spans=None))["steps"]
         self.assertEqual([step["timing"] for step in unread], [unknown] * 9)
+
+    def test_serial_stage_time_is_the_sum_of_the_finished_stages_and_the_open_stages_start(self) -> None:
+        state = build_state(self.raw, self.parent, self.running())
+        self.assertEqual(state["stage_time"], {"closed_ms": 21_000 + 120_000, "open_since_ms": 160_000})
+        self.assertEqual(state["waves"][:4], [{"wave": 1, "closed_ms": 21_000, "open_since_ms": None},
+                                              {"wave": 2, "closed_ms": 120_000, "open_since_ms": None},
+                                              {"wave": 3, "closed_ms": None, "open_since_ms": 160_000},
+                                              {"wave": 4, "closed_ms": None, "open_since_ms": None}])
+        self.assertEqual(build_state(self.raw, None, None)["stage_time"], {"closed_ms": None, "open_since_ms": None})
 
     def test_round_clock_is_temporal_start_and_close_else_first_stage(self) -> None:
         state = build_state(self.raw, self.parent, self.running())
@@ -425,6 +458,13 @@ class BoardServerTests(unittest.TestCase):
         self.assertTrue(state["temporal"]["reachable"])
         self.assertIsNone(state["live"])
         self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
+
+    def test_page_carries_the_wave_group_and_usage_hooks(self) -> None:
+        body = self.request("GET", "/")[2]
+        for hook in (b'id="stage-list"', b'id="tl-bar"', b'id="tl-num"', b'id="usage"', b'id="wf-count"',
+                     b'"data-wave"', b'"data-step"', b'"data-state"', b'"data-dropped"', b'"wave-h"',
+                     b'"wave-lanes"', b'"wave-lane"'):
+            self.assertIn(hook, body)
 
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
@@ -818,6 +858,196 @@ class ToolDrivenBoardTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(["--workflow-id", "w", "--input", str(tool_path), "--lab-url", "http://localhost:8765"])
         self.assertEqual(self.lab.requests, [])
+
+
+WAVES = {"scope": 1, "evidence": 2, "hypotheses": 2, "network": 2, "intel": 2, "analysis": 3, "detection": 4,
+         "purple": 5, "incident": 6}
+
+
+def _tokens(total: int) -> dict:
+    return {"input_tokens": total - 300, "output_tokens": 200, "cache_read_tokens": 100, "cache_write_tokens": 0,
+            "total_tokens": total, "duration_ms": total * 2}
+
+
+def _wave_child(states: dict, results: list[dict], **extra) -> dict:
+    """A parallel round's status as the board observes it: every step reported, wave 2 open.
+
+    ``states`` maps a step to its state or ``(state, reason)``; other steps are not reached. A step's
+    execution ID is set once it was dispatched, as the workflow reports it."""
+    steps = []
+    for index, step_id in enumerate(STEP_IDS):
+        state = states.get(step_id, "not_reached")
+        state, reason = state if isinstance(state, tuple) else (state, "")
+        steps.append({"step_id": step_id, "state": state, "wave": WAVES[step_id], "reason": reason,
+                      "execution_id": None if state in ("not_reached", "awaiting_approval") else f"{ROUND}:{index}"})
+    return {"stage": "executing", "step_id": "wave-2", "execution_id": None, "temporal_status": "RUNNING",
+            "results": results, "handoff_rejections": [], "steps": steps, **extra}
+
+
+class _History:
+    """A Temporal client and workflow handle whose history is ``events``; counts the reads."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+        self.reads = 0
+
+    def get_workflow_handle(self, workflow_id: str) -> "_History":
+        return self
+
+    async def fetch_history(self, skip_archival: bool):
+        self.reads += 1
+        return types.SimpleNamespace(events=list(self.events))
+
+
+class ParallelBoardTests(unittest.TestCase):
+    """A parallel round: several steps open in one wave, results matched by execution ID, dropped steps, usage."""
+
+    def setUp(self) -> None:
+        self.raw = dict(_load("lab-input.json"), parallel=True)
+        self.parent = _load("parent-status.json")
+        self.outputs = [result["output"] for result in _load("child-status.json")["results"]]
+
+    def result(self, index: int, **fields) -> dict:
+        return {"status": "completed", "execution_id": f"{ROUND}:{index}", "output": self.outputs[index],
+                "reason_code": "completed", "session_id": None, "usage": None, **fields}
+
+    def test_wave_steps_take_state_wave_reason_and_usage_from_their_own_execution(self) -> None:
+        failed = self.result(4, status="failed", output="", reason_code="native_failed", usage=_tokens(900))
+        results = [failed, self.result(3, usage=_tokens(4000)), self.result(0, usage=_tokens(1500))]
+        states = {"scope": "done", "evidence": "working", "hypotheses": "working", "network": "awaiting_review",
+                  "intel": ("dropped", "native_failed")}
+        spans = [{"execution_id": f"{ROUND}:1", "scheduled_ms": 30_000, "closed_ms": None},
+                 {"execution_id": f"{ROUND}:2", "scheduled_ms": 30_500, "closed_ms": None},
+                 {"execution_id": f"{ROUND}:3", "scheduled_ms": 31_000, "closed_ms": 60_000},
+                 {"execution_id": f"{ROUND}:4", "scheduled_ms": 31_500, "closed_ms": 40_000}]
+        state = build_state(self.raw, self.parent,
+                            _wave_child(states, results, workflow_id=ROUND, activity_spans=spans))
+        steps = state["steps"]
+        self.assertEqual(_states(state), ["done", "working", "working", "awaiting_review", "dropped"] + ["pending"] * 4)
+        self.assertEqual([step["wave"] for step in steps], [1, 2, 2, 2, 2, 3, 4, 5, 6])
+        self.assertEqual([step["optional"] for step in steps], [False] + [True] * 4 + [False] * 4)
+        self.assertEqual([step["reason"] for step in steps], [""] * 4 + ["native_failed"] + [""] * 4)
+        self.assertEqual([step["usage"] for step in steps],
+                         [_tokens(1500), None, None, _tokens(4000), _tokens(900)] + [None] * 4)
+        self.assertEqual([step["result"] and step["result"]["status"] for step in steps],
+                         ["completed", None, None, "completed", "failed"] + [None] * 4)
+        self.assertEqual(steps[4]["result"]["reason_code"], "native_failed")
+        self.assertEqual([(item["step_id"], item["handoff"] and item["handoff"]["step_id"], item["counted"])
+                          for item in state["feed"]],
+                         [("intel", None, False), ("network", "network", True), ("scope", "scope", True)])
+        self.assertEqual(steps[1]["timing"],
+                         {"started_ms": 30_000, "ended_ms": None, "duration_ms": None, "attempts": 1})
+        self.assertEqual([steps[index]["timing"]["duration_ms"] for index in (3, 4)], [29_000, 8_500])
+        states["network"] = "done"
+        reviewed = build_state(self.raw, self.parent, _wave_child(states, results))
+        self.assertEqual(_states(reviewed)[3:5], ["done", "dropped"])
+        self.assertEqual(reviewed["steps"][3]["usage"], _tokens(4000))
+
+    def test_a_wave_gate_id_marks_no_step_current(self) -> None:
+        gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],
+                           stage="awaiting_execution_approval")
+        state = build_state(self.raw, self.parent, gate)
+        self.assertEqual(state["run"]["child"]["step_id"], "wave-2")
+        self.assertEqual(_states(state), ["done"] + ["awaiting_approval"] * 4 + ["pending"] * 4)
+        # Four results would place a serial round's open step at index 4, the dropped step.
+        later = _wave_child({**dict.fromkeys(STEP_IDS[:4], "done"), "intel": ("dropped", "timeout"),
+                             "analysis": "awaiting_approval"}, [self.result(index) for index in (2, 0, 3, 1)],
+                            stage="awaiting_execution_approval", step_id="wave-3")
+        state = build_state(self.raw, self.parent, later)
+        self.assertEqual(_states(state), ["done"] * 4 + ["dropped", "awaiting_approval"] + ["pending"] * 3)
+        self.assertIsNone(state["steps"][4]["result"])
+        self.assertEqual([step["result"]["parsed"] for step in state["steps"][:4]], [True] * 4)
+
+    def test_a_stopped_or_closed_parallel_round_leaves_no_step_open(self) -> None:
+        rejected = _wave_child({**dict.fromkeys(STEP_IDS[:5], "done"), "analysis": ("stopped", "retry_exhausted")}, [],
+                               stage="handoff_validation_rejected", step_id="wave-3", temporal_status="COMPLETED")
+        state = build_state(self.raw, self.parent, rejected)
+        self.assertEqual(_states(state), ["done"] * 5 + ["stopped"] + ["not_reached"] * 3)
+        self.assertEqual(state["steps"][5]["reason"], "retry_exhausted")
+        terminated = _wave_child({"scope": "done", "evidence": "working", "hypotheses": "awaiting_review",
+                                  "network": "awaiting_approval", "intel": ("dropped", "timeout")}, [],
+                                 temporal_status="TERMINATED")
+        state = build_state(self.raw, self.parent, terminated)
+        self.assertEqual(_states(state), ["done"] + ["stopped"] * 3 + ["dropped"] + ["not_reached"] * 4)
+        self.assertEqual(state["steps"][1]["reason"], "working (Temporal TERMINATED)")
+        self.assertEqual([member["open_steps"] for member in state["team"]], [[]] * 6)
+
+    def test_run_summary_totals_usage_and_lists_dropped_steps(self) -> None:
+        results = [self.result(4, status="failed", output="", reason_code="timeout", usage=_tokens(900)),
+                   self.result(0, usage=_tokens(1500)), self.result(1)]
+        child = _wave_child({"scope": "done", "evidence": "awaiting_review", "intel": ("dropped", "timeout")}, results)
+        run = build_state(self.raw, self.parent, child)["run"]
+        self.assertEqual(run["usage_total"], {"input_tokens": 1800, "output_tokens": 400, "cache_read_tokens": 200,
+                                              "cache_write_tokens": 0, "total_tokens": 2400, "duration_ms": 4800})
+        self.assertEqual(run["dropped"], [{"step_id": "intel", "reason": "timeout"}])
+        unmetered = build_state(_load("lab-input.json"), self.parent, _load("child-status.json"))["run"]
+        self.assertIsNone(unmetered["usage_total"])
+        self.assertEqual(unmetered["dropped"], [])
+        self.assertEqual(build_state(self.raw, None, None)["run"],
+                         {"parent": None, "child": None, "usage_total": None, "dropped": []})
+
+    def test_stage_time_counts_the_overlapping_steps_of_a_wave_once(self) -> None:
+        spans = [{"execution_id": f"{ROUND}:0", "scheduled_ms": 1_000, "closed_ms": 22_000},
+                 *({"execution_id": f"{ROUND}:{index}", "scheduled_ms": 30_000, "closed_ms": 90_000}
+                   for index in range(1, 5))]
+        reviewed = build_state(self.raw, self.parent, _wave_child(dict.fromkeys(STEP_IDS[:5], "done"), [],
+                                                                  workflow_id=ROUND, activity_spans=spans))
+        self.assertEqual([step["timing"]["duration_ms"] for step in reviewed["steps"][:5]], [21_000] + [60_000] * 4)
+        self.assertEqual(reviewed["stage_time"], {"closed_ms": 21_000 + 60_000, "open_since_ms": None})
+        self.assertEqual(reviewed["waves"][:3], [{"wave": 1, "closed_ms": 21_000, "open_since_ms": None},
+                                                 {"wave": 2, "closed_ms": 60_000, "open_since_ms": None},
+                                                 {"wave": 3, "closed_ms": None, "open_since_ms": None}])
+        # Three lanes still run; the dropped lane's 20 s lie inside their span and add nothing.
+        open_spans = [spans[0], *(dict(span, closed_ms=None) for span in spans[1:4]), dict(spans[4], closed_ms=50_000)]
+        states = {"scope": "done", **dict.fromkeys(STEP_IDS[1:4], "working"), "intel": ("dropped", "timeout")}
+        running = build_state(self.raw, self.parent,
+                              _wave_child(states, [], workflow_id=ROUND, activity_spans=open_spans))
+        self.assertEqual(running["stage_time"], {"closed_ms": 21_000, "open_since_ms": 30_000})
+        self.assertEqual(running["waves"][1], {"wave": 2, "closed_ms": 0, "open_since_ms": 30_000})
+
+    def test_tool_lanes_follow_every_working_profile_and_count_its_steps(self) -> None:
+        child = _wave_child({"scope": "done", "evidence": "working", "hypotheses": "working", "network": "working",
+                             "intel": "awaiting_review"}, [])
+        lab = {"activity": ACTIVITY, "events": {}, "missing": []}
+        tools = build_state(tool_input(parallel=True), None, child, lab)["tools"]
+        self.assertEqual([lane["profile"] for lane in tools["lanes"]].count(TH), 1)
+        self.assertEqual({lane["profile"]: lane["working_steps"] for lane in tools["lanes"] if lane["working"]},
+                         {TH: 2, NA: 1})
+        self.assertEqual([lane["working_steps"] for lane in tools["lanes"] if not lane["working"]], [0] * 5)
+        self.assertEqual(tools["working_profile"], TH)
+
+    def test_team_lists_every_open_step_of_a_profile_and_keeps_current(self) -> None:
+        child = _wave_child({"scope": "done", "evidence": "working", "hypotheses": "awaiting_review",
+                             "network": "working", "intel": ("dropped", "timeout")}, [self.result(0), self.result(2)])
+        team = {member["profile"]: member for member in build_state(self.raw, self.parent, child)["team"]}
+        self.assertEqual(team[TH]["open_steps"], [{"step_id": "evidence", "state": "working"},
+                                                  {"step_id": "hypotheses", "state": "awaiting_review"}])
+        self.assertEqual(team[TH]["current"], 1)
+        self.assertEqual(team[NA]["open_steps"], [{"step_id": "network", "state": "working"}])
+        for profile in ("framework-coordinator", "framework-librarian"):
+            self.assertEqual((team[profile]["open_steps"], team[profile]["current"]), ([], None))
+
+    def test_history_is_re_read_until_every_running_activity_of_a_wave_is_readable(self) -> None:
+        with mock.patch("threading.Thread"):
+            observer = TemporalObserver("127.0.0.1:7233", "practice-1")
+        self.addCleanup(observer._loop.close)
+        observer._client = history = _History()
+
+        def spans(child: dict) -> list[dict]:
+            return asyncio.run(observer._activity_spans(ROUND, child))
+
+        child = _wave_child({"scope": "done", "evidence": "working", "hypotheses": "working"}, [self.result(0)])
+        history.events = [_scheduled(10, 1_000, f"{ROUND}:0"), _closed(12, 2_000, 10),
+                          _scheduled(20, 3_000, f"{ROUND}:1")]
+        self.assertEqual(len(spans(child)), 2)
+        history.events.append(_scheduled(22, 3_100, f"{ROUND}:2"))
+        self.assertEqual(len(spans(child)), 3)
+        spans(child)
+        self.assertEqual(history.reads, 2)
+        # A step can leave the wave without a new result; its activity's close time is still read.
+        spans(_wave_child({"scope": "done", "evidence": ("dropped", "timeout"), "hypotheses": "working"},
+                          [self.result(0)]))
+        self.assertEqual(history.reads, 3)
 
 
 if __name__ == "__main__":

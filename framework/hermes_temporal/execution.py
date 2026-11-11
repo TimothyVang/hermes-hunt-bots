@@ -26,6 +26,13 @@ PROFILES = frozenset({
 MAX_PROMPT_BYTES = 65536
 MAX_OUTPUT_BYTES = 65536
 MAX_TURNS = 32
+# Raw stream-json stdout of one step; a tool-heavy step emits far more than its final text.
+MAX_STREAM_BYTES = 16 * 1024 * 1024
+# A result line still fits when all MAX_OUTPUT_BYTES of its text are \uXXXX escapes; longer lines are dropped unparsed.
+MAX_STREAM_LINE_BYTES = 1024 * 1024
+_USAGE_FIELDS = (('input_tokens', 'input'), ('output_tokens', 'output'), ('cache_read_tokens', 'cache_read'),
+                 ('cache_write_tokens', 'cache_write'), ('total_tokens', 'total'))
+_ADDED_RECEIPT_COLUMNS = ('usage', 'session_id')
 _STEP_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z')
 
 
@@ -40,11 +47,14 @@ class ExecutionConfig:
     allow_operator_home: bool = False
     # Hermes hides --source tool sessions from user session lists; 'cli' shows them.
     visible_sessions: bool = False
+    # Run Hermes with stream-json output so each result carries token counts and wall time.
+    record_usage: bool = False
 
 
-def _result(request: ExecutionRequest, status: str, reason: str, output: str = '') -> ExecutionResult:
+def _result(request: ExecutionRequest, status: str, reason: str, output: str = '',
+            session_id: str | None = None, usage: dict | None = None) -> ExecutionResult:
     return ExecutionResult(status=status, execution_id=request.execution_id, output=output,
-                           reason_code=reason, session_id=None)
+                           reason_code=reason, session_id=session_id, usage=usage)
 
 
 def _valid_request(request: ExecutionRequest) -> bool:
@@ -96,6 +106,11 @@ def _fingerprint(request: ExecutionRequest) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _missing_receipt_columns(db: sqlite3.Connection) -> list[str]:
+    present = {row[1] for row in db.execute('PRAGMA table_info(receipts)')}
+    return [column for column in _ADDED_RECEIPT_COLUMNS if column not in present]
+
+
 class ReceiptStore:
     """Reserve in an immediate, fully synchronous transaction before dispatch."""
     def __init__(self, path: str):
@@ -106,35 +121,45 @@ class ReceiptStore:
         db.execute('PRAGMA synchronous=FULL')
         db.execute('CREATE TABLE IF NOT EXISTS receipts ('
                    'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
-                   'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL)')
+                   'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL, '
+                   'usage TEXT, session_id TEXT)')
+        if _missing_receipt_columns(db):
+            # Workers may open a five-column database together; recheck under the write lock
+            # so each column is added once.
+            db.execute('BEGIN IMMEDIATE')
+            for column in _missing_receipt_columns(db):
+                db.execute(f'ALTER TABLE receipts ADD COLUMN {column} TEXT')
+            db.execute('COMMIT')
         return db
 
     def reserve(self, request: ExecutionRequest) -> ExecutionResult | None:
         fingerprint = _fingerprint(request)
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT fingerprint, status, reason, output FROM receipts WHERE execution_id = ?',
-                             (request.execution_id,)).fetchone()
+            row = db.execute('SELECT fingerprint, status, reason, output, usage, session_id FROM receipts '
+                             'WHERE execution_id = ?', (request.execution_id,)).fetchone()
             if row is None:
-                db.execute('INSERT INTO receipts VALUES (?, ?, ?, ?, ?)',
-                           (request.execution_id, fingerprint, 'reserved', '', ''))
+                db.execute('INSERT INTO receipts (execution_id, fingerprint, status, reason, output) '
+                           'VALUES (?, ?, ?, ?, ?)', (request.execution_id, fingerprint, 'reserved', '', ''))
                 db.execute('COMMIT')
                 return None
             db.execute('COMMIT')
-        old_fingerprint, status, reason, output = row
+        old_fingerprint, status, reason, output, usage, session_id = row
         if old_fingerprint != fingerprint:
             return _result(request, 'failed', 'fingerprint_conflict')
+        usage = None if usage is None else json.loads(usage)
         if status in ('completed', 'failed'):
-            return _result(request, status, reason, output)
-        return _result(request, 'unknown', 'previous_dispatch_unknown')
+            return _result(request, status, reason, output, session_id, usage)
+        return _result(request, 'unknown', 'previous_dispatch_unknown', session_id=session_id, usage=usage)
 
     def finish(self, result: ExecutionResult) -> None:
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
-            cursor = db.execute('UPDATE receipts SET status = ?, reason = ?, output = ? '
+            cursor = db.execute('UPDATE receipts SET status = ?, reason = ?, output = ?, usage = ?, session_id = ? '
                                 'WHERE execution_id = ? AND status = ?',
                                 (result.status, result.reason_code, result.output,
-                                 result.execution_id, 'reserved'))
+                                 None if result.usage is None else json.dumps(result.usage, sort_keys=True),
+                                 result.session_id, result.execution_id, 'reserved'))
             if cursor.rowcount != 1:
                 db.execute('ROLLBACK')
                 raise RuntimeError('receipt state changed')
@@ -175,11 +200,91 @@ def _environment(home: str, executable: str) -> dict[str, str]:
     return env
 
 
+class _ResultStream:
+    """Keep the last `result` record of stream-json stdout while holding at most one bounded line."""
+    def __init__(self) -> None:
+        self.record: dict | None = None
+        self.dropped_line = False
+        self._line = bytearray()
+        self._dropping = False
+
+    def feed(self, part: bytes) -> None:
+        *complete, rest = part.split(b'\n')
+        for piece in complete:
+            self._extend(piece)
+            self.end_line()
+        self._extend(rest)
+
+    def _extend(self, piece: bytes) -> None:
+        if self._dropping:
+            return
+        if len(self._line) + len(piece) > MAX_STREAM_LINE_BYTES:
+            self._line.clear()
+            self._dropping = self.dropped_line = True
+        else:
+            self._line += piece
+
+    def end_line(self) -> None:
+        if not self._dropping:
+            try:
+                value = json.loads(self._line)
+            except (ValueError, RecursionError):
+                value = None
+            if isinstance(value, dict) and value.get('type') == 'result':
+                self.record = value
+        self._line.clear()
+        self._dropping = False
+
+
+def _utf8_size(value: object) -> int | None:
+    try:
+        return len(value.encode('utf-8')) if isinstance(value, str) else None
+    except UnicodeEncodeError:
+        return None
+
+
+def _usage(record: dict) -> dict | None:
+    tokens = record.get('tokens')
+    if not isinstance(tokens, dict):
+        return None
+    usage = {key: tokens.get(name) for key, name in _USAGE_FIELDS}
+    usage['duration_ms'] = record.get('duration_ms')
+    if any(type(value) is not int or value < 0 for value in usage.values()):
+        return None
+    return usage
+
+
+def _stream_result(request: ExecutionRequest, stream: _ResultStream, returncode: int) -> ExecutionResult:
+    record = stream.record
+    if record is None:
+        if returncode != 0:
+            return _result(request, 'unknown', 'native_nonzero')
+        return _result(request, 'unknown', 'output_limit' if stream.dropped_line else 'output_unavailable')
+    session_id = record.get('session_id')
+    spend = {'session_id': session_id if _utf8_size(session_id) is not None else None, 'usage': _usage(record)}
+    exit_code = record.get('exit_code', 0)
+    if returncode != 0 or type(exit_code) is not int or exit_code != 0:
+        return _result(request, 'unknown', 'native_nonzero', **spend)
+    text = record.get('text')
+    size = _utf8_size(text)
+    if size is None or not text.strip():
+        return _result(request, 'unknown', 'output_unavailable', **spend)
+    if size > MAX_OUTPUT_BYTES:
+        return _result(request, 'unknown', 'output_limit', **spend)
+    return _result(request, 'completed', 'completed', text, **spend)
+
+
 def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
     step = request.step
     command = [config.executable, '-p', step.profile, 'chat', '--oneshot', '--quiet',
                '--query-file', '-', '--source', 'cli' if config.visible_sessions is True else 'tool',
                '--max-turns', str(MAX_TURNS)]
+    stream = None
+    limit = MAX_OUTPUT_BYTES
+    if config.record_usage is True:
+        command += ['--format', 'stream-json']
+        stream = _ResultStream()
+        limit = MAX_STREAM_BYTES
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, cwd=config.working_directory,
@@ -198,16 +303,21 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
             while True:
                 part = os.read(process.stdout.fileno(), 8192)
                 if not part:
+                    if stream is not None:
+                        stream.end_line()
                     break
                 size += len(part)
-                if size > MAX_OUTPUT_BYTES:
+                if size > limit:
                     overflow.set()
                     try:
                         process.kill()
                     except OSError:
                         pass
                     break
-                chunks.append(part)
+                if stream is None:
+                    chunks.append(part)
+                else:
+                    stream.feed(part)
         except (OSError, ValueError):
             read_error.set()
         finally:
@@ -249,6 +359,8 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
         return _result(request, 'unknown', 'output_limit')
     if reader.is_alive() or writer.is_alive() or read_error.is_set() or write_error.is_set():
         return _result(request, 'unknown', 'output_unavailable')
+    if stream is not None:
+        return _stream_result(request, stream, process.returncode)
     if process.returncode != 0:
         return _result(request, 'unknown', 'native_nonzero')
     try:
@@ -260,13 +372,30 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
     return _result(request, 'completed', 'completed', output)
 
 
-def execute(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
+def _refusal(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult | None:
     if not _valid_request(request):
         return _result(request, 'failed', 'invalid_request')
     if not config.enabled:
         return _result(request, 'failed', 'execution_disabled')
     if not _valid_config(config):
         return _result(request, 'failed', 'invalid_configuration')
+    return None
+
+
+def invoke_step(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
+    """Run one step directly, with no receipt and therefore no at-most-once protection.
+
+    For operator probes outside a workflow only: a repeated call dispatches Hermes again.
+    Workflow steps go through `execute`.
+    """
+    refusal = _refusal(config, request)
+    return _invoke(config, request) if refusal is None else refusal
+
+
+def execute(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
+    refusal = _refusal(config, request)
+    if refusal is not None:
+        return refusal
     store = ReceiptStore(config.receipt_db)
     try:
         existing = store.reserve(request)

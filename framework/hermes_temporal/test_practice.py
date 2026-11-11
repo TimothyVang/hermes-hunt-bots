@@ -21,16 +21,18 @@ class PracticeWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.executions: list[str] = []
         self.outcome = "completed"
+        self.step_outcomes: dict[str, str] = {}
 
         @activity.defn(name="execute_hermes_step")
         async def execute(request: ExecutionRequest) -> ExecutionResult:
             self.executions.append(request.execution_id)
+            outcome = self.step_outcomes.get(request.step.step_id, self.outcome)
             reason = {
                 "completed": "completed",
                 "failed": "native_failed",
                 "unknown": "execution_error",
-            }[self.outcome]
-            return ExecutionResult(self.outcome, request.execution_id, "Synthetic result.", reason)
+            }[outcome]
+            return ExecutionResult(outcome, request.execution_id, "Synthetic result.", reason)
 
         self.execute = execute
         self.env = await WorkflowEnvironment.start_time_skipping()
@@ -56,10 +58,11 @@ class PracticeWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.01)
         return await asyncio.wait_for(poll(), timeout)
 
-    async def start_practice(self, workflow_id: str, *, rounds: int = 3, start_signal: str | None = None):
+    async def start_practice(self, workflow_id: str, *, rounds: int = 3, start_signal: str | None = None,
+                             hunt: WorkflowRequest | None = None):
         return await self.env.client.start_workflow(
             PracticeWorkflow.run,
-            PracticeRequest(WorkflowRequest([HermesStep("triage", "Synthetic triage.")]), rounds),
+            PracticeRequest(hunt or WorkflowRequest([HermesStep("triage", "Synthetic triage.")]), rounds),
             id=workflow_id,
             task_queue="test-hermes-practice",
             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
@@ -207,6 +210,76 @@ class PracticeWorkflowTests(unittest.IsolatedAsyncioTestCase):
         state = await parent.query(PracticeWorkflow.status)
         self.assertEqual((state.round_index, state.completed_rounds, state.last_result), (1, 0, "completed:unknown"))
         self.assertEqual(self.executions, ["practice-unknown-reviewed:round:001:0"])
+
+    @staticmethod
+    def _team_hunt() -> WorkflowRequest:
+        return WorkflowRequest([HermesStep("triage", "Synthetic triage."),
+                                HermesStep("hunter", "Synthetic hunt.", optional=True)], parallel=True)
+
+    async def test_parallel_round_with_a_dropped_optional_step_counts_as_completed(self) -> None:
+        self.step_outcomes["hunter"] = "failed"
+        parent = await self.start_practice("practice-parallel-dropped", rounds=1, hunt=self._team_hunt())
+        _, child = await self.open_child_gate(parent, "running_round")
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("wave-1", "execute", "approve", "wave-execute"))
+        child_state = await self.wait_for(lambda: self._child_stage(child, "awaiting_review"))
+        self.assertEqual([(item.step_id, item.state, item.reason) for item in child_state.steps],
+                         [("triage", "awaiting_review", ""), ("hunter", "dropped", "native_failed")])
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("wave-1", "review", "approve", "wave-review"))
+        self.assertEqual(await child.result(), PracticeRoundResult("completed", ["completed"]))
+        self.assertEqual(await parent.result(), "completed")
+        state = await parent.query(PracticeWorkflow.status)
+        self.assertEqual((state.stage, state.completed_rounds, state.last_result), ("completed", 1, "completed"))
+        self.assertEqual(sorted(self.executions), ["practice-parallel-dropped:round:001:0",
+                                                   "practice-parallel-dropped:round:001:1"])
+
+    async def test_parallel_round_with_an_unknown_required_step_halts(self) -> None:
+        self.step_outcomes["triage"] = "unknown"
+        parent = await self.start_practice("practice-parallel-unknown", rounds=2, hunt=self._team_hunt())
+        _, child = await self.open_child_gate(parent, "running_round")
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("wave-1", "execute", "approve", "wave-execute"))
+        await self.wait_for(lambda: self._child_stage(child, "needs_reconciliation"))
+        await child.signal(
+            PracticeRoundWorkflow.decision,
+            WorkflowDecision("triage", "reconcile", "accept", "wave-accept", "synthetic uncertainty reviewed"),
+        )
+        await self.wait_for(lambda: self._child_stage(child, "awaiting_review"))
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("wave-1", "review", "approve", "wave-review"))
+        self.assertEqual(await parent.result(), "halted")
+        self.assertEqual(await child.result(), PracticeRoundResult("completed", ["unknown"]))
+        state = await parent.query(PracticeWorkflow.status)
+        self.assertEqual((state.round_index, state.completed_rounds, state.last_result), (1, 0, "completed:unknown"))
+
+    async def test_non_parallel_round_result_still_lists_every_step_in_order(self) -> None:
+        self.step_outcomes["follow-up"] = "unknown"
+        hunt = WorkflowRequest([HermesStep("triage", "Synthetic triage."),
+                                HermesStep("follow-up", "Synthetic follow-up.")])
+        parent = await self.start_practice("practice-serial-order", rounds=2, hunt=hunt)
+        _, child = await self.open_child_gate(parent, "running_round")
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("triage", "execute", "approve", "triage-execute"))
+        await self.wait_for(lambda: self._child_stage(child, "awaiting_review"))
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("triage", "review", "approve", "triage-review"))
+        await self.wait_for(lambda: self._child_stage(child, "awaiting_execution_approval"))
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("follow-up", "execute", "approve", "follow-up-execute"))
+        await self.wait_for(lambda: self._child_stage(child, "needs_reconciliation"))
+        await child.signal(
+            PracticeRoundWorkflow.decision,
+            WorkflowDecision("follow-up", "reconcile", "accept", "follow-up-accept", "synthetic uncertainty reviewed"),
+        )
+        await self.wait_for(lambda: self._child_stage(child, "awaiting_review"))
+        await child.signal(PracticeRoundWorkflow.decision,
+                           WorkflowDecision("follow-up", "review", "approve", "follow-up-review"))
+        self.assertEqual(await child.result(), PracticeRoundResult("completed", ["completed", "unknown"]))
+        self.assertEqual(await parent.result(), "halted")
+        state = await parent.query(PracticeWorkflow.status)
+        self.assertEqual((state.round_index, state.completed_rounds, state.last_result),
+                         (1, 0, "completed:completed,unknown"))
 
     async def test_invalid_round_counts_rejected(self) -> None:
         request = WorkflowRequest([HermesStep("triage", "Synthetic triage.")])

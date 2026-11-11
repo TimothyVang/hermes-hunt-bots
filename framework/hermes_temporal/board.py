@@ -28,7 +28,7 @@ from urllib import parse
 
 from hunt_lab import screencast
 
-from .contracts import validate_loopback_address
+from .contracts import USAGE_KEYS, validate_loopback_address
 from .hunt import supplied_evidence_hunt
 from .lab_input import LabInputError, lab_endpoints, lab_get, loopback_base
 from .workflows import _unwrap_single_fence
@@ -422,13 +422,69 @@ def _step_states(count: int, step_ids: list[str], child: dict | None) -> list[tu
     return states
 
 
-def _run_summary(parent: dict | None, child: dict | None) -> dict:
+def _results(child: dict | None) -> list:
+    return child["results"] if isinstance(child, dict) and isinstance(child.get("results"), list) else []
+
+
+def _usage(result: Any) -> dict | None:
+    """A result's token counts and wall time, when the worker recorded them."""
+    usage = _get(result, "usage")
+    if not isinstance(usage, dict) or any(type(usage.get(key)) is not int for key in USAGE_KEYS):
+        return None
+    return {key: usage[key] for key in USAGE_KEYS}
+
+
+def _wave_steps(child: dict | None) -> dict[str, dict]:
+    """A parallel round's own report of every step, by step ID; empty for a serial round."""
+    steps = child.get("steps") if isinstance(child, dict) else None
+    return {item["step_id"]: item for item in steps if isinstance(item, dict)
+            and isinstance(item.get("step_id"), str)} if isinstance(steps, list) else {}
+
+
+def _step_track(step_ids: list[str], child: dict | None) -> list[tuple[str, str, int, dict | None]]:
+    """Per step in request order: board state, reason, wave and latest result.
+
+    A serial round has one open step, found from its ``step_id``, and positional results. A parallel
+    round reports each step itself: several can be open at once and its ``step_id`` is a wave gate,
+    so each result is matched by execution ID."""
+    results, reported = _results(child), _wave_steps(child)
+    if not reported:
+        states = _step_states(len(step_ids), step_ids, child)
+        return [(state, reason or "", index + 1,
+                 results[index] if index < len(results) and isinstance(results[index], dict) else None)
+                for index, (state, reason) in enumerate(states)]
+    by_execution = {result["execution_id"]: result for result in results
+                    if isinstance(result, dict) and isinstance(result.get("execution_id"), str)}
+    temporal = child.get("temporal_status")
+    live = temporal in (None, "RUNNING")
+    halted = not live or any(item.get("state") == "stopped" for item in reported.values())
+    track = []
+    for index, step_id in enumerate(step_ids):
+        item = reported.get(step_id, {})
+        state, reason = item.get("state"), ""
+        if state in _OPEN_STATES and not live:
+            state, reason = "stopped", f"{state} (Temporal {temporal})"
+        elif state in ("dropped", "stopped"):
+            reason = item["reason"] if isinstance(item.get("reason"), str) else ""
+        elif state not in _OPEN_STATES and state != "done":
+            state = "not_reached" if halted else "pending"
+        execution_id = item.get("execution_id")
+        track.append((state, reason, item["wave"] if type(item.get("wave")) is int else index + 1,
+                      by_execution.get(execution_id) if isinstance(execution_id, str) else None))
+    return track
+
+
+def _run_summary(parent: dict | None, child: dict | None, step_views: list[dict]) -> dict:
     parent_keys = ("workflow_id", "stage", "temporal_status", "round_index", "rounds",
                    "completed_rounds", "last_result", "child_workflow_id")
     child_keys = ("stage", "step_id", "execution_id", "temporal_status")
+    usages = [usage for usage in map(_usage, _results(child)) if usage]
     return {
         "parent": {key: parent.get(key) for key in parent_keys} if isinstance(parent, dict) else None,
         "child": {key: child.get(key) for key in child_keys} if isinstance(child, dict) else None,
+        "usage_total": {key: sum(usage[key] for usage in usages) for key in USAGE_KEYS} if usages else None,
+        "dropped": [{"step_id": view["step_id"], "reason": view["reason"]} for view in step_views
+                    if view["state"] == "dropped"],
     }
 
 
@@ -488,6 +544,14 @@ def _stage_timings(round_id: Any, count: int, spans: Any) -> list[dict]:
     return timings
 
 
+def _running_executions(child: dict) -> set:
+    """Execution IDs the round reports as running now: one for a serial round, several in a parallel wave."""
+    reported = _wave_steps(child)
+    if reported:
+        return {item.get("execution_id") for item in reported.values() if item.get("state") == "working"}
+    return {child.get("execution_id")} if child.get("stage") == "executing" else set()
+
+
 def _round_clock(child: dict | None, timings: list[dict]) -> dict:
     """The round's real start (Temporal, else its first stage) and end (Temporal close time)."""
     child = child if isinstance(child, dict) else {}
@@ -497,6 +561,25 @@ def _round_clock(child: dict | None, timings: list[dict]) -> dict:
         started, source = (min(firsts), "first_stage") if firsts else (None, None)
     return {"started_ms": started, "ended_ms": _epoch_ms(child.get("close_time")) if started is not None else None,
             "source": source}
+
+
+def _wall_time(step_views: list[dict]) -> dict:
+    """Wall time the steps cover, each moment counted once however many steps of a wave overlap it.
+
+    A step covers its first activity's start to its last one's end, or to now while it is open. The
+    result is the finished part and when the still-open part began; the page adds the time since."""
+    open_since = min((view["timing"]["started_ms"] for view in step_views
+                      if view["state"] in _OPEN_STATES and view["timing"]["started_ms"] is not None), default=None)
+    spans = sorted((view["timing"]["started_ms"], view["timing"]["ended_ms"]) for view in step_views
+                   if view["state"] not in _OPEN_STATES and view["timing"]["duration_ms"] is not None)
+    closed, covered = 0, None
+    for started, ended in spans:
+        started = started if covered is None else max(started, covered)
+        ended = ended if open_since is None else min(ended, open_since)
+        if ended > started:
+            closed += ended - started
+            covered = ended
+    return {"closed_ms": closed if spans else None, "open_since_ms": open_since}
 
 
 _AUDIT_TAIL_BYTES = 512 * 1024
@@ -569,9 +652,11 @@ def _team(step_views: list[dict]) -> list[dict]:
     team = []
     for profile, role in ROLE_TITLES.items():
         owned = [view for view in step_views if view["profile"] == profile]
+        open_steps = [view for view in owned if view["state"] in _OPEN_STATES]
         team.append({"profile": profile, "role": role, "monogram": MONOGRAMS[profile],
                      "steps": [view["index"] for view in owned],
-                     "current": next((view["index"] for view in owned if view["state"] in _OPEN_STATES), None),
+                     "current": open_steps[0]["index"] if open_steps else None,
+                     "open_steps": [{"step_id": view["step_id"], "state": view["state"]} for view in open_steps],
                      "claims": sum(view["claims"] or 0 for view in owned)})
     return team
 
@@ -614,9 +699,7 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         events = [event for event in (_event(row, None) for row in looked_up.values()) if event]
         events.sort(key=lambda event: (event["t_ms"] is None, event["t_ms"] or 0, event["id"]))
         sessions = []
-    step_ids = [step.step_id for step in steps]
-    states = _step_states(len(steps), step_ids, child)
-    results = child.get("results") if isinstance(child, dict) and isinstance(child.get("results"), list) else []
+    track = _step_track([step.step_id for step in steps], child)
     rejections = (child.get("handoff_rejections") if isinstance(child, dict)
                   and isinstance(child.get("handoff_rejections"), list) else [])
     known_events = {event["id"] for event in events}
@@ -629,13 +712,13 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
     claim_reviews: dict[str, list[dict]] = {}
     contradicted_by: dict[str, list[str]] = {}
     for index, step in enumerate(steps):
-        state, reason = states[index]
-        result = results[index] if index < len(results) and isinstance(results[index], dict) else None
+        state, reason, wave, result = track[index]
         role = ROLE_TITLES.get(step.profile, step.profile)
         view = {"index": index, "step_id": step.step_id, "name": step.step_id.replace("_", " ").title(),
                 "profile": step.profile, "role": role,
                 "monogram": MONOGRAMS.get(step.profile, step.profile[:2].upper()),
-                "state": state, "reason": reason, "result": None, "claims": None, "timing": timings[index],
+                "state": state, "reason": reason, "wave": wave, "optional": step.optional, "usage": _usage(result),
+                "result": None, "claims": None, "timing": timings[index],
                 "handoff_rejections": [{"outcome": item.get("outcome"), "reason": item.get("reason")}
                                        for item in rejections
                                        if isinstance(item, dict) and item.get("step_id") == step.step_id]}
@@ -712,17 +795,23 @@ def build_state(raw_input: dict, parent: dict | None, child: dict | None, lab: d
         if session["domain"]:
             by_domain[session["domain"]] = by_domain.get(session["domain"], 0) + 1
     pending = sorted({event_id for item in feed for event_id in item["pending_cited_ids"]})
-    working = next((step.profile for step, (state, _reason) in zip(steps, states) if state == "working"), None)
+    working: dict[str, int] = {}
+    for view in step_views:
+        if view["state"] == "working":
+            working[view["profile"]] = working.get(view["profile"], 0) + 1
     activity = sorted((entry for entry in lab.get("activity") or () if isinstance(entry, dict)),
                       key=lambda entry: entry.get("seq") if type(entry.get("seq")) is int else -1, reverse=True)
     return {
-        "board_version": 3,
+        "board_version": 4,
         "mode": "tool_driven" if tool_driven else "inline",
         "case": case,
         "scope": _text(raw.get("scope")),
         "input_errors": input_errors,
-        "run": _run_summary(parent, child),
+        "run": _run_summary(parent, child, step_views),
         "round": _round_clock(child, timings),
+        "stage_time": _wall_time(step_views),
+        "waves": [{"wave": wave, **_wall_time([view for view in step_views if view["wave"] == wave])}
+                  for wave in sorted({view["wave"] for view in step_views})],
         "steps": step_views,
         "team": _team(step_views),
         "latest_conclusion": _latest_conclusion(step_views, handoffs),
@@ -765,19 +854,21 @@ def _arkime_ui_url(arkime_url: str | None, case: dict, expression: str, network_
     return f"{arkime_url}/sessions?{parse.urlencode(params)}"
 
 
-def _tool_view(lab: dict, case: dict, working_profile: str | None) -> dict:
+def _tool_view(lab: dict, case: dict, working: dict[str, int]) -> dict:
+    """``working`` counts each profile's running steps. The lab logs tool calls per profile, so steps
+    that share a profile share one lane."""
     entries = [entry for entry in lab.get("activity") or () if isinstance(entry, dict)]
     new_after = lab.get("new_after") if type(lab.get("new_after")) is int else None
     lanes: dict[str, dict] = {
         profile: {"profile": profile, "role": role, "count": 0, "errors": 0, "entries": [],
-                  "working": profile == working_profile, "active": False}
+                  "working": profile in working, "working_steps": working.get(profile, 0), "active": False}
         for profile, role in ROLE_TITLES.items()
     }
     for entry in sorted(entries, key=lambda item: item.get("seq") if type(item.get("seq")) is int else -1,
                         reverse=True):
         profile = entry.get("profile") if entry.get("profile") in ROLE_TITLES else "unknown"
         lane = lanes.setdefault(profile, {"profile": "unknown", "role": "Unattributed", "count": 0, "errors": 0,
-                                          "entries": [], "working": False, "active": False})
+                                          "entries": [], "working": False, "working_steps": 0, "active": False})
         params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
         params = {key: value for key, value in params.items() if isinstance(key, str) and isinstance(value, str)}
         endpoint = entry.get("endpoint") if isinstance(entry.get("endpoint"), str) else ""
@@ -805,7 +896,7 @@ def _tool_view(lab: dict, case: dict, working_profile: str | None) -> dict:
         })
     return {
         "lab": {key: lab.get(key) for key in ("reachable", "error", "observed_at", "last_success_at", "arkime_url")},
-        "working_profile": working_profile,
+        "working_profile": next(iter(working), None),
         "lanes": [lane for lane in lanes.values() if lane["profile"] in ROLE_TITLES or lane["count"]],
         "entry_count": len(entries),
         "events_looked_up": len(lab.get("events") or {}),
@@ -900,11 +991,11 @@ class TemporalObserver:
         """The round's activity spans; None when its history could not be read (timings stay unknown)."""
         key = (workflow_id, child.get("stage"), child.get("step_id"), child.get("execution_id"),
                child.get("temporal_status"), len(child.get("results") or ()),
-               len(child.get("handoff_rejections") or ()))
+               len(child.get("handoff_rejections") or ()),
+               tuple((item.get("state"), item.get("execution_id")) for item in _wave_steps(child).values()))
         cached = self._spans
-        # A query can answer before the new activity's scheduled event is readable; re-read until it is.
-        settled = child.get("stage") != "executing" or any(
-            span["execution_id"] == child.get("execution_id") for span in (cached[1] if cached else ()))
+        # A query can answer before a new activity's scheduled event is readable; re-read until it is.
+        settled = _running_executions(child) <= {span["execution_id"] for span in (cached[1] if cached else ())}
         if cached and cached[0] == key and settled:
             return cached[1]
         try:
@@ -1411,7 +1502,7 @@ PAGE = r"""<!doctype html>
 :root{--paper:#f7f7f5;--ink:#1e211f;--muted:#666c68;--soft:#929993;--line:#dcdedb;--accent:#315c4c;--accent-soft:#e7eeea;
 --live:#b3322d;--done:#8d9a90;--track:#e8ebe7;--hx-side:#f5f6f8;--hx-line:#e3e6ea;--hx-text:#1f2430;--hx-muted:#6b7280;--hx-soft:#9aa1ac;
 --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;--sans:"Inter",-apple-system,"Segoe UI",sans-serif;
---screen-h:clamp(240px,calc(100vh - 615px),640px)}
+--screen-h:clamp(240px,calc(100vh - 615px - var(--wf-extra,0px)),640px)}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
@@ -1424,6 +1515,8 @@ code{font-family:var(--mono)}
 .st.run{color:var(--accent)}
 .st.wait{color:var(--soft)}
 .st.stop{color:var(--ink)}
+.st.drop{color:var(--soft)}
+.st.drop::before{content:"\00d7";font-size:15px;line-height:1}
 .st.live{color:var(--live)}
 .st.live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--live);animation:breathe 2.4s ease-in-out infinite}
 @keyframes breathe{50%{opacity:.48}}
@@ -1467,6 +1560,7 @@ h1{font-size:34px;line-height:1.1;letter-spacing:-.04em;font-weight:650;margin:0
 .tl-bar>span.done{background:var(--done)}
 .tl-bar>span.stop{background:var(--ink)}
 .tl-bar>span.pend{background:repeating-linear-gradient(90deg,#c3cac5 0 1px,#eef0ed 1px 4px)}
+.tl-bar>span.drop{background:repeating-linear-gradient(135deg,var(--done) 0 3px,#eef0ed 3px 6px)}
 .tl-bar>span.on{background:var(--accent-soft);box-shadow:inset 0 0 0 2px var(--accent)}
 .tl-bar>span.on>b{position:absolute;left:0;top:0;bottom:0;background:var(--accent)}
 .tl-num{margin-top:5px;font:600 12px var(--mono);color:var(--soft)}
@@ -1474,16 +1568,33 @@ h1{font-size:34px;line-height:1.1;letter-spacing:-.04em;font-weight:650;margin:0
 .tl-num>span.on{color:var(--accent)}
 .stages{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:repeat(9,minmax(0,1fr));border-top:1px solid var(--line)}
 .stage{padding:8px 10px 2px 0;min-width:0;border-top:3px solid transparent;margin-top:-2px}
-.stage+.stage{padding-left:10px;border-left:1px solid var(--line)}
+.stage+.stage,.stages.par .stage:not(:first-child){padding-left:10px;border-left:1px solid var(--line)}
 .stage.on{border-top-color:var(--accent)}
-.stage .top{display:flex;align-items:center;gap:8px;min-width:0}
-.stage .n{font:600 13px var(--mono);color:var(--soft)}
-.stage.on .n{color:var(--accent)}
-.stage .nm{font-size:17px;font-weight:650;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.stage .top,.wave-lane .top{display:flex;align-items:center;gap:8px;min-width:0}
+.stage .n,.wave-lane .n{font:600 13px var(--mono);color:var(--soft)}
+.stage.on .n,.wave-lane.on .n{color:var(--accent)}
+.stage .nm,.wave-lane .nm{font-size:17px;font-weight:650;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .stage .mg{width:28px;height:28px;font-size:10.5px}
-.stage .meta{display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:5px;white-space:nowrap}
-.stage .meta .st{overflow:hidden;text-overflow:ellipsis;min-width:0}
-.stage .t{font:500 14px var(--mono);color:var(--ink)}
+.stage .meta,.wave-lane .meta{display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-top:5px;white-space:nowrap}
+.stage .meta .st,.wave-lane .meta .st{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stage .t,.wave-lane .t{font:500 14px var(--mono);color:var(--ink)}
+.stage.dropped .nm,.wave-lane.dropped .nm{color:var(--soft);text-decoration:line-through}
+.why{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* A wave of several steps: one group behind one decision, its steps side by side as lanes. */
+.stages.par{align-items:start}
+.wave{min-width:0;margin:6px 10px 2px 0;padding:5px 10px 6px;background:#fff;border:1px solid var(--line);border-radius:8px}
+.wave.on{border-color:var(--accent)}
+.wave-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;font-size:12px;color:var(--muted)}
+.wave-g{margin-left:auto}
+.wave-lanes{list-style:none;margin:4px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 10px}
+.wave-lane{min-width:0;padding:1px 0 1px 8px;border-left:2px solid var(--line)}
+.wave-lane.on{border-left-color:var(--accent)}
+.wave-lane .nm{font-size:15px}
+.wave-lane .mg{width:24px;height:24px;font-size:10px}
+.wave-lane .sub{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);white-space:nowrap}
+.wave-lane .sub .role{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.wave-lane .sub .tok{font-family:var(--mono);color:var(--ink)}
+.wave-lane .meta{margin-top:2px}
 #bots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .bot{background:#fff;border:1.5px solid var(--ink);border-radius:14px;padding:14px 16px 16px;min-width:0;display:flex;flex-direction:column;gap:12px}
 .bot-h{display:flex;align-items:center;gap:14px;min-width:0}
@@ -1609,6 +1720,7 @@ ol.calls{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
 @media (max-width:1280px){#bots{grid-template-columns:minmax(0,1fr)}.stages{grid-template-columns:repeat(3,minmax(0,1fr))}
 .stage:nth-child(3n+1){padding-left:0;border-left:0}.team{grid-template-columns:repeat(3,minmax(0,1fr))}
 .team>div:nth-child(4){padding-left:0;border-left:0}main{grid-template-columns:minmax(0,1fr)}#feed-sec{position:static;max-height:none}
+.wave{grid-column:1/-1!important}
 :root{--screen-h:clamp(240px,50vh,620px)}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
@@ -1625,12 +1737,12 @@ ol.calls{list-style:none;margin:0;padding:0;max-height:320px;overflow:auto}
 <div class="title"><h1 id="case-id">Loading&hellip;</h1><span id="round"></span></div>
 <p id="question"></p>
 </div>
-<div class="clock"><div class="lbl"><span id="clock-label">Round elapsed</span><span id="round-state" class="st wait"></span></div>
+<div class="clock"><div class="lbl"><span id="clock-label">Round elapsed</span><span id="usage" hidden></span><span id="round-state" class="st wait"></span></div>
 <span id="clock">--:--</span><div id="conn">Loading state&hellip;</div></div>
 </header>
 <p id="errors" hidden></p>
 <section aria-label="Workflow">
-<div class="wf-h"><span class="lbl">Workflow &middot; nine stages, sized by real duration</span><span id="wf-meta"></span></div>
+<div class="wf-h"><span class="lbl">Workflow &middot; <span id="wf-count">nine</span> stages, sized by real duration</span><span id="wf-meta"></span></div>
 <div id="tl-bar" class="tl-bar" role="img" aria-label="Stages sized by their recorded duration"></div>
 <div id="tl-num" class="tl-num" aria-hidden="true"></div>
 <ol id="stage-list" class="stages"></ol>
@@ -1660,12 +1772,12 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const LIVE_FRESH_MS = 10000;
 const CAT = {process:"#1e211f", network:"#315c4c", authentication:"#666c68", configuration:"#929993"};
 const STATE_LABEL = {pending:"waiting", not_reached:"not reached", awaiting_approval:"waiting \u00b7 approval",
-  working:"running", awaiting_review:"in review", done:"done", stopped:"stopped"};
+  working:"running", awaiting_review:"in review", done:"done", dropped:"dropped", stopped:"stopped"};
 const OPEN = new Set(["working", "awaiting_approval", "awaiting_review"]);
 const PAGE_LABEL = {kibana_discover:"Kibana Discover", arkime_sessions:"Arkime Sessions", arkime_spiview:"Arkime SPI View", lab_console:"lab console"};
 const COUNT_NOUN = {elastic_search:"document", arkime_sessions:"session", arkime_unique:"unique value"};
 const $ = (id) => document.getElementById(id);
-let state = null, lastKey = null, fetchError = null;
+let state = null, lastKey = null, fetchError = null, wfExtra = 0;
 
 function el(tag, attrs, text){
   const node = document.createElement(tag);
@@ -1697,6 +1809,11 @@ function ago(ms, now){
   const s = Math.max(0, Math.round((now - ms) / 1000));
   return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
 }
+function tok(n){ return n < 1000 ? String(n) : n < 1e6 ? (n / 1e3).toFixed(1) + "k" : (n / 1e6).toFixed(2) + "M"; }
+function usageTip(u){
+  const full = (n) => n.toLocaleString("en-US");
+  return full(u.total_tokens) + " tokens: input " + full(u.input_tokens) + " \u00b7 output " + full(u.output_tokens) + " \u00b7 cache read " + full(u.cache_read_tokens);
+}
 function kindClass(kind){ return ["observed", "inference", "hypothesis", "finding"].includes(kind) ? kind : "other"; }
 
 const tip = $("tip");
@@ -1724,6 +1841,7 @@ function highlight(ids, on){
 // ---- Hunt Live (re-rendered every second from the last state) ----
 
 function stepWord(s){
+  if (s.state === "dropped") return {text:STATE_LABEL.dropped, cls:"drop"};
   const rejections = s.handoff_rejections || [];
   if (rejections.some((r) => r.outcome && r.outcome !== "retried")) return {text:"rejected", cls:"stop"};
   let text = STATE_LABEL[s.state] || s.state;
@@ -1736,9 +1854,12 @@ function stepTime(s, now){
   if (OPEN.has(s.state)) return t.started_ms === null || t.started_ms === undefined ? null : now - t.started_ms;
   return t.duration_ms;
 }
+// A bot can own several open steps in one wave; the one it is running comes first.
 function workingStep(profile){
   const t = (state.team || []).find((m) => m.profile === profile);
-  return t && t.current !== null ? state.steps[t.current] : null;
+  if (!t || t.current === null) return null;
+  const busy = t.open_steps.find((o) => o.state === "working");
+  return busy ? state.steps.find((s) => s.step_id === busy.step_id) : state.steps[t.current];
 }
 
 function renderHeader(now){
@@ -1755,6 +1876,9 @@ function renderHeader(now){
   const ended = r.ended_ms !== null && r.ended_ms !== undefined;
   $("clock").textContent = r.started_ms === null || r.started_ms === undefined ? "--:--" : dur((ended ? r.ended_ms : now) - r.started_ms);
   $("clock-label").textContent = ended ? "Round time" : r.source === "first_stage" ? "Elapsed since first stage" : "Round elapsed";
+  const u = run.usage_total, usage = $("usage");
+  usage.hidden = !u;
+  if (u){ usage.textContent = tok(u.total_tokens) + " tokens"; usage.title = usageTip(u); }
   const rs = $("round-state");
   if (c){
     const running = c.temporal_status === "RUNNING";
@@ -1771,43 +1895,99 @@ function renderHeader(now){
   conn.className = bad ? "bad" : "";
 }
 
+function stepCell(s, now, lane){
+  const open = OPEN.has(s.state), word = stepWord(s), time = stepTime(s, now);
+  const li = el("li", {class:(lane ? "wave-lane" : "stage") + (open ? " on" : "") + (s.state === "dropped" ? " dropped" : ""),
+    "data-step":s.step_id, "data-state":s.state}), top = el("div", {class:"top"});
+  top.appendChild(el("span", {class:"n"}, nn(s.index)));
+  top.appendChild(el("span", {class:"nm", title:s.step_id}, s.name));
+  top.appendChild(el("span", {class:"mg" + (s.state === "working" ? " on" : ""), title:s.role}, s.monogram));
+  li.appendChild(top);
+  if (lane){
+    const sub = el("div", {class:"sub"});
+    sub.appendChild(el("span", {class:"role", title:s.role}, s.role));
+    if (s.usage) sub.appendChild(el("span", {class:"tok", title:usageTip(s.usage)}, tok(s.usage.total_tokens) + " tok"));
+    li.appendChild(sub);
+  }
+  const meta = el("div", {class:"meta"});
+  meta.appendChild(el("span", {class:"st " + word.cls, title:s.reason || word.text}, word.text));
+  const t = el("span", {class:"t"}, time === null || time === undefined ? "" : dur(time));
+  if (!lane && s.usage) t.title = usageTip(s.usage);
+  meta.appendChild(t);
+  li.appendChild(meta);
+  if (s.state === "dropped" && s.reason) li.appendChild(el("div", {class:"why", title:s.reason}, s.reason.replace(/_/g, " ")));
+  return li;
+}
+function wallMs(w, now){ return (w.closed_ms || 0) + (w.open_since_ms === null ? 0 : now - w.open_since_ms); }
+function waveCounts(group){
+  const count = (states) => group.filter((s) => states.includes(s.state)).length;
+  const c = {done:count(["done"]), working:count(["working"]), awaiting:count(["awaiting_approval", "awaiting_review"]), dropped:count(["dropped"])};
+  c.text = [[c.done, "done"], [c.working, "running"], [c.awaiting, "awaiting decision"], [c.dropped, "dropped"], [count(["stopped"]), "stopped"],
+    [count(["pending", "not_reached"]), "waiting"]].filter((p) => p[0]).map((p) => p[0] + " " + p[1]).join(" \u00b7 ");
+  return c;
+}
+function waveGroup(group, now){
+  const c = waveCounts(group);
+  const li = el("li", {class:"wave" + (c.working + c.awaiting ? " on" : ""), "data-wave":group[0].wave, "data-done":c.done,
+    "data-working":c.working, "data-awaiting":c.awaiting, "data-dropped":c.dropped}), h = el("div", {class:"wave-h"});
+  li.style.gridColumn = "span " + Math.min(group.length, 9);
+  h.appendChild(el("span", {class:"lbl"}, "Wave " + group[0].wave));
+  h.appendChild(el("span", {class:"wave-c"}, c.text));
+  h.appendChild(el("span", {class:"wave-g"}, "one decision covers the wave"));
+  li.appendChild(h);
+  const lanes = el("ol", {class:"wave-lanes"});
+  for (const s of group) lanes.appendChild(stepCell(s, now, true));
+  li.appendChild(lanes);
+  return li;
+}
 function renderWorkflow(now){
   const bar = $("tl-bar"), nums = $("tl-num"), list = $("stage-list");
   clear(bar); clear(nums); clear(list);
   const steps = state.steps;
   if (!steps.length){ list.appendChild(el("li", {class:"empty"}, "No steps (input could not be read).")); $("wf-meta").textContent = ""; return; }
+  $("wf-count").textContent = steps.length === 9 ? "nine" : String(steps.length);
   const known = steps.filter((s) => s.state === "done" && s.timing && s.timing.duration_ms !== null).map((s) => s.timing.duration_ms / 1000);
   const placeholder = known.length ? known.reduce((a, b) => a + b, 0) / known.length : 120;
-  let total = 0;
+  const waves = new Map(), spans = new Map(state.waves.map((w) => [w.wave, w]));
   for (const s of steps){
-    const t = s.timing || {}, open = OPEN.has(s.state), word = stepWord(s), time = stepTime(s, now);
-    let grow = placeholder, cls = "pend", fill = null;
-    if (open){
-      const elapsed = t.started_ms === null || t.started_ms === undefined ? 0 : (now - t.started_ms) / 1000;
-      grow = Math.max(elapsed, placeholder); cls = "on"; fill = elapsed / grow;
-    } else if (t.duration_ms !== null && t.duration_ms !== undefined){
-      grow = t.duration_ms / 1000; cls = s.state === "done" ? "done" : "stop";
+    if (!waves.has(s.wave)) waves.set(s.wave, []);
+    waves.get(s.wave).push(s);
+  }
+  const groups = Array.from(waves.keys()).sort((a, b) => a - b).map((w) => waves.get(w));
+  const par = groups.some((g) => g.length > 1);
+  list.className = "stages" + (par ? " par" : "");
+  for (const group of groups){
+    // One bar segment per wave, as wide as the wave's wall time: its steps overlap, so their times are not added.
+    const first = group[0], last = group[group.length - 1], span = spans.get(first.wave), ms = wallMs(span, now);
+    const open = group.some((s) => OPEN.has(s.state));
+    let grow = placeholder, cls = "pend", fill = null, label = nn(first.index), title;
+    if (open){ grow = Math.max(ms / 1000, placeholder); cls = "on"; fill = ms / 1000 / grow; }
+    else if (span.closed_ms !== null){
+      grow = ms / 1000; cls = group.some((s) => s.state === "done") && !group.some((s) => s.state === "stopped") ? "done" : "stop";
     }
-    if (time !== null && time !== undefined) total += time;
-    const seg = el("span", {class:cls, title:nn(s.index) + " " + s.name + ": " + word.text + (time !== null && time !== undefined ? " " + dur(time) : "")});
+    if (group.every((s) => s.state === "dropped")) cls = "drop";
+    if (group.length > 1){
+      label += last.index - first.index === group.length - 1 ? "\u2013" + nn(last.index) : " +" + (group.length - 1);
+      title = "Wave " + first.wave + ": " + waveCounts(group).text + (ms > 0 ? " " + dur(ms) : "");
+      list.appendChild(waveGroup(group, now));
+    } else {
+      const time = stepTime(first, now), li = stepCell(first, now, false);
+      title = nn(first.index) + " " + first.name + ": " + stepWord(first).text + (time !== null && time !== undefined ? " " + dur(time) : "");
+      li.setAttribute("data-wave", first.wave);
+      list.appendChild(li);
+    }
+    const seg = el("span", {class:cls, title:title});
     seg.style.flexGrow = String(Math.max(grow, 1));
     if (fill !== null){ const b = el("b"); b.style.width = (fill * 100).toFixed(2) + "%"; seg.appendChild(b); }
     bar.appendChild(seg);
-    const num = el("span", {class:open ? "on" : ""}, nn(s.index)); num.style.flexGrow = seg.style.flexGrow; nums.appendChild(num);
-
-    const li = el("li", {class:"stage" + (open ? " on" : "")}), top = el("div", {class:"top"});
-    top.appendChild(el("span", {class:"n"}, nn(s.index)));
-    top.appendChild(el("span", {class:"nm", title:s.step_id}, s.name));
-    top.appendChild(el("span", {class:"mg" + (s.state === "working" ? " on" : ""), title:s.role}, s.monogram));
-    li.appendChild(top);
-    const meta = el("div", {class:"meta"});
-    meta.appendChild(el("span", {class:"st " + word.cls, title:s.reason || word.text}, word.text));
-    meta.appendChild(el("span", {class:"t"}, time === null || time === undefined ? "" : dur(time)));
-    li.appendChild(meta);
-    list.appendChild(li);
+    const num = el("span", {class:open ? "on" : ""}, label); num.style.flexGrow = seg.style.flexGrow; nums.appendChild(num);
   }
-  const done = steps.filter((s) => s.state === "done").length;
-  $("wf-meta").textContent = done + " of " + steps.length + " done \u00b7 stage time " + dur(total) + (known.length < steps.length ? " \u00b7 hatched: not reached yet, width is a placeholder" : "");
+  // The taller wave rows come out of the browser screens so Hunt Live still fits above the fold.
+  const single = list.querySelector(".stage");
+  const extra = par && single ? Math.max(0, list.offsetHeight - single.offsetHeight + 1) : 0;
+  if (extra !== wfExtra){ wfExtra = extra; document.documentElement.style.setProperty("--wf-extra", extra + "px"); }
+  const dropped = steps.filter((s) => s.state === "dropped").length, done = steps.filter((s) => s.state === "done").length + dropped;
+  $("wf-meta").textContent = done + " of " + steps.length + " done" + (dropped ? " (" + dropped + " dropped)" : "") + " \u00b7 stage time " + dur(wallMs(state.stage_time, now)) + (known.length < steps.length ? " \u00b7 hatched: not reached yet, width is a placeholder" : "");
 }
 
 const frames = {};
@@ -1907,7 +2087,8 @@ function renderBots(now){
     f.mgText.textContent = team ? team.monogram : o.profile.slice(0, 2).toUpperCase();
     f.mg.className = "mg xl" + (running ? " on" : "");
     f.name.textContent = o.role;
-    if (step) f.curv.textContent = nn(step.index) + " " + step.name + " \u00b7 " + stepWord(step).text;
+    const more = team ? team.open_steps.length - 1 : 0;
+    if (step) f.curv.textContent = nn(step.index) + " " + step.name + " \u00b7 " + stepWord(step).text + (more > 0 ? " \u00b7 +" + more + " more" : "");
     else {
       const owned = team ? team.steps.map((i) => state.steps[i]) : [];
       const next = owned.find((s) => s.state === "pending"), done = owned.filter((s) => s.state === "done");
@@ -1934,6 +2115,10 @@ function teamLine(t, now){
   const owned = t.steps.map((i) => state.steps[i]);
   const claims = t.claims ? " \u00b7 " + t.claims + " claim" + (t.claims === 1 ? "" : "s") : "";
   if (!owned.length) return {text:"no stage in this hunt", cls:""};
+  if (t.open_steps.length > 1){
+    const running = t.open_steps.filter((o) => o.state === "working").length;
+    return {text:t.open_steps.length + " stages open" + (running ? ", " + running + " running" : "") + ": " + t.open_steps.map((o) => o.step_id).join(", ") + claims, cls:"run"};
+  }
   if (t.current !== null){
     const s = state.steps[t.current], time = stepTime(s, now);
     return {text:nn(s.index) + " " + s.name + " \u00b7 " + stepWord(s).text + (time ? " " + dur(time) : "") + claims, cls:"run"};
@@ -1948,7 +2133,7 @@ function renderTeam(now){
   const box = $("team"); clear(box);
   const browsers = new Set(((state.live && state.live.owners) || []).map((o) => o.profile));
   for (const t of state.team || []){
-    const cell = el("div"), step = t.current !== null ? state.steps[t.current] : null;
+    const cell = el("div"), step = workingStep(t.profile);
     const mg = el("span", {class:"mg" + (step && step.state === "working" ? " on" : "")}, t.monogram);
     if (browsers.has(t.profile)) mg.appendChild(el("i", {class:"scr"}));
     const line = teamLine(t, now), text = el("div");
@@ -2139,7 +2324,7 @@ function renderFeed(){
     const card = el("div", {class:"card"}), h = el("div", {class:"card-h"});
     h.appendChild(el("span", {class:"sid"}, nn(item.index) + " " + item.step_id));
     h.appendChild(el("span", {class:"role"}, item.role));
-    const word = item.state === "done" ? "" : item.state === "stopped" ? "stop" : OPEN.has(item.state) ? "run" : "wait";
+    const word = item.state === "done" ? "" : item.state === "stopped" ? "stop" : item.state === "dropped" ? "drop" : OPEN.has(item.state) ? "run" : "wait";
     h.appendChild(el("span", {class:"st " + word}, STATE_LABEL[item.state] || item.state));
     const ho = item.handoff;
     if (ho && ho.disposition) h.appendChild(el("span", {class:"st", title:"step disposition written by the bot"}, ho.disposition.replace(/_/g, " ")));
@@ -2147,6 +2332,7 @@ function renderFeed(){
     if (item.result_status !== "completed") card.appendChild(el("div", {class:"note warn"}, "Result status " + item.result_status + (item.reason_code ? " (" + item.reason_code + ")" : "")));
     if (item.state === "awaiting_review") card.appendChild(el("div", {class:"note"}, "Waiting for human review; not yet accepted."));
     if (item.state === "stopped") card.appendChild(el("div", {class:"note warn"}, "Workflow stopped at this step (" + (item.reason || "unknown") + "); its citations are not counted."));
+    if (item.state === "dropped") card.appendChild(el("div", {class:"note warn"}, "Step dropped (" + (item.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."));
     if (!ho){
       card.appendChild(el("div", {class:"note warn"}, "Output not shown as a handoff: " + (item.parse_error || "unparsed") + " (" + item.output_chars + " characters)."));
       if (item.raw_excerpt){
@@ -2239,7 +2425,7 @@ function renderTools(){
     const col = el("div", {class:"lane-col" + (lane.working ? " working" : "")});
     const h = el("div", {class:"lane-h"});
     h.appendChild(el("span", {class:"role"}, lane.role));
-    if (lane.working) h.appendChild(el("span", {class:"st run"}, "running"));
+    if (lane.working) h.appendChild(el("span", {class:"st run", title:"tool calls are logged per bot, so steps of one bot share this lane"}, "running" + (lane.working_steps > 1 ? " \u00b7 " + lane.working_steps + " steps" : "")));
     col.appendChild(h);
     col.appendChild(el("div", {class:"lane-sub"}, lane.profile + " \u00b7 " + lane.count + " call" + (lane.count === 1 ? "" : "s") + (lane.errors ? " \u00b7 " + lane.errors + " error" + (lane.errors === 1 ? "" : "s") : "")));
     const list = el("ol", {class:"calls", "data-lane":lane.profile});
