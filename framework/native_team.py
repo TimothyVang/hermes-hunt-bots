@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 import lab
+from hunt_lab.query_adapter import TOOL_OWNERSHIP
 
 
 # Native Anthropic (Claude Pro/Max OAuth) routes. Hermes expects bare model IDs
@@ -39,16 +40,6 @@ PROFILE_ROUTES = (
     ('framework-network-analyst', 'Analyze only bounded, sanitized hunt_lab summaries.'),
 )
 
-# Exact host-tool ownership (toolset hunt_lab). The plugin registers every tool
-# in every framework profile; these allowlists decide who may call which.
-TOOL_OWNERSHIP = {
-    'framework-coordinator': ['delegate_task'],
-    'framework-researcher': ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields'],
-    'framework-builder': ['detection_test', 'elastic_aggregate'],
-    'framework-reviewer': ['elastic_search', 'arkime_sessions', 'detection_test'],
-    'framework-librarian': ['intel_lookup', 'elastic_aggregate'],
-    'framework-network-analyst': ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'],
-}
 HUNT_TOOL_PROFILES = tuple(name for name in PROFILES if name != 'framework-coordinator')
 
 # Earlier reviewed values that apply may replace; any other differing value is user policy.
@@ -65,13 +56,15 @@ SUPERSEDED_SETTINGS = {
 }
 
 def _allowed_tool_names(profile):
+    # TOOL_OWNERSHIP (hunt_lab/query_adapter.py) is the one ownership map. The hunt_lab plugin
+    # registers only the owner's tools, which is what limits them at runtime on stock Hermes.
     return list(TOOL_OWNERSHIP[profile])
 
 def _profile_route_entries():
     return [{'name': name, 'description': description} for name, description in PROFILE_ROUTES]
 
 POLICY_BLOCKERS = (
-    'The separate reviewed native-policy patch based on Hermes bf0203a794a07aac3ff764972ab9087baa4e4f4e is required to enforce agent.allowed_tool_names and delegation.allowed_profiles; this helper neither installs nor activates that patch.',
+    'The separate reviewed native-policy patch based on Hermes bf0203a794a07aac3ff764972ab9087baa4e4f4e is required to enforce delegation.allowed_profiles; this helper neither installs nor activates that patch.',
     'The pinned advanced-delegation plugin revision must be installed and enabled in the coordinator profile; this helper does not fetch, install, or activate plugins.',
     'Managed-worker sessions with frozen config cannot switch to another profile. Use a verified profile-capable native execution path; this helper does not add cross-profile worker routing or bypass that refusal.',
     'Native Hermes may ignore unsupported policy fields; persisted configuration alone does not establish runtime capabilities or readiness.',
@@ -128,7 +121,7 @@ def expected_settings(profile):
 def _disabled_toolset_requirements(profile):
     # Suppress core toolsets injected outside the explicit selection (Desktop
     # client tools, xAI search on credential presence, and a configured context
-    # engine/memory provider). Plugin toolsets remain a separately reported blocker.
+    # engine/memory provider). hunt_lab plugin tools are limited by owner-only registration.
     blocked = ['desktop_ui', 'project', 'catalog', 'x_search', 'context_engine', 'memory']
     if profile != 'framework-coordinator':
         blocked.append('delegation')
@@ -296,7 +289,7 @@ def inspect(hermes_override=None, home=None, model_projection_python=None):
     for profile in PROFILES:
         status = validate_observed(profile, _read_current(executable, profile, root, model_projection_python))
         lines.append(profile + ': ' + ', '.join(f'{key}={value}' for key, value in status.items()))
-    lines.append('Routes and complete tool boundaries: BLOCKED; see the policy blockers below.')
+    lines.append('Delegation routes: BLOCKED; see the policy blockers below.')
     lines.extend('BLOCKER: ' + item for item in POLICY_BLOCKERS)
     return '\n'.join(lines)
 

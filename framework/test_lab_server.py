@@ -250,7 +250,7 @@ class EndpointTests(ServerCase):
                          ('GET', 'http://127.0.0.1:8005/api/sessions?length=1'))
 
     def test_intel_is_case_filtered_and_reports_unmatched_values(self):
-        self.elastic.response = es_hits([{'indicator': {'type': 'domain', 'value': 'evil.example'},
+        self.elastic.response = es_hits([{'id': 'ioc-00001', 'indicator': {'type': 'domain', 'value': 'evil.example'},
                                           'threat': {'feed': {'name': 'feed-a'}}, 'confidence': 'high',
                                           'description': 'Invented.', 'first_seen': '2026-02-01T00:00:00Z'}])
         status, value = self.request('/intel?values=Evil.Example,198.51.100.7')
@@ -260,6 +260,8 @@ class EndpointTests(ServerCase):
         self.assertTrue(call['ignore_unavailable'])
         self.assertIn({'term': {'case_id': 'lab-med-001'}}, call['body']['query']['bool']['filter'])
         self.assertEqual(value['matches'][0]['threat.feed.name'], 'feed-a')
+        self.assertIn('id', call['body']['_source'])
+        self.assertEqual(value['matches'][0]['id'], 'ioc-00001')
         self.assertEqual(value['unmatched'], ['198.51.100.7'])
 
     def test_aggregations_terms_and_bounded_histogram(self):

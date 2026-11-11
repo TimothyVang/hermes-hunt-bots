@@ -72,6 +72,15 @@ class NativeTeamPolicyTests(unittest.TestCase):
                                        'detection_test', 'intel_lookup', 'arkime_sessions', 'arkime_unique',
                                        'lab_browser', 'packet_fields'})
 
+    def test_allowlists_are_the_plugins_ownership_map(self):
+        # One definition: the installed plugin registers exactly these owners' tools.
+        from hunt_lab import query_adapter
+        self.assertIs(native_team.TOOL_OWNERSHIP, query_adapter.TOOL_OWNERSHIP)
+        self.assertEqual(set(native_team.PROFILES), set(query_adapter.TOOL_OWNERSHIP))
+        for profile in native_team.PROFILES:
+            self.assertEqual(native_team.expected_settings(profile)['agent.allowed_tool_names'],
+                             list(query_adapter.TOOL_OWNERSHIP[profile]))
+
     def test_previous_reviewed_tool_policy_migrates_but_user_values_are_preserved(self):
         for profile in native_team.PROFILES:
             if profile == 'framework-coordinator':

@@ -29,14 +29,14 @@ PINNED_TINY_A = {
     "traffic.pcap": "7e4aff3de6f373253dfb873b4647a90a8a8de1ff077e5155fd311b0bb83743c8",
     "intel.jsonl": "a72e80d54060d5fa2ba17133827c007b3a5950e9078c1ca1c6b9a5342e2d15c6",
     "case.json": "34b75640a1b64421d2af9f6ab2282f27823c0220d03b1a66a9f63220c708b549",
-    "truth.json": "246d100d262c9131efdfd3a478bb5f2d6458e2b8587d5a373d38f781edcc7016",
+    "truth.json": "cc740d80c3b461a0d02343baae47ab5fb861a21957a36b64445a962eee231b31",
 }
 PINNED_MEDIUM_A = {
     "events.jsonl": "3aff6df769254ddb2aa5bf71fa006f1efb9c2e7c3b335a670204158590517060",
     "traffic.pcap": "b50612822339f4e95974c61fd94ff71fcd32e77034b37a629c1049c162e59d77",
     "intel.jsonl": "a17f8bf3e5604f4ae0063bbddfe8cc64704ac25736e0307199e66cb35b04924e",
     "case.json": "fbc0636ac931f0509a187a147e3d77324a28155fb2a0a631832628a77aa51811",
-    "truth.json": "03121f8661a5653c4212cac2b994b60a88ee2244144450c64e74379902a09cf0",
+    "truth.json": "844d90b3cee116c0348224669f8a4022a5ad3958cc0c11f95c9e800b7256708e",
 }
 
 
@@ -83,7 +83,7 @@ def parse_pcap(data, test):
     test.assertEqual(struct.unpack("<IHHIIII", data[:24]), (0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
     offset, previous = 24, 0
     result = {"queries": set(), "responses": 0, "syns": set(), "sni": {}, "http": {}, "ips": set(),
-              "qnames": set(), "times": [], "packets": 0}
+              "qnames": set(), "times": [], "packets": 0, "frames": []}
     while offset < len(data):
         seconds, micros, captured, original = struct.unpack("<IIII", data[offset:offset + 16])
         offset += 16
@@ -133,6 +133,8 @@ def parse_pcap(data, test):
             if payload.startswith((b"GET ", b"POST ", b"PUT ")) and key not in result["http"]:
                 host = re.search(rb"\r\nHost: ([^\r]+)\r\n", payload).group(1).decode("ascii")
                 result["http"][key] = (payload.split(b" ", 1)[0].decode("ascii"), host)
+        # frames[n - 1] is tshark's frame.number n: its endpoint pair, either direction.
+        result["frames"].append(frozenset(((source, sport), (destination, dport))))
     test.assertEqual(offset, len(data))
     return result
 
@@ -155,6 +157,10 @@ def domains_in(row):
     return names
 
 
+def indicator_values(row):
+    return domains_in(row) + [row[side]["ip"] for side in ("source", "destination") if side in row]
+
+
 def generate_tiny(root, seed=11, name="case", story="a"):
     evidence, operator = Path(root) / (name + "-evidence"), Path(root) / (name + "-operator")
     summary = scenario.generate("tiny", seed, "lab-tiny-001", evidence, operator, story)
@@ -170,6 +176,8 @@ class GeneratedTinyCase(unittest.TestCase):
                          | {(scenario.PROXY, "access"), (scenario.COVERAGE, "coverage-gap")})
     OPTIONAL_FAMILIES = set()
     PORTS = {443, 80, 445, 5985, 3389}
+    # (fact, group, indicator value): the C2 domain's intel record also cites the beacon's lookup group.
+    INTEL_ALTERNATIVE = ("attack.c2.jittered-https-beacon", 0, scenario.C2)
 
     @classmethod
     def setUpClass(cls):
@@ -240,7 +248,10 @@ class GeneratedTinyCase(unittest.TestCase):
         self.assertEqual(len({fact["fact_id"] for fact in facts}), len(facts))
         self.assertEqual({fact["kind"] for fact in facts}, {"attack", "decoy", "benign-pattern", "coverage"})
         for fact in facts:
-            self.assertEqual(set(fact), {"fact_id", "kind", "observation", "entities", "evidence_event_groups"})
+            self.assertEqual(set(fact), {"fact_id", "kind", "observation", "entities", "evidence_event_groups",
+                                         "evidence_frame_groups", "evidence_intel_groups"})
+            self.assertEqual(len(fact["evidence_frame_groups"]), len(fact["evidence_event_groups"]))
+            self.assertEqual(len(fact["evidence_intel_groups"]), len(fact["evidence_event_groups"]))
             self.assertEqual(set(fact["entities"]), {"hosts", "users", "processes", "domains", "ips"})
             self.assertTrue(fact["evidence_event_groups"])
             for group in fact["evidence_event_groups"]:
@@ -252,6 +263,44 @@ class GeneratedTinyCase(unittest.TestCase):
     def fact_events(self, fact_id, group=0):
         fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
         return [self.by_id[event_id] for event_id in fact["evidence_event_groups"][group]]
+
+    def test_frame_alternatives_are_the_written_frames_of_each_groups_events(self):
+        frames = parse_pcap((self.evidence / "traffic.pcap").read_bytes(), self)["frames"]
+        listed = 0
+        for fact in self.truth["facts"]:
+            for events, cited in zip(fact["evidence_event_groups"], fact["evidence_frame_groups"]):
+                rows = [self.by_id[event_id] for event_id in events]
+                pairs = {frozenset(((row["source"]["ip"], row["source"]["port"]),
+                                    (row["destination"]["ip"], row["destination"]["port"])))
+                         for row in rows if "destination" in row}
+                numbers = [int(item[len("frame-"):]) for item in cited]
+                self.assertEqual(cited, ["frame-%d" % number for number in sorted(set(numbers))], fact["fact_id"])
+                self.assertTrue(all(1 <= number <= len(frames) for number in numbers), fact["fact_id"])
+                # Every listed frame number, counted in the written capture's order, is a packet of one of the
+                # group's network events, and every network event of the group has its packets listed.
+                self.assertEqual({frames[number - 1] for number in numbers}, pairs, fact["fact_id"])
+                listed += len(numbers)
+        self.assertGreater(listed, 0)
+
+    def test_intel_alternatives_name_an_indicator_the_groups_events_carry(self):
+        records = {doc["id"]: doc for doc in self.intel}
+        for fact in self.truth["facts"]:
+            named = {value.lower() for key in ("domains", "ips") for value in fact["entities"][key]}
+            earlier = set()
+            for events, cited in zip(fact["evidence_event_groups"], fact["evidence_intel_groups"]):
+                carried = {value.lower() for event_id in events for value in indicator_values(self.by_id[event_id])}
+                for record_id in cited:
+                    indicator = records[record_id]["indicator"]
+                    self.assertIn(indicator["type"], ("domain", "ip"), fact["fact_id"])
+                    self.assertIn(indicator["value"].lower(), named & carried, fact["fact_id"])
+                # Each intel ID is listed in one group of a fact only: the first whose sessions carry it.
+                self.assertFalse(earlier & set(cited), fact["fact_id"])
+                earlier |= set(cited)
+        fact_id, group, value = self.INTEL_ALTERNATIVE
+        fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
+        expected = [doc["id"] for doc in self.intel if doc["indicator"]["value"] == value]
+        self.assertTrue(expected)
+        self.assertTrue(set(expected) <= set(fact["evidence_intel_groups"][group]), fact["evidence_intel_groups"])
 
     def check_story_truth(self, facts):
         names = [row["dns"]["question"]["name"] for row in self.fact_events("attack.exfiltration.dns-tunnel")]
@@ -299,7 +348,7 @@ class GeneratedTinyCase(unittest.TestCase):
                 self.assertNotIn(fact["fact_id"].lower(), text, name)
                 self.assertNotIn(fact["observation"].lower(), text, name)
         for word in ("decoy", "planted", "fact_id", "truth", "benign-pattern", "interpretation_boundary",
-                     "storyline", "evidence_event_groups"):
+                     "storyline", "evidence_event_groups", "evidence_frame_groups", "evidence_intel_groups"):
             for name, text in texts.items():
                 self.assertNotIn(word, text, (word, name))
         self.assertFalse(list(self.evidence.rglob("truth*")))
@@ -364,6 +413,7 @@ class GeneratedTinyStoryB(GeneratedTinyCase):
                             (scenario.IIS, "access"), (scenario.SYSTEM_LOG, "7045")})
     OPTIONAL_FAMILIES = {(scenario.SEC, "4625")}
     PORTS = {443, 80, 445, 3389, 9389}
+    INTEL_ALTERNATIVE = ("attack.recon.portal-path-probing", 0, scenario.B_ATTACKER)
 
     def check_story_truth(self, facts):
         children = self.fact_events("attack.execution.webshell-commands", 1)
@@ -487,6 +537,38 @@ def perfect_report(truth):
             "claims": claims, "reviews": [], "disposition": "needs_validation", "limitations": [], "requested_decisions": []}
 
 
+# A key written before frame and intel alternatives existed, a report that also carries such citations, and the
+# result the event-only scorer gave for it: keys without alternatives must keep scoring exactly this way.
+OLD_STYLE_KEY = {"schema_version": 1, "case_id": "lab-old-001", "facts": [
+    {"fact_id": "attack.c2", "kind": "attack", "observation": "ws-01 beaconed to c2.example.test.",
+     "entities": {"hosts": ["ws-01"], "domains": ["c2.example.test"]},
+     "evidence_event_groups": [["evt-000001"], ["evt-000002", "evt-000003"]]},
+    {"fact_id": "decoy.backup", "kind": "decoy", "observation": "bk-01 ran its nightly backup.",
+     "entities": {"hosts": ["bk-01"]}, "evidence_event_groups": [["evt-000004"]]},
+    {"fact_id": "coverage.mail", "kind": "coverage", "observation": "No mail logs.",
+     "entities": {"processes": ["OUTLOOK.EXE"]}, "evidence_event_groups": [["evt-000005"]]},
+]}
+OLD_STYLE_REPORT = {"claims": [
+    {"claim_id": "c1", "statement": "ws-01 beaconed to c2.example.test evt-000001 evt-000003 frame-7 ioc-00001"},
+    {"claim_id": "c2", "statement": "The attacker compromised bk-01 evt-000004"},
+], "limitations": ["No mail logs for OUTLOOK.EXE evt-000005"]}
+OLD_STYLE_RESULT = {
+    "found": 3, "total": 3, "decoys_cleared": 0,
+    "by_kind": {kind: {"total": 1, "found": 1, "partial": 0} for kind in ("attack", "decoy", "coverage")},
+    "facts": [
+        {"fact_id": "attack.c2", "kind": "attack", "found": True, "cited_groups": [0, 1], "missing_groups": [],
+         "cited_event_ids": ["evt-000001", "evt-000003"], "entities_named": ["c2.example.test", "ws-01"]},
+        {"fact_id": "decoy.backup", "kind": "decoy", "found": True, "cited_groups": [0], "missing_groups": [],
+         "cited_event_ids": ["evt-000004"], "entities_named": ["bk-01"]},
+        {"fact_id": "coverage.mail", "kind": "coverage", "found": True, "cited_groups": [0], "missing_groups": [],
+         "cited_event_ids": ["evt-000005"], "entities_named": ["OUTLOOK.EXE"]},
+    ],
+    "misattributed_decoys": [{"fact_id": "decoy.backup", "claim_id": "c2", "entities": ["bk-01"],
+                              "terms": ["compromised", "attacker"]}],
+    "method": "keyword and event-ID citation matching against the operator key; not human judgment",
+}
+
+
 class Scoring(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -507,6 +589,73 @@ class Scoring(unittest.TestCase):
         self.assertEqual((result["found"], result["total"]), (len(self.truth["facts"]), len(self.truth["facts"])))
         self.assertEqual(result["misattributed_decoys"], [])
         self.assertIn("not human judgment", result["method"])
+
+    def detail(self, report, fact_id):
+        return next(d for d in scenario.score_report(self.truth, report)["facts"] if d["fact_id"] == fact_id)
+
+    def test_old_style_key_scores_exactly_as_before(self):
+        self.assertEqual(scenario.score_report(OLD_STYLE_KEY, OLD_STYLE_REPORT), OLD_STYLE_RESULT)
+        short = dict(OLD_STYLE_KEY["facts"][0], evidence_frame_groups=[["frame-7"]])
+        with self.assertRaises(ValueError):
+            scenario.score_report(dict(OLD_STYLE_KEY, facts=[short]), {"claims": []})
+
+    def test_event_citations_score_the_same_with_or_without_alternatives(self):
+        stripped = dict(self.truth, facts=[{key: value for key, value in fact.items()
+                                            if key not in ("evidence_frame_groups", "evidence_intel_groups")}
+                                           for fact in self.truth["facts"]])
+        lateral = self.fact("attack.lateral.winrm-helpdesk-account")["evidence_event_groups"]
+        for report in (perfect_report(self.truth), {"claims": []},
+                       {"claims": [{"claim_id": "c1", "statement": "hd.kestrel on srv-files-02: " + lateral[0][0]}]}):
+            new, old = scenario.score_report(self.truth, report), scenario.score_report(stripped, report)
+            for detail in new["facts"]:
+                self.assertEqual((detail.pop("cited_frames"), detail.pop("cited_intel_ids")), ([], []))
+            self.assertIn("frame- and intel-ID", new.pop("method"))
+            self.assertIn("event-ID", old.pop("method"))
+            self.assertEqual(new, old)
+
+    def test_frame_citation_satisfies_its_group_and_a_wrong_frame_does_not(self):
+        beacon = self.fact("attack.c2.jittered-https-beacon")
+        events, frames = beacon["evidence_event_groups"], beacon["evidence_frame_groups"]
+        self.assertTrue(frames[0] and frames[1])
+        number = int(frames[0][0][len("frame-"):])
+        # tshark's frame.number stands in for the lookup events, whatever its case or zero padding.
+        cited = {"claims": [{"claim_id": "c1", "statement": "synchost.exe resolved %s (Frame-%06d) and posted %s"
+                             % (scenario.C2, number, events[1][0])}]}
+        detail = self.detail(cited, beacon["fact_id"])
+        self.assertTrue(detail["found"], detail)
+        self.assertEqual((detail["cited_frames"], detail["cited_event_ids"]), ([frames[0][0]], [events[1][0]]))
+        listed = {item for group in frames for item in group}
+        wrong = next("frame-%d" % n for n in range(1, len(listed) + 2) if "frame-%d" % n not in listed)
+        uncited = {"claims": [{"claim_id": "c1", "statement": "synchost.exe resolved %s (%s) and posted %s"
+                               % (scenario.C2, wrong, events[1][0])}]}
+        detail = self.detail(uncited, beacon["fact_id"])
+        self.assertFalse(detail["found"])
+        self.assertEqual((detail["missing_groups"], detail["cited_frames"]), ([0], []))
+        crossed = {"claims": [{"claim_id": "c1", "statement": "synchost.exe reached %s in %s" % (scenario.C2, frames[1][0])}]}
+        self.assertEqual(self.detail(crossed, beacon["fact_id"])["missing_groups"], [0])
+
+    def test_intel_id_citation_satisfies_an_indicator_group(self):
+        beacon = self.fact("attack.c2.jittered-https-beacon")
+        intel = beacon["evidence_intel_groups"]
+        record = intel[0][0]
+        self.assertEqual(intel[0], [record])
+        self.assertNotIn(record, intel[1])
+        # The C2 domain's record satisfies the lookup group only; the HTTPS group still needs its own citation.
+        alone = {"claims": [{"claim_id": "c1", "statement": "%s matches threat intel %s" % (scenario.C2, record)}]}
+        result = scenario.score_report(self.truth, alone)
+        detail = next(d for d in result["facts"] if d["fact_id"] == beacon["fact_id"])
+        self.assertEqual((detail["found"], detail["cited_groups"], detail["missing_groups"], detail["cited_intel_ids"]),
+                         (False, [0], [1], [record]))
+        self.assertEqual((result["by_kind"]["attack"]["found"], result["by_kind"]["attack"]["partial"]), (0, 1))
+        post = beacon["evidence_event_groups"][1][0]
+        detail = self.detail({"claims": [{"claim_id": "c1", "statement": "%s matches threat intel %s; POST %s"
+                                          % (scenario.C2, record, post)}]}, beacon["fact_id"])
+        self.assertTrue(detail["found"], detail)
+        self.assertEqual((detail["cited_intel_ids"], detail["cited_event_ids"]), ([record], [post]))
+        other = next(item for group in self.fact("attack.delivery.lookalike-download")["evidence_intel_groups"] for item in group)
+        detail = self.detail({"claims": [{"claim_id": "c1", "statement": "%s matches threat intel %s" % (scenario.C2, other)}]},
+                             beacon["fact_id"])
+        self.assertEqual((detail["found"], detail["cited_groups"], detail["cited_intel_ids"]), (False, [], []))
 
     def test_missing_group_or_entity_is_not_found(self):
         lateral = self.fact("attack.lateral.winrm-helpdesk-account")

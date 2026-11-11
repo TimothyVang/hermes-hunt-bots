@@ -25,13 +25,20 @@ Command lines describe behavior with placeholders; nothing is functional.
 
 score reads one or more final incident handoff JSON reports (strict JSON, or a
 single fenced ```json block) with claims[].statement / evidence_ids /
-entity_ids and limitations[]. A fact counts as found when the cited evt-IDs
-cover every evidence_event_groups entry (at least one ID per group) AND the
-text names at least one of the fact's entities. Citations and names are taken
-from claims; coverage facts also accept limitations. A decoy fact is flagged
-misattributed when a claim names one of its distinctive entities with
-compromise/malicious language and no benign qualifier. This is keyword and
-citation matching, not human judgment of analytic quality.
+entity_ids and limitations[]. A fact counts as found when the citations cover
+every evidence_event_groups entry (at least one per group) AND the text names
+at least one of the fact's entities. A group is cited by one of its evt-IDs or,
+when the key lists them (evidence_frame_groups / evidence_intel_groups, same
+length as the event groups), by one of its capture frames written frame-<n>
+(tshark frame.number of a packet of that group's sessions) or one of its intel
+record IDs (ioc-NNNNN: a domain/IP record for an indicator of the fact that
+those sessions carry, listed only in the first such group of the fact). Keys
+without these lists score on event IDs alone.
+Citations and names are taken from claims; coverage facts also accept
+limitations. A decoy fact is flagged misattributed when a claim names one of
+its distinctive entities with compromise/malicious language and no benign
+qualifier. This is keyword and citation matching, not human judgment of
+analytic quality.
 """
 
 import argparse
@@ -327,6 +334,17 @@ def http_response_head(status, body_length):
 FILLER = b"<p>Invented lab page content for defensive training only.</p>\n" * 64
 
 
+def session_indicators(session):
+    """Lowercased endpoint addresses and the DNS name, TLS SNI or HTTP Host a session spec carries."""
+    _, _, kind, client, _, server, _, _, data = session
+    values = {client, server}
+    if kind in ("dns", "tls"):
+        values.add(data[0].lower())
+    elif kind == "http":
+        values.add(re.search(rb"\r\nHost: ([^\r]+)\r\n", data[0]).group(1).decode("ascii").lower())
+    return values
+
+
 class Host:
     __slots__ = ("name", "ip", "kind", "role", "dept", "sysmon", "user", "admin", "port", "procs",
                  "ecs", "prelogged", "logon", "logoff", "fqdn")
@@ -351,7 +369,9 @@ class Scenario:
         self.backup_hosts = profile["backup"]
         self.rows = []
         self.sessions = []
+        self.session_of = {}
         self.tags = {}
+        self.group_tags = {}
         self.family = Counter()
         self.used_external = set()
         self.ip_of = {}
@@ -466,6 +486,12 @@ class Scenario:
         if seq is not None:
             self.tags.setdefault(tag, []).append(seq)
         return seq
+
+    def link(self, *seqs):
+        """Tie events to the packet session appended last, so the key can list that session's frames."""
+        for seq in seqs:
+            if seq is not None:
+                self.session_of[seq] = len(self.sessions) - 1
 
     def emit(self, ms, host, provider, code, category, kind, action, fields, family,
              outcome=None, channel=None, message=None):
@@ -635,6 +661,7 @@ class Scenario:
             return seq  # The resolver itself answers locally; nothing crosses the capture point.
         self.sessions.append((ms, len(self.sessions), "dns", host.ip, sport, self.env["resolver"], 53, delay,
                               (name, qtype, tuple(answers), rcode, ttl, self.rng.getrandbits(16))))
+        self.link(seq)
         return seq
 
     def web(self, ms, host, process, domain, scheme, method, path, status, request_body, response_body,
@@ -672,6 +699,7 @@ class Scenario:
                                "http-request", fields, "proxy:access",
                                outcome="success" if status < 400 else "failure",
                                message="%s %s://%s%s %d" % (method, scheme, domain, path, status))
+        self.link(conn, record)
         return conn, record
 
     def bare(self, ms, host, process, destination, dport, duration, protocol, emit=True):
@@ -680,6 +708,7 @@ class Scenario:
         duration = max(5, min(duration, self.end - ms - 3000))
         conn = self.netconn(ms, host, process, sport, destination, dport, "tcp", protocol) if emit else None
         self.sessions.append((ms, len(self.sessions), "bare", host.ip, sport, destination, dport, 1, duration))
+        self.link(conn)
         return conn
 
     # ----- background --------------------------------------------------------
@@ -1164,15 +1193,48 @@ class Scenario:
             raise ValueError("storyline tag produced no events: " + ",".join(tags))
         return ids
 
+    def fact(self, fact_id, kind, observation, entities, groups):
+        self.group_tags[fact_id] = groups
+        full = {key: sorted(set(entities.get(key, ()))) for key in ("hosts", "users", "processes", "domains", "ips")}
+        return {"fact_id": fact_id, "kind": kind, "observation": observation, "entities": full,
+                "evidence_event_groups": [self.group(*tags) for tags in groups]}
+
+    def group_sessions(self, tags):
+        return {self.session_of[seq] for tag in tags for seq in self.tags.get(tag, ()) if seq in self.session_of}
+
+    def link_sessions(self):
+        """Sessions behind every key group and the indicator values each carries; call before rendering sorts them."""
+        self.session_values = {index: session_indicators(self.sessions[index])
+                               for groups in self.group_tags.values() for tags in groups
+                               for index in self.group_sessions(tags)}
+        return frozenset(self.session_values)
+
+    def cite_alternatives(self, facts, frames, intel):
+        """Per evidence group: the frames of its events' sessions, and the domain/IP intel records naming an
+        indicator of the fact that those sessions carry. Either satisfies the group like one of its events.
+        An intel ID is listed only in the first group that carries it, so it satisfies at most one group of a fact."""
+        records = {}
+        for doc in intel:
+            if doc["indicator"]["type"] in ("domain", "ip"):
+                records.setdefault(doc["indicator"]["value"].lower(), []).append(doc["id"])
+        for fact in facts:
+            named = {value.lower() for key in ("domains", "ips") for value in fact["entities"][key]}
+            fact["evidence_frame_groups"], fact["evidence_intel_groups"] = [], []
+            listed = set()
+            for tags in self.group_tags[fact["fact_id"]]:
+                sessions = self.group_sessions(tags)
+                numbers = sorted(number for index in sessions for number in frames[index])
+                fact["evidence_frame_groups"].append(["frame-%d" % number for number in numbers])
+                touched = named & set().union(*(self.session_values[index] for index in sessions))
+                ids = {key for value in touched for key in records.get(value, ())} - listed
+                listed |= ids
+                fact["evidence_intel_groups"].append(sorted(ids))
+
     def facts(self):
         c = self.chain
         victim, server = self.by_name["wks-fin-07"], self.by_name["srv-files-02"]
 
-        def fact(fact_id, kind, observation, entities, groups):
-            full = {key: sorted(set(entities.get(key, ()))) for key in ("hosts", "users", "processes", "domains", "ips")}
-            return {"fact_id": fact_id, "kind": kind, "observation": observation, "entities": full,
-                    "evidence_event_groups": [self.group(*tags) for tags in groups]}
-
+        fact = self.fact
         backup_text = "; ".join("%s from %s UTC until about %s UTC" % (name, clock(max(begin, self.start)), clock(end))
                                 for name, begin, end in c.get("backup", []))
         facts = [
@@ -1500,7 +1562,7 @@ class StoryB(Scenario):
                "scheme": "https"}
         if "?" in path:
             url["query"] = path.split("?", 1)[1]
-        return self.emit(ms + 2 * rtt + 1, web, IIS, "access", ["web", "network"], ["access"], "http-request", {
+        seq = self.emit(ms + 2 * rtt + 1, web, IIS, "access", ["web", "network"], ["access"], "http-request", {
             "source": {"ip": client_ip, "port": cport}, "destination": {"ip": web.ip, "port": 443}, "url": url,
             "http": {"request": {"method": method, "bytes": request_bytes},
                      "response": {"status_code": status, "bytes": response_bytes}},
@@ -1508,6 +1570,8 @@ class StoryB(Scenario):
             "network": {"transport": "tcp", "protocol": "tls", "direction": "inbound"}},
             "iis:access", outcome="success" if status < 400 else "failure",
             message="%s %s %d" % (method, path, status))
+        self.link(seq)
+        return seq
 
     def account_created(self, ms, host, subject, target):
         return self.emit(ms, host, SEC, "4720", ["iam"], ["user", "creation"], "added-user-account", {
@@ -1803,10 +1867,7 @@ class StoryB(Scenario):
         dba_hosts = sorted(name for name, _ in c.get("dba", []))
         monitored = sorted(h.name for h in self.hosts if h.kind == "server" and h.name != "mon-01")
 
-        def fact(fact_id, kind, observation, entities, groups):
-            full = {key: sorted(set(entities.get(key, ()))) for key in ("hosts", "users", "processes", "domains", "ips")}
-            return {"fact_id": fact_id, "kind": kind, "observation": observation, "entities": full,
-                    "evidence_event_groups": [self.group(*tags) for tags in groups]}
+        fact = self.fact
 
         return [
             fact("attack.recon.portal-path-probing", "attack",
@@ -2021,7 +2082,9 @@ class PcapRenderer:
         return [(t, self.udp(client, cport, server, 53, query)),
                 (t + delay * 1000, self.udp(server, 53, client, cport, response))]
 
-    def write_all(self, sessions, window_end_us):
+    def write_all(self, sessions, window_end_us, tracked=frozenset()):
+        """Write every frame; for sessions in tracked, record their 1-based frame numbers (tshark frame.number)."""
+        self.frames = {index: [] for index in tracked}
         sessions.sort(key=lambda item: (item[0], item[1]))
         heap = []
         counter = 0
@@ -2031,18 +2094,20 @@ class PcapRenderer:
                 self.emit(heapq.heappop(heap), window_end_us)
             for moment, frame in self.render(session):
                 counter += 1
-                heapq.heappush(heap, (moment, counter, frame))
+                heapq.heappush(heap, (moment, counter, session[1], frame))
         while heap:
             self.emit(heapq.heappop(heap), window_end_us)
 
     def emit(self, item, window_end_us):
-        moment, _, frame = item
+        moment, _, session, frame = item
         if moment >= window_end_us:
             raise ValueError("packet outside the case window")
         seconds, micros = divmod(moment, 1000000)
         self._write(struct.pack("<IIII", DAY_SECONDS + seconds, micros, len(frame), len(frame)))
         self._write(frame)
         self.packets += 1
+        if session in self.frames:
+            self.frames[session].append(self.packets)
 
 
 def json_bytes(value):
@@ -2077,6 +2142,7 @@ def generate(size, seed, case_id, evidence_dir, truth_dir, story="a"):
     scenario.ordered_rows()
     facts = scenario.facts()
     intel = scenario.intel()
+    tracked = scenario.link_sessions()
     truth = {"schema_version": SCHEMA_VERSION, "case_id": case_id, "facts": facts,
              "interpretation_boundary": "Operator-only key for an invented scenario. Facts describe observable records and the storyline behind them; benign alternatives are labelled decoy or benign-pattern. Scoring by citation and keyword matching is not a judgment of analytic quality."}
 
@@ -2120,12 +2186,13 @@ def generate(size, seed, case_id, evidence_dir, truth_dir, story="a"):
         with path.open("xb") as handle:
             written.append(path)
             renderer = PcapRenderer(handle, seed)
-            renderer.write_all(scenario.sessions, scenario.end * 1000)
+            renderer.write_all(scenario.sessions, scenario.end * 1000, tracked)
         files[path.name] = {"path": str(path), "bytes": renderer.size, "sha256": renderer.digest.hexdigest()}
 
         write_file(evidence / "intel.jsonl",
                    b"".join((json.dumps(doc, sort_keys=True) + "\n").encode("utf-8") for doc in intel))
         write_file(evidence / "case.json", json_bytes(scenario.case_metadata(event_count, renderer.packets, session_count, len(intel))))
+        scenario.cite_alternatives(facts, renderer.frames, intel)
         write_file(operator / "truth.json", json_bytes(truth))
     except BaseException:
         for path in written:
@@ -2151,6 +2218,10 @@ def generate(size, seed, case_id, evidence_dir, truth_dir, story="a"):
 
 # ----- operator scoring ----------------------------------------------------------------
 EVENT_ID = re.compile(r"\bevt-\d{6,}\b")
+FRAME_ID = re.compile(r"\bframe-(\d+)\b", re.IGNORECASE)
+INTEL_ID = re.compile(r"\bioc-\d{5,}\b")
+# Optional per-fact lists parallel to evidence_event_groups; each entry is another way to cite that group.
+ALTERNATIVE_GROUPS = (("evidence_frame_groups", "cited_frames"), ("evidence_intel_groups", "cited_intel_ids"))
 COMPROMISE_TERMS = ("malicious", "compromise", "compromised", "attacker", "adversary", "intrusion", "threat actor",
                     "command-and-control", "command and control", "c2", "exfiltration", "exfiltrate", "exfiltrated",
                     "lateral movement", "backdoor", "implant", "brute force", "brute-force", "password spray", "malware")
@@ -2197,6 +2268,12 @@ def has_term(text, terms):
     return [term for term in terms if re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(term), text)]
 
 
+def cited_ids(text):
+    """Event IDs, frame-<n> citations normalised to tshark's frame.number, and intel record IDs."""
+    return (set(EVENT_ID.findall(text)) | {"frame-%d" % int(number) for number in FRAME_ID.findall(text)}
+            | set(INTEL_ID.findall(text)))
+
+
 def validate_truth(truth):
     if not isinstance(truth, dict) or truth.get("schema_version") != SCHEMA_VERSION or not isinstance(truth.get("facts"), list):
         raise ValueError("truth must be a scenario truth.json with schema_version 1 and facts")
@@ -2205,6 +2282,10 @@ def validate_truth(truth):
             raise ValueError("truth fact is missing required keys")
         if not fact["evidence_event_groups"] or not all(isinstance(g, list) and g for g in fact["evidence_event_groups"]):
             raise ValueError("truth fact %s has empty evidence groups" % fact["fact_id"])
+        for key, _ in ALTERNATIVE_GROUPS:
+            if key in fact and not (isinstance(fact[key], list) and len(fact[key]) == len(fact["evidence_event_groups"])
+                                    and all(isinstance(g, list) and all(isinstance(i, str) for i in g) for g in fact[key])):
+                raise ValueError("truth fact %s has malformed %s" % (fact["fact_id"], key))
 
 
 def score_report(truth, report):
@@ -2214,8 +2295,8 @@ def score_report(truth, report):
     claims = [claim for claim in report["claims"] if isinstance(claim, dict)]
     claim_text = "\n".join(text_of(claim) for claim in claims)
     limitation_text = text_of(report.get("limitations", []))
-    claim_ids = set(EVENT_ID.findall(claim_text))
-    limitation_ids = set(EVENT_ID.findall(limitation_text))
+    claim_ids = cited_ids(claim_text)
+    limitation_ids = cited_ids(limitation_text)
     attack_entities = {value.lower() for fact in truth["facts"] if fact["kind"] == "attack"
                        for values in fact["entities"].values() for value in values}
     details, misattributed = [], []
@@ -2224,14 +2305,20 @@ def score_report(truth, report):
         cited = claim_ids | limitation_ids if coverage else claim_ids
         text = (claim_text + "\n" + limitation_text if coverage else claim_text).lower()
         groups = fact["evidence_event_groups"]
-        covered = [index for index, group in enumerate(groups) if cited & set(group)]
+        alternatives = [(key, label) for key, label in ALTERNATIVE_GROUPS if key in fact]
+        accepted = [set(group).union(*(fact[key][index] for key, _ in alternatives)) for index, group in enumerate(groups)]
+        covered = [index for index, ids in enumerate(accepted) if cited & ids]
         entities = sorted({value for values in fact["entities"].values() for value in values})
         named = [value for value in entities if names(text, value)]
-        details.append({"fact_id": fact["fact_id"], "kind": fact["kind"],
-                         "found": len(covered) == len(groups) and bool(named),
-                         "cited_groups": covered, "missing_groups": [i for i in range(len(groups)) if i not in covered],
-                         "cited_event_ids": sorted(cited & {eid for group in groups for eid in group}),
-                         "entities_named": named})
+        detail = {"fact_id": fact["fact_id"], "kind": fact["kind"],
+                  "found": len(covered) == len(groups) and bool(named),
+                  "cited_groups": covered, "missing_groups": [i for i in range(len(groups)) if i not in covered],
+                  "cited_event_ids": sorted(cited & {eid for group in groups for eid in group}),
+                  "entities_named": named}
+        for key, label in alternatives:
+            # (length, text) puts frame-9 before frame-10.
+            detail[label] = sorted(cited & {item for group in fact[key] for item in group}, key=lambda item: (len(item), item))
+        details.append(detail)
         if fact["kind"] != "decoy":
             continue
         distinctive = [value for value in entities if value.lower() not in attack_entities]
@@ -2252,9 +2339,11 @@ def score_report(truth, report):
         bucket["partial"] += int(not detail["found"] and bool(detail["cited_groups"]))
     decoys_cleared = sum(1 for detail in details
                          if detail["kind"] == "decoy" and detail["found"] and detail["fact_id"] not in blamed)
+    method = ("keyword and event-, frame- and intel-ID citation matching" if any(
+        key in fact for fact in truth["facts"] for key, _ in ALTERNATIVE_GROUPS) else "keyword and event-ID citation matching")
     return {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
             "facts": details, "misattributed_decoys": misattributed,
-            "method": "keyword and event-ID citation matching against the operator key; not human judgment"}
+            "method": method + " against the operator key; not human judgment"}
 
 
 def score(truth_path, report_paths):

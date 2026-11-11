@@ -1,4 +1,4 @@
-"""Host-side hunt_lab tools: registration, ownership-independent wiring, bounds, and guest calls."""
+"""Host-side hunt_lab tools: owner-only registration, wiring, bounds, and guest calls."""
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -13,12 +13,19 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import hunt_lab
-from hunt_lab import query_adapter, runtime as lab_runtime
+from hunt_lab import query_adapter, runtime as lab_runtime, scenario
 
 CASE = 'lab-med-001'
 ANALYST = 'framework-network-analyst'
 HOST_TOOLS = {'elastic_search', 'elastic_aggregate', 'detection_test', 'intel_lookup',
               'arkime_sessions', 'arkime_unique', 'packet_fields'}
+PLUGIN_TOOLS = HOST_TOOLS | {'hunt_lab_query', 'lab_browser'}
+# Minimal valid arguments: each call passes local validation and stops at the VM status check.
+MINIMAL_ARGS = {
+    'elastic_search': {}, 'elastic_aggregate': {'field': 'host.name'}, 'detection_test': {'q': 'a', 'name': 'b'},
+    'intel_lookup': {'values': 'a'}, 'arkime_sessions': {}, 'arkime_unique': {'field': 'ip.src'},
+    'packet_fields': {}, 'lab_browser': {'action': 'snapshot'},
+}
 
 
 def guest_lab_server():
@@ -218,6 +225,14 @@ class ToolCallTests(unittest.TestCase):
                        '?[redacted]', 'Cite the matching evt- log events', 'frame numbers are supporting evidence'):
             self.assertIn(phrase, schema['description'])
 
+    def test_citation_forms_taught_by_the_tools_are_what_the_scorer_extracts(self):
+        packets = query_adapter.SCHEMAS['packet_fields']['description']
+        intel = query_adapter.SCHEMAS['intel_lookup']['description']
+        self.assertIn('cited as frame-<frame.number>', packets)
+        self.assertIn('Cite a match by its id', intel)
+        self.assertEqual(scenario.cited_ids(packets), {'frame-1234'})
+        self.assertEqual(scenario.cited_ids(intel), {'ioc-00012'})
+
     def test_packet_fields_waits_for_the_guest_field_listing_and_decode(self):
         with patch.object(query_adapter, '_get', wraps=query_adapter._get) as get:
             self.assertTrue(self.call('packet_fields', {'case_id': CASE})['ok'])
@@ -317,13 +332,15 @@ class RegistrationTests(unittest.TestCase):
             hunt_lab.register(ctx)
         return ctx
 
-    def test_every_framework_profile_registers_all_tools_against_the_analyst_lab(self):
+    def test_each_framework_profile_registers_exactly_its_owned_tools_against_the_analyst_lab(self):
+        # Hermes refuses any tool name the profile did not register (unknown-tool check), so
+        # registering only owned tools is what enforces each bot's tool limits at runtime.
         analyst_state = self.root / 'profiles' / ANALYST / 'hunt-lab-vm'
         for owner in query_adapter.FRAMEWORK_PROFILES:
             with self.subTest(profile=owner):
                 ctx = self.register(self.root / 'profiles' / owner, owner)
                 self.assertEqual(ctx.commands, ['hunt-lab'])
-                self.assertEqual(set(ctx.tools), HOST_TOOLS | {'hunt_lab_query', 'lab_browser'})
+                self.assertEqual(set(ctx.tools), set(query_adapter.TOOL_OWNERSHIP[owner]) & PLUGIN_TOOLS)
                 for name, (toolset, schema, _handler) in ctx.tools.items():
                     self.assertEqual(toolset, 'hunt_lab')
                     self.assertEqual(schema['name'], name)
@@ -331,19 +348,40 @@ class RegistrationTests(unittest.TestCase):
                     self.assertFalse(schema['parameters']['additionalProperties'])
                 calls = []
                 status = lambda action, *, state_dir, profile: calls.append((action, Path(state_dir), profile)) or {}
+                wired = sorted(set(ctx.tools) & set(MINIMAL_ARGS))
                 with patch.object(lab_runtime, 'invoke', side_effect=status):
-                    output = ctx.tools['elastic_search'][2]({'case_id': CASE})
-                    browser = ctx.tools['lab_browser'][2]({'case_id': CASE, 'action': 'snapshot'})
-                self.assertEqual(json.loads(output)['error'], 'owned_vm_not_running')
-                self.assertEqual(json.loads(browser)['error'], 'owned_vm_not_running')
-                self.assertEqual(calls, [('status', analyst_state, ANALYST)] * 2)
+                    outputs = [ctx.tools[name][2]({'case_id': CASE, **MINIMAL_ARGS[name]}) for name in wired]
+                self.assertEqual([json.loads(output)['error'] for output in outputs],
+                                 ['owned_vm_not_running'] * len(wired))
+                self.assertEqual(calls, [('status', analyst_state, ANALYST)] * len(wired))
+
+    def test_every_plugin_tool_has_an_owner_and_the_coordinator_registers_none(self):
+        owned = {tool for tools in query_adapter.TOOL_OWNERSHIP.values() for tool in tools}
+        self.assertEqual(owned & PLUGIN_TOOLS, PLUGIN_TOOLS)
+        self.assertEqual(set(query_adapter.TOOL_OWNERSHIP), set(query_adapter.FRAMEWORK_PROFILES))
+        self.assertEqual(self.register(self.root / 'profiles' / 'framework-coordinator',
+                                       'framework-coordinator').tools, {})
+
+    def test_builder_and_coordinator_never_register_elastic_search(self):
+        for owner in ('framework-builder', 'framework-coordinator'):
+            with self.subTest(profile=owner):
+                self.assertNotIn('elastic_search', self.register(self.root / 'profiles' / owner, owner).tools)
+
+    def test_unknown_profiles_register_no_tools(self):
+        for owner in ('default', 'framework-intruder', '', None):
+            with self.subTest(profile=owner):
+                ctx = self.register(self.root / 'profiles' / str(owner), owner)
+                self.assertEqual(ctx.tools, {})
 
     def test_plugin_manifest_lists_every_registered_tool(self):
         manifest = (Path(query_adapter.__file__).parent / 'plugin.yaml').read_text(encoding='utf-8')
         line = next(line for line in manifest.splitlines() if line.startswith('provides_tools:'))
         listed = {name.strip() for name in line.split('[', 1)[1].rstrip(']').split(',')}
-        ctx = self.register(self.root / 'profiles' / ANALYST, ANALYST)
-        self.assertEqual(listed, set(ctx.tools))
+        registered = set()
+        for owner in query_adapter.FRAMEWORK_PROFILES:
+            registered |= set(self.register(self.root / 'profiles' / owner, owner).tools)
+        self.assertEqual(listed, registered)
+        self.assertEqual(listed, PLUGIN_TOOLS)
         self.assertIn('packet_fields', listed)
 
     def test_non_framework_or_unanchored_homes_get_no_working_lab(self):

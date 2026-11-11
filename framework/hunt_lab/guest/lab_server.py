@@ -107,7 +107,8 @@ QUERY_FIELDS = [
 ]
 LEADING_WILDCARD = re.compile(r'(?:^|[\s(\[{:,"+!-])[*?]')
 INTERVALS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600}
-INTEL_FIELDS = ('indicator.type', 'indicator.value', 'threat.feed.name', 'confidence',
+# id is the intel record's own ID (ioc-NNNNN in generated cases), so a claim can cite the match.
+INTEL_FIELDS = ('id', 'indicator.type', 'indicator.value', 'threat.feed.name', 'confidence',
                 'description', 'first_seen')
 # Arkime database field names returned by /api/sessions (TLS SNI is stored in http.host).
 ARKIME_SESSION_FIELDS = (

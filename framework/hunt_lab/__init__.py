@@ -6,8 +6,9 @@ import importlib
 import json
 
 
-# Only the analyst owns and operates the lab VM; every framework profile may
-# register the read-only host tools, and native allowlists decide ownership.
+# Only the analyst owns and operates the lab VM. Each framework profile registers
+# only the read-only host tools it owns (query_adapter.TOOL_OWNERSHIP), so Hermes
+# refuses any other hunt_lab tool as unknown before it runs.
 LAB_OWNER = "framework-network-analyst"
 
 
@@ -96,10 +97,12 @@ def register(ctx):
     adapter = importlib.import_module(f"{__name__}.query_adapter")
     home = get_hermes_home()
     owner = profile_name_for_home(home)
-    if owner not in adapter.FRAMEWORK_PROFILES:
+    # Fail closed: a non-framework or unknown profile, or one that owns no hunt_lab tool, gets none.
+    owned = set(adapter.TOOL_OWNERSHIP.get(owner, ())) if owner in adapter.FRAMEWORK_PROFILES else set()
+    if not owned & (set(adapter.SCHEMAS) | {"lab_browser"}):
         return
     runtime = importlib.import_module(f"{__name__}.runtime")
-    browser = importlib.import_module(f"{__name__}.lab_browser")
+    browser = importlib.import_module(f"{__name__}.lab_browser") if "lab_browser" in owned else None
     state_dir = adapter.lab_state_dir(home, owner)
 
     def bind(call):
@@ -109,5 +112,8 @@ def register(ctx):
         return handler
 
     for name, schema in adapter.SCHEMAS.items():
-        ctx.register_tool(name=name, toolset="hunt_lab", schema=schema, handler=bind(functools.partial(adapter.call, name)))
-    ctx.register_tool(name="lab_browser", toolset="hunt_lab", schema=browser.SCHEMA, handler=bind(browser.call))
+        if name in owned:
+            ctx.register_tool(name=name, toolset="hunt_lab", schema=schema,
+                              handler=bind(functools.partial(adapter.call, name)))
+    if browser is not None:
+        ctx.register_tool(name="lab_browser", toolset="hunt_lab", schema=browser.SCHEMA, handler=bind(browser.call))
