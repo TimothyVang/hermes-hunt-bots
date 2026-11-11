@@ -60,6 +60,7 @@ Start any task with `/deep-mode:poteto <task>`. The project skill **`hunt-bots-p
 4. Run `python scripts/hunt_bots_check.py` (policy gate, framework tests, gitleaks when installed).
 5. Write the PR body with these sections, short sentences, and nothing invented: `## Why`, `## What changed`, `## Scope` (what it leaves out), `## Tradeoffs` (only if there was a real choice), `## Blast Radius`, `## Verification` (each real run and its outcome, plus the check summary line).
 6. Review with deep-mode (below). Triage every finding on its merits: fix it, dismiss it with a concrete reason, or ask. Do not churn code for nitpicks.
+7. Maintainers land their own PRs with no human step: `/deep-mode:land-pr <number>` (see Landing below). A contributor's PR still needs a code owner's approval.
 
 ## Review
 
@@ -67,7 +68,7 @@ Reviews run on the contributor's or maintainer's own agent, through deep-mode's 
 
 - **Before opening a PR,** self-review the branch in local mode and fix, dismiss with a reason, or ask for each finding. Put the review line (`review: ready at <short sha>, ...`) in the PR's `## Verification`.
 - **Maintainers** review an open PR with `/deep-mode:review-pr <number>`. It keeps only findings a code read or a run proves and posts one comment-only review (it asks first on a repository that isn't yours); a new push gets a re-review.
-- **Optional second opinion:** deep-mode's pr-agent technique runs PR-Agent on your own Claude subscription (`describe`, `review`, `improve`) and posts to your PR; triage its findings like any other. It draws on the subscription's usage limits; there is no separate service to pay for.
+- **Optional second opinion:** deep-mode's pr-agent technique runs PR-Agent (`describe`, `review`, `improve`) through `omp -p` on whatever subscription your omp is logged into, Claude or Codex, and posts to your PR; triage its findings like any other. It draws on that subscription's usage limits; no API key or paid service.
 - deep-mode's security-audit gate is not enabled here: it needs GitHub Actions, which this project keeps off.
 - A clean review never replaces the gate or the proof on the real app.
 
@@ -76,3 +77,7 @@ Reviewers flag these as blocking, in addition to the rules above:
 - `framework/hunt_lab/**`: bot lab tools stay read-only, scoped to the loaded case, and reach only the guest lab service on `127.0.0.1`; no VM control, live capture, other hosts, or answer-key access. Refusals relay only fixed snake_case error codes to the bot, never backend free text, and host-advertised field lists stay equal to the guest allowlists (`test_hunt_lab_tools.py`).
 - `framework/hermes_temporal/**`: a workflow behavior change is gated by a new `workflow.patched()` ID so recorded histories replay unchanged; human execute and review gates stay; no new retries without explicit approval.
 - `framework/**`: operator-only material (answer keys, `truth.json`, scoring rubrics) is never reachable from bot prompts, tools or the guest payload. Browser automation enforces the lab-origin allowlist inside the browser (navigations, frames, new tabs), not only by scanning code for URLs. Every tracked file is in `framework/TRACKED-FILES.txt`, and shipped files are also in the portable package lists (`package_portable.py` `FILES` and `test_package_portable.py` `APPROVED_FILES`).
+
+## Landing
+
+[`.deep-mode.json`](.deep-mode.json) sets `"autonomousMerge": true`, so a maintainer's own PR lands without a human. `/deep-mode:land-pr <number>` runs deep-mode's pr-conversation technique: reviewer bots post their findings in the PR, the author bot answers each one with a fix or a reason, three verifier bots vote on the final head, and on a pass the author bot merges with `gh pr merge --admin --match-head-commit <sha>`. The panel replaces the code-owner approval the branch requires; it never skips a failing check. Every bot runs on the maintainer's own omp subscription. Contributor PRs are excluded.
