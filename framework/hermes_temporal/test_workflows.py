@@ -1027,6 +1027,24 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             WorkflowRequest([HermesStep("one", "synthetic")], tool_driven="yes")
 
+    async def test_public_dataset_request_crosses_the_workflow_boundary_with_its_origin(self) -> None:
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            raise AssertionError("no step runs before its execute gate")
+
+        queue = "test-hermes-public-dataset"
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(
+                    HermesWorkflow.run,
+                    WorkflowRequest([HermesStep("producer", "public dataset", hunt_context=_ontology_context())],
+                                    synthetic_only=False, tool_driven=True, data_origin="public-dataset"),
+                    id=queue, task_queue=queue,
+                )
+                while (await handle.query(HermesWorkflow.status)).stage != "awaiting_execution_approval":
+                    await asyncio.sleep(0.01)
+                await handle.cancel()
+
     async def test_output_over_disclosed_target_but_within_cap_reaches_review(self) -> None:
         valid = json.dumps(_handoff("producer", "framework-researcher"))
         # Overshoots the 11468-byte stated target but stays under the 16384-byte enforced cap.
@@ -1685,6 +1703,18 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     load({**raw, "steps": [raw["steps"][0], {**follow, "focus": focus}]})
             with self.assertRaises(ValueError):
                 load({**raw, "parallel": False, "steps": [raw["steps"][0], {**follow, "optional": False}]})
+
+    def test_a_focus_on_an_untyped_predecessor_is_rejected_at_construction(self) -> None:
+        def request(analysis_context) -> WorkflowRequest:
+            return WorkflowRequest([
+                HermesStep("analysis", "synthetic", hunt_context=analysis_context),
+                HermesStep("follow-1", "synthetic", depends_on=("analysis",), hunt_context=_ontology_context(),
+                           optional=True, focus=("analysis", 0)),
+            ], parallel=True)
+
+        self.assertEqual(request(_ontology_context()).steps[1].focus, ("analysis", 0))
+        with self.assertRaisesRegex(ValueError, "predecessor with a hunt_context"):
+            request(None)
 
     async def test_a_focus_step_receives_only_its_claim_of_the_predecessor_handoff(self) -> None:
         from .workflows import (

@@ -11,6 +11,7 @@ with @timestamp in [start, end) whose host.name short name (before the first dot
 case-insensitive) is in --hosts (default: every host present). Records are sorted
 by (@timestamp, host.name, winlog.channel, winlog.record_id), given event.id
 evt-NNNNNN in that order and event.dataset = case id; every other field is kept.
+case.json says "data_origin": "public-dataset", so the case is never labelled synthetic.
 
 The operator-only truth.json is derived mechanically from the publisher's labels
 (raw/system_logs_labels.zip, clients_1_and_2) and ground-truth process lists
@@ -435,6 +436,8 @@ def import_case(data_dir, case_id, start, end, evidence_dir, truth_dir, hosts=No
             "schema_version": SCHEMA_VERSION, "case_id": case_id, "question": QUESTION,
             "time_range_utc": {"start_inclusive": format_time(start_ns), "end_exclusive": format_time(end_ns)},
             "network_capture": "none",
+            # Real lab telemetry from a public dataset: lab-input exports it only with operator approval.
+            "data_origin": "public-dataset",
             "sources": [{"artifact": "events.jsonl", "coverage": coverage}],
         }))
     except BaseException:

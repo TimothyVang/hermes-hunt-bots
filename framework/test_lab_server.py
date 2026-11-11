@@ -535,6 +535,20 @@ def frame(number, fields=None):
     return {'frame.number': str(number), 'frame.time_epoch': '%d.000000000' % (START_S + number), **(fields or {})}
 
 
+class PublicDatasetConsoleTests(ServerCase):
+    case = dict(CASE, network_capture='none', data_origin='public-dataset', question='What happened in the window?')
+
+    def test_console_states_the_case_origin(self):
+        self.elastic.response = es_hits([])
+        status, _, body = self.page('/')
+        self.assertEqual(status, 200)
+        self.assertIn('Public research dataset (real lab telemetry, no customer data). Read-only.', body)
+        self.assertNotIn('ynthetic', body)
+        self.assertEqual(self.request('/case')[1]['data_origin'], 'public-dataset')
+        self.server.case = CASE
+        self.assertIn('<p>Synthetic data only. Read-only. No live capture.</p>', self.page('/')[2])
+
+
 class FakeTsharkPipe:
     def __init__(self, data, process):
         self.data, self.process = io.BytesIO(data), process
@@ -631,7 +645,8 @@ class PacketFieldsTests(ServerCase):
         self.assertNotIn('shell', kwargs)
         self.assertEqual((kwargs['stdin'], kwargs['stderr']), (subprocess.DEVNULL, subprocess.DEVNULL))
         self.assertEqual(args[args.index('-Y') + 1], 'dns.qry.name == "a.test" and ip.src == 10.0.0.1')
-        self.assertIn('-c', args)
+        # The whole capture is read: a packet-count cutoff would turn a late match into a complete-looking negative.
+        self.assertNotIn('-c', args)
         self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == '-e'],
                          ['frame.number', 'frame.time_epoch', 'ip.src', 'dns.qry.name'])
         # The supported-field list is asked for once and then cached.
@@ -725,7 +740,9 @@ class PacketFieldsTests(ServerCase):
                           value['truncated']), ([4, 5, 6, 7], 4, True, False))
         self.assertTrue(self.tshark.processes[-1].killed.is_set())
         status, value = self.packets(start='8', length='5', fields='frame.len')
-        self.assertEqual(([row['frame.number'] for row in value['rows']], value['more']), ([9, 10], False))
+        # A scan that reaches the end of the capture is complete: neither more nor truncated.
+        self.assertEqual(([row['frame.number'] for row in value['rows']], value['more'], value['truncated']),
+                         ([9, 10], False, False))
         self.assertFalse(self.tshark.processes[-1].killed.is_set())
 
     def test_output_cap_stops_tshark_and_reports_truncation(self):
@@ -794,6 +811,13 @@ class LoadCaseTests(unittest.TestCase):
         for value in ('pcap', 'None', '', None, False):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load(network_capture=value)
+
+    def test_data_origin_is_absent_or_public_dataset_and_nothing_else(self):
+        self.assertNotIn('data_origin', self.load())
+        self.assertEqual(self.load(data_origin='public-dataset')['data_origin'], 'public-dataset')
+        for value in ('synthetic', 'customer', '', None, False):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load(data_origin=value)
 
 
 class FakeIndexer:
