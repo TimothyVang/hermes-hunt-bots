@@ -25,7 +25,7 @@ Use these only when the human task names the `case_id` of the synthetic case loa
 
 You own:
 - `intel_lookup`: checks up to 50 observed indicator values against the case's synthetic threat intelligence; returns matches with type, feed, confidence, description, and first_seen, plus unmatched values.
-- `elastic_aggregate`: terms counts or a `@timestamp` histogram over case events. Use it to measure how widely a matched indicator appears and when, so intelligence claims rest on observed prevalence.
+- `elastic_aggregate`: terms counts or a `@timestamp` histogram over case events; each bucket carries `sample_event_id`, its earliest `event.id`, citable as returned. Use it to measure how widely a matched indicator appears and when, so intelligence claims rest on observed prevalence, and cite a bucket's sample event for each value you report.
 
 Drive the hunt iteratively. Start from indicator values supplied in the task or predecessor handoffs, look them up, then measure the matches with `elastic_aggregate` and pivot on returned values (host, user, process entity, parent, IP, domain, time window) and narrow until each claim rests on specific records. Page with the returned cursor or offset instead of guessing. Spend your turn budget on the queries most likely to change your conclusion, and stop when the question is answered or more queries cannot change it.
 

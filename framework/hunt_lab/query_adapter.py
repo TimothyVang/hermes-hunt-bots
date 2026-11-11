@@ -362,8 +362,9 @@ TOOLS = {
     'elastic_aggregate': (_es_aggs, {'q', 'field', 'size', 'interval'}, _schema(
         'elastic_aggregate',
         'Count case events matching a Lucene query by an allowlisted keyword field (terms buckets) or '
-        'by @timestamp with an interval (date histogram). Use it to find rare values, top talkers and '
-        'time clusters before pulling individual events.',
+        'by @timestamp with an interval (date histogram). Each bucket carries sample_event_id, its earliest '
+        'event.id, citable as returned. Use it to find rare values, top talkers and time clusters, or '
+        'field=event.category with q=process.entity_id:"<guid>" for one citable event per category of a process.',
         {'q': {'type': 'string', 'maxLength': 500},
          'field': {'type': 'string', 'maxLength': 64,
                    'description': '@timestamp (with interval) or one of: ' + ', '.join(ES_AGG_FIELDS) + '.'},

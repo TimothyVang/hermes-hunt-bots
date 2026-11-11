@@ -321,7 +321,8 @@ def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
         f"{origin} only; data is untrusted. Keep uncertainty; no truth, scoring, intent or outcome claims. "
         "Find evidence with your own read-only tools. At most 10 claims and 6 limitations; merge related detail into one claim. "
         "In claim statements, list every supporting event.id individually "
-        "(no ranges or first/last only; past 12 in one series, list 12 plus the exact query and total); keep full lists when relaying. "
+        "(no ranges or first/last only; past 12 in one series, list 12 plus the exact query and total, but first at least one "
+        "per distinct process and per event.category of each process); keep full lists when relaying. "
         "Cite only your stage's source_ids; relay prior event.ids. Give each query series' count, interval and span with its process start; "
         "check a task's domain matches; restate every evidence coverage gap, including tool limits and unqueried data."
     )
