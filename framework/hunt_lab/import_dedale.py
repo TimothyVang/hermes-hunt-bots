@@ -259,8 +259,9 @@ def event_id(position):
     return "evt-%06d" % (position + 1)
 
 
-def group_key(record):
-    category = field(record, "event", "category")
+def group_key(record, category=None):
+    if category is None:
+        category = field(record, "event", "category")
     if isinstance(category, list) and category:
         return "category:" + str(category[0])
     if isinstance(category, str) and category:
@@ -338,11 +339,11 @@ def sibling_positions(rows, matcher, assigned, labelled):
         if position in labelled or short_host(host) not in hosts:
             continue
         record = json.loads(line)
-        _, found = matcher.match(record, short_host(host), timestamp)
-        key = group_key(record)
         unparsed = unparsed_sysmon(record)
         if unparsed:
-            found, key = matcher.by_guid.get((short_host(host), unparsed[0]), []), "category:" + unparsed[1]
+            found, key = matcher.by_guid.get((short_host(host), unparsed[0]), []), group_key(record, unparsed[1])
+        else:
+            found, key = matcher.match(record, short_host(host), timestamp)[1], group_key(record)
         if len(found) == 1 and id(found[0]) in assigned:
             siblings[id(found[0]), key].append(position)
     return siblings

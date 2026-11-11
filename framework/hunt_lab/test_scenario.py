@@ -179,6 +179,8 @@ class GeneratedTinyCase(unittest.TestCase):
     PORTS = {443, 80, 445, 5985, 3389}
     # (fact, group, indicator value): the C2 domain's intel record also cites the beacon's lookup group.
     INTEL_ALTERNATIVE = ("attack.c2.jittered-https-beacon", 0, scenario.C2)
+    # (process, DNS name): an attack process's lookup that sits beside several groups, so it must be no sibling.
+    AMBIGUOUS_SIBLING = ("synchost.exe", "srv-files-02." + scenario.ZONE)
 
     @classmethod
     def setUpClass(cls):
@@ -262,21 +264,24 @@ class GeneratedTinyCase(unittest.TestCase):
                     self.assertIn(event_id, self.by_id, fact["fact_id"])
         self.check_story_truth(facts)
 
-    def test_sibling_events_share_process_and_category_and_are_never_key_events(self):
-        accepted = {eid for fact in self.truth["facts"] for group in fact["evidence_event_groups"] for eid in group}
-        listed = []
+    def test_siblings_only_for_attack_facts_and_never_an_event_beside_two_groups(self):
         for fact in self.truth["facts"]:
-            for group, siblings in zip(fact["evidence_event_groups"], fact["evidence_sibling_groups"]):
-                if fact["kind"] != "attack":
-                    self.assertEqual(siblings, [], fact["fact_id"])
-                shapes = {(self.by_id[eid].get("process", {}).get("entity_id"), self.by_id[eid]["event"]["category"][0])
-                          for eid in group}
-                for eid in siblings:
-                    row = self.by_id[eid]
-                    self.assertIn((row["process"]["entity_id"], row["event"]["category"][0]), shapes, eid)
-                    self.assertNotIn(eid, accepted)
-                listed.extend(siblings)
-        self.assertEqual(len(listed), len(set(listed)))
+            if fact["kind"] != "attack":
+                self.assertEqual(fact["evidence_sibling_groups"], [[] for _ in fact["evidence_event_groups"]])
+        if self.AMBIGUOUS_SIBLING is None:
+            return
+        name, query = self.AMBIGUOUS_SIBLING
+        lookup = next(row for row in self.events if row.get("process", {}).get("name") == name
+                      and row.get("dns", {}).get("question", {}).get("name") == query)
+        shape = (lookup["process"]["entity_id"], lookup["event"]["category"][0])
+        beside = [(fact["fact_id"], index) for fact in self.truth["facts"] if fact["kind"] == "attack"
+                  for index, group in enumerate(fact["evidence_event_groups"])
+                  if any((self.by_id[eid].get("process", {}).get("entity_id"), self.by_id[eid]["event"]["category"][0]) == shape
+                         for eid in group)]
+        self.assertGreater(len(beside), 1, beside)
+        listed = {eid for fact in self.truth["facts"] for key in ("evidence_event_groups", "evidence_sibling_groups")
+                  for group in fact[key] for eid in group}
+        self.assertNotIn(lookup["event"]["id"], listed)
 
     def fact_events(self, fact_id, group=0):
         fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
@@ -432,6 +437,7 @@ class GeneratedTinyStoryB(GeneratedTinyCase):
     OPTIONAL_FAMILIES = {(scenario.SEC, "4625")}
     PORTS = {443, 80, 445, 3389, 9389}
     INTEL_ALTERNATIVE = ("attack.recon.portal-path-probing", 0, scenario.B_ATTACKER)
+    AMBIGUOUS_SIBLING = None
 
     def check_story_truth(self, facts):
         children = self.fact_events("attack.execution.webshell-commands", 1)

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import check_keys as ck
@@ -99,6 +100,37 @@ class CheckKeys(unittest.TestCase):
         result = ck.run_check(CASE, self.out, self.reviewer({'attack.drop': reply((0, 'proves', ()), (1, 'proves', ()))}),
                               facts_limit=1)
         self.assertEqual((result['checked_facts'], result['disputed'], len(self.calls)), (['attack.drop'], [], 1))
+
+    def test_a_failed_rerun_leaves_no_earlier_reply_behind(self):
+        ck.run_check(CASE, self.out, self.reviewer({'attack.drop': reply((0, 'proves', ()), (1, 'proves', ()))}), facts_limit=1)
+        self.assertTrue((self.out / f'reply-{CASE}-1.txt').exists())
+
+        def broken(packet_path):
+            raise RuntimeError('omp exited 1')
+        result = ck.run_check(CASE, self.out, broken, facts_limit=1)
+        self.assertEqual(result['failures'], [{'fact_id': 'attack.drop', 'problems': ['omp exited 1']}])
+        self.assertFalse((self.out / f'reply-{CASE}-1.txt').exists())
+
+    def test_omp_runs_without_tools_or_any_mcp_source_from_a_scratch_directory(self):
+        packet = self.out / 'packet-x.json'
+        packet.parent.mkdir(parents=True)
+        packet.write_text('{}', encoding='utf-8')
+        seen = {}
+
+        def run(command, cwd, **options):
+            seen.update(command=command, files=sorted(path.name for path in Path(cwd).iterdir()),
+                        overlay=(Path(cwd) / 'no-mcp.yml').read_text(encoding='utf-8'))
+            return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+        with patch.object(ck.subprocess, 'run', run):
+            self.assertEqual(ck.omp_reviewer('claude-opus-5-5')(packet), '[]')
+        self.assertEqual(seen['command'][:2], ['omp', '-p'])
+        for flag in ('--no-tools', '--no-session', '--no-context-files', '--no-extensions'):
+            self.assertIn(flag, seen['command'])
+        self.assertEqual(seen['command'][seen['command'].index('--config') + 1], 'no-mcp.yml')
+        self.assertEqual(seen['files'], ['no-mcp.yml', 'packet-x.json'])
+        self.assertEqual(seen['overlay'].split('\n')[0], 'disabledProviders:')
+        self.assertEqual({line.strip('- ').strip() for line in seen['overlay'].split('\n')[1:] if line},
+                         set(ck.DISCOVERY_PROVIDERS))
 
 
 if __name__ == '__main__':

@@ -2400,8 +2400,8 @@ def score_report(truth, report):
         found, by_kind, decoys_cleared = tally(details, blamed, lambda detail: (
             detail["with_siblings"]["found"], detail["with_siblings"]["cited_groups"]))
         result["with_siblings"] = {"found": found, "total": len(details), "by_kind": by_kind, "decoys_cleared": decoys_cleared,
-                                   "method": "as found, but a group is also cited by an event of the same process and "
-                                             "event category as one of its events (evidence_sibling_groups)"}
+                                   "method": "as found, but a group is also cited by an event the key lists beside it "
+                                             "(evidence_sibling_groups: same process, same kind of event)"}
     return result
 
 
