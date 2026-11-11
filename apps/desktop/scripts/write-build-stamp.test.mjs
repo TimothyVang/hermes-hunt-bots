@@ -115,6 +115,20 @@ test('source builds declare the same artifact schema, without a payload', () => 
   assert.equal(stamp.commit, baseStamp.commit)
 })
 
+test('the hunt variant stamps a bootstrap artifact with its variant and the source update path', () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const hunt = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: 'hunt' }, platform)
+    assert.equal(hunt.payload, 'bootstrap')
+    assert.equal(hunt.variant, 'hunt')
+    assert.equal(hunt.updateMechanism, 'self')
+    assert.equal(hunt.runtime, undefined)
+  }
+  for (const variant of ['', 'light', 'bundled']) {
+    const stamp = buildStampPayload(baseStamp, { HERMES_DESKTOP_VARIANT: variant }, 'darwin', { runtime })
+    assert.equal('variant' in stamp, false, `variant ${variant || '(empty)'} carries no variant field`)
+  }
+})
+
 test('buildStampPayload keeps schemaVersion + provenance in the staged shape', () => {
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'bundled'

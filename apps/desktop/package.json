@@ -37,6 +37,8 @@
     "dist": "npm run build && npm run builder",
     "payload": "node ../../scripts/build/python.mjs ../../scripts/bundles/stage.py --out build/agent-payload",
     "dist:bundled": "npm run payload && cross-env HERMES_DESKTOP_VARIANT=bundled npm run dist",
+    "pack:hunt": "cross-env HERMES_DESKTOP_VARIANT=hunt npm run build -- --icons ../../variants/hunt/icons && cross-env HERMES_DESKTOP_VARIANT=hunt npm run builder -- --dir --publish never",
+    "dist:hunt": "cross-env HERMES_DESKTOP_VARIANT=hunt npm run build -- --icons ../../variants/hunt/icons && cross-env HERMES_DESKTOP_VARIANT=hunt npm run builder -- --publish never",
     "dist:mac": "npm run build && npm run builder -- --mac",
     "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",
     "dist:mac:zip": "npm run build && npm run builder -- --mac zip",

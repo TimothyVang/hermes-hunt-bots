@@ -19,12 +19,19 @@ const variants = {
     display: 'Hermes Agent',
     kebab: 'hermes-bundled',
     pascal: 'HermesBundled'
+  },
+  // This fork's rebranded full client (HUNT-BOTS.md): its own app identity and
+  // userData, no release feed.
+  hunt: {
+    display: 'Hunt Command',
+    kebab: 'hunt-command',
+    pascal: 'HuntCommand'
   }
 }
 
 const variant = process.env.HERMES_DESKTOP_VARIANT || ''
-if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+if (!['', 'light', 'bundled', 'store', 'hunt'].includes(variant)) {
+  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store, hunt`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled
@@ -33,6 +40,7 @@ if (!['', 'light', 'bundled', 'store'].includes(variant)) {
 // MSIX package identity. The Store re-signs on submission.
 const store = variant === 'store'
 const light = variant === 'light'
+const hunt = variant === 'hunt'
 const name = variants[store ? 'bundled' : (variant || '')]
 
 // The electron-updater feed channel this build PUBLISHES to. A canary
@@ -67,13 +75,14 @@ const identity = {
   light,
   displayName,
   appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
-  // Store and commit builds do not publish a release feed.
-  channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
+  // Store, commit and Hunt Command builds do not publish a release feed.
+  channel: store || buildCommit || hunt ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: `${name.pascal}${pascalSuffix}`,
   artifactNamePascal: name.pascal,
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
   msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
+  ...(hunt ? { hunt } : {}),
   ...(store
     ? {
         storeMsix: {

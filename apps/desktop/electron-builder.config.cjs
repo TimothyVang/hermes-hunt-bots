@@ -18,6 +18,7 @@ const { createMacSigner } = require('./scripts/mac-sign.mjs')
 const {
   light,
   store,
+  hunt,
   storeMsix,
   displayName,
   appId,
@@ -103,9 +104,9 @@ module.exports = {
   extraMetadata: {
     name: appNamePascal,
     // Electron bootstrap reads package.productName before main.ts. Keep the
-    // shipped stable default, but isolate nonstable userData from first access.
-    // A stable-branded channel has no token and keeps stable's userData.
-    ...((channelRequest && token) || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
+    // shipped stable default, but isolate nonstable (and Hunt Command) userData
+    // from first access. A stable-branded channel has no token and keeps stable's userData.
+    ...((channelRequest && token) || hunt || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId
   },
   directories: {

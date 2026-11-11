@@ -13,12 +13,18 @@
  *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
+import { variantPluginModules } from '@/contrib/variant-plugins'
+
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
 import { watchRuntimePlugins } from './runtime-loader'
 
-const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true })
+// A build variant's own bundled plugins (none in stock Hermes) join the in-tree ones.
+const modules = {
+  ...import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true }),
+  ...variantPluginModules
+}
 
 // One-shot init guard. Contributions themselves register by id (re-registering
 // is idempotent), but the disk-door watcher setup below (watchRuntimePlugins)

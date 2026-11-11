@@ -185,6 +185,27 @@ An explicit keychain path does not make Security.framework work under a scratch
 home. Dependency preparation and product compilation still use the isolated home.
 Hermes state and explicit dependency-cache paths remain build-owned during packaging.
 
+## Hunt Command variant
+
+`HERMES_DESKTOP_VARIANT=hunt` builds this fork's rebrand, **Hunt Command**. It is the
+stock full client (bootstrap payload, checkout updates) with these changes only:
+
+- Identity: name, app ID, executable and userData are Hunt Command's own
+  (`product-identity.cjs`), so its storage, plugin choices and single-instance
+  lock never mix with stock Hermes. It has no release feed (`channel: null`).
+- Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
+- Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
+  and Cybersecurity workspace plugins are bundled straight from `framework/`
+  (`src/contrib/variant-plugins.hunt.ts`) and on by default; a same-id copy in
+  `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
+  pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
+  screen drops the Hermes wordmark. Any explicit pick wins.
+
+From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
+`release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
+also packages installers. Both copy the variant icons over the committed
+`assets/`; run `git checkout -- assets` before a stock build.
+
 ## Commit-only builds
 
 To preview a build for a pushed revision, run:

@@ -125,6 +125,7 @@ test('nonstable identity preserves an explicit isolated userData directory', asy
   const isolated = path.join(root, 'isolated')
   let selected = ''
   let displayedName = ''
+
   try {
     assert.equal(runtime.applyDesktopIdentity({
       getPath: (): string => assert.fail('The default appData path must not be accessed'),
@@ -219,6 +220,68 @@ test('light and bundled retain distinct OS markers from the full client', async 
       assert.notEqual(other.channel, full.channel)
     }
   }
+})
+
+test('hunt is a stable Hunt Command identity with its own userData and no release feed', async (): Promise<void> => {
+  const full: ProductIdentity = await identityForVariant(undefined)
+  assert.equal(full.hunt, undefined)
+  assert.equal(full.displayName, 'Hermes')
+  assert.equal(full.appNamePascal, 'Hermes')
+  assert.equal(full.channel, 'latest')
+
+  for (const variant of ['bundled', 'light', 'store']) {
+    assert.equal((await identityForVariant(variant)).hunt, undefined, `variant ${variant} must not be hunt`)
+  }
+
+  const hunt: ProductIdentity = await identityForVariant('hunt')
+  assert.equal(hunt.hunt, true)
+  assert.equal(hunt.displayName, 'Hunt Command')
+  assert.equal(hunt.appId, 'com.nousresearch.hunt-command')
+  assert.equal(hunt.appNamePascal, 'HuntCommand')
+  assert.equal(hunt.artifactNamePascal, 'HuntCommand')
+  assert.equal(hunt.windowsExecutableName, 'Hunt Command')
+  assert.equal(hunt.channel, null)
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
+  assert.equal((await identityForVariant('hunt')).channel, null)
+  delete process.env.HERMES_PAYLOAD_TAG
+  assert.deepEqual(await identityForVariant('hunt'), hunt)
+
+  for (const field of ['displayName', 'appId', 'appNamePascal', 'msixAppIdWithOrg'] as const) {
+    assert.notEqual(hunt[field], full[field])
+  }
+
+  const runtime: { applyDesktopIdentity: typeof applyDesktopIdentity } = await import('./product-identity')
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-hunt-'))
+  const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Hermes') }
+  let name: string = 'Hermes'
+
+  const app: Parameters<typeof applyDesktopIdentity>[0] = {
+    getPath: (key: string): string => paths[key],
+    setPath: (key: string, value: string): void => {
+      paths[key] = value
+    },
+    setName: (value: string): void => {
+      name = value
+    }
+  }
+
+  try {
+    assert.equal(runtime.applyDesktopIdentity(app, full), null)
+    assert.equal(paths.userData, path.join(root, 'Hermes'))
+    assert.equal(runtime.applyDesktopIdentity(app, hunt), 'Hunt Command')
+    assert.equal(paths.userData, path.join(root, 'HuntCommand'))
+    assert.equal(name, 'Hunt Command')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+
+  delete require.cache[require.resolve('../electron-builder.config.cjs')]
+  const config: PackagingConfiguration = require('../electron-builder.config.cjs')
+  // Electron's boot-time userData lookup must already use the Hunt Command name.
+  assert.equal(config.extraMetadata.productName, 'Hunt Command')
+  assert.equal(config.extraMetadata.name, 'HuntCommand')
+  assert.equal(config.publish, null)
+  assert.equal(config.mac.publish, null)
 })
 
 test('packaging isolates boot metadata and executable names without renaming release artifacts', async (): Promise<void> => {
