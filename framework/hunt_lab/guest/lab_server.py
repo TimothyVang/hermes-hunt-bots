@@ -3,7 +3,10 @@
 
 Every query is scoped server-side to the loaded case: events by event.dataset,
 intel by case_id, network sessions by the Arkime case tag and the case window.
-Arkime is reached only through two fixed read routes on guest loopback.
+Arkime is reached only through two fixed read routes on guest loopback. A case whose
+case.json says "network_capture": "none" has no sessions; its network queries are refused.
+Packet fields come only from the case's saved capture (tshark -r, never live capture), limited
+to a fixed field allowlist with URI query strings redacted (ADR 0003).
 """
 import argparse
 import base64
@@ -16,6 +19,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -39,7 +43,10 @@ CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
 INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
 EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
-                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'message', 'labels']
+                'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'powershell', 'message', 'labels']
+NO_CAPTURE = 'none'
+# case.json "data_origin": "public-dataset" marks an approved public research dataset; absent means synthetic.
+PUBLIC_DATASET = 'public-dataset'
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
 ES_TIMEOUT = 15
@@ -74,10 +81,21 @@ KEYWORD_FIELDS = (
     'winlog.event_data.TargetProcessGuid', 'winlog.event_data.TargetProcessId',
     'winlog.event_data.TargetUserName', 'winlog.event_data.TaskContent', 'winlog.event_data.TaskName',
     'winlog.event_data.WorkstationName',
+    # Fields of real winlogbeat/Sysmon/PowerShell logs (Sysmon spells TargetProcessGUID).
+    'event.module', 'process.args', 'process.title', 'process.hash.md5', 'process.hash.sha1',
+    'file.directory', 'file.extension', 'winlog.record_id', 'winlog.event_id', 'winlog.computer_name',
+    'winlog.provider_name', 'winlog.task', 'winlog.process.pid', 'winlog.event_data.User',
+    'winlog.event_data.IntegrityLevel', 'winlog.event_data.LogonId', 'winlog.event_data.ParentUser',
+    'winlog.event_data.OriginalFileName', 'winlog.event_data.Description', 'winlog.event_data.Company',
+    'winlog.event_data.Product', 'winlog.event_data.Signed', 'winlog.event_data.Signature',
+    'winlog.event_data.SignatureStatus', 'winlog.event_data.RuleName', 'winlog.event_data.CreationUtcTime',
+    'winlog.event_data.EventType', 'winlog.event_data.SourceUser', 'winlog.event_data.TargetUser',
+    'winlog.event_data.TargetProcessGUID',
 )
 AGG_FIELDS = frozenset(KEYWORD_FIELDS)
 SEARCH_FIELDS = frozenset(KEYWORD_FIELDS + (
-    '@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets'))
+    '@timestamp', 'message', 'dns.answers', 'network.bytes', 'network.packets',
+    'powershell.file.script_block_text'))
 LABEL_FIELD = re.compile(r'labels\.[a-z0-9_]{1,40}')
 ALWAYS_FIELDS = ('event.id', '@timestamp', 'host.name')
 DEFAULT_FIELDS = ALWAYS_FIELDS + (
@@ -113,6 +131,50 @@ ARKIME_UNIQUE_FIELDS = frozenset({
     'dns.query.type', 'tls.version', 'tls.cipher', 'tls.ja3', 'tls.ja4', 'tags',
 })
 MAX_UNIQUE_VALUES = 1000
+# packet_fields (ADR 0003): decoded fields of the case's saved capture, read with tshark -r only.
+TSHARK = '/usr/bin/tshark'
+TSHARK_ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C.UTF-8'}
+TSHARK_TIMEOUT = 20
+# wsutil/exit_codes.h INVALID_FILTER: tshark could not compile the display filter.
+TSHARK_INVALID_FILTER = 4
+# Every row carries these, so a claim can cite the frame.
+PACKET_ALWAYS_FIELDS = ('frame.number', 'frame.time_epoch')
+# Nothing outside this list is decoded: no cookies, authorization headers, bodies, file data, raw
+# bytes, passwords, hashes, tickets or challenges. Usernames are identity, not secrets (ADR 0003).
+PACKET_FIELDS = (
+    'frame.number', 'frame.time_epoch', 'frame.len', 'ip.src', 'ip.dst', 'ipv6.src', 'ipv6.dst',
+    'tcp.srcport', 'tcp.dstport', 'tcp.stream', 'udp.srcport', 'udp.dstport', '_ws.col.Protocol',
+    'dns.qry.name', 'dns.qry.type', 'dns.flags.rcode', 'dns.a', 'dns.aaaa', 'dns.cname',
+    'http.host', 'http.request.method', 'http.request.uri', 'http.response.code', 'http.user_agent',
+    'http.content_type', 'http.content_length', 'tls.handshake.type',
+    'tls.handshake.extensions_server_name', 'tls.handshake.ja3', 'tls.handshake.ja3s',
+    'tls.handshake.ja4', 'tls.record.version', 'smb2.cmd', 'smb2.filename', 'smb2.tree',
+    'kerberos.CNameString', 'ntlmssp.auth.username', 'ntlmssp.auth.domain',
+)
+PACKET_DEFAULT_FIELDS = ('ip.src', 'ip.dst', 'tcp.dstport', 'udp.dstport', '_ws.col.Protocol', 'dns.qry.name',
+                         'http.host', 'tls.handshake.extensions_server_name')
+# tshark 3.6 resolves _ws.col.* itself: they are absent from -G fields and cannot be filtered on.
+PACKET_COLUMN_FIELDS = frozenset({'_ws.col.Protocol'})
+# A redacted value must not be testable either: comparisons would recover a query string guess by guess.
+PACKET_FILTER_FIELDS = frozenset(PACKET_FIELDS) - PACKET_COLUMN_FIELDS - {'http.request.uri'}
+PACKET_FILTER_PROTOCOLS = frozenset({'ip', 'ipv6', 'tcp', 'udp', 'dns', 'http', 'tls', 'smb2', 'kerberos',
+                                     'ntlmssp', 'arp', 'icmp'})
+PACKET_FILTER_WORDS = {'and': 'logic', 'or': 'logic', 'not': 'not', 'eq': 'compare', 'ne': 'compare',
+                       'gt': 'compare', 'lt': 'compare', 'ge': 'compare', 'le': 'compare'}
+PACKET_FILTER_OPERATORS = {'==': 'compare', '!=': 'compare', '>=': 'compare', '<=': 'compare', '>': 'compare',
+                           '<': 'compare', '&&': 'logic', '||': 'logic', '!': 'not', '(': 'open', ')': 'close'}
+# Strings are printable ASCII without backslashes or quotes inside; every other character is refused.
+PACKET_FILTER_TOKEN = re.compile(
+    r' *(?:(?P<string>"[\x20\x21\x23-\x5b\x5d-\x7e]*")'
+    r'|(?P<operator>==|!=|>=|<=|&&|\|\||[<>!()])'
+    r'|(?P<ipv6>(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?:/[0-9]{1,3})?)(?![0-9A-Za-z_.:/])'
+    r'|(?P<number>0x[0-9A-Fa-f]+|[0-9]+(?:\.[0-9]+){0,3}(?:/[0-9]{1,2})?)(?![0-9A-Za-z_.:/])'
+    r'|(?P<word>[A-Za-z_][A-Za-z0-9_.]*)(?![0-9A-Za-z_.:\[-]))')
+MAX_PACKET_FILTER = 300
+MAX_PACKET_FILTER_DEPTH = 20
+MAX_PACKET_START = 100000
+MAX_PACKET_VALUE = 1000
+URL_USERINFO = re.compile(r'([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@')
 MISSING = object()
 
 
@@ -120,8 +182,15 @@ class BackendQueryError(Exception):
     """A refused query, with a fixed snake_case code the bot can act on; never echo backend text.
 
     invalid_query: the backend rejected the syntax; field_not_allowed / invalid_field_list: a field
-    outside the allowlist; leading_wildcard_not_supported: a term starts with * or ?.
+    outside the allowlist; leading_wildcard_not_supported: a term starts with * or ?;
+    no_network_capture: the case ships no packet capture, so it has no network sessions;
+    invalid_filter: a packet display filter outside the allowed grammar; field_unavailable: an
+    allowlisted packet field the installed tshark does not know.
     """
+
+
+class PacketToolFailure(RuntimeError):
+    """tshark failed (packet_tool_error) or ran too long (packet_tool_timeout); its own text is never kept."""
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -246,6 +315,15 @@ def window(case):
     return bounds['start_inclusive'], bounds['end_exclusive']
 
 
+def has_capture(case):
+    return case.get('network_capture') != NO_CAPTURE
+
+
+def require_capture(server):
+    if not has_capture(server.case):
+        raise BackendQueryError('no_network_capture')
+
+
 def lucene(q):
     q = text(q, 500)
     if not q.strip():
@@ -274,6 +352,8 @@ def network_filters(server):
 
 
 def query(server, dataset, params):
+    if dataset != 'events':
+        require_capture(server)
     allowed = {'q', 'host', 'limit', 'offset'}
     values = single(params, allowed)
     limit = bounded(values.get('limit'), 50, 1, MAX_RESULT)
@@ -456,6 +536,7 @@ def arkime_scope(server, expression):
 
 
 def arkime_sessions_endpoint(server, params):
+    require_capture(server)
     values = single(params, {'expression', 'length', 'start', 'fields'})
     length = bounded(values.get('length'), 50, 1, MAX_RESULT)
     start = bounded(values.get('start'), 0, 0, 10000)
@@ -482,6 +563,7 @@ def arkime_sessions_endpoint(server, params):
 
 
 def arkime_unique_endpoint(server, params):
+    require_capture(server)
     values = single(params, {'expression', 'field', 'counts'})
     field = values.get('field')
     if field not in ARKIME_UNIQUE_FIELDS:
@@ -504,6 +586,213 @@ def arkime_unique_endpoint(server, params):
         result.sort(key=lambda item: (-item['count'], item['value']))
     return {'case_id': server.case['case_id'], 'field': field, 'returned': len(result),
             'truncated': len(lines) > MAX_UNIQUE_VALUES, 'values': result}
+
+
+def packet_filter(value):
+    """Check a display filter against a closed grammar; return (filter for tshark, fields it tests).
+
+    expr := term (logic term)*; term := not term | ( expr ) | protocol | field [compare value].
+    A value (quoted string, number, IPv4/IPv6 address) only follows a comparison on an allowed field, so
+    no denied field, protocol bytes, slice, function, contains/matches or ${} reference can be tested.
+    """
+    try:
+        value = text(value, MAX_PACKET_FILTER).strip()
+    except ValueError:
+        raise BackendQueryError('invalid_filter') from None
+    if not value:
+        return None, ()
+    tokens, position = [], 0
+    while position < len(value):
+        match = PACKET_FILTER_TOKEN.match(value, position)
+        if not match:
+            raise BackendQueryError('invalid_filter')
+        position, kind = match.end(), match.lastgroup
+        token = match.group(kind)
+        if kind == 'operator':
+            kind = PACKET_FILTER_OPERATORS[token]
+        elif kind == 'word':
+            kind = PACKET_FILTER_WORDS.get(token) or ('field' if token in PACKET_FILTER_FIELDS else
+                                                     'protocol' if token in PACKET_FILTER_PROTOCOLS else None)
+            if kind is None:
+                raise BackendQueryError('invalid_filter')
+        else:
+            kind = 'value'
+        tokens.append((kind, token))
+    fields, index = [], 0
+
+    def peek():
+        return tokens[index][0] if index < len(tokens) else None
+
+    def take(kind):
+        nonlocal index
+        if peek() != kind:
+            raise BackendQueryError('invalid_filter')
+        index += 1
+        return tokens[index - 1][1]
+
+    def term(depth):
+        if depth > MAX_PACKET_FILTER_DEPTH:
+            raise BackendQueryError('invalid_filter')
+        kind = peek()
+        if kind == 'not':
+            take('not')
+            term(depth + 1)
+        elif kind == 'open':
+            take('open')
+            expression(depth + 1)
+            take('close')
+        elif kind == 'protocol':
+            take('protocol')
+        else:
+            fields.append(take('field'))
+            if peek() == 'compare':
+                take('compare')
+                take('value')
+
+    def expression(depth):
+        term(depth)
+        while peek() == 'logic':
+            take('logic')
+            term(depth)
+
+    expression(0)
+    if index != len(tokens):
+        raise BackendQueryError('invalid_filter')
+    return ' '.join(token for _kind, token in tokens), tuple(fields)
+
+
+def redact_uri(value):
+    """Path only: a query string or fragment becomes ?[redacted], and URL userinfo is dropped."""
+    cut = re.search(r'[?#]', value)
+    path = URL_USERINFO.sub(r'\1', value[:cut.start()] if cut else value)
+    return path + '?[redacted]' if cut else path
+
+
+def run_tshark(args, consume):
+    """Run tshark from an argument list (no shell) under a deadline; its stderr is discarded unread.
+
+    consume(stdout) returns (value, stop); stop kills tshark once enough output was read.
+    Returns (exit code, value), with code 0 for a deliberate stop.
+    """
+    try:
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, env=TSHARK_ENV)
+    except OSError:
+        raise PacketToolFailure('packet_tool_error') from None
+    expired = threading.Event()
+
+    def expire():
+        expired.set()
+        process.kill()
+
+    timer = threading.Timer(TSHARK_TIMEOUT, expire)
+    timer.daemon = True
+    timer.start()
+    stop = True
+    try:
+        value, stop = consume(process.stdout)
+    finally:
+        if stop:
+            process.kill()
+        code = process.wait()
+        timer.cancel()
+        process.stdout.close()
+    if stop:
+        return 0, value
+    if expired.is_set() and code != 0:
+        raise PacketToolFailure('packet_tool_timeout')
+    return code, value
+
+
+def tshark_fields(server):
+    """The allowlisted fields the installed tshark knows: asked once with -G fields, then cached."""
+    allowed = frozenset(PACKET_FIELDS)
+    with server.packet_lock:
+        if server.packet_supported is None:
+            def consume(stream):
+                found = set()
+                while True:
+                    line = stream.readline(4096)
+                    if not line:
+                        return found, False
+                    parts = line.split(b'\t', 3)
+                    if len(parts) > 2 and parts[0] == b'F':
+                        name = parts[2].decode('ascii', 'replace')
+                        if name in allowed:
+                            found.add(name)
+
+            code, found = run_tshark([TSHARK, '-G', 'fields'], consume)
+            if code != 0:
+                raise PacketToolFailure('packet_tool_error')
+            server.packet_supported = frozenset(found) | PACKET_COLUMN_FIELDS
+        return server.packet_supported
+
+
+def packet_row(columns, line):
+    values = line.decode('utf-8', 'replace').rstrip('\r\n').split('\t')
+    if len(values) != len(columns):
+        raise PacketToolFailure('packet_tool_error')
+    row = {}
+    for name, value in zip(columns, values):
+        if not value:
+            continue
+        if name == 'frame.number' and value.isdigit():
+            value = int(value)
+        else:
+            if name == 'http.request.uri':
+                value = redact_uri(value)
+            if len(value) > MAX_PACKET_VALUE:
+                value = value[:MAX_PACKET_VALUE] + '…'
+        row[name] = value
+    return row
+
+
+def packet_fields_endpoint(server, params):
+    require_capture(server)
+    values = single(params, {'fields', 'filter', 'length', 'start'})
+    length = bounded(values.get('length'), 50, 1, MAX_RESULT)
+    start = bounded(values.get('start'), 0, 0, MAX_PACKET_START)
+    fields = field_list(values.get('fields'), frozenset(PACKET_FIELDS), PACKET_DEFAULT_FIELDS)
+    display_filter, tested = packet_filter(values.get('filter'))
+    if server.capture is None or not Path(server.capture).is_file():
+        raise PacketToolFailure('packet_tool_error')
+    supported = tshark_fields(server)
+    if any(field not in supported for field in (*fields, *tested)):
+        raise BackendQueryError('field_unavailable')
+    columns = list(dict.fromkeys(PACKET_ALWAYS_FIELDS + tuple(fields)))
+    args = [TSHARK, '-r', str(server.capture), '-n', '-T', 'fields', '-E', 'header=n', '-E', 'separator=/t',
+            '-E', 'occurrence=a', '-E', 'aggregator=,']
+    for column in columns:
+        args += ['-e', column]
+    if display_filter:
+        args += ['-Y', display_filter]
+    # No -c packet count: a cutoff would end the scan early and a filter matching only later
+    # frames would read as a complete negative. TSHARK_TIMEOUT and MAX_BACKEND_BYTES bound it.
+
+    def consume(stream):
+        page, seen, size = [], 0, 0
+        while True:
+            line = stream.readline(MAX_BACKEND_BYTES + 1)
+            if not line:
+                return (page, False), False
+            size += len(line)
+            if size > MAX_BACKEND_BYTES:
+                return (page, True), True
+            seen += 1
+            if seen > start:
+                page.append(line)
+                # One row past the page tells whether another page exists.
+                if len(page) > length:
+                    return (page, False), True
+
+    code, (page, capped) = run_tshark(args, consume)
+    if code == TSHARK_INVALID_FILTER and display_filter:
+        raise BackendQueryError('invalid_filter')
+    if code != 0:
+        raise PacketToolFailure('packet_tool_error')
+    rows = [packet_row(columns, line) for line in page[:length]]
+    return {'case_id': server.case['case_id'], 'fields': columns, 'start': start, 'returned': len(rows),
+            'more': len(page) > length, 'truncated': capped, 'rows': rows}
 
 
 def events_endpoint(server, params):
@@ -533,7 +822,10 @@ def console_page(server, params):
     return status, (
         '<!doctype html><html><head><meta charset="utf-8"><title>Hermes hunting lab</title>'
         '<style>body{font:16px system-ui;margin:24px}td{vertical-align:top;border-bottom:1px solid #999}pre{white-space:pre-wrap}input{margin:6px}</style></head><body>'
-        '<h1>Hermes supplied-evidence lab</h1><p>Synthetic data only. Read-only. No live capture.</p>'
+        '<h1>Hermes supplied-evidence lab</h1><p>'
+        + ('Public research dataset (real lab telemetry, no customer data).' if case.get('data_origin') == PUBLIC_DATASET
+           else 'Synthetic data only.') +
+        ' Read-only. No live capture.</p>'
         '<p>Case: ' + html.escape(case['case_id']) + '</p><p>' + html.escape(case['question']) + '</p>'
         '<form action="/view" method="get"><label for="q">Search</label><input id="q" name="q" size="60" value="' + shown['q'] + '">'
         '<label for="host">Host</label><input id="host" name="host" value="' + shown['host'] + '"><button>Search logs</button></form>'
@@ -550,6 +842,7 @@ TOOL_ROUTES = {
     '/intel': ('intel_lookup', intel_endpoint, ('matches', None)),
     '/arkime/sessions': ('arkime_sessions', arkime_sessions_endpoint, ('returned', 'recordsFiltered')),
     '/arkime/unique': ('arkime_unique', arkime_unique_endpoint, ('returned', None)),
+    '/packets': ('packet_fields', packet_fields_endpoint, ('returned', None)),
     '/events': ('hunt_lab_query', events_endpoint, ('returned', 'total')),
     '/network': ('hunt_lab_query', network_endpoint, ('returned', 'total')),
 }
@@ -586,18 +879,24 @@ def counted(value):
 
 def health(server):
     events = query(server, 'events', {'limit': ['1']})
-    network = query(server, 'network', {'limit': ['1']})
+    captured = has_capture(server.case)
+    sessions = query(server, 'network', {'limit': ['1']})['total'] if captured else 0
     intel = es_search(server.elastic, INTEL_INDEX, {
         'query': {'bool': {'filter': [{'term': {'case_id': server.case['case_id']}}]}},
         'size': 0, 'track_total_hits': True, 'timeout': '10s'}, ignore_unavailable=True)
     viewer_ready = answers(ARKIME + '/')
     kibana_ready = kibana_case_ready(server.case['case_id'])
-    ready = events['total'] > 0 and network['total'] > 0 and viewer_ready and kibana_ready
-    return ready, {'ready': ready, 'case_id': server.case['case_id'],
-                   'event_count': events['total'], 'network_session_count': network['total'],
-                   'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
-                   'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True,
-                   'instance_id': server.instance_id}
+    # A case without a capture is served from events alone; Arkime has nothing of it to show.
+    network_ready = sessions > 0 and viewer_ready if captured else True
+    ready = events['total'] > 0 and network_ready and kibana_ready
+    value = {'ready': ready, 'case_id': server.case['case_id'],
+             'event_count': events['total'], 'network_session_count': sessions,
+             'intel_count': intel['hits']['total']['value'], 'network_scope': server.network_scope,
+             'arkime_viewer_ready': viewer_ready, 'kibana_ready': kibana_ready, 'read_only': True,
+             'instance_id': server.instance_id}
+    if not captured:
+        value['network_capture'] = NO_CAPTURE
+    return ready, value
 
 
 def answers(url):
@@ -641,6 +940,8 @@ class Handler(BaseHTTPRequestHandler):
             status, error = 400, exc.args[0]
         except (ValueError, TypeError):
             status, error = 400, 'invalid_query'
+        except PacketToolFailure as exc:
+            status, error = 503, exc.args[0]
         except (OSError, KeyError, RuntimeError):
             status, error = 503, 'backend_not_ready'
         claimed = self.headers.get('X-Hermes-Profile', '')
@@ -707,6 +1008,10 @@ def load_case(path):
     start, end = window(case)
     if epoch(start) >= epoch(end):
         raise ValueError('case.json time_range_utc must be a nonempty window')
+    if 'network_capture' in case and case['network_capture'] != NO_CAPTURE:
+        raise ValueError('case.json network_capture may only be "none"')
+    if 'data_origin' in case and case['data_origin'] != PUBLIC_DATASET:
+        raise ValueError('case.json data_origin may only be "public-dataset"')
     return case
 
 
@@ -719,7 +1024,7 @@ def instance_id(path=INSTANCE_ID_FILE):
     return value if INSTANCE_ID.fullmatch(value) else None
 
 
-def make_server(bind, port, case, elastic, network_scope='tag', instance=None):
+def make_server(bind, port, case, elastic, network_scope='tag', instance=None, capture=None):
     if network_scope not in ('tag', 'window'):
         raise ValueError('network_scope must be tag or window')
     server = ThreadingHTTPServer((bind, port), Handler)
@@ -729,6 +1034,10 @@ def make_server(bind, port, case, elastic, network_scope='tag', instance=None):
     server.network_scope = network_scope
     server.instance_id = instance
     server.activity = Activity()
+    # The case's saved capture (evidence/traffic.pcap next to case.json): packet_fields' only source.
+    server.capture = capture
+    server.packet_lock = threading.Lock()
+    server.packet_supported = None
     return server
 
 
@@ -742,7 +1051,7 @@ def main():
     args = parser.parse_args()
     server = make_server(args.bind, args.port, load_case(args.case),
                          os.environ.get('LAB_ELASTICSEARCH', 'http://elasticsearch:9200'), args.network_scope,
-                         instance=instance_id())
+                         instance=instance_id(), capture=Path(args.case).resolve().parent / 'traffic.pcap')
     server.serve_forever()
 
 

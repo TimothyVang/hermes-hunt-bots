@@ -41,6 +41,12 @@ PAYLOAD_FILES = (
 EVIDENCE_FILES = ("events.jsonl", "traffic.pcap", "case.json")
 # Optional per-case evidence; never truth/answer-key material.
 OPTIONAL_EVIDENCE_FILES = ("intel.jsonl",)
+# case.json "network_capture": "none" declares a case without traffic.pcap; no other value is accepted.
+CAPTURE_FILE = "traffic.pcap"
+NO_CAPTURE = "none"
+# case.json "data_origin": "public-dataset" marks an approved public research dataset (HUNT-BOTS.md
+# rule 1); absent means synthetic. No other value is accepted.
+PUBLIC_DATASET = "public-dataset"
 INSTANCE_ID = "hermes-framework-network-analyst-native-v1"
 CASE_ID_PATTERN = re.compile(r"[a-z0-9-]{3,64}")
 DEPLOYMENT_KEYS = frozenset({"qemu", "disk", "seed", "memory_mib", "cpus", "accel"})
@@ -323,8 +329,14 @@ def prepare(args: argparse.Namespace) -> dict:
 
 def payload_sources(evidence: Path) -> list[tuple[str, Path]]:
     """The reviewed guest payload: fixed guest files and allowlisted evidence names only."""
+    captured = case_metadata(source_file(evidence / "case.json")).get("network_capture") != NO_CAPTURE
+    if not captured and os.path.lexists(evidence / CAPTURE_FILE):
+        raise PreparationError(f'case.json says network_capture "{NO_CAPTURE}" but {CAPTURE_FILE} is present')
     sources = [(name, source_file(LAB_SOURCE / name)) for name in PAYLOAD_FILES]
-    sources.extend(("evidence/" + name, source_file(evidence / name)) for name in EVIDENCE_FILES)
+    sources.extend(
+        ("evidence/" + name, source_file(evidence / name))
+        for name in EVIDENCE_FILES if captured or name != CAPTURE_FILE
+    )
     sources.extend(
         ("evidence/" + name, source_file(evidence / name))
         for name in OPTIONAL_EVIDENCE_FILES if os.path.lexists(evidence / name)
@@ -351,6 +363,10 @@ def case_metadata(path: Path) -> dict:
         ordered = False
     if not ordered:
         raise PreparationError("case.json time_range_utc needs ISO start_inclusive < end_exclusive")
+    if "network_capture" in case and case["network_capture"] != NO_CAPTURE:
+        raise PreparationError(f'case.json network_capture may only be "{NO_CAPTURE}"')
+    if "data_origin" in case and case["data_origin"] != PUBLIC_DATASET:
+        raise PreparationError(f'case.json data_origin may only be "{PUBLIC_DATASET}"')
     return case
 
 
@@ -513,7 +529,7 @@ def parser() -> argparse.ArgumentParser:
     mode = cli.add_mutually_exclusive_group(required=True)
     mode.add_argument("--images-tar", help="Offline public Docker export for the locked lab images")
     mode.add_argument("--guest-pull", action="store_true", help="Pull only locked public image digests inside the guest")
-    cli.add_argument("--evidence-dir", required=True, help="Directory containing events.jsonl, traffic.pcap, case.json and optional intel.jsonl")
+    cli.add_argument("--evidence-dir", required=True, help="Directory containing events.jsonl, traffic.pcap (absent when case.json network_capture is none), case.json and optional intel.jsonl")
     cli.add_argument("--state-dir", required=True, help="Native profile home/hunt-lab-vm, outside workspace/Git")
     cli.add_argument("--profile", required=True, choices=(PROFILE,))
     cli.add_argument("--accel", choices=("whpx", "kvm", "tcg"), default="whpx")
@@ -530,7 +546,7 @@ def reseed_parser() -> argparse.ArgumentParser:
             "evidence. On the next boot the guest re-runs setup and serves that case. Never overwrites media."
         ),
     )
-    cli.add_argument("--evidence-dir", required=True, help="Directory containing events.jsonl, traffic.pcap, case.json and optional intel.jsonl")
+    cli.add_argument("--evidence-dir", required=True, help="Directory containing events.jsonl, traffic.pcap (absent when case.json network_capture is none), case.json and optional intel.jsonl")
     cli.add_argument("--state-dir", required=True, help="Prepared native profile home/hunt-lab-vm")
     cli.add_argument("--profile", required=True, choices=(PROFILE,))
     cli.add_argument(

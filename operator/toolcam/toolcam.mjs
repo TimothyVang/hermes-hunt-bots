@@ -48,12 +48,13 @@ const ROLE = {
   "framework-reviewer": ["Purple Team Analyst", "#f472b6"], "framework-coordinator": ["Incident Response Lead", "#e5e7eb"],
 };
 const TOOLNAME = { elastic_search: "Elasticsearch · search", elastic_aggregate: "Elasticsearch · aggregation", detection_test: "Elasticsearch · detection test",
-  intel_lookup: "Threat intel feed · lookup", arkime_sessions: "Arkime · sessions", arkime_unique: "Arkime · unique values", hunt_lab_query: "Lab summary query" };
+  intel_lookup: "Threat intel feed · lookup", arkime_sessions: "Arkime · sessions", arkime_unique: "Arkime · unique values", hunt_lab_query: "Lab summary query",
+  packet_fields: "tshark · saved-capture fields" };
 let status = "Starting…";
 const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const chrome = (e, body) => {
   const [role, color] = ROLE[e.profile] || [e.profile, "#fff"];
-  const q = e.params.expression ?? e.params.q ?? e.params.values ?? "";
+  const q = e.params.expression ?? e.params.q ?? e.params.filter ?? e.params.values ?? "";
   const extra = ["field", "interval", "name", "size", "length", "sort"].filter(k => e.params[k]).map(k => `${k} = ${esc(e.params[k])}`).join(" · ");
   const count = e.error ? `<span style="color:#f87171">lab refused: ${esc(e.error)}</span>` : `${(e.total ?? e.result_count ?? "?").toLocaleString?.() ?? e.total} results`;
   return `<div id="tc-top" style="position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#0b1020ee;color:#fff;font:600 22px system-ui;padding:14px 22px;border-bottom:4px solid ${color}">
@@ -87,7 +88,7 @@ async function consoleView(e) {
     else if (e.tool === "detection_test") body = `<div style="font:600 34px system-ui;margin-bottom:14px">${Number(d.total ?? 0).toLocaleString()} matching events${d.total ? ` · ${esc(String(d.first ?? "").slice(11, 19))} → ${esc(String(d.last ?? "").slice(11, 19))}` : ""}</div>` + bars((d.hosts || []).map(h => [h.key, h.count]), color);
     else if (e.tool === "intel_lookup") body = table((d.matches || []), ["indicator.value", "indicator.type", "confidence", "threat.feed.name", "description"]) + `<div style="margin-top:14px;font:500 20px system-ui;opacity:.8">no match: ${esc((d.unmatched || []).join(", "))}</div>`;
     else {
-      const rows = d.hits || d.records || d.events || d.sessions || [];
+      const rows = d.hits || d.records || d.events || d.sessions || d.rows || [];
       const cols = [...new Set(rows.flatMap(r => Object.keys(r)))].filter(c => !/^_/.test(c)).slice(0, 7);
       body = table(rows, cols.length ? cols : ["(no rows)"]);
     }

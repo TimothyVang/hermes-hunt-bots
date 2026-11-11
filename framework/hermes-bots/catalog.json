@@ -42,7 +42,7 @@
   {
     "name": "framework-network-analyst",
     "title": "Network Analyst",
-    "description": "Analyzes human-approved sanitized Arkime/Wireshark summaries without tool access or raw capture inspection.",
+    "description": "Analyzes approved network summaries, case session metadata and redacted packet fields from the case's saved capture; never live capture or raw packets.",
     "soul_path": "framework-network-analyst/SOUL.md",
     "distribution_path": "framework-network-analyst",
     "role": "researcher"

@@ -18,7 +18,16 @@ from hunt_lab import query_adapter, runtime as lab_runtime
 CASE = 'lab-med-001'
 ANALYST = 'framework-network-analyst'
 HOST_TOOLS = {'elastic_search', 'elastic_aggregate', 'detection_test', 'intel_lookup',
-              'arkime_sessions', 'arkime_unique'}
+              'arkime_sessions', 'arkime_unique', 'packet_fields'}
+
+
+def guest_lab_server():
+    sys.path.insert(0, str(Path(query_adapter.__file__).parent / 'guest'))
+    try:
+        import lab_server
+    finally:
+        sys.path.pop(0)
+    return lab_server
 
 
 class GuestStub:
@@ -101,6 +110,10 @@ class ToolCallTests(unittest.TestCase):
             'arkime_sessions': ({'expression': 'ip.dst == 203.0.113.7', 'length': 10, 'start': 20},
                                 '/arkime/sessions', {'expression': 'ip.dst == 203.0.113.7', 'length': '10', 'start': '20'}),
             'arkime_unique': ({'field': 'host.dns'}, '/arkime/unique', {'expression': '', 'field': 'host.dns', 'counts': '1'}),
+            'packet_fields': ({'fields': 'dns.qry.name,_ws.col.Protocol', 'filter': 'dns.qry.name == "a.test"',
+                               'length': 10, 'start': 5},
+                              '/packets', {'length': '10', 'start': '5', 'fields': 'dns.qry.name,_ws.col.Protocol',
+                                           'filter': 'dns.qry.name == "a.test"'}),
         }
         self.assertEqual(set(cases), HOST_TOOLS)
         for name, (arguments, path, params) in cases.items():
@@ -144,6 +157,17 @@ class ToolCallTests(unittest.TestCase):
             ('arkime_sessions', {'case_id': CASE, 'length': 0}),
             ('arkime_sessions', {'case_id': CASE, 'expression': 'a\nb'}),
             ('arkime_unique', {'case_id': CASE, 'field': 'ip.dst; drop'}),
+            ('packet_fields', {'case_id': CASE, 'length': 0}),
+            ('packet_fields', {'case_id': CASE, 'length': 201}),
+            ('packet_fields', {'case_id': CASE, 'length': True}),
+            ('packet_fields', {'case_id': CASE, 'start': -1}),
+            ('packet_fields', {'case_id': CASE, 'start': 100001}),
+            ('packet_fields', {'case_id': CASE, 'filter': 'x' * 301}),
+            ('packet_fields', {'case_id': CASE, 'filter': 'dns\nip'}),
+            ('packet_fields', {'case_id': CASE, 'filter': 7}),
+            ('packet_fields', {'case_id': CASE, 'fields': 'ip.src;id'}),
+            ('packet_fields', {'case_id': CASE, 'interface': 'eth0'}),
+            ('packet_fields', {'case_id': CASE, 'expression': 'ip.src == 10.0.0.1'}),
         ]
         for name, arguments in invalid:
             with self.subTest(tool=name, arguments=arguments):
@@ -171,8 +195,78 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual(set(query_adapter.ES_RETURN_FIELDS), set(lab_server.SEARCH_FIELDS))
         self.assertEqual(query_adapter.ARKIME_SESSION_FIELDS, tuple(lab_server.ARKIME_SESSION_FIELDS))
         self.assertEqual(set(query_adapter.ARKIME_UNIQUE_FIELDS), set(lab_server.ARKIME_UNIQUE_FIELDS))
+        self.assertEqual(query_adapter.PACKET_FIELDS, tuple(lab_server.PACKET_FIELDS))
+        self.assertEqual(query_adapter.PACKET_DEFAULT_FIELDS, tuple(lab_server.PACKET_DEFAULT_FIELDS))
+        self.assertEqual(set(query_adapter.PACKET_FILTER_PROTOCOLS), set(lab_server.PACKET_FILTER_PROTOCOLS))
         described = query_adapter.TOOLS['elastic_search'][2]['parameters']['properties']['fields']['description']
         self.assertIn('winlog.event_data.TargetImage', described)
+
+    def test_packet_fields_schema_states_the_saved_capture_boundary(self):
+        schema = query_adapter.SCHEMAS['packet_fields']
+        properties = schema['parameters']['properties']
+        self.assertEqual(set(properties), {'case_id', 'fields', 'filter', 'length', 'start'})
+        self.assertEqual(schema['parameters']['required'], ['case_id'])
+        self.assertFalse(schema['parameters']['additionalProperties'])
+        self.assertEqual((properties['length']['minimum'], properties['length']['maximum']), (1, 200))
+        self.assertEqual((properties['start']['minimum'], properties['start']['maximum']), (0, 100000))
+        self.assertEqual(properties['filter']['maxLength'], 300)
+        for field in query_adapter.PACKET_FIELDS:
+            self.assertIn(field, properties['fields']['description'])
+        for protocol in query_adapter.PACKET_FILTER_PROTOCOLS:
+            self.assertIn(protocol, properties['filter']['description'])
+        for phrase in ("this case's saved packet capture only", 'Never live traffic', 'no cookies, authorization headers',
+                       '?[redacted]', 'Cite the matching evt- log events', 'frame numbers are supporting evidence'):
+            self.assertIn(phrase, schema['description'])
+
+    def test_packet_fields_waits_for_the_guest_field_listing_and_decode(self):
+        with patch.object(query_adapter, '_get', wraps=query_adapter._get) as get:
+            self.assertTrue(self.call('packet_fields', {'case_id': CASE})['ok'])
+            self.assertTrue(self.call('arkime_sessions', {'case_id': CASE})['ok'])
+        timeouts = [(call.args[1].split('?')[0], call.args[3] if len(call.args) > 3 else None) for call in get.call_args_list]
+        self.assertEqual(timeouts, [('/case', None), ('/packets', 50), ('/case', None), ('/arkime/sessions', 12)])
+
+    def test_real_windows_log_fields_are_advertised_on_both_sides(self):
+        lab_server = guest_lab_server()
+        keyword = ('event.module', 'process.args', 'process.hash.sha1', 'file.extension', 'winlog.record_id',
+                   'winlog.process.pid', 'winlog.event_data.User', 'winlog.event_data.CreationUtcTime',
+                   'winlog.event_data.TargetProcessGUID', 'winlog.event_data.TargetProcessGuid')
+        for field in keyword:
+            with self.subTest(field=field):
+                self.assertIn(field, query_adapter.ES_AGG_FIELDS)
+                self.assertIn(field, lab_server.AGG_FIELDS)
+                self.assertIn(field, lab_server.SEARCH_FIELDS)
+        script = 'powershell.file.script_block_text'
+        self.assertIn(script, query_adapter.ES_RETURN_FIELDS)
+        self.assertIn(script, lab_server.SEARCH_FIELDS)
+        self.assertNotIn(script, query_adapter.ES_AGG_FIELDS)
+        self.assertNotIn(script, lab_server.AGG_FIELDS)
+        self.assertIn('powershell', lab_server.EVENT_FIELDS)
+        described = query_adapter.TOOLS['elastic_search'][2]['parameters']['properties']['fields']['description']
+        self.assertIn('winlog.event_data.TargetProcessGUID', described)
+        self.assertIn(script, described)
+        result = self.call('elastic_search', {'case_id': CASE, 'fields': 'event.id,winlog.event_data.TargetProcessGUID,' + script})
+        self.assertTrue(result['ok'], result)
+
+    def test_no_network_capture_code_reaches_the_bot_from_the_real_guest(self):
+        lab_server = guest_lab_server()
+        case = {'case_id': CASE, 'question': 'Synthetic question.', 'network_capture': 'none',
+                'time_range_utc': {'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-05T00:00:00Z'}}
+        # No backend exists: a refusal that touched Elasticsearch or Arkime would surface as backend_not_ready.
+        server = lab_server.make_server('127.0.0.1', 0, case, 'http://elastic.invalid:9200')
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.runtime.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
+        for name, arguments in (('arkime_sessions', {'expression': 'ip.dst == 203.0.113.7'}),
+                                ('arkime_unique', {'field': 'ip.dst'}),
+                                ('packet_fields', {'filter': 'dns.qry.name == "a.test"'}),
+                                ('hunt_lab_query', {'dataset': 'network'})):
+            with self.subTest(tool=name):
+                result = self.call(name, {'case_id': CASE, **arguments})
+                self.assertEqual((result['ok'], result['error'], result.get('detail')),
+                                 (False, 'lab_http_400', 'no_network_capture'))
+        case_view = self.call('hunt_lab_query', {'case_id': CASE, 'dataset': 'case'})
+        self.assertEqual(case_view['evidence']['network_capture'], 'none')
 
     def test_oversized_redirected_or_foreign_case_responses_are_refused(self):
         self.guest.overrides['/arkime/sessions'] = (200, b'{"case_id":"lab-med-001","x":"' + b'a' * (512 * 1024) + b'"}', {})
@@ -243,6 +337,14 @@ class RegistrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(output)['error'], 'owned_vm_not_running')
                 self.assertEqual(json.loads(browser)['error'], 'owned_vm_not_running')
                 self.assertEqual(calls, [('status', analyst_state, ANALYST)] * 2)
+
+    def test_plugin_manifest_lists_every_registered_tool(self):
+        manifest = (Path(query_adapter.__file__).parent / 'plugin.yaml').read_text(encoding='utf-8')
+        line = next(line for line in manifest.splitlines() if line.startswith('provides_tools:'))
+        listed = {name.strip() for name in line.split('[', 1)[1].rstrip(']').split(',')}
+        ctx = self.register(self.root / 'profiles' / ANALYST, ANALYST)
+        self.assertEqual(listed, set(ctx.tools))
+        self.assertIn('packet_fields', listed)
 
     def test_non_framework_or_unanchored_homes_get_no_working_lab(self):
         self.assertEqual(self.register(self.root / 'profiles' / 'default', 'default').tools, {})

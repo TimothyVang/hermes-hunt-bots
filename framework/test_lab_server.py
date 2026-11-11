@@ -7,12 +7,14 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 
 GUEST = Path(__file__).resolve().parent / 'hunt_lab' / 'guest'
 
@@ -33,6 +35,19 @@ CASE = {'case_id': 'lab-med-001', 'question': 'Synthetic question.',
         'time_range_utc': {'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-05T00:00:00Z'}}
 START_S = 1772409600
 END_S = 1772668800
+
+# Fields of real winlogbeat/Sysmon/PowerShell logs (DEDALE); Sysmon spells TargetProcessGUID.
+REAL_WINDOWS_KEYWORD_FIELDS = (
+    'event.module', 'process.args', 'process.title', 'process.hash.md5', 'process.hash.sha1',
+    'file.directory', 'file.extension', 'winlog.record_id', 'winlog.event_id', 'winlog.computer_name',
+    'winlog.provider_name', 'winlog.task', 'winlog.process.pid', 'winlog.event_data.User',
+    'winlog.event_data.IntegrityLevel', 'winlog.event_data.LogonId', 'winlog.event_data.ParentUser',
+    'winlog.event_data.OriginalFileName', 'winlog.event_data.Description', 'winlog.event_data.Company',
+    'winlog.event_data.Product', 'winlog.event_data.Signed', 'winlog.event_data.Signature',
+    'winlog.event_data.SignatureStatus', 'winlog.event_data.RuleName', 'winlog.event_data.CreationUtcTime',
+    'winlog.event_data.EventType', 'winlog.event_data.SourceUser', 'winlog.event_data.TargetUser',
+    'winlog.event_data.TargetProcessGUID', 'winlog.event_data.TargetProcessGuid',
+)
 
 
 def es_hits(sources, total=None):
@@ -58,6 +73,7 @@ class FakeElastic:
 
 class ServerCase(unittest.TestCase):
     scope = 'tag'
+    case = CASE
 
     def setUp(self):
         self.elastic = FakeElastic()
@@ -67,7 +83,7 @@ class ServerCase(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        self.server = lab_server.make_server('127.0.0.1', 0, CASE, 'http://elastic.invalid:9200', self.scope)
+        self.server = lab_server.make_server('127.0.0.1', 0, self.case, 'http://elastic.invalid:9200', self.scope)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)
@@ -157,12 +173,38 @@ class EndpointTests(ServerCase):
         self.assertEqual(self.request('/es/aggs?field=winlog.event_data.TargetUserName')[0], 200)
         self.assertEqual(self.elastic.calls[-1]['body']['aggs']['values']['terms']['field'], 'winlog.event_data.TargetUserName')
 
+    def test_real_windows_log_fields_are_returnable_and_keyword_ones_aggregatable(self):
+        self.elastic.response = es_hits([{
+            '@timestamp': '2026-03-02T01:00:00.000Z', 'event': {'id': 'evt-000001', 'module': 'powershell'},
+            'process': {'args': ['powershell.exe', '-NoP'], 'hash': {'md5': 'a' * 32}},
+            'winlog': {'record_id': 12813, 'event_data': {'TargetProcessGUID': '{416dd0c5-0000}'}},
+            'powershell': {'file': {'script_block_text': 'Get-Process | Out-Null'}}}])
+        fields = REAL_WINDOWS_KEYWORD_FIELDS + ('powershell.file.script_block_text',)
+        status, value = self.request('/es/search?fields=' + ','.join(fields))
+        self.assertEqual(status, 200)
+        self.assertLessEqual(set(fields), set(self.elastic.calls[0]['body']['_source']))
+        hit = value['hits'][0]
+        self.assertEqual((hit['event.module'], hit['process.args'], hit['process.hash.md5'], hit['winlog.record_id']),
+                         ('powershell', ['powershell.exe', '-NoP'], 'a' * 32, 12813))
+        self.assertEqual(hit['winlog.event_data.TargetProcessGUID'], '{416dd0c5-0000}')
+        self.assertEqual(hit['powershell.file.script_block_text'], 'Get-Process | Out-Null')
+        self.elastic.response = {'hits': {'total': {'value': 0}}, 'aggregations': {'values': {'buckets': []}}}
+        for field in REAL_WINDOWS_KEYWORD_FIELDS:
+            with self.subTest(field=field):
+                self.assertEqual(self.request('/es/aggs?field=' + field)[0], 200)
+                self.assertEqual(self.elastic.calls[-1]['body']['aggs']['values']['terms']['field'], field)
+        self.assertEqual(self.request('/es/aggs?field=powershell.file.script_block_text'),
+                         (400, {'error': 'field_not_allowed'}))
+        self.elastic.response = es_hits([])
+        self.assertEqual(self.request('/events')[0], 200)
+        self.assertIn('powershell', self.elastic.calls[-1]['body']['_source'])
+
     def test_non_get_methods_are_405_and_unknown_routes_404(self):
         for method in ('POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'):
             with self.subTest(method=method):
                 self.assertEqual(self.request('/es/search', method)[0], 405)
         for path in ('/arkime/api/sessions', '/arkime/delete', '/api/sessions', '/es/_delete_by_query',
-                     '/arkime/sessions/pcap', '/es'):
+                     '/arkime/sessions/pcap', '/es', '/packets/pcap', '/pcap'):
             with self.subTest(path=path):
                 self.assertEqual(self.request(path), (404, {'error': 'not_found'}))
         self.assertEqual(self.elastic.calls, [])
@@ -443,6 +485,339 @@ class LegacyWindowScopeTests(ServerCase):
         self.assertNotIn('tags', json.dumps(self.elastic.calls[-1]['body']))
 
 
+class NoCaptureTests(ServerCase):
+    case = dict(CASE, network_capture='none')
+
+    def test_health_is_ready_from_events_alone_and_reports_no_capture(self):
+        self.elastic.response = es_hits([{}], total=5)
+        with mock.patch.object(lab_server, 'answers', return_value=False), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['ready']), (200, True))
+        self.assertEqual((value['network_capture'], value['network_session_count'], value['event_count']),
+                         ('none', 0, 5))
+        self.assertFalse(any(call['index'] == 'arkime_sessions3-*' for call in self.elastic.calls))
+        self.elastic.response = es_hits([], total=0)
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            self.assertEqual(self.request('/health')[0], 503)
+
+    def test_network_queries_are_refused_with_a_fixed_code_before_any_backend_call(self):
+        for path in ('/arkime/sessions', '/arkime/sessions?expression=ip.dst%3D%3D10.0.0.1',
+                     '/arkime/unique?field=ip.src', '/network', '/network?q=dns&limit=5',
+                     '/packets', '/packets?filter=dns&fields=dns.qry.name'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path, profile='framework-network-analyst'),
+                                 (400, {'error': 'no_network_capture'}))
+        self.arkime.assert_not_called()
+        self.assertEqual(self.elastic.calls, [])
+        _, activity = self.request('/activity')
+        self.assertEqual({entry['error'] for entry in activity['entries']}, {'no_network_capture'})
+        self.assertEqual(self.request('/events')[0], 200)
+        self.assertEqual(self.request('/case')[1]['network_capture'], 'none')
+
+    def test_case_with_a_capture_still_queries_its_sessions(self):
+        self.server.case = CASE
+        self.assertEqual(self.request('/arkime/sessions')[0], 200)
+        self.assertEqual(self.request('/network')[0], 200)
+        self.arkime.assert_called_once()
+
+
+# Packet fields that must never be returned or tested, whatever the request (ADR 0003).
+DENIED_PACKET_FIELDS = ('http.cookie', 'http.authorization', 'data', 'http.file_data', 'ntlmssp.ntlmv2_response',
+                        'http.proxy_authorization', 'http.set_cookie', 'tcp.payload', 'kerberos.cipher',
+                        'http.request.full_uri', 'http.request.line', 'frame.protocols')
+
+
+def frame(number, fields=None):
+    return {'frame.number': str(number), 'frame.time_epoch': '%d.000000000' % (START_S + number), **(fields or {})}
+
+
+class PublicDatasetConsoleTests(ServerCase):
+    case = dict(CASE, network_capture='none', data_origin='public-dataset', question='What happened in the window?')
+
+    def test_console_states_the_case_origin(self):
+        self.elastic.response = es_hits([])
+        status, _, body = self.page('/')
+        self.assertEqual(status, 200)
+        self.assertIn('Public research dataset (real lab telemetry, no customer data). Read-only.', body)
+        self.assertNotIn('ynthetic', body)
+        self.assertEqual(self.request('/case')[1]['data_origin'], 'public-dataset')
+        self.server.case = CASE
+        self.assertIn('<p>Synthetic data only. Read-only. No live capture.</p>', self.page('/')[2])
+
+
+class FakeTsharkPipe:
+    def __init__(self, data, process):
+        self.data, self.process = io.BytesIO(data), process
+
+    def readline(self, limit=-1):
+        if self.process.hang:
+            self.process.killed.wait(5)
+            return b''
+        line = self.data.readline(limit)
+        self.process.finished = not line
+        return line
+
+    def close(self):
+        pass
+
+
+class FakeTsharkProcess:
+    def __init__(self, data, code, hang):
+        self.code, self.hang, self.finished = code, hang, False
+        self.killed = threading.Event()
+        self.stdout = FakeTsharkPipe(data, self)
+
+    def kill(self):
+        # Like Popen.kill on an exited process: nothing to signal once the output ended.
+        if not self.finished:
+            self.killed.set()
+
+    def wait(self):
+        return -9 if self.killed.is_set() else self.code
+
+
+class FakeTshark:
+    """Stands in for the subprocess module: answers tshark -G fields and -r queries, records every call."""
+    PIPE, DEVNULL = subprocess.PIPE, subprocess.DEVNULL
+
+    def __init__(self):
+        # As Ubuntu 22.04's tshark 3.6: no JA4, and column fields are not listed by -G fields.
+        self.known = [name for name in lab_server.PACKET_FIELDS if name not in ('_ws.col.Protocol', 'tls.handshake.ja4')]
+        self.rows, self.code, self.fields_code, self.hang, self.error = [], 0, 0, False, None
+        self.calls, self.processes = [], []
+
+    def Popen(self, args, **kwargs):
+        self.calls.append((args, kwargs))
+        if self.error:
+            raise self.error
+        if args[1:] == ['-G', 'fields']:
+            data = b''.join(b'F\tLabel\t%s\tFT_STRING\tproto\t\t0x0\t\n' % name.encode() for name in self.known)
+            process = FakeTsharkProcess(data + b'P\tDomain Name System\tdns\n', self.fields_code, False)
+        else:
+            columns = [args[index + 1] for index, arg in enumerate(args) if arg == '-e']
+            data = b''.join(('\t'.join(row.get(column, '') for column in columns) + '\n').encode() for row in self.rows)
+            process = FakeTsharkProcess(data, self.code, self.hang)
+        self.processes.append(process)
+        return process
+
+    def queries(self):
+        return [args for args, _kwargs in self.calls if args[1:] != ['-G', 'fields']]
+
+
+class PacketFieldsTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.tshark = FakeTshark()
+        patch = mock.patch.object(lab_server, 'subprocess', self.tshark)
+        patch.start()
+        self.addCleanup(patch.stop)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.capture = Path(temp.name) / 'evidence' / 'traffic.pcap'
+        self.capture.parent.mkdir()
+        self.capture.write_bytes(b'')
+        self.server.capture = self.capture
+
+    def packets(self, profile='framework-network-analyst', **params):
+        return self.request('/packets' + ('?' + urlencode(params) if params else ''), profile=profile)
+
+    def test_tshark_reads_only_the_case_capture_from_an_argument_list(self):
+        self.tshark.rows = [frame(7, {'ip.src': '10.0.0.5', 'dns.qry.name': 'a.test'})]
+        status, value = self.packets(fields='ip.src,dns.qry.name', length='5',
+                                     filter='dns.qry.name == "a.test" and ip.src == 10.0.0.1')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value, {'case_id': 'lab-med-001', 'fields': ['frame.number', 'frame.time_epoch', 'ip.src', 'dns.qry.name'],
+                                 'start': 0, 'returned': 1, 'more': False, 'truncated': False,
+                                 'rows': [{'frame.number': 7, 'frame.time_epoch': '%d.000000000' % (START_S + 7),
+                                           'ip.src': '10.0.0.5', 'dns.qry.name': 'a.test'}]})
+        self.assertEqual([args for args, _ in self.tshark.calls][0], ['/usr/bin/tshark', '-G', 'fields'])
+        [args] = self.tshark.queries()
+        kwargs = self.tshark.calls[1][1]
+        self.assertIsInstance(args, list)
+        self.assertEqual(args[0], '/usr/bin/tshark')
+        self.assertEqual(args[args.index('-r') + 1], str(self.capture))
+        self.assertNotIn('-i', args)
+        self.assertNotIn('-w', args)
+        self.assertNotIn('shell', kwargs)
+        self.assertEqual((kwargs['stdin'], kwargs['stderr']), (subprocess.DEVNULL, subprocess.DEVNULL))
+        self.assertEqual(args[args.index('-Y') + 1], 'dns.qry.name == "a.test" and ip.src == 10.0.0.1')
+        # The whole capture is read: a packet-count cutoff would turn a late match into a complete-looking negative.
+        self.assertNotIn('-c', args)
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == '-e'],
+                         ['frame.number', 'frame.time_epoch', 'ip.src', 'dns.qry.name'])
+        # The supported-field list is asked for once and then cached.
+        self.assertEqual(self.packets()[0], 200)
+        self.assertEqual(sum(args[1:] == ['-G', 'fields'] for args, _ in self.tshark.calls), 1)
+        default = self.tshark.queries()[-1]
+        self.assertEqual([default[i + 1] for i, arg in enumerate(default) if arg == '-e'],
+                         list(lab_server.PACKET_ALWAYS_FIELDS + lab_server.PACKET_DEFAULT_FIELDS))
+        self.assertNotIn('-Y', default)
+
+    def test_server_main_points_packet_fields_at_the_capture_next_to_case_json(self):
+        case = self.capture.parent / 'case.json'
+        with mock.patch.object(lab_server, 'make_server') as make, \
+                mock.patch.object(lab_server, 'load_case', return_value=CASE), \
+                mock.patch.object(lab_server, 'instance_id', return_value=None), \
+                mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case)]):
+            lab_server.main()
+        self.assertEqual(make.call_args.kwargs['capture'], case.resolve().parent / 'traffic.pcap')
+
+    def test_fields_outside_the_allowlist_are_refused_before_tshark_runs(self):
+        for field in DENIED_PACKET_FIELDS:
+            with self.subTest(field=field):
+                self.assertNotIn(field, lab_server.PACKET_FIELDS)
+                self.assertEqual(self.packets(fields='ip.src,' + field), (400, {'error': 'field_not_allowed'}))
+        self.assertEqual(self.packets(fields='ip.src,ip.src'), (400, {'error': 'invalid_field_list'}))
+        for params in ({'length': '0'}, {'length': '201'}, {'start': '100001'}, {'expression': 'x'}):
+            with self.subTest(params=params):
+                self.assertEqual(self.packets(**params), (400, {'error': 'invalid_query'}))
+        self.assertEqual(self.tshark.calls, [])
+
+    def test_filters_admit_only_the_closed_grammar(self):
+        for raw, normalized in (
+                ('dns.qry.name == "a.test" and ip.src == 10.0.0.1', 'dns.qry.name == "a.test" and ip.src == 10.0.0.1'),
+                ('(tcp.dstport==445 || udp.dstport eq 53) && !ip.dst==10.0.0.0/8',
+                 '( tcp.dstport == 445 || udp.dstport eq 53 ) && ! ip.dst == 10.0.0.0/8'),
+                ('ipv6.src == fe80::1 or smb2 or not kerberos', 'ipv6.src == fe80::1 or smb2 or not kerberos'),
+                ('tls.handshake.type == 1 and tls.record.version >= 0x0301',
+                 'tls.handshake.type == 1 and tls.record.version >= 0x0301'),
+                ('http.request.method != "GET" and frame.len gt 1500', 'http.request.method != "GET" and frame.len gt 1500')):
+            with self.subTest(filter=raw):
+                self.assertEqual(lab_server.packet_filter(raw)[0], normalized)
+        self.assertEqual(lab_server.packet_filter('dns.qry.name == "a" or ip.dst')[1], ('dns.qry.name', 'ip.dst'))
+        self.assertEqual(lab_server.packet_filter('  '), (None, ()))
+        refused = list(DENIED_PACKET_FIELDS) + [field + ' == "x"' for field in DENIED_PACKET_FIELDS] + [
+            'dns.qry.name contains "evil"', 'dns.qry.name matches "e.*"', 'dns.qry.name ~ "e"',
+            'http.cookie contains "session"', 'ip.src[0:2] == 0a:00', 'http.cookie[0] == 41', 'ip.src == ${ip.dst}',
+            'dns.qry.name == "a\\\\b"', 'dns.qry.name == "a\\"b"', "dns.qry.name == 'a'", 'ip.src == @x',
+            'http.request.uri == "/a?token=x"', 'http.request.uri > "/a?t"', '_ws.col.Protocol == "DNS"',
+            'http == "GET"', 'http > 47:45:54', 'len(dns.qry.name) > 3', 'upper(dns.qry.name) == "A"',
+            'ip.src in {10.0.0.1}', 'ip.src == 10.0.0.1 xor ip.dst == 10.0.0.2', '"a.test" == dns.qry.name',
+            'dns.qry.name ==', 'ip.src == 10.0.0.1)', '((ip.src)', 'ip.src == 10.0.0.1 and', 'dns.qry.name == "a" "b"',
+            'ip.src == 1.2.3.4.5', 'tcp.dstport & 0x10', 'ip.src == 10.0.0.1\n', 'dns.qry.name == "\u00e9"',
+            'not ' * 25 + 'ip', 'a' * 301, 'frame', 'eth.src == 00:11:22:33:44:55']
+        for raw in refused:
+            with self.subTest(filter=raw):
+                with self.assertRaises(lab_server.BackendQueryError) as caught:
+                    lab_server.packet_filter(raw)
+                self.assertEqual(caught.exception.args, ('invalid_filter',))
+        for field in ('http.cookie', 'http.authorization', 'data', 'http.file_data', 'ntlmssp.ntlmv2_response'):
+            with self.subTest(field=field):
+                self.assertEqual(self.packets(filter=field + ' == "x"'), (400, {'error': 'invalid_filter'}))
+        self.assertEqual(self.packets(filter='dns.qry.name contains "x"'), (400, {'error': 'invalid_filter'}))
+        self.assertEqual(self.tshark.calls, [])
+
+    def test_uri_query_strings_fragments_and_userinfo_never_leave_the_guest(self):
+        uris = ['/login?user=a&password=s3cret', '/a,/b?x=1,2', 'http://u:pw@proxy.example/x?y=1#z', '/plain',
+                '/doc#token=abc', 'http://proxy.example/a@b?c=d']
+        self.tshark.rows = [frame(n, {'http.request.uri': uri}) for n, uri in enumerate(uris, 1)]
+        status, value = self.packets(fields='http.request.uri,http.host')
+        self.assertEqual(status, 200, value)
+        self.assertEqual([row['http.request.uri'] for row in value['rows']],
+                         ['/login?[redacted]', '/a,/b?[redacted]', 'http://proxy.example/x?[redacted]', '/plain',
+                          '/doc?[redacted]', 'http://proxy.example/a@b?[redacted]'])
+        body = json.dumps(value)
+        for secret in ('s3cret', 'password', 'u:pw', 'token', 'x=1', 'c=d'):
+            self.assertNotIn(secret, body)
+        self.assertNotIn('http.host', value['rows'][0])
+
+    def test_allowlisted_fields_the_installed_tshark_lacks_are_field_unavailable(self):
+        self.assertEqual(self.packets(fields='tls.handshake.ja4'), (400, {'error': 'field_unavailable'}))
+        self.assertEqual(self.packets(filter='tls.handshake.ja4 == "t13d"'), (400, {'error': 'field_unavailable'}))
+        self.assertEqual(self.tshark.queries(), [])
+        # Column fields are resolved by tshark itself even though -G fields does not list them.
+        self.assertEqual(self.packets(fields='_ws.col.Protocol,tls.handshake.ja3')[0], 200)
+
+    def test_paging_reads_one_row_past_the_page_and_stops_tshark(self):
+        self.tshark.rows = [frame(n) for n in range(1, 11)]
+        status, value = self.packets(start='3', length='4', fields='frame.len')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(([row['frame.number'] for row in value['rows']], value['returned'], value['more'],
+                          value['truncated']), ([4, 5, 6, 7], 4, True, False))
+        self.assertTrue(self.tshark.processes[-1].killed.is_set())
+        status, value = self.packets(start='8', length='5', fields='frame.len')
+        # A scan that reaches the end of the capture is complete: neither more nor truncated.
+        self.assertEqual(([row['frame.number'] for row in value['rows']], value['more'], value['truncated']),
+                         ([9, 10], False, False))
+        self.assertFalse(self.tshark.processes[-1].killed.is_set())
+
+    def test_output_cap_stops_tshark_and_reports_truncation(self):
+        self.tshark.rows = [frame(n, {'dns.qry.name': 'host-%03d.example' % n}) for n in range(1, 101)]
+        with mock.patch.object(lab_server, 'MAX_BACKEND_BYTES', 200):
+            status, value = self.packets(fields='dns.qry.name', length='200')
+        self.assertEqual(status, 200, value)
+        self.assertTrue(value['truncated'])
+        self.assertFalse(value['more'])
+        self.assertLess(value['returned'], 10)
+        self.assertLessEqual(sum(len('\t'.join(frame(row['frame.number'], {'dns.qry.name': row['dns.qry.name']}).values()))
+                                 + 1 for row in value['rows']), 200)
+        self.assertTrue(self.tshark.processes[-1].killed.is_set())
+
+    def test_timeouts_and_failures_map_to_fixed_codes_without_tshark_text(self):
+        self.tshark.hang = True
+        with mock.patch.object(lab_server, 'TSHARK_TIMEOUT', 0.2):
+            self.assertEqual(self.packets(), (503, {'error': 'packet_tool_timeout', 'partial_results': False}))
+        self.assertTrue(self.tshark.processes[-1].killed.is_set())
+        self.tshark.hang, self.tshark.code = False, 2
+        self.assertEqual(self.packets(), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        self.tshark.code = 4
+        self.assertEqual(self.packets(filter='dns'), (400, {'error': 'invalid_filter'}))
+        self.assertEqual(self.packets(), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        # A row whose value holds an unescaped tab no longer matches the requested columns.
+        self.tshark.code, self.tshark.rows = 0, [{'frame.number': '1\textra'}]
+        self.assertEqual(self.packets(fields='frame.len'), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        self.assertTrue(all(kwargs['stderr'] is subprocess.DEVNULL for _args, kwargs in self.tshark.calls))
+
+    def test_a_missing_tshark_or_capture_is_packet_tool_error_and_the_field_list_is_retried(self):
+        self.tshark.error = FileNotFoundError('/usr/bin/tshark')
+        self.assertEqual(self.packets(), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        self.tshark.error, self.tshark.fields_code = None, 1
+        self.assertEqual(self.packets(), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        self.tshark.fields_code = 0
+        self.assertEqual(self.packets()[0], 200)
+        self.assertEqual(sum(args[1:] == ['-G', 'fields'] for args, _ in self.tshark.calls), 3)
+        self.capture.unlink()
+        calls = len(self.tshark.calls)
+        self.assertEqual(self.packets(), (503, {'error': 'packet_tool_error', 'partial_results': False}))
+        self.assertEqual(len(self.tshark.calls), calls)
+
+    def test_activity_log_records_packet_calls(self):
+        self.tshark.rows = [frame(1, {'dns.qry.name': 'a.test'})]
+        self.packets(filter='dns.qry.name == "a.test"', fields='dns.qry.name')
+        self.packets(filter='http.cookie', profile='framework-researcher')
+        self.packets(profile='hunt-board')
+        entries = self.request('/activity?after=0')[1]['entries']
+        self.assertEqual([(e['profile'], e['tool'], e['endpoint'], e['result_count'], e['total'], e['error'])
+                          for e in entries], [
+            ('framework-network-analyst', 'packet_fields', '/packets', 1, None, None),
+            ('framework-researcher', 'packet_fields', '/packets', None, None, 'invalid_filter')])
+        self.assertEqual(entries[0]['params'], {'filter': 'dns.qry.name == "a.test"', 'fields': 'dns.qry.name'})
+
+
+class LoadCaseTests(unittest.TestCase):
+    def load(self, **fields):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'case.json'
+            path.write_text(json.dumps(dict(CASE, **fields)), encoding='utf-8')
+            return lab_server.load_case(path)
+
+    def test_network_capture_is_absent_or_none_and_nothing_else(self):
+        self.assertNotIn('network_capture', self.load())
+        self.assertEqual(self.load(network_capture='none')['network_capture'], 'none')
+        for value in ('pcap', 'None', '', None, False):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load(network_capture=value)
+
+    def test_data_origin_is_absent_or_public_dataset_and_nothing_else(self):
+        self.assertNotIn('data_origin', self.load())
+        self.assertEqual(self.load(data_origin='public-dataset')['data_origin'], 'public-dataset')
+        for value in ('synthetic', 'customer', '', None, False):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load(data_origin=value)
+
+
 class FakeIndexer:
     def __init__(self, current=None):
         self.calls = []
@@ -514,6 +889,25 @@ class IngestTests(unittest.TestCase):
         with mock.patch.object(ingest, 'request', fake):
             self.assertEqual(ingest.ensure_event_index('http://es'), 'ready')
         self.assertEqual(len(fake.calls), 1)
+
+    def test_script_block_text_is_full_text_on_new_and_existing_stores(self):
+        script = {'type': 'text'}
+        fake = FakeIndexer()
+        with mock.patch.object(ingest, 'request', fake):
+            ingest.ingest('http://es', self.events(2), 'lab-med-001')
+        mappings = next(data for method, path, data in fake.calls if method == 'PUT')['mappings']
+        self.assertEqual(mappings['properties']['powershell']['properties']['file']['properties']['script_block_text'], script)
+        # Every other string stays an aggregatable keyword.
+        self.assertEqual(mappings['dynamic_templates'][0]['strings_as_keywords']['mapping'],
+                         {'type': 'keyword', 'ignore_above': 1024})
+        self.assertFalse(any(path.endswith('/_mapping') for _, path, _ in fake.calls))
+        fake = FakeIndexer(current={'hunt-lab-events-v2': {}})
+        with mock.patch.object(ingest, 'request', fake):
+            ingest.ingest('http://es', self.events(2), 'lab-med-001')
+        update = next(data for method, path, data in fake.calls
+                      if (method, path) == ('PUT', '/hunt-lab-events-v2/_mapping'))
+        self.assertEqual(update['properties']['powershell']['properties']['file']['properties']['script_block_text'], script)
+        self.assertEqual(update['_meta'], mappings['_meta'])
 
     def test_events_from_another_case_or_rejected_documents_fail(self):
         fake = FakeIndexer()

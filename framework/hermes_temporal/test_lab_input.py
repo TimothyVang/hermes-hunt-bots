@@ -26,6 +26,13 @@ TOOL_CASE = {
                 {"artifact": "intel.jsonl", "coverage": "invented indicators"}],
     "time_range_utc": {"start_inclusive": "2025-10-14T04:30:00Z", "end_exclusive": "2025-10-14T10:30:00Z"},
 }
+# As hunt_lab.import_dedale writes it; nothing in it calls the data synthetic.
+PUBLIC_CASE = {
+    "case_id": "dedale-001", "schema_version": 1, "network_capture": "none", "data_origin": "public-dataset",
+    "question": "What happened in this environment during the window? Cite event.id values.",
+    "sources": [{"artifact": "events.jsonl", "coverage": "Real Windows winlogbeat ECS records from 2 hosts of a lab network"}],
+    "time_range_utc": {"start_inclusive": "2022-01-01T00:00:00Z", "end_exclusive": "2022-01-01T06:00:00Z"},
+}
 
 
 class FakeLab:
@@ -270,7 +277,8 @@ class LabInputTests(unittest.TestCase):
             path.write_text("keep", encoding="utf-8")
             with patch.object(lab_input, "collect_lab_input", return_value={"synthetic_only": True}):
                 with self.assertRaises(FileExistsError):
-                    asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=False)))
+                    asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=False,
+                                                                  allow_public_dataset=False)))
             self.assertEqual(path.read_text(encoding="utf-8"), "keep")
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
@@ -283,10 +291,32 @@ class LabInputTests(unittest.TestCase):
             path = Path(directory) / "tool.json"
             with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool, \
                     patch.object(lab_input, "collect_lab_input") as inline:
-                asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True)))
-            tool.assert_called_once_with("state")
+                asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
+                                                              allow_public_dataset=False)))
+            tool.assert_called_once_with("state", allow_public_dataset=False)
             inline.assert_not_called()
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"mode": "tool_driven"})
+
+    @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
+    def test_lab_input_cli_passes_public_dataset_approval_only_for_tool_driven(self):
+        from . import cli
+
+        args = cli._parser().parse_args(["lab-input", "--state-dir", "state", "--output", "x.json", "--tool-driven",
+                                         "--allow-public-dataset"])
+        self.assertTrue(args.allow_public_dataset)
+        self.assertFalse(cli._parser().parse_args(["lab-input", "--state-dir", "s", "--output", "x"]).allow_public_dataset)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tool.json"
+            with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool:
+                asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
+                                                              allow_public_dataset=True)))
+            tool.assert_called_once_with("state", allow_public_dataset=True)
+            inline = Path(directory) / "inline.json"
+            with patch.object(lab_input, "collect_lab_input") as collect, self.assertRaises(ValueError):
+                asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(inline), tool_driven=False,
+                                                              allow_public_dataset=True)))
+            collect.assert_not_called()
+            self.assertFalse(inline.exists())
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
     def test_new_input_json_rejects_duplicate_and_nonfinite_values(self):
@@ -300,10 +330,10 @@ class LabInputTests(unittest.TestCase):
 class ToolDrivenInputTests(unittest.TestCase):
     STATUS = {"profile": "framework-network-analyst", "state": "running"}
 
-    def collect(self, lab, status=None):
+    def collect(self, lab, status=None, **options):
         runtime = fake_runtime({**self.STATUS, "lab_url": lab.url, **(status or {})})
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            return lab_input.collect_tool_input("approved-state"), runtime
+            return lab_input.collect_tool_input("approved-state", **options), runtime
 
     def test_export_reads_only_case_metadata_for_the_loaded_case(self):
         lab = FakeLab(events=[{"event.id": "evt-000001", "message": "never exported"}])
@@ -324,6 +354,46 @@ class ToolDrivenInputTests(unittest.TestCase):
             self.assertIn("lab-med-001", step.prompt)
         self.assertEqual(self.collect(lab)[0], raw)
 
+    def test_a_log_only_case_is_exported_with_its_network_capture_field(self):
+        lab = FakeLab(case={**TOOL_CASE, "network_capture": "none"})
+        self.addCleanup(lab.close)
+        raw, _runtime = self.collect(lab)
+        self.assertIn('"network_capture":"none"', raw["evidence"][0]["content"])
+        supplied_evidence_hunt(raw)
+
+    def test_public_dataset_case_is_refused_without_operator_approval(self):
+        lab = FakeLab(case=PUBLIC_CASE)
+        self.addCleanup(lab.close)
+        with self.assertRaises(lab_input.LabInputError):
+            self.collect(lab)
+        raw, _runtime = self.collect(lab, allow_public_dataset=True)
+        self.assertIs(raw["synthetic_only"], False)
+        self.assertEqual(raw["data_origin"], "public-dataset")
+        self.assertTrue(raw["scope"].startswith(
+            "Public research dataset dedale-001 (real lab telemetry, no customer data) only; "))
+        bot_visible = {key: value for key, value in raw.items() if key != "synthetic_only"}
+        self.assertNotIn("synthetic", json.dumps(bot_visible).lower())
+        request = supplied_evidence_hunt(raw)
+        self.assertEqual((request.synthetic_only, request.data_origin), (False, "public-dataset"))
+        for step in request.steps:
+            self.assertNotIn("synthetic", step.prompt.lower())
+            self.assertIn("public research dataset (real lab telemetry, no customer data)", step.prompt)
+
+    def test_approval_does_not_change_a_synthetic_export(self):
+        lab = FakeLab()
+        self.addCleanup(lab.close)
+        raw, _runtime = self.collect(lab, allow_public_dataset=True)
+        self.assertEqual(raw, self.collect(lab)[0])
+        self.assertIs(raw["synthetic_only"], True)
+        self.assertNotIn("data_origin", raw)
+
+    def test_unknown_data_origin_is_refused(self):
+        for origin in ("synthetic", "customer", "", None):
+            lab = FakeLab(case={**PUBLIC_CASE, "data_origin": origin})
+            self.addCleanup(lab.close)
+            with self.subTest(origin=origin), self.assertRaises(lab_input.LabInputError):
+                self.collect(lab, allow_public_dataset=True)
+
     def test_export_refuses_unowned_unsafe_or_malformed_lab(self):
         endpoint_faults = ({"state": "stopped"}, {"profile": "framework-researcher"},
                            {"lab_url": "http://192.0.2.10:8765"}, {"lab_url": "https://127.0.0.1:8765"},
@@ -336,7 +406,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.assertEqual(lab.requests, [])
         bad_cases = ({**TOOL_CASE, "case_id": "Lab Med"}, {**TOOL_CASE, "truth": "x"},
                      {key: value for key, value in TOOL_CASE.items() if key != "schema_version"},
-                     {**TOOL_CASE, "sources": "events.jsonl"})
+                     {**TOOL_CASE, "sources": "events.jsonl"}, {**TOOL_CASE, "network_capture": "full"})
         for case in bad_cases:
             bad = FakeLab(case=case)
             self.addCleanup(bad.close)

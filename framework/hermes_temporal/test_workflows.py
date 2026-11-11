@@ -1027,6 +1027,24 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             WorkflowRequest([HermesStep("one", "synthetic")], tool_driven="yes")
 
+    async def test_public_dataset_request_crosses_the_workflow_boundary_with_its_origin(self) -> None:
+        @activity.defn(name="execute_hermes_step")
+        async def execute(request: ExecutionRequest) -> ExecutionResult:
+            raise AssertionError("no step runs before its execute gate")
+
+        queue = "test-hermes-public-dataset"
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with Worker(env.client, task_queue=queue, workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(
+                    HermesWorkflow.run,
+                    WorkflowRequest([HermesStep("producer", "public dataset", hunt_context=_ontology_context())],
+                                    synthetic_only=False, tool_driven=True, data_origin="public-dataset"),
+                    id=queue, task_queue=queue,
+                )
+                while (await handle.query(HermesWorkflow.status)).stage != "awaiting_execution_approval":
+                    await asyncio.sleep(0.01)
+                await handle.cancel()
+
     async def test_output_over_disclosed_target_but_within_cap_reaches_review(self) -> None:
         valid = json.dumps(_handoff("producer", "framework-researcher"))
         # Overshoots the 11468-byte stated target but stays under the 16384-byte enforced cap.

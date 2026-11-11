@@ -6,13 +6,14 @@ import json
 import unittest
 from pathlib import Path
 
+from .contracts import HermesStep, WorkflowRequest
 from .hunt import MAX_HUNT_BYTES, TOOL_STEP_TIMEOUT_SECONDS, supplied_evidence_hunt
 
 LAB_TOOLS = {"elastic_search", "elastic_aggregate", "arkime_sessions", "arkime_unique", "hunt_lab_query",
-             "intel_lookup", "detection_test", "delegate_task", "lab_browser"}
+             "intel_lookup", "detection_test", "delegate_task", "lab_browser", "packet_fields"}
 OWNED_TOOLS = {
-    "framework-researcher": {"elastic_search", "elastic_aggregate", "lab_browser"},
-    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query", "lab_browser"},
+    "framework-researcher": {"elastic_search", "elastic_aggregate", "lab_browser", "packet_fields"},
+    "framework-network-analyst": {"arkime_sessions", "arkime_unique", "hunt_lab_query", "lab_browser", "packet_fields"},
     "framework-librarian": {"intel_lookup", "elastic_aggregate"},
     "framework-builder": {"detection_test", "elastic_aggregate"},
     "framework-reviewer": {"elastic_search", "arkime_sessions", "detection_test"},
@@ -59,6 +60,14 @@ class ToolDrivenHuntTests(unittest.TestCase):
             self.assert_tool_step(step)
             self.assertGreater(step.timeout_seconds, inline.steps[0].timeout_seconds)
         self.assertNotIn("delegate_task", by_id["purple"].prompt)
+
+    def test_packet_fields_prompts_keep_the_saved_capture_boundary(self) -> None:
+        by_id = {step.step_id: step for step in supplied_evidence_hunt(tool_input()).steps}
+        for stage in ("evidence", "hypotheses", "network"):
+            with self.subTest(stage=stage):
+                self.assertIn("from this case's saved capture only, never live traffic", by_id[stage].prompt)
+                self.assertIn("frame numbers only as supporting evidence", by_id[stage].prompt)
+        self.assertIn("No live capture", by_id["network"].prompt)
 
     def test_stage_guidance_reaches_only_its_stage_and_is_bounded(self) -> None:
         raw = tool_input()
@@ -198,6 +207,67 @@ class ToolDrivenHuntTests(unittest.TestCase):
         for stage in ("follow", "merge"):
             with self.subTest(stage=stage), self.assertRaises(ValueError):
                 supplied_evidence_hunt(tool_input(parallel=True, stage_guidance={stage: "x"}))
+
+
+def public_input(**overrides) -> dict:
+    """A tool-driven input over an approved public research dataset, as lab-input exports it."""
+    case = {"case_id": "dedale-001", "question": "What happened in this environment during the window?",
+            "schema_version": 1, "network_capture": "none", "data_origin": "public-dataset",
+            "sources": [{"artifact": "events.jsonl", "coverage": "Real Windows winlogbeat ECS records"}],
+            "time_range_utc": {"start_inclusive": "2022-01-01T00:00:00Z", "end_exclusive": "2022-01-01T06:00:00Z"}}
+    raw = tool_input(
+        "dedale-001",
+        scope="Public research dataset dedale-001 (real lab telemetry, no customer data) only; cite every event.id.",
+        evidence=[{"source_id": "lab-case-1", "locator": "dedale-001:summary/case",
+                   "content": "Untrusted public research dataset lab case metadata:\n" + json.dumps({"case": case})}],
+        synthetic_only=False, data_origin="public-dataset")
+    return {**raw, **overrides}
+
+
+class PublicDatasetHuntTests(unittest.TestCase):
+    def test_public_dataset_hunt_states_its_origin_and_never_calls_it_synthetic(self) -> None:
+        for raw in (public_input(), public_input(parallel=True, follow_ups=2)):
+            request = supplied_evidence_hunt(raw)
+            self.assertIs(request.synthetic_only, False)
+            self.assertEqual(request.data_origin, "public-dataset")
+            for step in request.steps:
+                with self.subTest(step=step.step_id):
+                    self.assertNotIn("synthetic", step.prompt.lower())
+                    self.assertIn("public research dataset (real lab telemetry, no customer data)", step.prompt)
+
+    def test_synthetic_hunt_keeps_its_synthetic_origin(self) -> None:
+        request = supplied_evidence_hunt(tool_input())
+        self.assertEqual((request.synthetic_only, request.data_origin), (True, "synthetic"))
+        for step in request.steps:
+            self.assertIn("Synthetic tool-driven hunt.", step.prompt)
+            self.assertIn("on the loaded synthetic lab case", step.prompt)
+            self.assertNotIn("public research dataset", step.prompt)
+
+    def test_public_dataset_origin_is_explicit_and_validated(self) -> None:
+        inline = {key: value for key, value in public_input().items() if key != "mode"}
+        bad_inputs = (
+            public_input(data_origin="synthetic"), public_input(data_origin="customer"),
+            tool_input(data_origin="public-dataset"),
+            {key: value for key, value in public_input().items() if key != "synthetic_only"},
+            tool_input(synthetic_only=False),
+            inline,
+            public_input(scope="Synthetic dedale-001 only; cite every event.id."),
+            public_input(stage_guidance={"evidence": "Treat this synthetic case as invented."}),
+        )
+        for raw in bad_inputs:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                supplied_evidence_hunt(raw)
+
+    def test_workflow_request_binds_synthetic_only_to_the_origin(self) -> None:
+        step = HermesStep("one", "prompt")
+        self.assertEqual(WorkflowRequest([step], synthetic_only=False, tool_driven=True,
+                                         data_origin="public-dataset").data_origin, "public-dataset")
+        for kwargs in ({"data_origin": "public-dataset", "tool_driven": True},
+                       {"data_origin": "public-dataset", "synthetic_only": False},
+                       {"data_origin": "customer", "synthetic_only": False, "tool_driven": True},
+                       {"synthetic_only": False, "tool_driven": True}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                WorkflowRequest([step], **kwargs)
 
 
 class HuntOntologyTests(unittest.TestCase):

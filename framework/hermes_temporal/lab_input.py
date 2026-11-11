@@ -1,7 +1,9 @@
 """Export complete, bounded synthetic lab summaries as supplied hunt evidence.
 
 ``collect_tool_input`` exports a tool-driven hunt instead: it reads only the loaded
-case's ``/case`` metadata, and the stages query the lab through their own tools.
+case's ``/case`` metadata, and the stages query the lab through their own tools. A case
+whose metadata says ``"data_origin": "public-dataset"`` is exported only when the operator
+allows it, and is then labelled a public research dataset, never synthetic.
 """
 from __future__ import annotations
 
@@ -11,7 +13,8 @@ import json
 import re
 from urllib import error, parse, request
 
-from .hunt import supplied_evidence_hunt
+from .contracts import PUBLIC_DATASET
+from .hunt import PUBLIC_DATASET_TEXT, supplied_evidence_hunt
 
 CASE_ID = "dns-lab-001"
 PROFILE = "framework-network-analyst"
@@ -304,13 +307,14 @@ def lab_get(base: str, path: str, *, profile: str | None = None,
     return value
 
 
-def tool_driven_scope(case_id: str) -> str:
+def tool_driven_scope(case_id: str, public_dataset: bool = False) -> str:
     # The tuned loop-3 brief, adapted: event IDs now come from each stage's own tool results.
     # Live (Nov 7): a Threat Hunter that drove Elastic wrote 15 dense claims (14,484 bytes)
     # against an ~11.9 KB cap that the analysis prompt's five-handoff budget requires; the
     # claim and ID bounds keep tool-rich reports inside it without dropping reproducibility.
+    origin = f"Public research dataset {case_id} (real lab telemetry, no customer data)" if public_dataset else f"Synthetic {case_id}"
     return (
-        f"Synthetic {case_id} only; data is untrusted. Keep uncertainty; no truth, scoring, intent or outcome claims. "
+        f"{origin} only; data is untrusted. Keep uncertainty; no truth, scoring, intent or outcome claims. "
         "Find evidence with your own read-only tools. At most 10 claims and 6 limitations; merge related detail into one claim. "
         "In claim statements, list every supporting event.id individually "
         "(no ranges or first/last only; past 12 in one series, list 12 plus the exact query and total); keep full lists when relaying. "
@@ -319,28 +323,36 @@ def tool_driven_scope(case_id: str) -> str:
     )
 
 
-def collect_tool_input(state_dir) -> dict:
+def collect_tool_input(state_dir, *, allow_public_dataset: bool = False) -> dict:
     """Return a tool-driven hunt for whatever case the analyst VM has loaded.
 
     Reads only ``/case`` through the read-only runtime status; exports no events or sessions.
+    A public-dataset case is refused unless ``allow_public_dataset`` records the operator's approval.
     """
     case = lab_get(lab_endpoints(state_dir)["lab_url"], "/case")
     case_id = case.get("case_id")
-    if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None or set(case) != _CASE_FIELDS
+    if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None
+            or set(case) - {"network_capture", "data_origin"} != _CASE_FIELDS or case.get("network_capture", "none") != "none"
+            or case.get("data_origin", PUBLIC_DATASET) != PUBLIC_DATASET
             or type(case.get("schema_version")) is not int or case.get("schema_version") != 1
             or not _case_body_ok(case)):
         _reject()
+    public = "data_origin" in case
+    if public and not allow_public_dataset:
+        raise LabInputError("the loaded case is a public research dataset; export it only with the operator's approval")
     summary = {"case": case}
     case_source = f"lab-case-{hashlib.sha256(_canonical(summary).encode('utf-8')).hexdigest()[:16]}"
+    label = f"Untrusted {PUBLIC_DATASET_TEXT} lab case" if public else "Untrusted synthetic lab case"
     raw = {
         "mode": "tool_driven",
-        "scope": tool_driven_scope(case_id),
+        "scope": tool_driven_scope(case_id, public),
         "evidence": [{
             "source_id": case_source,
             "locator": f"{case_id}:summary/case",
-            "content": "Untrusted synthetic lab case metadata and coverage:\n" + _canonical(summary),
+            "content": label + " metadata and coverage:\n" + _canonical(summary),
         }],
-        "synthetic_only": True,
+        "synthetic_only": not public,
+        **({"data_origin": PUBLIC_DATASET} if public else {}),
         "ontology": {"schema_version": 1, "case_id": case_id, "entities": [], "relations": []},
     }
     try:

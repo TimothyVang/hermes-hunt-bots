@@ -1,7 +1,9 @@
 """drive_gates behavior that an unattended loop round depends on."""
 import argparse
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,8 +39,9 @@ SCOPE = step('scope', 'done', 'x:scope', wave=1)
 SCOPE_RESULT = result('x:scope', 'scope report')
 
 
-def drive(states):
+def drive(states, args=None):
     """Run the driver over these child statuses; the parent reports completed once they are used up.
+    Without args it runs in delegated mode with the note 'NOTE'.
     Returns (exit code, decisions sent, saved outputs by file name, log messages)."""
     states, decisions = list(states), []
 
@@ -54,7 +57,8 @@ def drive(states):
                           options['--evidence-note']))
         return {'signal_sent': True}
 
-    args = argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop', note='NOTE')
+    args = args or argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop',
+                                      operator=None, note='NOTE')
     with tempfile.TemporaryDirectory() as tmp, patch.object(dg, 'GATE_RUNS', Path(tmp)), \
             patch.object(dg, 'LOG', Path(tmp) / 'driver.log'), patch.object(dg, 'cli', fake_cli), \
             patch.object(dg.time, 'sleep'):
@@ -87,7 +91,8 @@ class RetryGateTest(unittest.TestCase):
             decisions.append((options['--phase'], options['--decision-id'], options['--evidence-note']))
             return {'signal_sent': True}
 
-        args = argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop', note='NOTE')
+        args = argparse.Namespace(workflow_id='loop-wf', delegated_by='Ada', reason='synthetic loop', operator=None,
+                                  note='NOTE')
         with tempfile.TemporaryDirectory() as tmp, patch.object(dg, 'GATE_RUNS', Path(tmp)), \
                 patch.object(dg, 'LOG', Path(tmp) / 'driver.log'), patch.object(dg, 'cli', fake_cli), \
                 patch.object(dg.time, 'sleep'):
@@ -198,6 +203,153 @@ class WaveGateTest(unittest.TestCase):
             [SCOPE_RESULT, result('x:analysis', '', 'unknown', 'execution_error')], gate='analysis')])
         self.assertEqual((code, decisions), (1, []))
         self.assertTrue(messages[-1].startswith(f'STOP {CHILD} analysis: stage needs_reconciliation; no retry. '))
+
+
+AUTOMATED = ('Automated approval under ADR 0002 (two human decisions per hunt) for operator Ada Lovelace; '
+             'recorded automatically by operator/drive_gates.py; not a human review of this step.')
+# A short parallel hunt: the scope wave, one hunter wave, then analysis and the final report.
+PLAN = (('scope', 1), ('evidence', 2), ('network', 2), ('analysis', 3), ('incident', 4))
+
+
+def two_decisions():
+    return dg.parse_args(['loop-wf', '--two-decisions', '--operator', ' Ada  Lovelace '])
+
+
+def hunt(stage, gate, **states):
+    """A parallel hunt's status; steps not named are done before the open wave and not reached after it."""
+    open_wave = int(gate.split('-')[1])
+    steps, results = [], []
+    for name, number in PLAN:
+        state = states.get(name, 'done' if number < open_wave else 'not_reached')
+        ran = state not in ('not_reached', 'awaiting_approval')
+        steps.append(step(name, state, f'x:{name}' if ran else None, wave=number))
+        if state in ('awaiting_review', 'done'):
+            results.append(result(f'x:{name}', f'{name} report'))
+    return wave(stage, steps, results, gate=gate)
+
+
+def serial(stage, step_id, rejections=(), results=()):
+    """A serial hunt's status: no step list, the open gate is the step itself."""
+    return {'stage': stage, 'step_id': step_id, 'execution_id': f'{CHILD}:{step_id}', 'temporal_status': 'RUNNING',
+            'results': list(results), 'handoff_rejections': list(rejections)}
+
+
+def drive_two_decisions(states):
+    printed = io.StringIO()
+    with redirect_stdout(printed):
+        code, decisions, saved, messages = drive(states, two_decisions())
+    return code, decisions, saved, messages, printed.getvalue()
+
+
+def waiting(messages):
+    """The WAITING lines, without the temporary output directory they end with."""
+    lines = [message for message in messages if message.startswith('WAITING')]
+    for line in lines:
+        assert line.endswith(str(Path('outputs', 'loop-wf'))), line
+    return [line.split('; outputs in ')[0] for line in lines]
+
+
+class TwoDecisionModeTest(unittest.TestCase):
+    def test_a_parallel_hunt_waits_for_the_operator_at_the_scope_and_report_reviews_and_automates_the_rest(self):
+        scope_review = hunt('awaiting_review', 'wave-1', scope='awaiting_review')
+        report_review = hunt('awaiting_review', 'wave-4', incident='awaiting_review')
+        code, decisions, saved, messages, printed = drive_two_decisions([
+            hunt('awaiting_execution_approval', 'wave-1', scope='awaiting_approval'),
+            hunt('executing', 'wave-1', scope='working'),
+            scope_review, scope_review, scope_review,
+            # The operator approved the scope: the hunters' wave opens and the driver goes on.
+            hunt('awaiting_execution_approval', 'wave-2', evidence='awaiting_approval', network='awaiting_approval'),
+            hunt('awaiting_review', 'wave-2', evidence='awaiting_review', network='awaiting_review'),
+            hunt('awaiting_execution_approval', 'wave-3', analysis='awaiting_approval'),
+            hunt('awaiting_review', 'wave-3', analysis='awaiting_review'),
+            hunt('awaiting_execution_approval', 'wave-4', incident='awaiting_approval'),
+            report_review, report_review,
+        ])
+        self.assertEqual(code, 0)
+        self.assertEqual(decisions, [
+            ('wave-1', 'execute', f'{CHILD}:wave-1:execute', AUTOMATED),
+            ('wave-2', 'execute', f'{CHILD}:wave-2:execute', AUTOMATED),
+            ('wave-2', 'review', f'{CHILD}:wave-2:review', AUTOMATED),
+            ('wave-3', 'execute', f'{CHILD}:wave-3:execute', AUTOMATED),
+            ('wave-3', 'review', f'{CHILD}:wave-3:review', AUTOMATED),
+            ('wave-4', 'execute', f'{CHILD}:wave-4:execute', AUTOMATED),
+        ])
+        self.assertEqual(waiting(messages), [
+            f'WAITING FOR OPERATOR Ada Lovelace: scope review of {CHILD} wave-1',
+            f'WAITING FOR OPERATOR Ada Lovelace: report review of {CHILD} wave-4',
+        ])
+        self.assertEqual(saved, {f'001-{name}.txt': f'{name} report' for name, _ in PLAN})
+        for gate in ('wave-1', 'wave-4'):
+            for choice in ('approve', 'deny'):
+                self.assertIn(f'decision {CHILD} --step-id {gate} --phase review --choice {choice} '
+                              f'--decision-id {CHILD}:{gate}:review --evidence-note ', printed)
+        self.assertNotIn('approved (delegated', printed)
+
+    def test_a_serial_hunt_waits_for_the_operator_at_the_scope_and_incident_reviews_and_automates_the_rest(self):
+        evidence_retried = dict(RETRIED, step_id='evidence')
+        code, decisions, saved, messages, _ = drive_two_decisions([
+            serial('awaiting_execution_approval', 'scope'),
+            serial('awaiting_review', 'scope', results=[result('x:scope', 'scope report')]),
+            serial('awaiting_review', 'scope', results=[result('x:scope', 'scope report')]),
+            serial('awaiting_execution_approval', 'evidence'),
+            serial('awaiting_execution_approval', 'evidence', [evidence_retried]),
+            serial('awaiting_review', 'evidence', [evidence_retried], [result('x:evidence', 'evidence report')]),
+            serial('awaiting_execution_approval', 'incident', [evidence_retried]),
+            serial('awaiting_review', 'incident', [evidence_retried], [result('x:incident', 'incident report')]),
+            serial('awaiting_review', 'incident', [evidence_retried], [result('x:incident', 'incident report')]),
+        ])
+        self.assertEqual(code, 0)
+        self.assertEqual(decisions, [
+            ('scope', 'execute', f'{CHILD}:scope:execute', AUTOMATED),
+            ('evidence', 'execute', f'{CHILD}:evidence:execute', AUTOMATED),
+            ('evidence', 'execute', f'{CHILD}:evidence:execute:retry1', dg.RETRY_NOTE + AUTOMATED),
+            ('evidence', 'review', f'{CHILD}:evidence:review', AUTOMATED),
+            ('incident', 'execute', f'{CHILD}:incident:execute', AUTOMATED),
+        ])
+        self.assertEqual(waiting(messages), [
+            f'WAITING FOR OPERATOR Ada Lovelace: scope review of {CHILD} scope',
+            f'WAITING FOR OPERATOR Ada Lovelace: report review of {CHILD} incident',
+        ])
+        self.assertEqual(saved, {'001-scope.txt': 'scope report', '001-evidence.txt': 'evidence report',
+                                 '001-incident.txt': 'incident report'})
+
+    def test_an_operator_denial_of_the_scope_stops_the_run_with_nothing_sent_for_it(self):
+        scope_review = hunt('awaiting_review', 'wave-1', scope='awaiting_review')
+        code, decisions, _, messages, _ = drive_two_decisions([
+            hunt('awaiting_execution_approval', 'wave-1', scope='awaiting_approval'),
+            scope_review, scope_review,
+            hunt('denied', 'wave-1', scope='awaiting_review'),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual([decision[:2] for decision in decisions], [('wave-1', 'execute')])
+        self.assertTrue(messages[-1].startswith(f'STOP {CHILD} wave-1: stage denied; no retry. '))
+
+
+class ModeChoiceTest(unittest.TestCase):
+    def test_exactly_one_mode_must_be_chosen(self):
+        rejected = {
+            'neither': [],
+            'both': ['--two-decisions', '--operator', 'Ada', '--delegated-by', 'Ada', '--reason', 'loop'],
+            'two decisions with a reason': ['--two-decisions', '--operator', 'Ada', '--reason', 'loop'],
+            'operator without two decisions': ['--operator', 'Ada'],
+            'operator in delegated mode': ['--operator', 'Ada', '--delegated-by', 'Ada', '--reason', 'loop'],
+            'two decisions without an operator': ['--two-decisions'],
+            'blank operator': ['--two-decisions', '--operator', '  '],
+            'delegated without a reason': ['--delegated-by', 'Ada'],
+            'delegated with a blank reason': ['--delegated-by', 'Ada', '--reason', ' '],
+        }
+        for case, argv in rejected.items():
+            with self.subTest(case), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                dg.parse_args(['loop-wf', *argv])
+            self.assertEqual(stopped.exception.code, 2)
+
+    def test_each_mode_records_its_own_note(self):
+        self.assertEqual((two_decisions().operator, two_decisions().note), ('Ada Lovelace', AUTOMATED))
+        delegated = dg.parse_args(['loop-wf', '--delegated-by', 'Ada', '--reason', 'synthetic  loop'])
+        self.assertIsNone(delegated.operator)
+        self.assertEqual(delegated.note, 'Delegated approval by Ada: synthetic loop. Recorded automatically by '
+                                         'operator/drive_gates.py on their behalf; this is not a human review of the '
+                                         'content.')
 
 
 if __name__ == '__main__':

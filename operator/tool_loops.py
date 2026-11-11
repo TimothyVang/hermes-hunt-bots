@@ -90,7 +90,9 @@ def last_seq(url):
 
 def build_input(base, brief, guidance, case_id):
     raw = json.loads(json.dumps(base))
-    raw['scope'] = f'Synthetic {case_id} only; ' + brief
+    # A public research dataset keeps the origin label lab-input gave it; never relabel it synthetic.
+    origin = base['scope'].split(' only; ', 1)[0] if 'data_origin' in base else f'Synthetic {case_id}'
+    raw['scope'] = f'{origin} only; ' + brief
     if guidance:
         raw['stage_guidance'] = guidance
     return raw
@@ -148,17 +150,23 @@ def workflow_id(name, case_id, lane=DEFAULT_LANE):
     return f'{name}{RUN_TAG}-{lane.name + "-" if lane.name else ""}{case_id}'
 
 
-def base_input(case_id, lane=DEFAULT_LANE):
-    """The case loaded in this lane's lab as a tool-driven hunt input, made once per case and lane and cached in TOOL_LOOPS."""
+def base_input(case_id, lane=DEFAULT_LANE, *, allow_public_dataset=False):
+    """The case loaded in this lane's lab as a tool-driven hunt input, made once per case and lane and cached in TOOL_LOOPS.
+
+    A public research dataset case (data_origin public-dataset) is exported only with allow_public_dataset."""
     TOOL_LOOPS.mkdir(parents=True, exist_ok=True)
     base_path = TOOL_LOOPS / f'base-{case_id}{"-" + lane.name if lane.name else ""}.json'
     if not base_path.exists():
-        r = subprocess.run([*lane.temporal_cli(), 'lab-input', '--tool-driven', '--state-dir', str(lane.state_dir),
+        approval = ['--allow-public-dataset'] if allow_public_dataset else []
+        r = subprocess.run([*lane.temporal_cli(), 'lab-input', '--tool-driven', *approval, '--state-dir', str(lane.state_dir),
                             '--output', str(base_path)], cwd=FRAMEWORK, capture_output=True, text=True,
                            encoding='utf-8', errors='replace', timeout=120)
         if r.returncode:
             raise SystemExit('lab-input failed: ' + r.stderr[-300:])
-    return json.loads(base_path.read_text(encoding='utf-8'))
+    base = json.loads(base_path.read_text(encoding='utf-8'))
+    if 'data_origin' in base and not allow_public_dataset:
+        raise SystemExit(f'{base_path.name} is a public research dataset input; pass allow_public_dataset=True to use it')
+    return base
 
 
 def result_sizes(st):
@@ -283,9 +291,10 @@ def report_digest(wf, n):
 
 WATCHER_RULES = (
     "You are the WATCHER for a six-bot AI threat-hunting team. Each bot drives its own read-only lab tool: "
-    "Threat Hunter (elastic_search, elastic_aggregate), Network Analyst (arkime_sessions, arkime_unique), Threat Intel "
-    "(intel_lookup, elastic_aggregate), Detection Engineer (detection_test, elastic_aggregate), Purple Team (elastic_search, "
-    "arkime_sessions, detection_test); the Incident Response Lead (scope, analysis, incident stages) has only delegate_task. "
+    "Threat Hunter (elastic_search, elastic_aggregate, packet_fields), Network Analyst (arkime_sessions, arkime_unique, "
+    "packet_fields), Threat Intel (intel_lookup, elastic_aggregate), Detection Engineer (detection_test, elastic_aggregate), "
+    "Purple Team (elastic_search, arkime_sessions, detection_test); the Incident Response Lead (scope, analysis, incident "
+    "stages) has only delegate_task. packet_fields decodes allowlisted, redacted fields of the case's saved capture only. "
     "Stages: scope, evidence, hypotheses (Threat Hunter), network, intel, analysis, detection, purple, incident. "
     "You watched the last hunt: every tool call, every refusal, the stage reports, and which answer-key CATEGORIES the final "
     "report missed (you never see the key itself). Propose ONE focused, general improvement that would help on any intrusion "
@@ -295,7 +304,8 @@ WATCHER_RULES = (
     "final report to cite at least one event.id from every evidence group of that fact and name its entities, so relaying "
     "earlier stages' event IDs into the final report matters. Lab refusals waste turns; their codes are "
     "field_not_allowed / invalid_field_list (field outside the list in the tool description), "
-    "leading_wildcard_not_supported, and invalid_query (syntax). Reply with ONE JSON object only, no prose, no fences: "
+    "leading_wildcard_not_supported, invalid_query (syntax), invalid_filter (packet filter outside its grammar) and "
+    "field_unavailable (the lab's tshark lacks that field). Reply with ONE JSON object only, no prose, no fences: "
     '{"diagnosis": "...", "hypothesis": "...", "brief": "<full new brief>", "stage_guidance": {"<stage>": "<text>", ...}}')
 
 

@@ -124,6 +124,59 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(any('key' in name or 'truth' in name or 'test' in name or name == 'case.py' for name in names))
 
 
+class PayloadSourceTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='hermes-payload-test-')
+        self.addCleanup(temp.cleanup)
+        self.evidence = Path(temp.name).resolve()
+        fixtures = managed.SOURCE / 'fixtures' / 'dns-lab-001'
+        for name in prepare_guest.EVIDENCE_FILES:
+            (self.evidence / name).write_bytes((fixtures / name).read_bytes())
+        self.case = json.loads((fixtures / 'case.json').read_text(encoding='utf-8'))
+
+    def write_case(self, **fields):
+        (self.evidence / 'case.json').write_text(json.dumps(dict(self.case, **fields)), encoding='utf-8')
+
+    def evidence_names(self):
+        return {name for name, _ in prepare_guest.payload_sources(self.evidence) if name.startswith('evidence/')}
+
+    def test_case_without_the_field_ships_and_requires_the_pcap(self):
+        self.assertEqual(self.evidence_names(),
+                         {'evidence/events.jsonl', 'evidence/traffic.pcap', 'evidence/case.json'})
+        (self.evidence / 'traffic.pcap').unlink()
+        with self.assertRaises(FileNotFoundError):
+            prepare_guest.payload_sources(self.evidence)
+
+    def test_case_without_capture_is_accepted_without_a_pcap(self):
+        (self.evidence / 'traffic.pcap').unlink()
+        self.write_case(network_capture='none')
+        self.assertEqual(self.evidence_names(), {'evidence/events.jsonl', 'evidence/case.json'})
+        self.assertEqual(prepare_guest.case_metadata(self.evidence / 'case.json')['network_capture'], 'none')
+
+    def test_case_saying_none_but_shipping_a_pcap_is_refused(self):
+        self.write_case(network_capture='none')
+        with self.assertRaisesRegex(prepare_guest.PreparationError, 'traffic.pcap is present'):
+            prepare_guest.payload_sources(self.evidence)
+
+    def test_any_other_network_capture_value_is_refused(self):
+        for value in ('pcap', 'None', '', None, False, ['none']):
+            with self.subTest(value=value):
+                self.write_case(network_capture=value)
+                with self.assertRaisesRegex(prepare_guest.PreparationError, 'network_capture'):
+                    prepare_guest.case_metadata(self.evidence / 'case.json')
+                with self.assertRaisesRegex(prepare_guest.PreparationError, 'network_capture'):
+                    prepare_guest.payload_sources(self.evidence)
+
+    def test_data_origin_is_absent_or_public_dataset_and_nothing_else(self):
+        self.write_case(data_origin='public-dataset')
+        self.assertEqual(prepare_guest.case_metadata(self.evidence / 'case.json')['data_origin'], 'public-dataset')
+        for value in ('synthetic', 'customer', '', None, ['public-dataset']):
+            with self.subTest(value=value):
+                self.write_case(data_origin=value)
+                with self.assertRaisesRegex(prepare_guest.PreparationError, 'data_origin'):
+                    prepare_guest.case_metadata(self.evidence / 'case.json')
+
+
 try:
     import pycdlib
 except ImportError:
@@ -208,6 +261,17 @@ class ReseedTests(unittest.TestCase):
         with self.assertRaises(prepare_guest.PreparationError):
             prepare_guest.reseed(self.args())
         self.assertEqual(list((self.state / 'media').iterdir()), [])
+
+    def test_reseed_of_a_case_without_capture_ships_no_pcap(self):
+        case = json.loads((self.evidence / 'case.json').read_text())
+        (self.evidence / 'case.json').write_text(json.dumps(dict(case, network_capture='none')))
+        with self.assertRaises(prepare_guest.PreparationError):
+            prepare_guest.reseed(self.args())
+        self.assertEqual(list((self.state / 'media').iterdir()), [])
+        (self.evidence / 'traffic.pcap').unlink()
+        _, names = self.read_iso(Path(prepare_guest.reseed(self.args())['seed']))
+        self.assertEqual(names, set(prepare_guest.PAYLOAD_FILES) | {
+            'evidence/events.jsonl', 'evidence/case.json', 'evidence/intel.jsonl'})
 
     def test_deployment_switch_is_refused_while_the_vm_is_not_stopped(self):
         path, _ = self.deployment()

@@ -4,6 +4,6 @@ version: 1.0.0
 description: "Human-operated native QEMU lab with bounded, read-only, case-scoped bot evidence tools."
 author: "Local hunting lab development"
 kind: standalone
-provides_tools: [hunt_lab_query, elastic_search, elastic_aggregate, detection_test, intel_lookup, arkime_sessions, arkime_unique, lab_browser]
+provides_tools: [hunt_lab_query, elastic_search, elastic_aggregate, detection_test, intel_lookup, arkime_sessions, arkime_unique, packet_fields, lab_browser]
 provides_hooks: []
 python_dependencies: []

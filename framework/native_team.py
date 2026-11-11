@@ -43,11 +43,11 @@ PROFILE_ROUTES = (
 # in every framework profile; these allowlists decide who may call which.
 TOOL_OWNERSHIP = {
     'framework-coordinator': ['delegate_task'],
-    'framework-researcher': ['elastic_search', 'elastic_aggregate', 'lab_browser'],
+    'framework-researcher': ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields'],
     'framework-builder': ['detection_test', 'elastic_aggregate'],
     'framework-reviewer': ['elastic_search', 'arkime_sessions', 'detection_test'],
     'framework-librarian': ['intel_lookup', 'elastic_aggregate'],
-    'framework-network-analyst': ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser'],
+    'framework-network-analyst': ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'],
 }
 HUNT_TOOL_PROFILES = tuple(name for name in PROFILES if name != 'framework-coordinator')
 
@@ -56,7 +56,8 @@ SUPERSEDED_SETTINGS = {
     profile: {
         'agent.allowed_tool_names': [
             ['hunt_lab_query'] if profile == 'framework-network-analyst' else [],
-            [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'lab_browser'],
+            [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields')],
+            [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'packet_fields'],
         ],
         'platform_toolsets.cli': [['no_mcp']],
     }

@@ -35,10 +35,16 @@ def _object(**properties):
     return {'properties': properties}
 
 
+# Added after mapping version 2; put onto an existing store so a full script block stays searchable.
+ADDED_EVENT_PROPERTIES = {
+    'powershell': _object(file=_object(script_block_text={'type': 'text'})),
+}
+EVENT_MAPPING_VERSION = 3
+
 EVENT_MAPPING = {
     'settings': {'number_of_shards': 1, 'number_of_replicas': 0},
     'mappings': {
-        '_meta': {'hermes_mapping_version': 2},
+        '_meta': {'hermes_mapping_version': EVENT_MAPPING_VERSION},
         'date_detection': False,
         'dynamic_templates': [{'strings_as_keywords': {'match_mapping_type': 'string', 'mapping': KEYWORD}}],
         'properties': {
@@ -65,6 +71,7 @@ EVENT_MAPPING = {
             'file': _object(path=LONG_KEYWORD, name=KEYWORD),
             'winlog': _object(channel=KEYWORD),
             'user_agent': _object(original=LONG_KEYWORD),
+            **ADDED_EVENT_PROPERTIES,
         },
     },
 }
@@ -142,6 +149,12 @@ def ensure_event_index(base):
     return state
 
 
+def add_event_fields(base):
+    """Add later-version fields to an existing store; Elasticsearch refuses a type change (no silent remap)."""
+    request(base, '/' + EVENT_STORE + '/_mapping', 'PUT',
+            {'_meta': {'hermes_mapping_version': EVENT_MAPPING_VERSION}, 'properties': ADDED_EVENT_PROPERTIES})
+
+
 def _rows(path, identity):
     """Yield (_id, document) for each nonempty line; validation is per line."""
     seen = set()
@@ -211,7 +224,8 @@ def ingest(base, evidence, case_id=None):
         datasets.add(event['dataset'])
         return event['dataset'] + ':' + key
 
-    ensure_event_index(base)
+    if ensure_event_index(base) == 'ready':
+        add_event_fields(base)
     run = uuid.uuid4().hex
     count = _bulk(base, INDEX, _rows(evidence, identity), run)
     if not count:

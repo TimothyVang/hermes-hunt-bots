@@ -1,5 +1,5 @@
 name: framework-network-analyst
 version: "1.0.0"
-description: "Analyzes human-approved sanitized Arkime/Wireshark summaries without tool access or raw capture inspection."
+description: "Analyzes approved network summaries, case session metadata and redacted packet fields from the case's saved capture; never live capture or raw packets."
 distribution_owned:
   - SOUL.md

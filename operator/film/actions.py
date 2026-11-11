@@ -96,7 +96,7 @@ def from_activity(entries):
         except (KeyError, ValueError, AttributeError):
             continue
         params = e.get('params') or {}
-        query = params.get('q') or params.get('expression') or ''
+        query = params.get('q') or params.get('expression') or params.get('filter') or ''
         detail = query or params.get('field') or params.get('value') or ''
         result = f'ERROR {e["error"]}' if e.get('error') else (
             f'{e.get("result_count")} of {e.get("total")}' if e.get('total') is not None else f'{e.get("result_count")} results')
