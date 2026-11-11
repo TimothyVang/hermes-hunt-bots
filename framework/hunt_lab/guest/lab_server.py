@@ -444,17 +444,27 @@ def es_aggs_endpoint(server, params):
         aggregation = {'terms': {'field': field, 'size': size}}
     else:
         raise BackendQueryError('field_not_allowed')
+    # One citable event per bucket, so a per-category sweep of a process needs no second search.
+    aggregation['aggs'] = {'sample': {'top_hits': {'size': 1, '_source': ['event.id'],
+                                                   'sort': [{'@timestamp': 'asc'}, {'event.id': 'asc'}]}}}
     response = es_search(server.elastic, EVENT_INDEX, {
         'query': event_query(server.case, values.get('q')), 'size': 0, 'track_total_hits': True,
         'timeout': '10s', 'aggs': {'values': aggregation}})
     result = response['aggregations']['values']
-    buckets = [{'key': bucket.get('key_as_string', bucket['key']), 'count': bucket['doc_count']}
+    buckets = [{'key': bucket.get('key_as_string', bucket['key']), 'count': bucket['doc_count'],
+                'sample_event_id': sample_event_id(bucket)}
                for bucket in result['buckets']]
     value = {'case_id': server.case['case_id'], 'field': field, 'total': response['hits']['total']['value'],
              'buckets': buckets}
     if 'sum_other_doc_count' in result:
         value['other'] = result['sum_other_doc_count']
     return value
+
+
+def sample_event_id(bucket):
+    hits = bucket.get('sample', {}).get('hits', {}).get('hits', [])
+    value = pick(hits[0].get('_source', {}), ['event', 'id']) if hits else MISSING
+    return None if value is MISSING else value
 
 
 def es_detect_endpoint(server, params):

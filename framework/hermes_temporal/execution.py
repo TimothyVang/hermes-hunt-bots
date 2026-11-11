@@ -43,14 +43,19 @@ MAX_LOG_SCAN_BYTES = 4 * 1024 * 1024
 _ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 _EXCEPTION_LINE = re.compile(r'(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|Exit|Interrupt|Failure)\b(?::.*)?\Z')
 _ERROR_LINE = re.compile(r'(?i)\b(?:error|fatal|failed)\b')
+_SECRET_KEY = r'(?i)\b([\w-]*(?:api[_-]?key|token|secret|password|passwd|credentials?|signature|sig))\b'
 _SECRETS = (
     (re.compile(r'(?i)\b((?:proxy-)?authorization|set-cookie|cookie)\b\s*[:=].*'), r'\1: [redacted]'),
     (re.compile(r'(?i)\b(bearer|basic)\s+[^\s,;]+'), r'\1 [redacted]'),
-    (re.compile(r'(?i)\b([\w-]*(?:api[_-]?key|token|secret|password|passwd|credentials?|signature|sig))\b'
-                r'(["\']?\s*[:=]\s*["\']?)[^\s"\',;&]+'), r'\1\2[redacted]'),
+    # A quoted value after a key name and a separator or a space (`api_key "..."`), up to its closing quote
+    # or, when stderr cut it off, the end of the line.
+    (re.compile(_SECRET_KEY + r'(["\']?\s*[:=]\s*|\s+)(["\'])(?:(?!\3).)*\3?'), r'\1\2\3[redacted]\3'),
+    (re.compile(_SECRET_KEY + r'(["\']?\s*[:=]\s*["\']?)[^\s"\',;&]+'), r'\1\2[redacted]'),
     (re.compile(r'://[^/\s@]+@'), '://[redacted]@'),
     (re.compile(r'(?i)(https?://[^\s?#]+)[?#]\S*'), r'\1?[redacted]'),
     (re.compile(r'(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}'), '[redacted]'),
+    # Stripe-style `sk_live_...`; a digit is required so identifiers such as `pk_receipts` stay readable.
+    (re.compile(r'(?i)\b(?:sk|pk|rk)_(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{8,}'), '[redacted]'),
     (re.compile(r'(?i)\bxox[a-z]-[A-Za-z0-9-]+'), '[redacted]'),
     (re.compile(r'\b(?:gh[pousr]_|github_pat_|glpat-|hf_|AKIA|ASIA|AIza)[A-Za-z0-9_-]{8,}'), '[redacted]'),
     (re.compile(r'\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*'), '[redacted]'),

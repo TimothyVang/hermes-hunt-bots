@@ -1,0 +1,1715 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="__CSP__">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Hunt Command</title>
+<style>
+:root{
+ --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+ --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+ --fs-11:11px;--lh-11:16px; --fs-12:12px;--lh-12:16px; --fs-13:13px;--lh-13:18px;
+ --row:32px;
+ --r-4:4px;--r-8:8px;--r-10:10px;--r-pill:999px;
+ --rail:236px;--details:320px;
+ --dur:150ms;--ease-sharp:cubic-bezier(.165,.84,.44,1);
+ --hair:.5px;
+}
+.t-dark{
+ --bg-rail:#0e0e0e;--bg-chrome:#121212;--bg-pane:#161616;--bg-raised:#1c1c1c;--bg-sunk:#0a0a0a;
+ --ink:255,255,255;
+ --c-blocked:#f0565b;--c-working:#e5a83b;--c-done:#3fc1a5;--c-idle:rgba(255,255,255,.40);--accent:#5d9bff;
+ --shadow-1:none;--shadow-2:none;--shadow-3:none;--scrim:rgba(0,0,0,.5);
+ color-scheme:dark;
+}
+.t-dark{
+ --ink-1:rgba(var(--ink),1);--ink-2:rgba(var(--ink),.68);--ink-3:rgba(var(--ink),.56);--ink-4:rgba(var(--ink),.40);
+ --line-1:rgba(var(--ink),.24);--line-2:rgba(var(--ink),.12);--line-3:rgba(var(--ink),.08);
+ --fill-1:rgba(var(--ink),.06);--fill-2:rgba(var(--ink),.04);
+ --t17-blocked:color-mix(in srgb,var(--c-blocked) 17%,transparent);
+ font-family:var(--font-sans);font-size:var(--fs-13);line-height:var(--lh-13);color:var(--ink-1);
+ font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg-pane)}
+button{font:inherit;color:inherit;background:none;border:0;margin:0;padding:0;text-align:inherit;cursor:pointer}
+:focus{outline:none}
+:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+[hidden]{display:none!important}
+*{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.14) transparent}
+/* ---------- primitives (canvas) ---------- */
+.i{flex:none;display:block;width:16px;height:16px}
+.g{flex:none;display:block;width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;color:var(--ink-2)}
+.wv .st,.pane-h .st{min-width:0}
+.wv .st > span{overflow:hidden;text-overflow:ellipsis}
+.st-dropped > span{text-decoration:line-through;text-decoration-color:var(--ink-4)}
+.g-blocked{color:var(--c-blocked)}.g-working{color:var(--c-working)}.g-done{color:var(--c-done)}.g-idle{color:var(--c-idle)}.g-dropped{color:var(--ink-4)}
+.mg{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:var(--r-4);background:var(--fill-1);box-shadow:inset 0 0 0 var(--hair) var(--line-2);font-size:10px;line-height:1;font-weight:600;color:var(--ink-2);letter-spacing:.02em;flex:none}
+.mg.lg{width:28px;height:28px;font-size:11px;border-radius:6px}
+.mono{font-family:var(--font-mono);font-size:12px;letter-spacing:0}
+.mut{color:var(--ink-3)} .faint{color:var(--ink-4)} .sec{color:var(--ink-2)}
+.sm{font-size:var(--fs-12);line-height:var(--lh-12)}
+.xs{font-size:var(--fs-11);line-height:var(--lh-11)}
+.b5{font-weight:500}.b6{font-weight:600}
+.row{display:flex;align-items:center;gap:8px;min-width:0}
+.grow{flex:1;min-width:0}
+.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.clamp2,.clamp3{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.clamp2{-webkit-line-clamp:2}.clamp3{-webkit-line-clamp:3}
+.full{white-space:pre-wrap;overflow-wrap:anywhere}
+.clipw{min-width:0}
+.more{display:inline-block;margin-top:2px;font-size:12px;line-height:16px;color:var(--ink-3)}
+.more:hover{color:var(--ink-2)}
+.ids{display:flex;flex-wrap:wrap;gap:2px 12px;line-height:18px}
+.ids > span{white-space:nowrap}
+.hnote{margin:0 0 8px;font-size:12px;line-height:16px;color:var(--ink-2);overflow-wrap:anywhere}
+.wrap{overflow-wrap:anywhere}
+.bw{overflow-wrap:break-word}
+.pill{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:var(--r-pill);background:var(--t17-blocked);color:var(--c-blocked);font-size:12px;font-weight:500;white-space:nowrap;justify-self:start}
+.kbd{font-family:var(--font-mono);font-size:11px;line-height:16px;padding:0 4px;border-radius:4px;box-shadow:inset 0 0 0 var(--hair) var(--line-1);color:var(--ink-2);white-space:nowrap}
+.link{display:inline-flex;align-items:center;gap:4px;color:var(--ink-1);font-weight:500;text-decoration:none}
+.link .i{color:var(--ink-3)}
+.sec-h{display:flex;align-items:center;gap:8px;font-size:13px;line-height:18px;font-weight:600;color:var(--ink-1);margin:0 0 8px}
+.sec-h .aside{margin-left:auto;font-weight:400;font-size:12px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.box{background:var(--bg-raised);border-radius:var(--r-10);box-shadow:inset 0 0 0 var(--hair) var(--line-2),var(--shadow-1)}
+.list > .li{display:flex;align-items:center;gap:12px;min-height:var(--row);padding:6px 12px;border-top:var(--hair) solid var(--line-3);width:100%}
+.list > .li:first-child{border-top:0}
+.list > .li.on{background:var(--fill-2)}
+.facts{display:grid;grid-template-columns:112px 1fr;row-gap:6px;column-gap:12px;font-size:12px;line-height:16px;margin:0}
+.facts dt{color:var(--ink-3)} .facts dd{margin:0;color:var(--ink-1);min-width:0;overflow-wrap:anywhere}
+.th{font-size:12px;color:var(--ink-3);font-weight:500}
+ol.dec{margin:0;padding-left:16px;font-size:12px;line-height:16px;color:var(--ink-2)}
+ol.dec li{margin-bottom:6px}
+ol.dec.loose li{margin-bottom:8px}
+.ri:not(.on) .g,.li:not(.on) .st .g,.li:not(.on) > .g{opacity:.5}
+/* ---------- board shell ---------- */
+#app{display:grid;grid-template-rows:44px minmax(0,1fr) 28px;height:100vh;background:var(--bg-pane)}
+.bd-top{display:flex;align-items:center;gap:16px;padding:0 16px;background:var(--bg-chrome);border-bottom:var(--hair) solid var(--line-2);min-width:0}
+.mark{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;width:204px;flex:none}
+.crumb{display:flex;align-items:center;gap:8px;color:var(--ink-3);font-size:13px;white-space:nowrap;min-width:0;overflow:hidden}
+.crumb .mono{color:var(--ink-1);overflow:hidden;text-overflow:ellipsis;max-width:240px}
+.tabs{display:flex;gap:4px;margin-left:8px;flex:none}
+.tab{height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border-radius:var(--r-8);color:var(--ink-3);font-weight:500;white-space:nowrap}
+.tab:hover{color:var(--ink-2)}
+.tab.on{color:var(--ink-1);background:var(--fill-1)}
+.health{margin-left:auto;display:flex;align-items:center;gap:16px;font-size:12px;color:var(--ink-3);white-space:nowrap;min-width:0;overflow:hidden}
+.health > *{flex:none}
+.health .counts{gap:12px;color:var(--ink-1);min-width:auto}
+.health .counts .st{color:var(--ink-1)}
+.vsep{width:.5px;height:16px;background:var(--line-1);flex:none}
+.bd-body{display:grid;grid-template-columns:var(--rail) minmax(0,1fr) var(--details);min-height:0}
+#app[data-v="agents"] .bd-body{grid-template-columns:var(--rail) minmax(0,1fr)}
+#app[data-v="evidence"] .bd-body{grid-template-columns:minmax(0,1fr) var(--details)}
+#app[data-v="agents"] #details,#app[data-v="evidence"] #rail{display:none}
+.bd-foot{display:flex;align-items:center;gap:16px;padding:0 16px;background:var(--bg-chrome);border-top:var(--hair) solid var(--line-2);font-size:11px;color:var(--ink-3);white-space:nowrap;overflow:hidden}
+.bd-foot .k{display:inline-flex;gap:6px;align-items:center}
+.bd-foot .end{margin-left:auto}
+.rail{background:var(--bg-rail);border-right:var(--hair) solid var(--line-2);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.rail-scroll{flex:1;min-height:0;overflow-y:auto;padding-bottom:12px}
+.rail-h{display:flex;align-items:center;justify-content:space-between;height:36px;padding:0 16px;font-size:12px;font-weight:500;color:var(--ink-3);flex:none}
+.rail-h .i{color:var(--ink-4)}
+.rail-h .ib{display:flex;align-items:center;justify-content:center;width:24px;height:24px;margin-right:-4px;border-radius:var(--r-4)}
+.rail-h .ib:hover .i{color:var(--ink-2)}
+.ri{display:flex;align-items:center;gap:10px;margin:0 8px;padding:6px 8px;border-radius:var(--r-8);min-height:var(--row);width:calc(100% - 16px)}
+.ri.sm8{padding:4px 8px}
+.ri:hover{background:var(--fill-2)}
+.ri.on{background:var(--fill-1)}
+.ri .t{font-size:13px;line-height:18px;color:var(--ink-1)}
+.ri .t .r{font-size:12px;color:var(--ink-3)}
+.ri .s{font-size:12px;line-height:16px;color:var(--ink-3)}
+.sep{height:var(--hair);background:var(--line-2);margin:8px 16px;flex:none}
+.main{min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
+.main > .pad-end{flex:none;height:24px}
+.details{background:var(--bg-chrome);border-left:var(--hair) solid var(--line-2);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;min-height:0}
+.dpad{padding:16px 20px}
+.dsec{padding:16px 20px;border-top:var(--hair) solid var(--line-2)}
+.sect{padding:20px 32px 0;flex:none}
+.h1{margin:0;font-size:17px;line-height:24px;font-weight:600}
+.note-bad{color:var(--c-blocked)}
+.empty{padding:14px 16px;font-size:13px;color:var(--ink-3)}
+/* case */
+.wv{display:grid;grid-template-columns:16px 64px minmax(0,1fr) 92px 72px 56px;gap:12px;align-items:center;width:100%}
+.wv.sub{grid-template-columns:20px 120px minmax(0,1fr) 92px 72px 56px}
+.wv-wide .wv{grid-template-columns:16px 64px minmax(0,1fr) 148px 72px 56px}
+.wv-wide .wv.sub{grid-template-columns:20px 120px minmax(0,1fr) 148px 72px 56px}
+.dropcell{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.pane.line{flex-direction:row}
+.pane.line .pane-h{flex:1;border-bottom:0}
+.li.subrow{padding-left:40px}
+.li.btn{cursor:pointer}
+.li.btn:hover:not(.on){background:var(--fill-2)}
+.num{text-align:right}
+.cl{display:grid;grid-template-columns:96px minmax(0,1fr);gap:16px;padding:12px 0;border-top:var(--hair) solid var(--line-3)}
+.cl:first-child{border-top:0}
+.clbox .cl.on{background:var(--fill-2);margin:0 -16px;padding-left:16px;padding-right:16px}
+.kind{font-size:12px;color:var(--ink-2)}
+.stmt{font-size:14px;line-height:20px}
+.gate-card{padding:16px;box-shadow:inset 0 0 0 var(--hair) var(--line-1)}
+.gate-card + .gate-card{margin-top:12px}
+.gate-card ol{margin:0 0 10px;padding-left:18px;font-size:13px;line-height:18px;color:var(--ink-1)}
+.gate-card ol li{margin-bottom:4px}
+.screen{background:var(--bg-sunk);border-radius:var(--r-8);box-shadow:inset 0 0 0 var(--hair) var(--line-2);overflow:hidden;position:relative}
+.screen.small{height:96px}
+.screen img{display:block;width:100%;height:auto}
+.screen .scr-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--ink-3);font-size:12px;padding:0 12px;text-align:center}
+.screen.small.has-img{height:auto;aspect-ratio:16/10}
+.screen.small img{height:100%;object-fit:contain;object-position:top center}
+.namebtn{border-radius:var(--r-4)}
+.namebtn:hover{text-decoration:underline;text-decoration-color:var(--ink-4);text-underline-offset:3px}
+/* panes */
+.panes{display:grid;gap:1px;background:var(--line-2);flex:1;min-height:0}
+.pane{background:var(--bg-pane);display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;position:relative}
+.pane-h{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-bottom:var(--hair) solid var(--line-2);font-size:12px;color:var(--ink-3);flex:none;white-space:nowrap;min-width:0}
+.pane-h .t{color:var(--ink-1);font-weight:500;font-size:13px}
+.pane-h .tail{margin-left:auto;padding-left:8px}
+.pane-h > span{overflow:hidden;text-overflow:ellipsis}
+.pane-h .i{color:var(--ink-2)}
+.pane.focus::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 1px var(--accent);pointer-events:none;z-index:2}
+.pane-b{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+.tl{display:grid;grid-template-columns:28px 64px 132px minmax(0,1fr) 56px;gap:12px;align-items:baseline;padding:6px 12px;border-top:var(--hair) solid var(--line-3);font-size:12px;line-height:16px}
+.tl.head{border:0}
+.tl .err{color:var(--c-blocked)}
+.tl .qlink{text-decoration:underline;text-decoration-color:var(--line-1);text-underline-offset:3px}
+.tl .qlink:hover{color:var(--ink-1)}
+.live-meta{display:flex;align-items:center;gap:6px;padding:0 12px 12px;flex:none;min-width:0}
+.live-meta .tail{margin-left:auto;white-space:nowrap}
+/* evidence */
+.tlx{display:grid;grid-template-columns:140px minmax(0,1fr) 128px;align-items:center}
+.tlx .track{position:relative;height:32px;background:linear-gradient(var(--line-3),var(--line-3)) 0 50%/100% .5px no-repeat}
+.tlx .ticks{position:relative;height:24px}
+.tlx .ticks span{position:absolute;top:0;transform:translateX(-50%)}
+.dot{position:absolute;top:13px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--ink-2);padding:0}
+.dot.on{width:10px;height:10px;margin-left:-5px;top:11px;background:var(--accent)}
+.list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(0,1fr) 180px;gap:12px}
+/* toasts */
+#toasts{position:fixed;right:16px;bottom:40px;display:flex;flex-direction:column;gap:8px;z-index:30;pointer-events:none}
+#app[data-v="case"] ~ #toasts,#app[data-v="agent"] ~ #toasts,#app[data-v="evidence"] ~ #toasts{right:336px}
+.toast{width:248px;background:var(--bg-raised);border-radius:var(--r-10);box-shadow:inset 0 0 0 var(--hair) var(--line-1),var(--shadow-2);padding:10px 12px;display:flex;gap:10px;align-items:flex-start;pointer-events:auto;cursor:pointer;text-align:left}
+.toast .g{margin-top:3px}
+@media (prefers-reduced-motion: no-preference){
+ .toast.enter{animation:toast-in var(--dur) var(--ease-sharp)}
+ @keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+}
+/* sheets */
+.scrim{position:fixed;inset:0;background:var(--scrim);z-index:40;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh}
+.sheet{width:min(560px,calc(100vw - 32px));max-height:70vh;display:flex;flex-direction:column;background:var(--bg-raised);border-radius:var(--r-10);box-shadow:inset 0 0 0 var(--hair) var(--line-1),var(--shadow-3);overflow:hidden}
+.sheet-h{display:flex;align-items:center;gap:10px;height:44px;padding:0 16px;border-bottom:var(--hair) solid var(--line-2);flex:none}
+.sheet-h input{flex:1;min-width:0;height:28px;background:transparent;border:0;color:var(--ink-1);font:14px/20px var(--font-sans)}
+.sheet-h input::placeholder{color:var(--ink-4)}
+.sheet-h .i{color:var(--ink-3)}
+.sheet-b{overflow-y:auto;padding:6px 0}
+.sheet-grp{padding:8px 16px 4px;font-size:12px;font-weight:500;color:var(--ink-3)}
+.pr{display:flex;align-items:center;gap:10px;min-height:var(--row);padding:6px 16px;width:100%}
+.pr.on{background:var(--fill-1)}
+.pr.ind{padding-left:40px}
+.pr .meta{margin-left:auto;font-size:12px;color:var(--ink-3);white-space:nowrap;padding-left:8px}
+.keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px;padding:8px 16px 16px}
+.keys h3{grid-column:1/-1;margin:12px 0 4px;font-size:12px;font-weight:500;color:var(--ink-3)}
+.keys .kr{display:flex;align-items:center;gap:10px;min-height:24px;font-size:12px;color:var(--ink-2)}
+.keys .kr .kbd{min-width:44px;text-align:center}
+/* phone */
+.ph-head,.ph-tabs{display:none}
+#app.ph{grid-template-rows:auto minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
+#app.ph .bd-top,#app.ph .bd-foot{display:none}
+#app.ph .ph-head{display:block;padding:8px 16px 12px;border-bottom:var(--hair) solid var(--line-2);background:var(--bg-pane);min-width:0}
+#app.ph .ph-head .row.sm{flex-wrap:wrap;row-gap:4px}
+#app.ph .ph-tabs{display:grid;grid-template-columns:repeat(4,1fr);padding:8px 8px max(28px, env(safe-area-inset-bottom));border-top:var(--hair) solid var(--line-2);background:var(--bg-chrome)}
+.ph-tabs button{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;line-height:16px;color:var(--ink-3)}
+.ph-tabs button.on{color:var(--ink-1)}
+#app.ph .bd-body{display:block;overflow-y:auto;overflow-x:hidden}
+#app.ph .rail,#app.ph .details,#app.ph .main{display:none;overflow:visible;border:0}
+#app.ph[data-v="agents"] .rail{display:flex;background:var(--bg-pane)}
+#app.ph[data-v="agents"] .rail-scroll{overflow:visible}
+#app.ph[data-v="case"] .main,#app.ph[data-v="evidence"] .main,#app.ph[data-v="agent"] .main,#app.ph[data-v="inbox"] .main{display:flex}
+#app.ph[data-v="evidence"] .details,#app.ph[data-v="agent"] .details{display:flex;border-top:var(--hair) solid var(--line-2)}
+#app.ph .sect{padding:16px 16px 0}
+#app.ph .wv{grid-template-columns:16px 56px minmax(0,1fr) 48px}
+#app.ph .wv > :nth-child(4),#app.ph .wv > :nth-child(5){display:none}
+#app.ph .wv.sub{grid-template-columns:20px minmax(0,1fr) auto 48px}
+#app.ph .wv.sub > :nth-child(4){display:none}
+#app.ph .wv.sub > :nth-child(5){display:none}
+#app.ph .cl{grid-template-columns:minmax(0,1fr);gap:4px}
+#app.ph .evr{grid-template-columns:96px minmax(0,1fr)}
+#app.ph .evr > :nth-child(2),#app.ph .evr > :nth-child(3),#app.ph .evr > :nth-child(4),#app.ph .evr > :nth-child(6){display:none}
+#app.ph .tlx{grid-template-columns:96px minmax(0,1fr) 0}
+#app.ph .tlx > :nth-child(3){display:none}
+#app.ph .ag-head{flex-wrap:wrap}
+#app.ph ~ #toasts{right:12px;left:12px;bottom:84px;align-items:stretch}
+#app.ph ~ #toasts .toast{width:auto}
+/* narrow desktop */
+@media (max-width:1100px){
+ #app:not(.ph)[data-v="case"] .bd-body{grid-template-columns:minmax(0,1fr) 280px}
+ #app:not(.ph)[data-v="case"] #rail{display:none}
+ #app:not(.ph)[data-v="agent"] .bd-body{grid-template-columns:200px minmax(0,1fr) 280px}
+ #app:not(.ph)[data-v="evidence"] .bd-body{grid-template-columns:minmax(0,1fr) 280px}
+ #app:not(.ph)[data-v="case"] ~ #toasts,#app:not(.ph)[data-v="agent"] ~ #toasts,#app:not(.ph)[data-v="evidence"] ~ #toasts{right:296px}
+ .mark{width:auto}
+}
+@media (max-width:960px){
+ .mark .mt,#crumb-round{display:none}
+}
+</style>
+</head>
+<body class="t-dark">
+<!-- Icons: Lucide 0.577.0, copied path for path.
+Lucide is under the ISC License. Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2026 as part of
+Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2026. Permission to use, copy,
+modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the
+above copyright notice and this permission notice appear in all copies. THE SOFTWARE IS PROVIDED "AS IS" AND THE
+AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY
+DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+The MIT License (MIT) (for portions derived from Feather). Copyright (c) 2013-2026 Cole Bemis.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright
+notice and this permission notice shall be included in all copies or substantial portions of the Software. THE
+SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+<symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+<symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+<symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+<symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+</svg>
+<div id="app" data-v="case">
+  <header class="bd-top">
+    <div class="mark" id="mark"></div>
+    <div class="crumb"><span class="mono" id="crumb-case"></span><span id="crumb-round"></span></div>
+    <nav class="tabs" id="tabs" aria-label="Views"></nav>
+    <div class="health" id="health" role="status"></div>
+  </header>
+  <div class="ph-head" id="ph-head"></div>
+  <div class="bd-body" id="body">
+    <aside class="rail" id="rail"></aside>
+    <main class="main" id="main" data-sk="main"></main>
+    <aside class="details" id="details" data-sk="details"></aside>
+  </div>
+  <footer class="bd-foot" id="foot"></footer>
+  <nav class="ph-tabs" id="ph-tabs" aria-label="Views"></nav>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<div class="scrim" id="scrim" hidden><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
+<script>
+"use strict";
+(function(){
+const STATE_URL = new URL("/state.json", location.href).href;
+const SVGNS = "http://www.w3.org/2000/svg";
+const LIVE_FRESH_MS = 10000, POLL_MS = 2000, TOAST_MS = 6000;
+const GATE = new Set(["awaiting_approval", "awaiting_review"]);
+const OPEN = new Set(["working", "awaiting_approval", "awaiting_review"]);
+const KINDS = ["blocked", "working", "done", "idle", "dropped"];
+const VIEWS = ["case", "agents", "evidence", "agent", "inbox"];
+const $ = (id) => document.getElementById(id);
+
+let state = null, idx = null, lastKey = null, fetchError = null, prevStates = null;
+const route = {view:"case", agent:null};
+const ui = {caseKey:null, expanded:new Set(), collapsed:new Set(), agentSel:null, paneFocus:0, zoom:false, filter:null,
+  claimSel:-1, evSel:null, evHost:null, evCat:null, footMsg:"", explicitView:false, showAll:new Set(), openText:new Set()};
+
+// ---------- DOM helpers ----------
+function h(tag, cls, text, attrs){
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  for (const k in attrs || {}) if (attrs[k] !== null && attrs[k] !== undefined) n.setAttribute(k, String(attrs[k]));
+  return n;
+}
+function add(p){ for (let i = 1; i < arguments.length; i++){ const c = arguments[i]; if (c !== null && c !== undefined && c !== false) p.appendChild(typeof c === "string" ? document.createTextNode(c) : c); } return p; }
+function sv(tag, attrs){ const n = document.createElementNS(SVGNS, tag); for (const k in attrs || {}) n.setAttribute(k, String(attrs[k])); return n; }
+function clear(n){ while (n.firstChild) n.removeChild(n.firstChild); }
+function icon(id){
+  const s = sv("svg", {class:"i", width:16, height:16, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", "stroke-width":"1.5",
+    "stroke-linecap":"round", "stroke-linejoin":"round", "aria-hidden":"true"});
+  s.appendChild(sv("use", {href:"#i-" + id}));
+  return s;
+}
+function glyph(k){
+  const s = sv("svg", {class:"g g-" + k, width:12, height:12, viewBox:"0 0 12 12", "aria-hidden":"true"});
+  const line = {fill:"none", stroke:"currentColor", "stroke-width":"1.5", "stroke-linecap":"round"};
+  if (k === "blocked") s.appendChild(sv("circle", {cx:6, cy:6, r:4, fill:"currentColor"}));
+  else if (k === "working") s.appendChild(sv("path", Object.assign({d:"M6 1.75a4.25 4.25 0 1 1-4.25 4.25"}, line)));
+  else if (k === "done") s.appendChild(sv("path", Object.assign({d:"M2.25 6.25 4.75 8.75 9.75 3.5", "stroke-linejoin":"round"}, line)));
+  else if (k === "dropped") s.appendChild(sv("path", Object.assign({d:"M2.5 6h7"}, line)));
+  else s.appendChild(sv("circle", {cx:6, cy:6, r:3.25, fill:"none", stroke:"currentColor", "stroke-width":"1.5"}));
+  return s;
+}
+function stEl(k, text, plain){ return add(h("span", plain ? "st" : "st st-" + k), glyph(k), h("span", null, text)); }
+function kbd(keys, label){ return add(h("span", "k"), h("span", "kbd", keys), label); }
+
+// ---------- formatting ----------
+function pad2(n){ return String(n).padStart(2, "0"); }
+function fmtDur(ms){
+  if (ms === null || ms === undefined || !isFinite(ms) || ms < 0) return "\u2014";
+  const s = Math.floor(ms / 1000), hh = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return hh ? hh + ":" + pad2(m) + ":" + pad2(s % 60) : m + ":" + pad2(s % 60);
+}
+function hms(ms){ return ms === null || ms === undefined ? "\u2014" : new Date(ms).toISOString().slice(11, 19); }
+function num(n){ return typeof n === "number" ? n.toLocaleString("en-US") : "\u2014"; }
+function tokShort(n){ if (typeof n !== "number") return "\u2014"; return n < 1000 ? String(n) : n < 1e6 ? (n / 1e3).toFixed(1) + "k" : n < 1e9 ? (n / 1e6).toFixed(2) + "M" : (n / 1e9).toFixed(2) + "B"; }
+function plural(n, word){ return num(n) + " " + word + (n === 1 ? "" : "s"); }
+function isoMs(t){ const v = typeof t === "string" ? Date.parse(t) : NaN; return isNaN(v) ? null : v; }
+function words(s){ return String(s || "").replace(/_/g, " "); }
+function windowText(c){
+  const a = isoMs(c && c.start), b = isoMs(c && c.end);
+  if (a === null || b === null) return null;
+  const da = new Date(a).toISOString(), db = new Date(b).toISOString();
+  return da.slice(0, 10) === db.slice(0, 10) ? da.slice(0, 10) + " " + da.slice(11, 16) + "\u2013" + db.slice(11, 16) + " UTC"
+    : da.slice(0, 10) + " " + da.slice(11, 16) + " \u2013 " + db.slice(0, 10) + " " + db.slice(11, 16) + " UTC";
+}
+function since(el, startMs, baseMs){ el.dataset.since = startMs; el.dataset.base = baseMs || 0; el.textContent = fmtDur(Date.now() - startMs + (baseMs || 0)); return el; }
+
+// ---------- step model ----------
+function kindOf(s){
+  if (GATE.has(s.state)) return "blocked";
+  if (s.state === "working") return "working";
+  if (s.state === "done") return "done";
+  if (s.state === "dropped" || s.state === "stopped") return "dropped";
+  return "idle";
+}
+function stateWords(s){
+  const k = kindOf(s);
+  const retried = (s.handoff_rejections || []).some((r) => r.outcome === "retried");
+  if (k === "blocked") return "blocked \u00b7 " + words(s.state);
+  if (k === "idle") return "idle \u00b7 " + (s.state === "not_reached" ? "not reached" : "pending");
+  if (k === "dropped") return s.state;
+  return k + (retried ? " \u00b7 retried" : "");
+}
+function stepSince(s){
+  const t = s.timing || {};
+  if (!OPEN.has(s.state)) return null;
+  if (t.started_ms !== null && t.started_ms !== undefined) return t.started_ms;
+  const w = idx.waveSpan.get(s.wave);
+  return w && w.open_since_ms !== null && w.open_since_ms !== undefined ? w.open_since_ms : null;
+}
+function timeEl(s, cls){
+  const e = h("span", cls || null), at = stepSince(s), t = s.timing || {};
+  if (at !== null) return since(e, at);
+  e.textContent = s.state === "pending" || s.state === "not_reached" ? "\u2014" : fmtDur(t.duration_ms);
+  return e;
+}
+function rollKind(steps){
+  if (!steps.length) return "idle";
+  if (steps.some((s) => GATE.has(s.state))) return "blocked";
+  if (steps.some((s) => s.state === "working")) return "working";
+  if (steps.every((s) => s.state === "done" || s.state === "dropped" || s.state === "stopped")) return steps.some((s) => s.state === "done") ? "done" : "dropped";
+  return "idle";
+}
+function counts(steps){ const c = {blocked:0, working:0, done:0, idle:0, dropped:0}; for (const s of steps) c[kindOf(s)]++; return c; }
+function roleOf(s){ return s.role || s.profile || ""; }
+function fromLab(){ return state.mode === "tool_driven"; }
+
+function buildIndex(){
+  const steps = state.steps || [];
+  const byId = new Map(steps.map((s) => [s.step_id, s]));
+  const feedBy = new Map((state.feed || []).map((f) => [f.step_id, f]));
+  const claims = [];
+  let verdicts = 0;
+  for (const f of state.feed || []){
+    for (const c of ((f.handoff || {}).claims) || []){ claims.push({c:c, s:byId.get(f.step_id)}); verdicts += (c.verdicts || []).length; }
+  }
+  claims.sort((a, b) => (a.s ? a.s.index : 1e9) - (b.s ? b.s.index : 1e9));
+  const waves = new Map();
+  for (const s of steps){ if (!waves.has(s.wave)) waves.set(s.wave, []); waves.get(s.wave).push(s); }
+  const waveList = Array.from(waves.keys()).sort((a, b) => a - b).map((w) => ({wave:w, steps:waves.get(w)}));
+  const events = ((state.timeline || {}).events) || [];
+  return {byId:byId, feedBy:feedBy, claims:claims, verdicts:verdicts, waveList:waveList,
+    waveSpan:new Map((state.waves || []).map((w) => [w.wave, w])),
+    lanes:new Map((((state.tools || {}).lanes) || []).map((l) => [l.profile, l])),
+    events:events, evById:new Map(events.map((e) => [e.id, e])), team:state.team || []};
+}
+// The claims that cite an event: claims of the counted steps the board lists in event.cited_by.
+function citingClaims(e){
+  const steps = new Set(e.cited_by || []);
+  return idx.claims.filter((x) => x.s && steps.has(x.s.step_id) && (x.c.cited_events || []).includes(e.id));
+}
+function handoff(s){ const f = idx.feedBy.get(s.step_id); return f ? f.handoff : null; }
+function waveOf(n){ return idx.waveList.find((w) => w.wave === n) || null; }
+function nextWave(n){ return idx.waveList.find((w) => w.wave > n) || null; }
+function waveNames(steps){
+  const m = steps.map((s) => /^(.*?)[- ](\d+)$/.exec(s.name || ""));
+  if (steps.length > 2 && m.every((x) => x && x[1] === m[0][1])) return steps[0].name + " \u2013 " + steps[steps.length - 1].name;
+  return steps.map((s) => s.name).join(", ");
+}
+function waveRep(w){
+  return w.steps.find((s) => GATE.has(s.state)) || w.steps.find((s) => s.state === "working")
+    || w.steps.slice().reverse().find((s) => s.state === "done") || w.steps[0];
+}
+function waveWall(w){ return idx.waveSpan.get(w.wave) || {closed_ms:0, open_since_ms:null}; }
+function waveTimeEl(w){
+  const span = waveWall(w), e = h("span", "sm sec num");
+  if (w.steps.some((s) => GATE.has(s.state))){ e.textContent = "open"; return e; }
+  if (span.open_since_ms !== null && span.open_since_ms !== undefined) return since(e, span.open_since_ms, span.closed_ms || 0);
+  e.textContent = w.steps.every((s) => s.state === "pending" || s.state === "not_reached") ? "\u2014" : fmtDur(span.closed_ms || 0);
+  return e;
+}
+function claimCount(steps){ let n = 0, any = false; for (const s of steps) if (typeof s.claims === "number"){ n += s.claims; any = true; } return any ? n : null; }
+function stepCalls(s){
+  const lane = idx.lanes.get(s.profile);
+  if (!lane) return {calls:[], lane:null, shared:[]};
+  const t = s.timing || {}, now = Date.now();
+  if (t.started_ms === null || t.started_ms === undefined) return {calls:[], lane:lane, shared:[]};
+  const end = OPEN.has(s.state) || t.ended_ms === null || t.ended_ms === undefined ? now : t.ended_ms;
+  const calls = lane.entries.filter((e) => { const m = isoMs(e.time); return m !== null && m >= t.started_ms - 1000 && m <= end + 1000; });
+  calls.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  // Tool calls are logged per profile, so a step sharing its profile with an overlapping step may see that step's calls.
+  const shared = (state.steps || []).filter((o) => {
+    const ot = o.timing || {};
+    if (o === s || o.profile !== s.profile || ot.started_ms === null || ot.started_ms === undefined) return false;
+    const oend = OPEN.has(o.state) || ot.ended_ms === null || ot.ended_ms === undefined ? now : ot.ended_ms;
+    return ot.started_ms < end && oend > t.started_ms;
+  });
+  // The board keeps only the newest entries per profile while lane.count counts every call; say when this step predates them.
+  const kept = lane.entries.map((e) => isoMs(e.time)).filter((m) => m !== null), oldest = kept.length ? Math.min(...kept) : null;
+  const cut = lane.count > lane.entries.length && (oldest === null || t.started_ms < oldest) ? {before:oldest, shown:lane.entries.length, total:lane.count} : null;
+  return {calls:calls, lane:lane, shared:shared, cut:cut};
+}
+function cutText(sc){
+  const c = sc.cut;
+  return c ? (c.before !== null ? "Calls before " + hms(c.before) : "Older calls") + " are not kept on the board (" + num(c.shown) + " of " + num(c.total) + " shown)." : null;
+}
+function noCallsText(s, sc){
+  const lab = (state.tools || {}).lab || {};
+  if (!fromLab()) return "Inline input: this hunt used no lab tools.";
+  if (!sc.lane) return "No tool lane for this profile.";
+  if (sc.cut) return cutText(sc);
+  if (sc.lane.count) return "No calls by " + s.profile + " in this step's time window.";
+  if (lab.error) return "None on record for this profile. The lab was unreachable when the board last looked.";
+  return "None on record for this profile.";
+}
+// ---------- live screens (one persistent <img> per profile) ----------
+const screens = new Map();
+function screenFor(profile){
+  if (screens.has(profile)) return screens.get(profile);
+  const box = h("div", "screen"), empty = h("div", "scr-empty");
+  box.appendChild(empty);
+  const c = {profile:profile, box:box, empty:empty, img:null};
+  screens.set(profile, c);
+  return c;
+}
+function liveOwner(profile){ return ((((state.live || {}).owners) || []).find((o) => o.profile === profile)) || null; }
+function browserOf(profile){ return (state.browsers || []).find((b) => b.profile === profile) || null; }
+function liveStatus(profile, now){
+  const o = liveOwner(profile);
+  const team = idx.team.find((m) => m.profile === profile);
+  const running = !!team && (team.open_steps || []).some((x) => x.state === "working");
+  const fresh = !!o && o.last_frame_at !== null && o.last_frame_at !== undefined && now - o.last_frame_at < LIVE_FRESH_MS;
+  if (o && o.attached && running && fresh) return {k:"working", text:"Live \u00b7 " + plural(o.frames, "frame")};
+  if (o && o.last_frame_at !== null && o.last_frame_at !== undefined){
+    const s = Math.max(0, Math.round((now - o.last_frame_at) / 1000));
+    return {k:"idle", text:"Idle \u00b7 last frame " + (s < 90 ? s + " s" : s < 5400 ? Math.round(s / 60) + " min" : Math.round(s / 3600) + " h") + " ago"};
+  }
+  if (o) return {k:"idle", text:o.attached ? "Attached \u00b7 no frame yet" : "Waiting for browser"};
+  return {k:"idle", text:"No screencast"};
+}
+function liveProfile(prefer){
+  if (prefer && (liveOwner(prefer) || browserOf(prefer))) return prefer;
+  const o = (((state.live || {}).owners) || []).find((x) => x.frames > 0);
+  if (o) return o.profile;
+  const b = (state.browsers || []).find((x) => x.action);
+  return b ? b.profile : prefer;
+}
+function updateScreen(c){
+  const o = liveOwner(c.profile), frames = o ? o.frames : 0;
+  if (frames > 0 && !c.img){
+    const src = new URL("/live/" + encodeURIComponent(c.profile) + ".mjpg", location.href).href;
+    const img = h("img", null, null, {alt:"", src:src});
+    // The stream ends when the board restarts or the stream cap is reached; reconnect after a pause.
+    img.addEventListener("error", () => setTimeout(() => img.setAttribute("src", src), 5000));
+    c.box.insertBefore(img, c.empty);
+    c.img = img;
+  }
+  if (c.img) c.img.setAttribute("alt", (o ? o.role : c.profile) + " lab browser, view only");
+  c.box.classList.toggle("has-img", !!c.img);
+  c.empty.hidden = !!c.img;
+  clear(c.empty);
+  add(c.empty, icon("monitor"), !o ? "No live screen for this profile" : o.attached ? "Attached \u00b7 waiting for the first frame" : "Waiting for the lab browser");
+}
+function placeScreen(slot, profile, small){
+  const c = screenFor(profile);
+  c.box.classList.toggle("small", !!small);
+  updateScreen(c);
+  if (c.box.parentNode !== slot) slot.appendChild(c.box);
+  return c;
+}
+function liveNote(profile){
+  if (!state.live) return "Appears when an agent uses lab_browser and the board runs with --hermes-home.";
+  if (!liveOwner(profile)) return "Only the lab-browser profiles stream to the board.";
+  return null;
+}
+function refreshLiveText(){
+  const now = Date.now();
+  document.querySelectorAll("[data-live]").forEach((el) => {
+    const st = liveStatus(el.dataset.live, now), want = st.k + "|" + st.text;
+    if (el.dataset.key === want) return;
+    el.dataset.key = want; clear(el); add(el, stEl(st.k, st.text, true));
+  });
+  for (const c of screens.values()) if (c.box.isConnected) updateScreen(c);
+}
+
+// ---------- shell ----------
+function renderMark(){ const m = $("mark"); if (!m.firstChild) add(m, icon("radar"), h("span", "mt", "Hunt Command")); }
+function renderTop(){
+  const p = (state.run || {}).parent;
+  $("crumb-case").textContent = state.case && state.case.case_id ? state.case.case_id : "case id not supplied";
+  $("crumb-case").title = $("crumb-case").textContent;
+  $("crumb-round").textContent = p ? "round " + (p.round_index || 0) + " of " + (p.rounds || "?") : "round not observed";
+  renderHealth();
+}
+function countsEl(cls){
+  const c = counts(state.steps || []), row = h("span", "row " + (cls || "counts"));
+  for (const k of KINDS) if (c[k]){ const x = stEl(k, c[k] + " " + k); x.dataset.k = k; row.appendChild(x); }
+  if (!(state.steps || []).length) row.appendChild(h("span", "mut", "no steps"));
+  row.title = KINDS.filter((k) => c[k]).map((k) => c[k] + " " + k).join(" \u00b7 ");
+  return row;
+}
+function renderHealth(){
+  const el = $("health"); clear(el);
+  const t = state.temporal || {}, lab = ((state.tools || {}).lab) || {};
+  const cs = countsEl();
+  add(el, cs, h("span", "vsep"));
+  if (fetchError){ const x = stEl("blocked", "Board unreachable", true); x.title = fetchError; el.appendChild(x); }
+  // Temporal can answer while the status query itself fails (for example with no worker); say so instead of "reachable".
+  if (t.reachable && !t.error) el.appendChild(stEl("done", "Temporal reachable", true));
+  else { const x = stEl("blocked", t.reachable ? "Temporal query failed" : "Temporal unreachable", true); x.title = (t.error || "") + (t.last_success_at ? " \u00b7 last answer " + t.last_success_at : " \u00b7 no answer yet"); el.appendChild(x); }
+  if (fromLab()){
+    const x = lab.reachable ? stEl("done", "Lab reachable", true) : stEl("idle", "Lab unreachable", true);
+    if (lab.error) x.title = lab.error;
+    el.appendChild(x);
+  } else el.appendChild(stEl("idle", "Inline input", true));
+  const at = isoMs(t.observed_at);
+  if (at !== null){
+    const d = new Date(at);
+    el.appendChild(h("span", "mono faint", "observed " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()), {title:t.observed_at, "data-drop":"0"}));
+  }
+  // When the bar is crowded, drop the least urgent parts first; the counts row keeps the full roll-up as its title.
+  const crumb = el.parentNode.querySelector(".crumb");
+  const crowded = () => el.scrollWidth > el.clientWidth + 1 || (crumb && crumb.scrollWidth > crumb.clientWidth + 1);
+  const drops = [el.querySelector("[data-drop]")].concat(["idle", "done", "dropped"].map((k) => cs.querySelector('[data-k="' + k + '"]')));
+  for (const x of drops){ if (!crowded()) break; if (x) x.remove(); }
+}
+function renderTabs(){
+  const tabs = $("tabs"), had = tabs.contains(document.activeElement) ? document.activeElement.dataset.view : null;
+  clear(tabs);
+  const ev = effView(), cur = ev === "agent" ? "agents" : ev;
+  for (const [v, ic, label] of [["case", "file-text", "Case"], ["agents", "users", "Agents"], ["evidence", "activity", "Evidence"]]){
+    const b = add(h("button", "tab" + (cur === v ? " on" : ""), null, {type:"button", "data-view":v, "aria-current":cur === v ? "page" : null}), icon(ic), label);
+    b.addEventListener("click", () => go({view:v}));
+    tabs.appendChild(b);
+    // The tabs are rebuilt on every route change; keep keyboard focus on the tab that had it.
+    if (had === v) b.focus();
+  }
+  const pt = $("ph-tabs"); clear(pt);
+  const pc = ev === "agent" ? "agents" : ev;
+  for (const [v, ic, label] of [["inbox", "inbox", "Inbox"], ["agents", "users", "Agents"], ["case", "file-text", "Case"], ["evidence", "activity", "Evidence"]]){
+    const b = add(h("button", pc === v ? "on" : null, null, {type:"button", "aria-current":pc === v ? "page" : null}), icon(ic), label);
+    b.addEventListener("click", () => go({view:v}));
+    pt.appendChild(b);
+  }
+}
+const FOOT = {
+  case:[["j k", "move"], ["enter", "open"], ["1 2 3", "views"], ["/", "search"], ["?", "all keys"]],
+  agents:[["j k", "agent"], ["h l", "pane"], ["z", "zoom pane"], ["b w d i", "filter by state"], ["g", "go to"], ["?", "all keys"]],
+  agent:[["esc", "back to panes"], ["j k", "claim"], ["c", "copy claim id"], ["?", "all keys"]],
+  evidence:[["j k", "event"], ["h", "filter host"], ["c", "category"], ["?", "all keys"]],
+  inbox:[["1 2 3", "views"], ["?", "all keys"]]
+};
+function renderFoot(){
+  const f = $("foot"); clear(f);
+  for (const [k, l] of FOOT[effView()] || FOOT.case) f.appendChild(kbd(k, l));
+  add(f, h("span", "end mono", (ui.footMsg ? ui.footMsg + " \u00b7 " : "") + location.host + " \u00b7 read-only"));
+}
+function flashFoot(msg){ ui.footMsg = msg; renderFoot(); setTimeout(() => { if (ui.footMsg === msg){ ui.footMsg = ""; renderFoot(); } }, 2000); }
+function renderPhoneHead(){
+  const ph = $("ph-head"); clear(ph);
+  add(ph, add(h("div", "row", null, {style:"gap:8px"}), icon("radar"), h("span", "b6", "Hunt Command", {style:"white-space:nowrap"}),
+    h("span", "mono sm mut ell", state.case && state.case.case_id ? state.case.case_id : "", {style:"margin-left:auto;min-width:0", title:state.case && state.case.case_id || ""})));
+  add(ph, add(countsEl("sm"), null)).lastChild.style.cssText = "gap:12px;margin-top:10px";
+}
+function rail(header, aside, onSearch){
+  const r = $("rail");
+  const hd = add(h("div", "rail-h"), h("span", null, header));
+  if (onSearch){ const b = add(h("button", "ib", null, {type:"button", title:"Search (/ or Ctrl K)", "aria-label":"Search"}), icon("search")); b.addEventListener("click", onSearch); hd.appendChild(b); }
+  else if (aside) hd.appendChild(h("span", "xs faint", aside, {style:"font-weight:400"}));
+  r.appendChild(hd);
+  return hd;
+}
+function keepScroll(fn){
+  const pos = new Map();
+  document.querySelectorAll("#app [data-sk]").forEach((n) => pos.set(n.dataset.sk, n.scrollTop));
+  fn();
+  document.querySelectorAll("#app [data-sk]").forEach((n) => { if (pos.has(n.dataset.sk)) n.scrollTop = pos.get(n.dataset.sk); });
+}
+
+// ---------- case ----------
+function caseRows(){
+  const rows = [];
+  for (const w of idx.waveList){
+    const multi = w.steps.length > 1;
+    const open = w.steps.some((s) => OPEN.has(s.state)) || (w.steps.some((s) => s.state === "done") && w.steps.some((s) => s.state === "pending" || s.state === "not_reached"));
+    const sel = ui.caseKey && ui.caseKey.startsWith("s:") && w.steps.some((s) => "s:" + s.step_id === ui.caseKey);
+    const expanded = multi && !ui.collapsed.has(w.wave) && (open || sel || ui.expanded.has(w.wave));
+    rows.push({key:"w:" + w.wave, wave:w, step:waveRep(w), multi:multi, expanded:expanded});
+    if (expanded) for (const s of w.steps) rows.push({key:"s:" + s.step_id, wave:w, step:s, sub:true});
+  }
+  return rows;
+}
+function defaultCaseKey(rows){
+  const pick = (pred) => rows.find((r) => r.sub && pred(r.step)) || rows.find((r) => !r.sub && !r.multi && pred(r.step)) || rows.find((r) => !r.sub && pred(r.step));
+  const lc = state.latest_conclusion;
+  const r = pick((s) => GATE.has(s.state)) || pick((s) => s.state === "working") || (lc ? pick((s) => s.step_id === lc.step_id) : null)
+    || rows.slice().reverse().find((x) => x.step && x.step.state === "done") || rows[0];
+  return r ? r.key : null;
+}
+function caseSelection(){
+  let rows = caseRows();
+  if (!ui.caseKey || !rows.some((r) => r.key === ui.caseKey)){
+    // A selected step whose wave collapsed falls back to its wave row.
+    if (ui.caseKey && ui.caseKey.startsWith("s:")){
+      const s = idx.byId.get(ui.caseKey.slice(2));
+      if (s) ui.caseKey = "w:" + s.wave;
+    }
+    if (!rows.some((r) => r.key === ui.caseKey)) ui.caseKey = defaultCaseKey(rows);
+    rows = caseRows();
+  }
+  const row = rows.find((r) => r.key === ui.caseKey) || null;
+  return {rows:rows, row:row, step:row ? row.step : null};
+}
+function selectCaseStep(s){
+  const w = waveOf(s.wave);
+  if (w && w.steps.length > 1){ ui.collapsed.delete(w.wave); ui.expanded.add(w.wave); ui.caseKey = "s:" + s.step_id; }
+  else ui.caseKey = "w:" + s.wave;
+}
+function renderCaseRail(sel){
+  const r = $("rail"); clear(r);
+  rail("Cases", null, () => openPalette("search"));
+  const p = (state.run || {}).parent, steps = state.steps || [], c = counts(steps), kind = rollKind(steps);
+  const open = idx.waveList.find((w) => w.steps.some((s) => OPEN.has(s.state)));
+  let sub;
+  if (open) sub = ["wave " + open.wave].concat(c.blocked ? [c.blocked + " blocked"] : [], c.working ? [c.working + " working"] : []).join(" \u00b7 ");
+  else if (p){
+    const rd = state.round || {};
+    const wall = rd.started_ms ? (rd.ended_ms || Date.now()) - rd.started_ms : null;
+    sub = words(p.stage || p.last_result || "observed") + (wall !== null ? " \u00b7 " + fmtDur(wall) : "");
+  } else sub = "practice status not observed";
+  add(r, add(h("div", "ri on"), glyph(kind), add(h("div", "grow"), h("div", "t mono ell", state.case && state.case.case_id ? state.case.case_id : "case", {style:"font-size:12px"}), h("div", "s ell", sub))));
+  r.appendChild(h("div", "sep"));
+  const hd = rail("Team", idx.team.length + (idx.team.length === 1 ? " role" : " roles"));
+  hd.style.flex = "none";
+  const list = h("div", "rail-scroll", null, {"data-sk":"rail-team"});
+  for (const m of idx.team){
+    const ms = (m.steps || []).map((i) => state.steps[i]).filter(Boolean);
+    const openStep = (m.open_steps || []).find((x) => GATE.has(x.state)) || (m.open_steps || [])[0];
+    let subText;
+    if (openStep){ const os = idx.byId.get(openStep.step_id); subText = openStep.step_id + " \u00b7 " + (os ? kindOf(os) : words(openStep.state)); }
+    else if (ms.length && ms.every((s) => s.state === "pending" || s.state === "not_reached")) subText = words(ms[0].state === "not_reached" ? "not reached" : "pending");
+    else {
+      // The dropped count goes before the claims, so the narrow rail cuts the claim count, not the drop.
+      const dropped = ms.filter((s) => kindOf(s) === "dropped").length;
+      subText = plural(ms.length, "step") + (dropped ? " \u00b7 " + dropped + " dropped" : "") + " \u00b7 " + plural(m.claims || 0, "claim");
+    }
+    const on = !!sel.step && sel.step.profile === m.profile;
+    const b = add(h("button", "ri" + (on ? " on" : ""), null, {type:"button", title:m.role + " \u00b7 " + m.profile}), h("span", "mg", m.monogram || "?"),
+      add(h("div", "grow"), h("div", "t ell", m.role || m.profile), h("div", "s ell", subText)), glyph(rollKind(ms)));
+    b.addEventListener("click", () => {
+      const pick = (openStep && idx.byId.get(openStep.step_id)) || ms.slice().reverse().find((s) => s.state !== "pending" && s.state !== "not_reached") || ms[0];
+      if (pick){ selectCaseStep(pick); renderView(); }
+    });
+    list.appendChild(b);
+  }
+  r.appendChild(list);
+}
+function claimRow(c, mode, on, key){
+  const ids = c.cited_events || [], meta = [plural(ids.length, "cited event")];
+  if ((c.verdicts || []).length) meta.push(c.verdicts.map((v) => words(v.disposition || "reviewed")).join(", "));
+  if ((c.contradicted_by || []).length) meta.push("contradicted by " + c.contradicted_by.join(", "));
+  if ((c.contradicts || []).length) meta.push("contradicts " + c.contradicts.join(", "));
+  const metaRow = h("div", "row sm mut", null, {style:"gap:16px;margin-top:4px;flex-wrap:wrap"});
+  for (const m of meta) metaRow.appendChild(h("span", "wrap", m));
+  const text = c.statement || "(empty statement)";
+  const stmt = mode === "full" ? h("div", "stmt full", text) : clip(text, mode === "clamp3" ? 3 : 2, "cl:" + (key || c.claim_id || text.slice(0, 40)), "stmt");
+  return add(h("div", "cl" + (on ? " on" : ""), null, {"data-claim":c.claim_id || ""}),
+    add(h("div"), h("div", "kind", c.kind || "no kind"), h("div", "mono xs faint wrap", c.claim_id || "(no claim id)", {style:"margin-top:2px"})),
+    add(h("div", null, null, {style:"min-width:0"}), stmt, metaRow));
+}
+// Clipped text that keyboard users can open: fitClips adds a Show more button once layout shows the text is cut.
+function clip(text, lines, key, cls){
+  const open = ui.openText.has(key);
+  return add(h("div", "clipw", null, {"data-clip":key, "data-lines":lines}), h("div", (cls ? cls + " " : "") + (open ? "full" : "clamp" + lines), text));
+}
+function fitClips(){
+  document.querySelectorAll("#app [data-clip]").forEach((w) => {
+    if (w.querySelector(":scope > .more")) return;
+    const key = w.dataset.clip, t = w.firstChild, cls = "clamp" + w.dataset.lines;
+    if (!ui.openText.has(key) && t.scrollHeight <= t.clientHeight + 1) return;
+    const b = h("button", "more", null, {type:"button"});
+    const sync = () => { const open = ui.openText.has(key); t.classList.toggle("full", open); t.classList.toggle(cls, !open); b.textContent = open ? "Show less" : "Show more"; b.setAttribute("aria-expanded", String(open)); };
+    b.addEventListener("click", (e) => { e.stopPropagation(); if (ui.openText.has(key)) ui.openText.delete(key); else ui.openText.add(key); sync(); });
+    sync();
+    w.appendChild(b);
+  });
+}
+// Toggles that re-render keep keyboard focus on the toggle with the same key.
+function toggleBtn(key, label, onClick){
+  const b = h("button", "more", label, {type:"button", "data-toggle":key, "aria-expanded":String(ui.showAll.has(key))});
+  b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); renderView(); const again = document.querySelector('[data-toggle="' + CSS.escape(key) + '"]'); if (again) again.focus(); });
+  return b;
+}
+function idList(ids, key, cap){
+  const all = ui.showAll.has(key), wrap = h("div", "ids mono sm sec");
+  for (const id of all ? ids : ids.slice(0, cap)) wrap.appendChild(h("span", null, id));
+  const box = add(h("div"), wrap);
+  if (ids.length > cap) box.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + num(ids.length), () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
+  return box;
+}
+// Lines above a step's claims: why its citations are not counted, and cited IDs the board could not find.
+function handoffNotes(s){
+  const f = idx.feedBy.get(s.step_id), out = [];
+  if (!f || !f.handoff) return out;
+  if (f.counted === false){
+    const why = f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
+      : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
+      : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
+      : "Its citations are not counted.";
+    out.push(h("div", "hnote", why));
+  }
+  const unk = f.unknown_cited_ids || [];
+  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"), idList(unk, "unk:" + s.step_id, 24)));
+  return out;
+}
+function noHandoffShort(s){
+  const f = idx.feedBy.get(s.step_id);
+  return f && !f.handoff ? "Handoff not parsed." : s.state === "dropped" || s.state === "stopped" ? "No handoff: " + s.state + "." : "No handoff yet.";
+}
+function noHandoffText(s){
+  const f = idx.feedBy.get(s.step_id);
+  if (f && !f.handoff && f.result_status && f.result_status !== "completed") return "Result " + words(f.result_status) + (f.reason_code ? " (" + f.reason_code + ")" : "") + (f.diagnostic ? ": " + f.diagnostic : ".");
+  if (f && !f.handoff) return "Handoff not parsed: " + (f.parse_error || "unparsed") + (f.output_chars ? " (" + num(f.output_chars) + " characters)." : ".");
+  if (s.state === "working") return "Not posted yet. Claims appear here when " + s.name + " hands off.";
+  if (GATE.has(s.state)) return s.state === "awaiting_review" ? "The handoff waits for human review." : "Waiting for approval to start.";
+  if (s.state === "dropped" || s.state === "stopped") return words(s.state) + " before a handoff" + (s.reason ? ": " + words(s.reason) : "") + (s.result && s.result.diagnostic ? " (" + s.result.diagnostic + ")" : "") + ".";
+  if (s.state === "done") return "No handoff on record.";
+  return "Not reached yet.";
+}
+function gateCard(w){
+  const gated = w.steps.filter((s) => GATE.has(s.state)), s = gated[0], ho = handoff(s), nw = nextWave(w.wave);
+  const span = waveWall(w), at = span.open_since_ms;
+  const card = h("div", "box gate-card");
+  const right = h("span", "sm mut", null, {style:"margin-left:auto;white-space:nowrap"});
+  if (at !== null && at !== undefined) add(right, "open since ", h("span", "mono", hms(at)), " \u00b7 ", since(h("span"), at));
+  add(card, add(h("div", "row", null, {style:"gap:10px"}), glyph("blocked"), h("span", "b6", (w.steps.length > 1 ? "Wave " + w.wave : s.name) + " is waiting on a human gate", {style:"font-size:14px"}), right));
+  const decisions = ho ? ho.requested_decisions || [] : [];
+  // Requested decisions are free text the workflow never checks; only the gate decision releases the next wave.
+  let lead = s.name + " (" + roleOf(s) + ") " + (s.state === "awaiting_review" ? "handed off; the handoff waits for human review." : "waits for approval to start.");
+  if (gated.length > 1) lead += " " + (gated.length - 1) + " more step" + (gated.length > 2 ? "s wait" : " waits") + " in this wave.";
+  if (nw) lead += " " + waveRep(nw).name + " in wave " + nw.wave + " waits for the gate decision.";
+  card.appendChild(h("p", "wrap", lead, {style:"margin:10px 0 10px;font-size:14px;line-height:20px;color:var(--ink-2)"}));
+  if (decisions.length){
+    card.appendChild(h("div", "sm mut", s.name + " also requested " + plural(decisions.length, "decision") + " in its handoff:", {style:"margin:0 0 6px"}));
+    const ol = h("ol"); decisions.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 3, "gd:" + s.step_id + ":" + i)))); card.appendChild(ol);
+  }
+  card.appendChild(add(h("div", "row sm mut", null, {style:"gap:6px"}), icon("arrow-up-right"), "Decide in Hermes \u2192 Human gates. This board is read-only."));
+  return card;
+}
+function waveRowEl(r, on){
+  const w = r.wave, steps = w.steps, gated = steps.some((s) => GATE.has(s.state)), cc = claimCount(steps);
+  const mgs = h("span", "row", null, {style:"gap:4px;flex:none"});
+  for (const m of Array.from(new Set(steps.map((s) => s.monogram)))) mgs.appendChild(h("span", "mg", m || "?"));
+  const names = waveNames(steps);
+  const dropped = steps.filter((s) => kindOf(s) === "dropped").length;
+  const terminal = steps.every((s) => s.state === "done" || kindOf(s) === "dropped");
+  const stepsCell = gated ? add(h("span", "pill"), glyph("blocked"), words(steps.find((s) => GATE.has(s.state)).state))
+    : dropped ? add(h("span", "sm mut dropcell", null, {title:dropped + " of " + plural(steps.length, "step") + " dropped"}),
+      (terminal ? steps.filter((s) => s.state === "done").length + " done" : plural(steps.length, "step")) + " \u00b7 ", glyph("dropped"), dropped + " dropped")
+    : h("span", "sm mut", plural(steps.length, "step"));
+  const wv = add(h("div", "wv"), glyph(rollKind(steps)), h("span", "b5", "Wave " + w.wave),
+    add(h("span", "row", null, {style:"gap:8px"}), mgs, h("span", "ell sec", names, {title:names})),
+    stepsCell,
+    h("span", "sm mut num", gated || cc === null || steps.every((s) => s.state !== "done") ? "" : plural(cc, "claim")),
+    waveTimeEl(w));
+  const li = add(h("div", "li btn" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1", "aria-expanded":r.multi ? String(r.expanded) : null}), wv);
+  li.addEventListener("click", () => { const was = ui.caseKey === r.key; ui.caseKey = r.key; if (r.multi){ if (r.expanded){ ui.expanded.delete(w.wave); ui.collapsed.add(w.wave); } else { ui.collapsed.delete(w.wave); ui.expanded.add(w.wave); } } else if (was) openAgent(r.step); renderView(); });
+  li.addEventListener("dblclick", () => openAgent(r.step));
+  return li;
+}
+function stepRowEl(r, on){
+  const s = r.step;
+  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), stEl(kindOf(s), stateWords(s)), h("span"),
+    h("span", "sm mut num", s.state === "done" && typeof s.claims === "number" ? plural(s.claims, "claim") : ""), timeEl(s, "sm sec num"));
+  const li = add(h("div", "li btn subrow" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1"}), wv);
+  li.addEventListener("click", () => { if (ui.caseKey === r.key) openAgent(s); else { ui.caseKey = r.key; renderView(); } });
+  return li;
+}
+function renderCaseMain(sel){
+  const m = $("main"); clear(m);
+  const p = (state.run || {}).parent, rd = state.round || {}, u = (state.run || {}).usage_total;
+  const errs = state.input_errors || [];
+  if (errs.length) m.appendChild(add(h("div", "sect"), h("div", "sm note-bad wrap", "Input errors: " + errs.join(" \u00b7 "))));
+  const head = h("div", "sect", null, {style:"padding-top:24px"});
+  add(head, add(h("div", "row", null, {style:"gap:10px;margin-bottom:8px"}), h("h1", "h1", "Case question", {style:"flex:none;white-space:nowrap"}),
+    h("span", "mono mut ell", p && p.workflow_id ? p.workflow_id : (state.case && state.case.case_id) || "")));
+  head.appendChild(add(h("div", null, null, {style:"margin:0 0 12px;max-width:880px"}),
+    clip(state.case && state.case.question ? state.case.question : "No question in the input.", 2, "q", "sec stmt")));
+  const facts = h("div", "row sm mut", null, {style:"gap:20px;flex-wrap:wrap"});
+  const wt = windowText(state.case);
+  if (wt) add(facts, add(h("span"), "Window ", h("span", "mono sec", wt)));
+  add(facts, add(h("span"), "Started ", h("span", "mono sec", rd.started_ms ? hms(rd.started_ms) : "\u2014")));
+  const wall = h("span", "sec");
+  if (rd.started_ms && !rd.ended_ms) since(wall, rd.started_ms); else wall.textContent = rd.started_ms ? fmtDur(rd.ended_ms - rd.started_ms) : "\u2014";
+  add(facts, add(h("span"), "Wall ", wall));
+  add(facts, add(h("span"), "Tokens ", h("span", "sec", u ? tokShort(u.total_tokens) : "\u2014")));
+  add(facts, add(h("span"), "Mode ", h("span", "mono sec", state.mode || "\u2014")));
+  head.appendChild(facts);
+  m.appendChild(head);
+
+  const gates = idx.waveList.filter((w) => w.steps.some((s) => GATE.has(s.state)));
+  if (gates.length){
+    const g = h("div", "sect");
+    for (const w of gates) g.appendChild(gateCard(w));
+    m.appendChild(g);
+  } else {
+    const lc = state.latest_conclusion, g = h("div", "sect");
+    const aside = h("span", "aside");
+    if (lc) add(aside, (lc.kind || "claim") + " \u00b7 ", h("span", "mono", lc.claim_id || ""), " \u00b7 " + (lc.role || ""));
+    add(g, add(h("div", "sec-h"), "Latest conclusion", aside));
+    const box = h("div", "box", null, {style:"padding:14px 16px"});
+    box.appendChild(lc ? clip(lc.statement || "(empty statement)", 3, "lc:" + (lc.claim_id || ""), "stmt") : h("div", "mut", "No conclusion yet. The first done step's first claim appears here."));
+    g.appendChild(box);
+    m.appendChild(g);
+  }
+
+  const wsec = h("div", "sect"), steps = state.steps || [], c = counts(steps);
+  const open = idx.waveList.find((w) => w.steps.some((s) => OPEN.has(s.state)));
+  const aside = open ? ["wave " + open.wave].concat(c.blocked ? [c.blocked + " blocked"] : [], c.working ? [c.working + " working"] : [], c.dropped ? [c.dropped + " dropped"] : []).join(" \u00b7 ")
+    : [plural(idx.waveList.length, "wave"), plural(steps.length, "step"), plural(idx.claims.length, "claim"), plural(idx.verdicts, "verdict")].join(" \u00b7 ");
+  add(wsec, add(h("div", "sec-h"), "Waves", h("span", "aside", aside)));
+  const list = h("div", "box list" + (idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) ? " wv-wide" : ""), null, {id:"case-list"});
+  for (const r of sel.rows) list.appendChild(r.sub ? stepRowEl(r, r.key === ui.caseKey) : waveRowEl(r, r.key === ui.caseKey));
+  if (!sel.rows.length) list.appendChild(h("div", "empty", "No steps: the input could not be read."));
+  wsec.appendChild(list);
+  m.appendChild(wsec);
+
+  const s = sel.step;
+  if (s){
+    const ho = handoff(s), csec = h("div", "sect");
+    const ca = h("span", "aside");
+    if (ho) add(ca, plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 disposition " : ""), ho.disposition ? h("span", "mono", ho.disposition) : null);
+    add(csec, add(h("div", "sec-h"), "Claims from " + s.name, ca));
+    for (const n of handoffNotes(s)) csec.appendChild(n);
+    const box = h("div", "box", null, {style:"padding:0 16px"});
+    if (ho && (ho.claims || []).length) ho.claims.forEach((cl, i) => box.appendChild(claimRow(cl, "clamp2", false, s.step_id + ":" + i)));
+    else box.appendChild(h("div", "empty wrap", ho ? "This handoff has no claims." : noHandoffText(s), {style:"padding:14px 0"}));
+    csec.appendChild(box);
+    m.appendChild(csec);
+  }
+  m.appendChild(h("div", "pad-end"));
+}
+function stepHeader(s){
+  const d = h("div", "dpad");
+  const nm = h("button", "b6 namebtn ell", s.name, {type:"button", title:"Open " + s.name, style:"font-size:15px;line-height:22px;max-width:100%"});
+  nm.addEventListener("click", () => openAgent(s));
+  add(d, add(h("div", "row", null, {style:"gap:12px"}), h("span", "mg lg", s.monogram || "?"), add(h("div", "grow"), add(h("div", "row"), nm), h("div", "sm mut ell", roleOf(s)))));
+  add(d, add(h("div", "sm", null, {style:"display:flex;flex-direction:column;gap:4px;margin-top:12px"}), stEl(kindOf(s), stateWords(s)), h("span", "mono mut ell", s.profile || "")));
+  return d;
+}
+function cappedList(key, items, cap, lines, loose){
+  const all = ui.showAll.has(key), ol = h("ol", "dec" + (loose ? " loose" : ""));
+  (all ? items : items.slice(0, cap)).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, lines, key + ":" + i))));
+  const frag = add(h("div"), ol);
+  if (items.length > cap) frag.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + items.length, () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
+  return frag;
+}
+function decisionsSec(s, full){
+  const ho = handoff(s), list = ho ? ho.requested_decisions || [] : [];
+  const sec = h("div", "dsec");
+  add(sec, add(h("div", "sec-h"), "Requested decisions", list.length ? h("span", "aside", String(list.length)) : null));
+  if (!list.length){ sec.appendChild(h("div", "sm mut", ho ? "None requested." : noHandoffShort(s))); return sec; }
+  if (full) sec.appendChild(cappedList("dec:" + s.step_id, list, 3, 3, true));
+  else { const ol = h("ol", "dec"); list.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 2, "dd:" + s.step_id + ":" + i)))); sec.appendChild(ol); }
+  sec.appendChild(h("div", "sm mut", "Requests in the handoff; the workflow does not check them.", {style:"margin-top:4px"}));
+  return sec;
+}
+function liveSec(profile){
+  const sec = add(h("div", "dsec"), h("div", "sec-h", "Live screen"));
+  const slot = h("div");
+  sec.appendChild(slot);
+  placeScreen(slot, profile, true);
+  const o = liveOwner(profile);
+  if (o) sec.appendChild(h("div", "xs", null, {"data-live":profile, style:"margin-top:6px"}));
+  const note = liveNote(profile);
+  if (note) sec.appendChild(h("div", "xs faint", note, {style:"margin-top:6px"}));
+  return sec;
+}
+function renderCaseDetails(sel){
+  const d = $("details"); clear(d);
+  const s = sel.step;
+  if (!s){ d.appendChild(h("div", "dpad mut", "No step selected.")); return; }
+  d.appendChild(stepHeader(s));
+  const gs = add(h("div", "dsec"), h("div", "sec-h", "Gate"));
+  const w = waveOf(s.wave), nw = nextWave(s.wave), span = w ? waveWall(w) : {};
+  if (GATE.has(s.state)){
+    const at = span.open_since_ms !== null && span.open_since_ms !== undefined ? span.open_since_ms : stepSince(s);
+    add(gs, add(h("div", "row", null, {style:"gap:8px"}), stEl("blocked", words(s.state)), at !== null ? add(h("span", "sm mut"), "since ", h("span", "mono", hms(at))) : null));
+    gs.appendChild(add(h("div", "sm mut", null, {style:"margin-top:6px"}), (nw ? "Wave " + nw.wave + " waits for the gate decision. " : "The hunt waits for the gate decision. ") + "Decide in Hermes ", h("span", "sec", "\u2192 Human gates"), "."));
+  } else {
+    const other = idx.waveList.find((x) => x.steps.some((y) => GATE.has(y.state)));
+    const t = h("div", "sm mut");
+    if (s.state === "pending" || s.state === "not_reached") t.textContent = "No open gate. Wave " + s.wave + " not reached.";
+    else if (span.open_since_ms !== null && span.open_since_ms !== undefined) t.textContent = "No open gate. Wave " + s.wave + " is running.";
+    else add(t, "No open gate. Wave " + s.wave + " closed after ", h("span", "mono sec", fmtDur(span.closed_ms || 0)), ".");
+    if (other && other.wave !== s.wave) t.appendChild(document.createTextNode(" Wave " + other.wave + " waits on a human gate."));
+    gs.appendChild(t);
+  }
+  d.appendChild(gs);
+  d.appendChild(decisionsSec(s, false));
+  d.appendChild(liveSec(s.profile));
+  d.appendChild(runSec(s));
+}
+function runSec(s){
+  const ho = handoff(s), t = s.timing || {}, u = s.usage;
+  const dl = h("dl", "facts");
+  const fact = (k, v, cls) => { add(dl, h("dt", null, k)); const dd = h("dd", cls || null); if (typeof v === "string") dd.textContent = v; else add(dd, v); dl.appendChild(dd); };
+  fact("Wave", s.wave + (s.optional ? " \u00b7 optional" : ""));
+  fact("Started \u00b7 ended", (t.started_ms ? hms(t.started_ms) : "\u2014") + " \u00b7 " + (t.ended_ms ? hms(t.ended_ms) : "\u2014"), "mono");
+  const durEl = h("span");
+  if (OPEN.has(s.state) && t.started_ms) since(durEl, t.started_ms); else durEl.textContent = OPEN.has(s.state) ? "\u2014" : fmtDur(t.duration_ms);
+  fact("Duration", add(h("span"), durEl, " \u00b7 " + plural(t.attempts || 0, "attempt")));
+  fact("Tokens", u ? num(u.total_tokens) : "\u2014");
+  fact("Input \u00b7 output", u ? num(u.input_tokens) + " \u00b7 " + num(u.output_tokens) : "\u2014");
+  fact("Disposition", ho && ho.disposition ? ho.disposition : "\u2014", "mono");
+  fact("Limitations", ho ? String((ho.limitations || []).length) : "\u2014");
+  const sc = stepCalls(s);
+  fact("Tool calls", sc.calls.length ? plural(sc.calls.length, "call") + (sc.calls.some((e) => e.error) ? " \u00b7 " + plural(sc.calls.filter((e) => e.error).length, "error") : "") : (sc.lane ? num(sc.lane.count) : "0") + " on record");
+  if (s.reason) fact("Reason", words(s.reason));
+  if (s.result && s.result.diagnostic) fact("Diagnostic", s.result.diagnostic);
+  if ((s.handoff_rejections || []).length) fact("Rejected handoffs", s.handoff_rejections.map((r) => r.reason || r.outcome || "rejected").join("; "));
+  return add(h("div", "dsec"), h("div", "sec-h", "Run"), dl);
+}
+
+// ---------- agents ----------
+function agentOrder(){
+  const steps = (state.steps || []).slice();
+  const kinds = new Set(steps.map(kindOf));
+  if (kinds.size <= 1) return {list:steps, grouped:false};
+  const rank = {blocked:0, working:1, done:2, idle:3, dropped:4};
+  steps.sort((a, b) => {
+    const ka = kindOf(a), kb = kindOf(b);
+    if (ka !== kb) return rank[ka] - rank[kb];
+    if (ka === "done") return ((b.timing || {}).ended_ms || 0) - ((a.timing || {}).ended_ms || 0) || b.index - a.index;
+    return a.index - b.index;
+  });
+  return {list:steps, grouped:true};
+}
+function agentList(){ const o = agentOrder(); return {list:ui.filter ? o.list.filter((s) => kindOf(s) === ui.filter) : o.list, grouped:o.grouped}; }
+function agentSub(s, grouped){
+  const k = kindOf(s);
+  if (!grouped){
+    const f = idx.feedBy.get(s.step_id);
+    return "wave " + s.wave + " \u00b7 " + (f && !f.handoff && f.parse_error ? "handoff not parsed" : typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
+  }
+  if (k === "working" || k === "done") return add(h("span"), k + " \u00b7 ", timeEl(s));
+  if (k === "dropped") return s.state + " \u00b7 " + (s.reason ? words(s.reason) : s.profile);
+  return stateWords(s);
+}
+function renderAgentRail(selId){
+  const r = $("rail"); clear(r);
+  const o = agentList(), all = state.steps || [];
+  const uniform = new Set(all.map(kindOf));
+  const aside = ui.filter ? ui.filter + " only" : uniform.size === 1 && all.length ? all.length + " \u00b7 all " + kindOf(all[0]) : "by state";
+  rail("Agents", aside);
+  const list = h("div", "rail-scroll", null, {"data-sk":"rail-agents", role:"listbox", "aria-label":"Agents"});
+  for (const s of o.list){
+    const on = s.step_id === selId;
+    const sub = agentSub(s, o.grouped);
+    const b = add(h("button", "ri sm8" + (on ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(on), "data-step":s.step_id, title:s.name + " \u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s)}),
+      glyph(kindOf(s)), add(h("div", "grow"), add(h("div", "t ell"), s.name + " ", h("span", "r", "\u00b7 " + (s.monogram || ""))), add(h("div", "s ell"), sub)));
+    b.addEventListener("click", () => {
+      if (effView() === "agent" || phone()) openAgent(s);
+      else { ui.agentSel = s.step_id; ui.paneFocus = 0; renderView(); }
+    });
+    b.addEventListener("dblclick", () => openAgent(s));
+    list.appendChild(b);
+  }
+  if (!o.list.length) list.appendChild(h("div", "empty", ui.filter ? "No " + ui.filter + " agents. Press " + ui.filter.charAt(0) + " again to clear." : "No steps: the input could not be read."));
+  r.appendChild(list);
+}
+function agentsSel(){
+  const o = agentList();
+  if (!ui.agentSel || !o.list.some((s) => s.step_id === ui.agentSel)) ui.agentSel = o.list.length ? o.list[0].step_id : null;
+  return ui.agentSel ? idx.byId.get(ui.agentSel) : null;
+}
+function callsTable(calls){
+  const wrap = h("div", null, null, {style:"padding:0 4px"});
+  wrap.appendChild(add(h("div", "tl th head"), h("span", null, "#"), h("span", null, "Time"), h("span", null, "Tool"), h("span", null, "Query"), h("span", "num", "Rows")));
+  calls.forEach((e, i) => {
+    const t = isoMs(e.time), n = e.total !== null && e.total !== undefined ? e.total : e.result_count;
+    const rows = e.error ? h("span", "mono err num", "error", {title:e.error}) : h("span", "mono num", n === null || n === undefined ? "\u2014" : num(n));
+    const q = e.query || "(no query)";
+    const ark = typeof e.arkime_ui_url === "string" && /^http:\/\/127\.0\.0\.1:\d+\//.test(e.arkime_ui_url) ? e.arkime_ui_url : null;
+    const qEl = ark ? h("a", "mono sec ell qlink", q, {href:ark, target:"_blank", rel:"noopener noreferrer", title:"Open in Arkime: " + q}) : h("span", "mono sec ell", q, {title:q});
+    wrap.appendChild(add(h("div", "tl"), h("span", "mono faint", String(i + 1)), h("span", "mono mut", t ? hms(t) : (e.time || "\u2014"), {title:e.time || ""}),
+      h("span", "mono ell", e.tool, {title:e.endpoint || e.tool}), qEl, rows));
+  });
+  return wrap;
+}
+function agentPane(s, full, focus){
+  const pane = h("section", "pane" + (focus ? " focus" : ""), null, {"data-pane":"agent", "data-step":s.step_id});
+  const nm = h("button", "t namebtn", s.name, {type:"button", title:"Open " + s.name});
+  nm.addEventListener("click", (e) => { e.stopPropagation(); openAgent(s); });
+  const desc = add(h("span"), "\u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s));
+  if (OPEN.has(s.state) && stepSince(s) !== null) add(desc, " ", timeEl(s));
+  add(pane, add(h("div", "pane-h"), glyph(kindOf(s)), nm, desc, h("span", "mono tail", s.profile || "")));
+  const body = h("div", "pane-b", null, {"data-sk":"pane-" + (full ? "a-" : "b-") + s.step_id});
+  const sc = stepCalls(s), lane = sc.lane;
+  if (full){
+    const aside = sc.calls.length ? plural(sc.calls.length, "call") + " \u00b7 " + plural(sc.calls.filter((e) => e.error).length, "error") + (lane && lane.active && OPEN.has(s.state) ? " \u00b7 active" : "") : "";
+    body.appendChild(add(h("div", null, null, {style:"padding:16px 16px 8px"}), add(h("div", "sec-h"), "Tool calls", h("span", "aside", aside))));
+    body.appendChild(sc.calls.length ? callsTable(sc.calls) : h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:0 16px"}));
+    if (sc.calls.length && sc.shared.length) body.appendChild(h("div", "xs faint wrap", "Calls are logged per profile; " + sc.shared.map((o) => o.name).join(", ") + " overlapped this step, so some calls may be theirs.", {style:"padding:6px 16px 0"}));
+    if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 16px 0"}));
+    const ho = handoff(s), hs = h("div", null, null, {style:"padding:20px 16px 8px"});
+    const ha = h("span", "aside");
+    if (ho) add(ha, plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " : ""), ho.disposition ? h("span", "mono", ho.disposition) : null);
+    add(hs, add(h("div", "sec-h"), "Handoff", ha));
+    for (const n of handoffNotes(s)) hs.appendChild(n);
+    if (ho && (ho.claims || []).length){ const box = h("div"); ho.claims.forEach((c, i) => box.appendChild(claimRow(c, focus ? "full" : "clamp2", false, s.step_id + ":" + i))); hs.appendChild(box); }
+    else hs.appendChild(h("div", "sm mut wrap", ho ? "This handoff has no claims." : s.state === "working" ? "Not posted yet. Claims appear here when " + s.name + " hands off" + (nextWave(s.wave) ? " to wave " + nextWave(s.wave).wave : "") + "." : noHandoffText(s)));
+    body.appendChild(hs);
+  } else {
+    body.style.padding = "8px 4px";
+    if (sc.calls.length) body.appendChild(callsTable(sc.calls));
+    else body.appendChild(h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:6px 12px"}));
+    if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 12px 0"}));
+    const ho = handoff(s);
+    body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") : noHandoffText(s), {style:"padding:12px 12px 6px"}));
+  }
+  pane.appendChild(body);
+  return pane;
+}
+function livePane(profile, focus, line){
+  const pane = h("section", "pane" + (focus ? " focus" : "") + (line ? " line" : ""), null, {"data-pane":"live"});
+  // Nothing streams for this profile: one line, and no stream path that would only 404.
+  if (line){ add(pane, add(h("div", "pane-h", null, {title:liveNote(profile) || ""}), icon("monitor"), h("span", "t", "Live screen"), h("span", null, "\u00b7 No live screen for this profile"))); return pane; }
+  const b = browserOf(profile), a = b && b.action;
+  add(pane, add(h("div", "pane-h"), icon("monitor"), h("span", "t", "Live screen"),
+    h("span", null, "\u00b7 " + (profile || "no profile") + (a ? " \u00b7 lab_browser " + a.action : "")),
+    h("span", "mono tail", profile ? "/live/" + profile + ".mjpg" : "")));
+  const slot = h("div", null, null, {style:"padding:12px;flex:1;min-height:0;display:flex;flex-direction:column"});
+  const c = placeScreen(slot, profile, false);
+  c.box.style.flex = "1"; c.box.style.minHeight = "0";
+  pane.appendChild(slot);
+  const meta = add(h("div", "live-meta sm mut"), icon("monitor"), h("span", "ell", "View only. The board does not take control of the lab browser."));
+  if (liveOwner(profile)) meta.appendChild(h("span", "tail xs", null, {"data-live":profile}));
+  pane.appendChild(meta);
+  if (a){
+    const line = [a.verb ? a.verb.charAt(0).toUpperCase() + a.verb.slice(1) : a.action, a.query || a.detail || "", a.submitted ? "+ Enter" : "", a.ok ? "" : "refused" + (a.error ? ": " + a.error : ""),
+      b.api && (b.api.total !== null || b.api.result_count !== null) ? "returned " + num(b.api.total !== null ? b.api.total : b.api.result_count) + " via " + b.api.tool : "", hms(a.t_ms) + " UTC"].filter(Boolean).join(" \u00b7 ");
+    pane.appendChild(h("div", "xs faint ell", line, {style:"padding:0 12px 12px;margin-top:-6px", title:line}));
+  } else {
+    const note = liveNote(profile);
+    if (note) pane.appendChild(h("div", "xs faint", note, {style:"padding:0 12px 12px;margin-top:-6px"}));
+  }
+  return pane;
+}
+function paneModel(){
+  const focus = agentsSel();
+  if (!focus) return [];
+  const o = agentList().list.filter((s) => s.step_id !== focus.step_id);
+  const second = o.find((s) => s.state === "working") || o.find((s) => OPEN.has(s.state)) || o[0] || null;
+  const panes = [{type:"agent", step:focus}, {type:"live", profile:liveProfile(focus.profile)}];
+  if (second) panes.push({type:"agent", step:second});
+  return panes;
+}
+function renderAgentsMain(){
+  const m = $("main"); clear(m);
+  const model = paneModel();
+  if (!model.length){ m.appendChild(h("div", "empty", ui.filter ? "No " + ui.filter + " agents." : "No steps: the input could not be read.")); return; }
+  if (ui.paneFocus >= model.length) ui.paneFocus = 0;
+  const grid = h("div", "panes");
+  const live = model.find((p) => p.type === "live"), line = !!live && !liveOwner(live.profile) && !browserOf(live.profile);
+  const els = model.map((p, i) => p.type === "live" ? livePane(p.profile, i === ui.paneFocus, line) : agentPane(p.step, i === 0, i === ui.paneFocus));
+  els.forEach((el, i) => el.addEventListener("mousedown", () => { if (ui.paneFocus !== i){ ui.paneFocus = i; document.querySelectorAll(".pane.focus").forEach((x) => x.classList.remove("focus")); el.classList.add("focus"); } }));
+  if (ui.zoom){ grid.style.gridTemplate = (line && model[ui.paneFocus].type === "live" ? "36px" : "1fr") + " / 1fr"; grid.appendChild(els[ui.paneFocus]); }
+  else if (els.length === 3){
+    grid.style.gridTemplateColumns = "1fr 1fr"; grid.style.gridTemplateRows = line ? "36px minmax(0,1fr)" : "1.25fr 1fr";
+    els[0].style.gridRow = "1 / 3";
+    add(grid, els[0], els[1], els[2]);
+  } else if (line){ grid.style.gridTemplate = "36px minmax(0,1fr) / 1fr"; add(grid, els[1], els[0]); }
+  else { grid.style.gridTemplateColumns = "1fr 1fr"; add(grid, els[0], els[1]); }
+  m.appendChild(grid);
+}
+
+// ---------- agent focus ----------
+function renderAgentMain(s){
+  const m = $("main"); clear(m);
+  const ho = handoff(s), u = s.usage, t = s.timing || {};
+  const head = h("div", null, null, {style:"padding:20px 32px 16px;border-bottom:var(--hair) solid var(--line-2);flex:none"});
+  const back = h("button", null, "Agents", {type:"button"});
+  back.addEventListener("click", () => go({view:"agents"}));
+  add(head, add(h("div", "row sm mut", null, {style:"gap:6px;margin-bottom:12px"}), back, icon("chevron-right"), h("span", "sec ell", s.name, {title:s.name})));
+  const durEl = h("span", "sec");
+  if (OPEN.has(s.state) && t.started_ms) since(durEl, t.started_ms); else durEl.textContent = fmtDur(OPEN.has(s.state) ? null : t.duration_ms);
+  const right = add(h("div", "row sm", null, {style:"margin-left:auto;gap:4px 24px;flex-wrap:wrap"}), stEl(kindOf(s), stateWords(s)),
+    add(h("span", "mut"), "Duration ", durEl), add(h("span", "mut"), "Tokens ", h("span", "sec", u ? num(u.total_tokens) : "\u2014")),
+    add(h("span", "mut"), "Claims ", h("span", "sec", typeof s.claims === "number" ? String(s.claims) : "\u2014")),
+    add(h("span", "mut"), "Disposition ", h("span", "mono sec", ho && ho.disposition ? ho.disposition : "\u2014")));
+  const who = add(h("div", "sm mut bw"), roleOf(s) + " \u00b7 ", h("span", "mono", s.profile || ""), " \u00b7 wave " + s.wave + (s.optional ? " \u00b7 optional" : ""));
+  add(head, add(h("div", "row ag-head", null, {style:"gap:12px"}), h("span", "mg lg", s.monogram || "?"),
+    add(h("div", null, null, {style:"max-width:60%"}), h("div", "b6 bw", s.name, {style:"font-size:17px;line-height:24px"}), who), right));
+  m.appendChild(head);
+
+  const sec = h("div", "sect", null, {style:"padding-top:16px"});
+  const claims = ho ? ho.claims || [] : [];
+  const kinds = new Map();
+  for (const c of claims) kinds.set(c.kind || "no kind", (kinds.get(c.kind || "no kind") || 0) + 1);
+  const cited = claims.reduce((n, c) => n + (c.cited_events || []).length, 0), vd = claims.reduce((n, c) => n + (c.verdicts || []).length, 0);
+  const aside = ho ? Array.from(kinds, ([k, n]) => n + " " + k).concat([plural(cited, "cited event"), plural(vd, "verdict")]).join(" \u00b7 ") : "";
+  add(sec, add(h("div", "sec-h"), "Claims", h("span", "aside", aside)));
+  for (const n of handoffNotes(s)) sec.appendChild(n);
+  const box = h("div", "box clbox", null, {style:"padding:0 16px"});
+  if (claims.length){
+    if (ui.claimSel >= claims.length) ui.claimSel = claims.length - 1;
+    claims.forEach((c, i) => { const el = claimRow(c, "full", i === ui.claimSel); el.addEventListener("click", () => { ui.claimSel = i; markClaim(); }); box.appendChild(el); });
+  } else {
+    box.appendChild(h("div", "empty wrap", ho ? "This handoff has no claims." : noHandoffText(s), {style:"padding:14px 0"}));
+    const f = idx.feedBy.get(s.step_id);
+    if (f && f.raw_excerpt) box.appendChild(h("pre", "mono sec", f.raw_excerpt, {style:"white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 14px;font-size:12px;line-height:16px"}));
+  }
+  sec.appendChild(box);
+  m.appendChild(sec);
+  const reviews = ho ? ho.reviews || [] : [];
+  if (reviews.length){
+    const rs = add(h("div", "sect"), add(h("div", "sec-h"), "Reviews", h("span", "aside", String(reviews.length))));
+    const rb = h("div", "box", null, {style:"padding:0 16px"});
+    for (const rv of reviews) rb.appendChild(add(h("div", "cl"), add(h("div"), h("div", "kind", words(rv.disposition || "review")), h("div", "mono xs faint wrap", rv.review_id || "", {style:"margin-top:2px"})),
+      add(h("div", null, null, {style:"min-width:0"}), h("div", "stmt full", rv.rationale || ""), h("div", "sm mut wrap", "names " + (rv.claim_ids || []).join(", "), {style:"margin-top:4px"}))));
+    rs.appendChild(rb); m.appendChild(rs);
+  }
+  if (!ho || OPEN.has(s.state)){
+    const sc = stepCalls(s);
+    if (sc.calls.length){
+      const ts = add(h("div", "sect"), add(h("div", "sec-h"), "Tool calls", h("span", "aside", plural(sc.calls.length, "call"))));
+      ts.appendChild(add(h("div", "box", null, {style:"padding:4px 0"}), callsTable(sc.calls)));
+      if (sc.cut) ts.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"margin-top:6px"}));
+      m.appendChild(ts);
+    }
+  }
+  m.appendChild(h("div", "pad-end"));
+}
+function markClaim(){
+  const els = document.querySelectorAll("#main .clbox .cl");
+  els.forEach((el, i) => el.classList.toggle("on", i === ui.claimSel));
+  if (els[ui.claimSel]) els[ui.claimSel].scrollIntoView({block:"nearest", behavior:"instant"});
+}
+function renderAgentDetails(s){
+  const d = $("details"); clear(d);
+  const ho = handoff(s), u = s.usage, t = s.timing || {};
+  const lim = ho ? ho.limitations || [] : [];
+  const ls = add(h("div", "dpad"), add(h("div", "sec-h"), "Limitations", lim.length ? h("span", "aside", String(lim.length)) : null));
+  if (lim.length) ls.appendChild(cappedList("lim:" + s.step_id, lim, 4, 3, true));
+  else ls.appendChild(h("div", "sm mut", ho ? "None stated." : noHandoffShort(s)));
+  d.appendChild(ls);
+  d.appendChild(decisionsSec(s, true));
+  const dl = h("dl", "facts");
+  const fact = (k, v, cls) => add(dl, h("dt", null, k), h("dd", cls || null, v));
+  fact("Input", u ? num(u.input_tokens) : "\u2014"); fact("Output", u ? num(u.output_tokens) : "\u2014");
+  fact("Cache read", u ? num(u.cache_read_tokens) : "\u2014"); fact("Cache write", u ? num(u.cache_write_tokens) : "\u2014");
+  fact("Started \u00b7 ended", (t.started_ms ? hms(t.started_ms) : "\u2014") + " \u00b7 " + (t.ended_ms ? hms(t.ended_ms) : "\u2014"), "mono");
+  if ((t.attempts || 0) > 1) fact("Attempts", String(t.attempts));
+  d.appendChild(add(h("div", "dsec"), h("div", "sec-h", "Usage"), dl));
+  const sc = stepCalls(s), ts = add(h("div", "dsec"), add(h("div", "sec-h"), "Tool calls", sc.calls.length ? h("span", "aside", plural(sc.calls.length, "call")) : null));
+  if (!sc.calls.length) ts.appendChild(h("div", "sm mut wrap", noCallsText(s, sc)));
+  else {
+    const list = h("div", "list sm");
+    for (const e of sc.calls.slice(-8)){
+      const n = e.total !== null && e.total !== undefined ? e.total : e.result_count, tm = isoMs(e.time);
+      list.appendChild(add(h("div", "li", null, {style:"padding:6px 0;gap:10px"}), h("span", "mono mut", tm ? hms(tm) : "\u2014"), h("span", "mono ell grow", e.tool, {title:e.query || ""}),
+        h("span", e.error ? "mono err" : "mono sec", e.error ? "error" : n === null || n === undefined ? "\u2014" : num(n), {title:e.error || ""})));
+    }
+    ts.appendChild(list);
+    if (sc.cut) ts.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"margin-top:6px"}));
+  }
+  d.appendChild(ts);
+  if (liveOwner(s.profile) || browserOf(s.profile)) d.appendChild(liveSec(s.profile));
+}
+
+// ---------- evidence ----------
+function evFiltered(){ return idx.events.filter((e) => (!ui.evHost || e.host === ui.evHost) && (!ui.evCat || e.category === ui.evCat)); }
+function evSelected(list){
+  if (!list.length){ ui.evSel = null; return null; }
+  if (!ui.evSel || !list.some((e) => e.id === ui.evSel)) ui.evSel = list[0].id;
+  return idx.evById.get(ui.evSel);
+}
+function renderEvidenceMain(sel, list){
+  const m = $("main"); clear(m);
+  const tl = state.timeline || {}, hosts = (tl.lanes || []).filter((x) => x !== null);
+  const head = h("div", "sect");
+  add(head, add(h("div", "row", null, {style:"gap:12px;margin-bottom:4px;flex-wrap:wrap"}), h("h1", "h1", "Evidence"),
+    h("span", "sm mut", [plural(idx.events.length, fromLab() ? "looked-up event" : "event"), plural(hosts.length, "host"), windowText(state.case) || ""].filter(Boolean).join(" \u00b7 "))));
+  head.appendChild(h("p", "sm mut", fromLab() ? "Only events the lab looked up for cited claims. Missing events stay listed as pending, not hidden." : "Events from the supplied input.", {style:"margin:0 0 16px"}));
+  head.appendChild(h("div", "sec-h", "Timeline by host"));
+  const box = h("div", "box", null, {style:"padding:8px 0"});
+  const t0 = tl.start_ms, t1 = tl.end_ms;
+  const ticks = h("div", "ticks");
+  if (t0 !== null && t0 !== undefined && t1 > t0){
+    const span = t1 - t0, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
+    const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9)) || steps[steps.length - 1];
+    for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t1; x += stepMs) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16), {style:"left:" + ((x - t0) / span * 100) + "%"}));
+  }
+  box.appendChild(add(h("div", "tlx", null, {style:"height:24px;align-items:start"}), h("span", "th", "Host", {style:"padding-left:12px"}), ticks, h("span")));
+  const byHost = new Map();
+  for (const e of idx.events){ const k = e.host || "(no host)"; if (!byHost.has(k)) byHost.set(k, []); byHost.get(k).push(e); }
+  for (const [host, evs] of Array.from(byHost).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))){
+    const track = h("div", "track");
+    if (t0 !== null && t0 !== undefined && t1 > t0) for (const e of evs){
+      if (e.t_ms === null || e.t_ms < t0 || e.t_ms > t1) continue;
+      const on = sel && e.id === sel.id;
+      const dot = h("button", "dot" + (on ? " on" : ""), null, {type:"button", title:e.id + " \u00b7 " + (e.summary || ""), "aria-label":e.id, style:"left:" + ((e.t_ms - t0) / (t1 - t0) * 100) + "%"});
+      dot.addEventListener("click", () => { ui.evSel = e.id; renderView(); });
+      track.appendChild(dot);
+    }
+    box.appendChild(add(h("div", "tlx", null, {style:"height:32px;border-top:var(--hair) solid var(--line-3)" + (ui.evHost && ui.evHost !== host ? ";opacity:.4" : "")}),
+      h("span", "mono sec ell", host, {style:"font-size:12px;padding-left:12px", title:host}), track, h("span", "sm mut", plural(evs.length, "event"), {style:"padding-left:12px"})));
+  }
+  if (!byHost.size) box.appendChild(add(h("div", "tlx", null, {style:"height:32px;border-top:var(--hair) solid var(--line-3)"}), h("span", "sm mut", "No events", {style:"padding-left:12px"}), h("div", "track"), h("span")));
+  head.appendChild(box);
+  m.appendChild(head);
+
+  const es = h("div", "sect");
+  const pend = (state.pending_event_ids || []).length;
+  const filt = [ui.evHost ? "host " + ui.evHost : "", ui.evCat ? "category " + ui.evCat : ""].filter(Boolean);
+  add(es, add(h("div", "sec-h"), "Events", h("span", "aside", filt.concat(["sorted by time", pend + " pending"]).join(" \u00b7 "))));
+  const lb = h("div", "box list", null, {id:"ev-list"});
+  lb.appendChild(add(h("div", "li evr"), h("span", "th", "Time UTC"), h("span", "th", "Event"), h("span", "th", "Host"), h("span", "th", "Category"), h("span", "th", "Summary"), h("span", "th", "Cited by")));
+  for (const e of list){
+    const on = sel && e.id === sel.id, cc = citingClaims(e), cites = (cc.length ? cc.map((x) => x.c.claim_id || "?") : e.cited_by || []).join(", ");
+    const row = add(h("div", "li evr btn" + (on ? " on" : ""), null, {"data-ev":e.id, role:"button", tabindex:"-1"}),
+      h("span", "mono sm sec", e.timestamp ? e.timestamp.slice(11, 23) : "\u2014"), h("span", "mono sm ell", e.id), h("span", "mono sm sec ell", e.host || "\u2014", {title:e.host || ""}),
+      h("span", "sm sec ell", e.category || ""), h("span", "ell", e.summary || e.message || "", {title:e.summary || e.message || ""}), h("span", "mono sm mut ell", cites || "\u2014", {title:cites}));
+    row.addEventListener("click", () => { ui.evSel = e.id; renderView(); });
+    lb.appendChild(row);
+  }
+  if (!list.length){
+    const lab = ((state.tools || {}).lab) || {};
+    let why;
+    if (idx.events.length) why = "No events match the filter. Press h or c to change it.";
+    else if (!fromLab()) why = "The supplied input has no events.";
+    else if (lab.error) why = "The lab was unreachable when the board last looked, so cited events were not looked up." + (pend ? " " + plural(pend, "cited event") + " pending." : "");
+    else why = pend ? plural(pend, "cited event") + " waiting for lookup." : "No claim has cited an event yet.";
+    lb.appendChild(h("div", "empty wrap", why));
+  }
+  es.appendChild(lb);
+  m.appendChild(es);
+  m.appendChild(h("div", "pad-end"));
+}
+function renderEvidenceDetails(e){
+  const d = $("details"); clear(d);
+  if (!e){
+    const pend = state.pending_event_ids || [];
+    const p = add(h("div", "dpad"), h("div", "sec-h", "No event selected"), h("div", "sm mut", idx.events.length ? "Pick an event with j and k." : "Events appear here after the lab looks them up."));
+    d.appendChild(p);
+    if (pend.length){
+      d.appendChild(add(h("div", "dsec"), add(h("div", "sec-h"), "Pending lookups", h("span", "aside", String(pend.length))), idList(pend, "pend", 60)));
+    }
+    return;
+  }
+  const top = h("div", "dpad");
+  add(top, h("div", "mono b5", e.id, {style:"font-size:13px"}),
+    add(h("div", "sm mut wrap", null, {style:"margin-top:2px"}), [e.category, e.host].filter(Boolean).join(" \u00b7 ") + " \u00b7 ", h("span", "mono", e.timestamp ? e.timestamp.slice(11, 23) : "no time")),
+    h("p", "wrap", e.summary || e.message || "(no summary)", {style:"margin:12px 0 0;font-size:14px;line-height:20px"}));
+  d.appendChild(top);
+  const cites = citingClaims(e);
+  const cs = add(h("div", "dsec"), add(h("div", "sec-h"), "Cited by", h("span", "aside", plural(cites.length, "claim"))));
+  for (const x of cites){
+    const id = x.c.claim_id || "(no claim id)";
+    cs.appendChild(add(h("div", "row", null, {style:"gap:8px;align-items:flex-start;margin-bottom:6px"}), h("span", "mono sm", id, {style:"flex:none"}),
+      add(h("div", "grow"), clip(x.c.statement || "", 3, "cb:" + e.id + ":" + id, "sm sec"))));
+  }
+  if (!cites.length) cs.appendChild(h("div", "sm mut", "Not cited by a counted claim."));
+  d.appendChild(cs);
+  const nodes = ((state.graph || {}).nodes || []).filter((n) => (n.event_ids || []).includes(e.id));
+  const gs = add(h("div", "dsec"), h("div", "sec-h", "Graph neighbours"));
+  if (nodes.length){ const l = h("div", "list sm"); for (const n of nodes) l.appendChild(add(h("div", "li", null, {style:"padding:6px 0"}), h("span", "mut", n.kind, {style:"width:72px;flex:none"}), h("span", "mono ell", n.label, {title:n.label}))); gs.appendChild(l); }
+  else gs.appendChild(h("div", "sm mut", "No host, process, task or domain entity for this event."));
+  d.appendChild(gs);
+  const lab = ((state.tools || {}).lab) || {}, os = add(h("div", "dsec"), h("div", "sec-h", "Open in lab"));
+  if (lab.arkime_url && /^http:\/\/127\.0\.0\.1:\d+(\/|$)/.test(lab.arkime_url)) os.appendChild(add(h("a", "link sm", null, {href:lab.arkime_url, target:"_blank", rel:"noopener noreferrer"}), "Open Arkime", icon("external-link")));
+  else os.appendChild(add(h("div", "sm mut"), "Arkime link appears when ", h("span", "mono", "tools.lab.arkime_url"), " is set."));
+  d.appendChild(os);
+}
+
+// ---------- phone inbox ----------
+function renderInbox(){
+  const m = $("main"); clear(m);
+  const steps = state.steps || [];
+  const gates = idx.waveList.filter((w) => w.steps.some((s) => GATE.has(s.state)));
+  m.appendChild(h("div", "sec-h", "Needs you", {style:"padding:16px 16px 8px;margin:0"}));
+  if (!gates.length) m.appendChild(h("div", "sm mut", "Nothing needs you.", {style:"padding:0 16px"}));
+  for (const w of gates){
+    const s = w.steps.find((x) => GATE.has(x.state)), ho = handoff(s), nw = nextWave(w.wave), dec = ho ? (ho.requested_decisions || []).length : 0;
+    const wo = waveWall(w).open_since_ms, at = wo !== null && wo !== undefined ? wo : stepSince(s), right = h("span", "sm mut", null, {style:"margin-left:auto"});
+    if (at !== null) since(right, at);
+    const card = add(h("button", "box", null, {type:"button", style:"margin:0 12px 8px;display:block;width:calc(100% - 24px)"}), add(h("div", null, null, {style:"padding:14px 16px"}),
+      add(h("div", "row", null, {style:"gap:8px"}), add(h("span", "pill"), glyph("blocked"), words(s.state)), right),
+      h("div", "b6 ell", s.name + " \u00b7 wave " + w.wave, {style:"margin-top:10px;font-size:15px;line-height:22px"}),
+      h("p", "wrap", (s.state === "awaiting_review" ? "The handoff waits for review." : "Waits for approval to start.") + (nw ? " " + waveRep(nw).name + " in wave " + nw.wave + " waits for the gate decision." : "") + (dec ? " " + plural(dec, "requested decision") + " in its handoff." : ""),
+        {style:"margin:4px 0 0;font-size:14px;line-height:20px;color:var(--ink-2)"}),
+      h("div", "sm mut", "Decide in Hermes \u2192 Human gates", {style:"margin-top:10px"})));
+    card.addEventListener("click", () => openAgent(s));
+    m.appendChild(card);
+  }
+  const group = (title, list, sub, showCount) => {
+    if (!list.length) return;
+    m.appendChild(add(h("div", "sec-h", title, {style:"padding:20px 16px 4px;margin:0"}), showCount ? h("span", "aside", String(list.length)) : null));
+    const l = h("div", "list");
+    for (const s of list){
+      const b = add(h("button", "li", null, {type:"button", style:"padding:10px 16px;gap:12px"}), glyph(kindOf(s)),
+        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut ell", sub(s))), timeEl(s, "sm mut"));
+      b.addEventListener("click", () => openAgent(s));
+      l.appendChild(b);
+    }
+    m.appendChild(l);
+  };
+  const lastTool = (s) => { const c = stepCalls(s).calls; return c.length ? c[c.length - 1].tool : null; };
+  group("Working", steps.filter((s) => s.state === "working"), (s) => roleOf(s) + (lastTool(s) ? " \u00b7 " + lastTool(s) : ""), false);
+  group("Done", steps.filter((s) => s.state === "done").sort((a, b) => ((b.timing || {}).ended_ms || 0) - ((a.timing || {}).ended_ms || 0) || b.index - a.index),
+    (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"), true);
+  group("Waiting", steps.filter((s) => kindOf(s) === "idle"), (s) => "wave " + s.wave + " \u00b7 " + stateWords(s).replace(/^idle \u00b7 /, ""), true);
+  group("Dropped", steps.filter((s) => kindOf(s) === "dropped"), (s) => "wave " + s.wave + " \u00b7 " + s.state + (s.reason ? " \u00b7 " + words(s.reason) : ""), true);
+  m.appendChild(h("div", "pad-end"));
+}
+
+// ---------- routing ----------
+const phoneMq = matchMedia("(max-width: 760px)");
+function phone(){ return phoneMq.matches; }
+function effView(){
+  const v = route.view;
+  if (phone()) return v === "case" && !ui.explicitView ? "inbox" : v;
+  return v === "inbox" ? "case" : v;
+}
+function readHash(){
+  const p = new URLSearchParams(location.hash.slice(1));
+  const v = p.get("view");
+  ui.explicitView = !!v;
+  route.view = VIEWS.includes(v) ? v : "case";
+  route.agent = p.get("agent") || null;
+  if (route.view === "agent" && !route.agent) route.view = "agents";
+  if (route.agent && route.view === "agents") ui.agentSel = route.agent;
+}
+function writeHash(){
+  const p = new URLSearchParams();
+  p.set("view", route.view);
+  if (route.agent && (route.view === "agent" || route.view === "agents")) p.set("agent", route.agent);
+  return "#" + p.toString();
+}
+function go(patch){
+  Object.assign(route, patch);
+  ui.explicitView = true;
+  if (route.view === "agent" && !route.agent) route.view = "agents";
+  if (route.view !== "agents") ui.zoom = false;
+  const hs = writeHash();
+  if (location.hash !== hs) history.replaceState(null, "", hs);
+  applyRoute();
+}
+function openAgent(s){ if (!s) return; ui.claimSel = -1; ui.agentSel = s.step_id; go({view:"agent", agent:s.step_id}); }
+function applyRoute(){
+  const ev = effView();
+  $("app").dataset.v = ev;
+  $("app").classList.toggle("ph", phone());
+  if (!state) return;
+  renderTabs(); renderFoot(); renderView();
+}
+function renderView(){
+  if (!state) return;
+  const ev = effView();
+  keepScroll(() => {
+    if (ev === "case"){ const sel = caseSelection(); renderCaseRail(sel); renderCaseMain(sel); renderCaseDetails(sel); }
+    else if (ev === "agents"){ if (route.agent && !ui.agentSel) ui.agentSel = route.agent; const s = agentsSel(); renderAgentRail(s ? s.step_id : null); if (!phone()) renderAgentsMain(); else clear($("main")); clear($("details")); }
+    else if (ev === "agent"){
+      const s = idx.byId.get(route.agent);
+      renderAgentRail(s ? s.step_id : null);
+      if (s){ renderAgentMain(s); renderAgentDetails(s); }
+      else { clear($("main")); $("main").appendChild(h("div", "empty", "This agent is not part of the current hunt.")); clear($("details")); }
+    }
+    else if (ev === "evidence"){ clear($("rail")); const list = evFiltered(), e = evSelected(list); renderEvidenceMain(e, list); renderEvidenceDetails(e); }
+    else if (ev === "inbox"){ clear($("rail")); clear($("details")); renderInbox(); }
+    fitClips();
+  });
+  refreshLiveText();
+}
+
+// ---------- keyboard ----------
+function typing(t){ return t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)); }
+function scrollSel(sel){ const el = document.querySelector(sel); if (el) el.scrollIntoView({block:"nearest", behavior:"instant"}); }
+function moveCase(d){
+  const sel = caseSelection(), i = sel.rows.findIndex((r) => r.key === ui.caseKey);
+  const n = Math.max(0, Math.min(sel.rows.length - 1, i + d));
+  if (!sel.rows[n]) return;
+  ui.caseKey = sel.rows[n].key; renderView(); scrollSel('#case-list [data-key="' + CSS.escape(ui.caseKey) + '"]');
+}
+function enterCase(){
+  const sel = caseSelection(), r = sel.row;
+  if (!r) return;
+  if (!r.sub && r.multi){ if (r.expanded){ ui.expanded.delete(r.wave.wave); ui.collapsed.add(r.wave.wave); } else { ui.collapsed.delete(r.wave.wave); ui.expanded.add(r.wave.wave); } renderView(); }
+  else openAgent(r.step);
+}
+function moveAgent(d){
+  const list = agentList().list;
+  if (!list.length) return;
+  const cur = (agentsSel() || {}).step_id;
+  const i = list.findIndex((s) => s.step_id === cur), n = Math.max(0, Math.min(list.length - 1, (i < 0 ? 0 : i + d)));
+  ui.agentSel = list[n].step_id;
+  renderView(); scrollSel('#rail [data-step="' + CSS.escape(ui.agentSel) + '"]');
+}
+function moveClaim(d){
+  const s = idx.byId.get(route.agent), ho = s && handoff(s), n = ho ? (ho.claims || []).length : 0;
+  if (!n) return;
+  ui.claimSel = ui.claimSel < 0 ? (d > 0 ? 0 : n - 1) : Math.max(0, Math.min(n - 1, ui.claimSel + d)); markClaim();
+}
+function moveEvent(d){
+  const list = evFiltered();
+  if (!list.length) return;
+  const i = list.findIndex((e) => e.id === ui.evSel), n = Math.max(0, Math.min(list.length - 1, (i < 0 ? 0 : i + d)));
+  ui.evSel = list[n].id; renderView(); scrollSel('#ev-list [data-ev="' + CSS.escape(ui.evSel) + '"]');
+}
+function cycle(cur, values){ if (!values.length) return null; const i = values.indexOf(cur); return i < 0 ? values[0] : i === values.length - 1 ? null : values[i + 1]; }
+function onKey(e){
+  if (!$("scrim").hidden){ sheetKey(e); return; }
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){ e.preventDefault(); openPalette("search"); return; }
+  if (typing(e.target) || e.ctrlKey || e.metaKey || e.altKey || !state) return;
+  const ev = effView(), k = e.key;
+  if (k === "Enter" || k === " "){
+    // Keyboard activation belongs to the focused control: native buttons and links activate themselves,
+    // and row-like [role=button] elements get the same click a pointer would give them.
+    const t = e.target && e.target.closest ? e.target.closest("button, a[href], [role=button]") : null;
+    if (t){ if (!/^(BUTTON|A)$/.test(t.tagName)){ e.preventDefault(); t.click(); } return; }
+    if (k === " ") return;
+  }
+  let done = true;
+  if (k === "1") go({view:"case"});
+  else if (k === "2") go({view:"agents"});
+  else if (k === "3") go({view:"evidence"});
+  else if (k === "/") openPalette("search");
+  else if (k === "g") openPalette("goto");
+  else if (k === "?") openKeys();
+  else if (k === "Escape"){
+    if (ev === "agents" && ui.zoom){ ui.zoom = false; renderView(); }
+    else if (ev === "agent") go({view:phone() ? "inbox" : "agents"});
+    else if (ev === "agents" && ui.filter){ ui.filter = null; renderView(); }
+    else if (ev === "evidence" && (ui.evHost || ui.evCat)){ ui.evHost = null; ui.evCat = null; renderView(); }
+    else done = false;
+  }
+  else if (ev === "case" && (k === "j" || k === "ArrowDown")) moveCase(1);
+  else if (ev === "case" && (k === "k" || k === "ArrowUp")) moveCase(-1);
+  else if (ev === "case" && k === "Enter") enterCase();
+  else if (ev === "agents" && (k === "j" || k === "k" || k === "ArrowDown" || k === "ArrowUp")) moveAgent(k === "j" || k === "ArrowDown" ? 1 : -1);
+  else if (ev === "agents" && (k === "h" || k === "l" || k === "ArrowLeft" || k === "ArrowRight")){
+    const n = paneModel().length;
+    if (n){ ui.paneFocus = (ui.paneFocus + (k === "l" || k === "ArrowRight" ? 1 : n - 1)) % n; renderView(); }
+  }
+  else if (ev === "agents" && k === "z"){ ui.zoom = !ui.zoom; renderView(); }
+  else if (ev === "agents" && "bwdi".includes(k) && k.length === 1){
+    const f = {b:"blocked", w:"working", d:"done", i:"idle"}[k];
+    ui.filter = ui.filter === f ? null : f; ui.paneFocus = 0; renderView();
+  }
+  else if (ev === "agents" && k === "Enter"){
+    const p = paneModel()[ui.paneFocus];
+    if (p && p.type === "agent") openAgent(p.step);
+  }
+  else if (ev === "agent" && (k === "j" || k === "ArrowDown")) moveClaim(1);
+  else if (ev === "agent" && (k === "k" || k === "ArrowUp")) moveClaim(-1);
+  else if (ev === "agent" && k === "c") copyClaim();
+  else if (ev === "evidence" && (k === "j" || k === "ArrowDown")) moveEvent(1);
+  else if (ev === "evidence" && (k === "k" || k === "ArrowUp")) moveEvent(-1);
+  else if (ev === "evidence" && k === "h"){ ui.evHost = cycle(ui.evHost, Array.from(new Set(idx.events.map((x) => x.host).filter(Boolean)))); renderView(); }
+  else if (ev === "evidence" && k === "c"){ ui.evCat = cycle(ui.evCat, Array.from(new Set(idx.events.map((x) => x.category).filter(Boolean)))); renderView(); }
+  else done = false;
+  if (done) e.preventDefault();
+}
+function copyClaim(){
+  const s = idx.byId.get(route.agent), ho = s && handoff(s), c = ho && (ho.claims || [])[Math.max(0, ui.claimSel)];
+  if (!c || !c.claim_id) return;
+  const ok = () => flashFoot("copied " + c.claim_id), bad = () => flashFoot("copy failed");
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(c.claim_id).then(ok, bad); else bad();
+}
+
+// ---------- palette and key sheet ----------
+const sheet = {mode:null, items:[], sel:0, back:null};
+function closeSheet(){
+  $("scrim").hidden = true; sheet.mode = null; clear($("sheet"));
+  if (sheet.back && sheet.back.isConnected) sheet.back.focus();
+  sheet.back = null;
+}
+function openShell(mode){ sheet.back = document.activeElement; sheet.mode = mode; sheet.sel = 0; clear($("sheet")); $("scrim").hidden = false; }
+function paletteItems(q){
+  const items = [], ql = q.trim().toLowerCase(), hit = (t) => !ql || t.toLowerCase().includes(ql);
+  if (sheet.mode === "goto"){
+    for (const [v, label] of [["case", "Case"], ["agents", "Agents"], ["evidence", "Evidence"]]) if (hit(label)) items.push({group:"Views", label:label, act:() => go({view:v})});
+    for (const w of idx.waveList){
+      const c = counts(w.steps), roll = KINDS.filter((k) => c[k]).map((k) => c[k] + " " + k).join(" \u00b7 ");
+      const kids = w.steps.filter((s) => hit(s.name + " " + s.step_id + " " + roleOf(s) + " wave " + w.wave));
+      if (!kids.length) continue;
+      items.push({group:"Waves", label:"Wave " + w.wave, glyph:rollKind(w.steps), meta:roll, act:() => { selectCaseStep(waveRep(w)); go({view:"case"}); }});
+      for (const s of kids) items.push({group:"Waves", label:s.name, sub:roleOf(s), glyph:kindOf(s), meta:stateWords(s), ind:true, act:() => openAgent(s)});
+    }
+  } else {
+    for (const s of state.steps || []) if (hit([s.name, s.step_id, roleOf(s), s.profile, stateWords(s)].join(" "))) items.push({group:"Agents", label:s.name, sub:roleOf(s), glyph:kindOf(s), meta:stateWords(s), act:() => openAgent(s)});
+    if (ql) for (const x of idx.claims){
+      const c = x.c;
+      if (hit([c.claim_id, c.kind, c.statement, (c.cited_events || []).join(" ")].join(" "))) items.push({group:"Claims", label:c.claim_id || "(no id)", mono:true, sub:c.statement || "", meta:c.kind || "",
+        act:() => { if (!x.s) return; const i = ((handoff(x.s) || {}).claims || []).indexOf(c); openAgent(x.s); ui.claimSel = Math.max(0, i); markClaim(); }});
+    }
+    if (ql) for (const e of idx.events) if (hit([e.id, e.host, e.category, e.summary].join(" "))) items.push({group:"Events", label:e.id, mono:true, sub:e.summary || "", meta:e.host || "",
+      act:() => { ui.evHost = null; ui.evCat = null; ui.evSel = e.id; go({view:"evidence"}); }});
+  }
+  return items.slice(0, 80);
+}
+function renderPaletteList(){
+  const b = $("pal-list"); clear(b);
+  let group = null;
+  sheet.items.forEach((it, i) => {
+    if (it.group !== group){ group = it.group; b.appendChild(h("div", "sheet-grp", group)); }
+    const r = add(h("button", "pr" + (it.ind ? " ind" : "") + (i === sheet.sel ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(i === sheet.sel), "data-i":i}),
+      it.glyph ? glyph(it.glyph) : null, h("span", (it.mono ? "mono " : "") + "ell", it.label, {style:"flex:none;max-width:45%"}), it.sub ? h("span", "sm mut ell grow", it.sub) : h("span", "grow"), it.meta ? h("span", "meta", it.meta) : null);
+    r.addEventListener("click", () => { const a = it.act; closeSheet(); a(); });
+    r.addEventListener("mousemove", () => { if (sheet.sel !== i){ sheet.sel = i; b.querySelectorAll(".pr").forEach((x) => x.classList.toggle("on", Number(x.dataset.i) === i)); } });
+    b.appendChild(r);
+  });
+  if (!sheet.items.length) b.appendChild(h("div", "empty", "No match."));
+  const on = b.querySelector(".pr.on");
+  if (on) on.scrollIntoView({block:"nearest", behavior:"instant"});
+}
+function openPalette(mode){
+  if (!state) return;
+  openShell(mode);
+  const input = h("input", null, null, {type:"text", placeholder:mode === "goto" ? "Go to a view, wave or agent" : "Search agents, claims and events", "aria-label":mode === "goto" ? "Go to" : "Search", autocomplete:"off", spellcheck:"false"});
+  add($("sheet"), add(h("div", "sheet-h"), icon(mode === "goto" ? "chevron-right" : "search"), input, h("span", "kbd", "esc")), h("div", "sheet-b", null, {id:"pal-list", role:"listbox"}));
+  const refresh = () => { sheet.items = paletteItems(input.value); sheet.sel = 0; renderPaletteList(); };
+  input.addEventListener("input", refresh);
+  refresh();
+  input.focus();
+}
+function openKeys(){
+  openShell("keys");
+  const groups = [["Everywhere", [["1 2 3", "Case, Agents, Evidence"], ["/", "search"], ["Ctrl K", "search"], ["g", "go to"], ["?", "all keys"], ["esc", "close, back, clear filter"]]],
+    ["Case", [["j k", "move through waves and steps"], ["enter", "open the step, or expand the wave"]]],
+    ["Agents", [["j k", "agent"], ["h l", "pane"], ["enter", "open the focused agent"], ["z", "zoom pane"], ["b w d i", "blocked, working, done, idle only"]]],
+    ["Agent", [["j k", "claim"], ["c", "copy claim id"], ["esc", "back to panes"]]],
+    ["Evidence", [["j k", "event"], ["h", "filter host"], ["c", "filter category"]]]];
+  const body = h("div", "keys");
+  for (const [g, rows] of groups){ body.appendChild(h("h3", null, g)); for (const [k, l] of rows) body.appendChild(add(h("div", "kr"), h("span", "kbd", k), l)); }
+  add($("sheet"), add(h("div", "sheet-h"), h("span", "b6 grow", "All keys"), h("span", "kbd", "esc")), add(h("div", "sheet-b"), body));
+  $("sheet").setAttribute("tabindex", "-1"); $("sheet").focus();
+}
+function sheetKey(e){
+  if (e.key === "Escape"){ e.preventDefault(); closeSheet(); return; }
+  if (sheet.mode === "keys"){ if (e.key === "?"){ e.preventDefault(); closeSheet(); } return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp" || (e.ctrlKey && (e.key === "n" || e.key === "p"))){
+    e.preventDefault();
+    const n = sheet.items.length; if (!n) return;
+    sheet.sel = (sheet.sel + (e.key === "ArrowDown" || e.key === "n" ? 1 : n - 1)) % n;
+    renderPaletteList();
+  } else if (e.key === "Enter"){
+    e.preventDefault();
+    const it = sheet.items[sheet.sel];
+    closeSheet();
+    if (it) it.act();
+  }
+}
+
+// ---------- toasts ----------
+function focusedAgent(){
+  const ev = effView();
+  if (ev === "agent") return route.agent;
+  if (ev === "agents") return ui.agentSel;
+  if (ev === "case"){ const sel = caseSelection(); return sel.step ? sel.step.step_id : null; }
+  return null;
+}
+function toast(s){
+  const box = $("toasts");
+  const t = add(h("button", "toast enter", null, {type:"button", title:"Open " + s.name}), glyph("done"),
+    add(h("div", "grow"), h("div", "b5 ell", s.name + " done"), h("div", "sm mut ell", "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"))));
+  t.addEventListener("click", () => { t.remove(); openAgent(s); });
+  box.appendChild(t);
+  while (box.children.length > 3) box.firstChild.remove();
+  setTimeout(() => t.remove(), TOAST_MS);
+}
+function noticeDone(){
+  const now = new Map((state.steps || []).map((s) => [s.step_id, s.state]));
+  if (prevStates){
+    const focus = focusedAgent();
+    for (const s of state.steps || []){
+      const before = prevStates.get(s.step_id);
+      if (s.state === "done" && before !== undefined && before !== "done" && s.step_id !== focus) toast(s);
+    }
+  }
+  prevStates = now;
+}
+
+// ---------- loop ----------
+function tick(){
+  if (!state) return;
+  const now = Date.now();
+  document.querySelectorAll("[data-since]").forEach((e) => { const t = fmtDur(now - Number(e.dataset.since) + Number(e.dataset.base || 0)); if (e.textContent !== t) e.textContent = t; });
+  refreshLiveText();
+}
+function renderAll(){
+  idx = buildIndex();
+  renderMark(); renderTabs(); renderTop(); renderPhoneHead(); renderFoot();
+  renderView();
+}
+async function poll(){
+  try {
+    const res = await fetch(STATE_URL, {cache:"no-store", credentials:"omit"});
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const next = await res.json();
+    if (!next || !Array.isArray(next.steps)) throw new Error("malformed state");
+    const hadError = fetchError !== null;
+    fetchError = null; state = next;
+    // Observation timestamps change every poll; rebuild the view only when the round's content changes.
+    const tools = next.tools ? Object.assign({}, next.tools, {lab:null}) : null;
+    const key = JSON.stringify(Object.assign({}, next, {temporal:null, tools:tools, live:null}));
+    if (key !== lastKey){ lastKey = key; renderAll(); noticeDone(); }
+    else { idx = buildIndex(); renderHealth(); if (hadError) renderView(); tick(); }
+  } catch (err){
+    fetchError = err && err.message ? err.message : "fetch failed";
+    if (state){ renderHealth(); tick(); }
+    else {
+      renderMark();
+      const hl = $("health"); clear(hl); const x = stEl("blocked", "Board unreachable", true); x.title = fetchError; hl.appendChild(x);
+      const m = $("main"); clear(m); m.appendChild(h("div", "empty", "Waiting for the board server: " + fetchError));
+      renderFoot();
+    }
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+addEventListener("keydown", onKey);
+$("scrim").addEventListener("mousedown", (e) => { if (e.target === $("scrim")) closeSheet(); });
+addEventListener("hashchange", () => { readHash(); applyRoute(); });
+phoneMq.addEventListener("change", applyRoute);
+let resizeTimer = null;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state){ renderHealth(); renderView(); } }, 150); });
+readHash();
+applyRoute();
+renderMark();
+renderFoot();
+setInterval(tick, 1000);
+poll();
+})();
+</script>
+</body>
+</html>
