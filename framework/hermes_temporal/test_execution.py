@@ -254,6 +254,22 @@ class ExecutionReceiptTests(unittest.TestCase):
             self.assertEqual((result.status, result.reason_code, result.diagnostic),
                              ('unknown', 'native_nonzero', 'exit code 1: RuntimeError: provider closed the stream'))
 
+    def test_a_refusal_logged_for_the_session_names_the_refusal(self):
+        logs = Path(self.config.hermes_home) / 'profiles' / 'framework-coordinator' / 'logs'
+        logs.mkdir(parents=True)
+        refusal = ("2026-11-11 02:52:15,446 WARNING [{0}] agent.conversation_loop: Model declined to respond "
+                   "(finish_reason=content_filter). model=m provider=p native_stop_reason=refusal "
+                   "stop_details={{'category': 'cyber', 'explanation': 'flagged'}}\n")
+        log = logs / 'agent.log'
+        log.write_text(refusal.format('local-other'), encoding='utf-8')
+        record = stream(INIT, {**RESULT, 'exit_code': 1})
+        result, _, _ = self.run_stream(record, 1, b'RuntimeError: provider closed the stream\n')
+        self.assertEqual(result.diagnostic, 'exit code 1: RuntimeError: provider closed the stream')
+        log.write_text(refusal.format('local-other') + refusal.format('local-synthetic'), encoding='utf-8')
+        result, _, _ = self.run_stream(record, 1, b'RuntimeError: provider closed the stream\n')
+        self.assertEqual((result.reason_code, result.diagnostic), (
+            'native_nonzero', 'exit code 1: model declined to respond (finish_reason=content_filter, category cyber)'))
+
     def test_secrets_in_stderr_are_redacted(self):
         value = 'synthetic' + 'Value' + 'q7'
         long_hex = 'ab12' * 10
