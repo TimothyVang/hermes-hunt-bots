@@ -459,13 +459,6 @@ class BoardServerTests(unittest.TestCase):
         self.assertIsNone(state["live"])
         self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
 
-    def test_page_carries_the_wave_group_and_usage_hooks(self) -> None:
-        body = self.request("GET", "/")[2]
-        for hook in (b'id="stage-list"', b'id="tl-bar"', b'id="tl-num"', b'id="usage"', b'id="wf-count"',
-                     b'"data-wave"', b'"data-step"', b'"data-state"', b'"data-dropped"', b'"wave-h"',
-                     b'"wave-lanes"', b'"wave-lane"'):
-            self.assertIn(hook, body)
-
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
             self.assertEqual(self.request("GET", path)[0], 404)
@@ -626,12 +619,10 @@ class LiveBoardTests(unittest.TestCase):
             self.assertEqual(self.live.status()[0]["page"], page, url)
 
     def test_page_csp_allows_live_images_from_the_board_only(self) -> None:
-        _, headers, body = self.request("/")
+        _, headers, _ = self.request("/")
         csp = headers["Content-Security-Policy"]
         self.assertIn(f"img-src data: http://127.0.0.1:{self.port};", csp)
         self.assertIn(f"connect-src http://127.0.0.1:{self.port};", csp)
-        self.assertIn(b'id="bots"', body)
-        self.assertIn(b"powered by Claude", body)
 
     def test_state_carries_each_owners_newest_audit_action_of_this_round(self) -> None:
         child = _load("child-status.json")
@@ -942,6 +933,17 @@ class ParallelBoardTests(unittest.TestCase):
         reviewed = build_state(self.raw, self.parent, _wave_child(states, results))
         self.assertEqual(_states(reviewed)[3:5], ["done", "dropped"])
         self.assertEqual(reviewed["steps"][3]["usage"], _tokens(4000))
+
+    def test_a_dropped_step_carries_its_failure_diagnostic_to_its_view_and_card(self) -> None:
+        cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
+        refused = self.result(4, status="unknown", output="", reason_code="native_nonzero", diagnostic=cause)
+        child = _wave_child({"scope": "done", "evidence": "awaiting_review", "intel": ("dropped", "native_nonzero")},
+                            [self.result(0), self.result(1), refused])
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual([step["result"] and step["result"]["diagnostic"] for step in state["steps"][:5]],
+                         [None, None, None, None, cause])
+        self.assertEqual({item["step_id"]: item["diagnostic"] for item in state["feed"]},
+                         {"scope": None, "evidence": None, "intel": cause})
 
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],

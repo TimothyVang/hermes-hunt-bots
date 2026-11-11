@@ -192,7 +192,7 @@ FILES = (
     'hermes_temporal/lab_input.py', 'hermes_temporal/test_lab_input.py',
     'hermes_temporal/ontology.py', 'hermes_temporal/test_ontology.py',
     'hermes_temporal/test_hunt.py',
-    'hermes_temporal/board.py', 'hermes_temporal/test_board.py',
+    'hermes_temporal/board.py', 'hermes_temporal/board_page.html', 'hermes_temporal/test_board.py',
     'hermes_temporal/fixtures/board/lab-input.json',
     'hermes_temporal/fixtures/board/parent-status.json',
     'hermes_temporal/fixtures/board/child-status.json',

@@ -58,7 +58,7 @@ _SECRETS = (
 _LONG_RUN = re.compile(r'[A-Za-z0-9+/=_-]{32,}')
 _USAGE_FIELDS = (('input_tokens', 'input'), ('output_tokens', 'output'), ('cache_read_tokens', 'cache_read'),
                  ('cache_write_tokens', 'cache_write'), ('total_tokens', 'total'))
-_ADDED_RECEIPT_COLUMNS = ('usage', 'session_id')
+_ADDED_RECEIPT_COLUMNS = ('usage', 'session_id', 'diagnostic')
 _STEP_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z')
 
 
@@ -78,9 +78,10 @@ class ExecutionConfig:
 
 
 def _result(request: ExecutionRequest, status: str, reason: str, output: str = '',
-            session_id: str | None = None, usage: dict | None = None) -> ExecutionResult:
+            session_id: str | None = None, usage: dict | None = None,
+            diagnostic: str | None = None) -> ExecutionResult:
     return ExecutionResult(status=status, execution_id=request.execution_id, output=output,
-                           reason_code=reason, session_id=session_id, usage=usage)
+                           reason_code=reason, session_id=session_id, usage=usage, diagnostic=diagnostic)
 
 
 def _valid_request(request: ExecutionRequest) -> bool:
@@ -148,10 +149,10 @@ class ReceiptStore:
         db.execute('CREATE TABLE IF NOT EXISTS receipts ('
                    'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
                    'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL, '
-                   'usage TEXT, session_id TEXT)')
+                   'usage TEXT, session_id TEXT, diagnostic TEXT)')
         if _missing_receipt_columns(db):
-            # Workers may open a five-column database together; recheck under the write lock
-            # so each column is added once.
+            # Workers may open an older five- or seven-column database together; recheck under the
+            # write lock so each column is added once.
             db.execute('BEGIN IMMEDIATE')
             for column in _missing_receipt_columns(db):
                 db.execute(f'ALTER TABLE receipts ADD COLUMN {column} TEXT')
@@ -162,7 +163,7 @@ class ReceiptStore:
         fingerprint = _fingerprint(request)
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT fingerprint, status, reason, output, usage, session_id FROM receipts '
+            row = db.execute('SELECT fingerprint, status, reason, output, usage, session_id, diagnostic FROM receipts '
                              'WHERE execution_id = ?', (request.execution_id,)).fetchone()
             if row is None:
                 db.execute('INSERT INTO receipts (execution_id, fingerprint, status, reason, output) '
@@ -170,22 +171,23 @@ class ReceiptStore:
                 db.execute('COMMIT')
                 return None
             db.execute('COMMIT')
-        old_fingerprint, status, reason, output, usage, session_id = row
+        old_fingerprint, status, reason, output, usage, session_id, diagnostic = row
         if old_fingerprint != fingerprint:
             return _result(request, 'failed', 'fingerprint_conflict')
         usage = None if usage is None else json.loads(usage)
         if status in ('completed', 'failed'):
-            return _result(request, status, reason, output, session_id, usage)
-        return _result(request, 'unknown', 'previous_dispatch_unknown', session_id=session_id, usage=usage)
+            return _result(request, status, reason, output, session_id, usage, diagnostic)
+        return _result(request, 'unknown', 'previous_dispatch_unknown', session_id=session_id, usage=usage,
+                       diagnostic=diagnostic)
 
     def finish(self, result: ExecutionResult) -> None:
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
-            cursor = db.execute('UPDATE receipts SET status = ?, reason = ?, output = ?, usage = ?, session_id = ? '
-                                'WHERE execution_id = ? AND status = ?',
+            cursor = db.execute('UPDATE receipts SET status = ?, reason = ?, output = ?, usage = ?, session_id = ?, '
+                                'diagnostic = ? WHERE execution_id = ? AND status = ?',
                                 (result.status, result.reason_code, result.output,
                                  None if result.usage is None else json.dumps(result.usage, sort_keys=True),
-                                 result.session_id, result.execution_id, 'reserved'))
+                                 result.session_id, result.diagnostic, result.execution_id, 'reserved'))
             if cursor.rowcount != 1:
                 db.execute('ROLLBACK')
                 raise RuntimeError('receipt state changed')
