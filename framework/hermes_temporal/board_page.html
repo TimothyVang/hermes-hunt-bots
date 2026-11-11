@@ -59,6 +59,13 @@ button{font:inherit;color:inherit;background:none;border:0;margin:0;padding:0;te
 .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .clamp2,.clamp3{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .clamp2{-webkit-line-clamp:2}.clamp3{-webkit-line-clamp:3}
+.full{white-space:pre-wrap;overflow-wrap:anywhere}
+.clipw{min-width:0}
+.more{display:inline-block;margin-top:2px;font-size:12px;line-height:16px;color:var(--ink-3)}
+.more:hover{color:var(--ink-2)}
+.ids{display:flex;flex-wrap:wrap;gap:2px 12px;line-height:18px}
+.ids > span{white-space:nowrap}
+.hnote{margin:0 0 8px;font-size:12px;line-height:16px;color:var(--ink-2);overflow-wrap:anywhere}
 .wrap{overflow-wrap:anywhere}
 .bw{overflow-wrap:break-word}
 .pill{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:var(--r-pill);background:var(--t17-blocked);color:var(--c-blocked);font-size:12px;font-weight:500;white-space:nowrap;justify-self:start}
@@ -126,6 +133,11 @@ ol.dec.loose li{margin-bottom:8px}
 /* case */
 .wv{display:grid;grid-template-columns:16px 64px minmax(0,1fr) 92px 72px 56px;gap:12px;align-items:center;width:100%}
 .wv.sub{grid-template-columns:20px 120px minmax(0,1fr) 92px 72px 56px}
+.wv-wide .wv{grid-template-columns:16px 64px minmax(0,1fr) 148px 72px 56px}
+.wv-wide .wv.sub{grid-template-columns:20px 120px minmax(0,1fr) 148px 72px 56px}
+.dropcell{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.pane.line{flex-direction:row}
+.pane.line .pane-h{flex:1;border-bottom:0}
 .li.subrow{padding-left:40px}
 .li.btn{cursor:pointer}
 .li.btn:hover:not(.on){background:var(--fill-2)}
@@ -250,7 +262,17 @@ above copyright notice and this permission notice appear in all copies. THE SOFT
 AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
 FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY
 DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. -->
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+The MIT License (MIT) (for portions derived from Feather). Copyright (c) 2013-2026 Cole Bemis.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright
+notice and this permission notice shall be included in all copies or substantial portions of the Software. THE
+SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
 <symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
 <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
@@ -296,7 +318,7 @@ const $ = (id) => document.getElementById(id);
 let state = null, idx = null, lastKey = null, fetchError = null, prevStates = null;
 const route = {view:"case", agent:null};
 const ui = {caseKey:null, expanded:new Set(), collapsed:new Set(), agentSel:null, paneFocus:0, zoom:false, filter:null,
-  claimSel:-1, evSel:null, evHost:null, evCat:null, footMsg:"", explicitView:false, showAll:new Set()};
+  claimSel:-1, evSel:null, evHost:null, evCat:null, footMsg:"", explicitView:false, showAll:new Set(), openText:new Set()};
 
 // ---------- DOM helpers ----------
 function h(tag, cls, text, attrs){
@@ -450,12 +472,20 @@ function stepCalls(s){
     const oend = OPEN.has(o.state) || ot.ended_ms === null || ot.ended_ms === undefined ? now : ot.ended_ms;
     return ot.started_ms < end && oend > t.started_ms;
   });
-  return {calls:calls, lane:lane, shared:shared};
+  // The board keeps only the newest entries per profile while lane.count counts every call; say when this step predates them.
+  const kept = lane.entries.map((e) => isoMs(e.time)).filter((m) => m !== null), oldest = kept.length ? Math.min(...kept) : null;
+  const cut = lane.count > lane.entries.length && (oldest === null || t.started_ms < oldest) ? {before:oldest, shown:lane.entries.length, total:lane.count} : null;
+  return {calls:calls, lane:lane, shared:shared, cut:cut};
+}
+function cutText(sc){
+  const c = sc.cut;
+  return c ? (c.before !== null ? "Calls before " + hms(c.before) : "Older calls") + " are not kept on the board (" + num(c.shown) + " of " + num(c.total) + " shown)." : null;
 }
 function noCallsText(s, sc){
   const lab = (state.tools || {}).lab || {};
   if (!fromLab()) return "Inline input: this hunt used no lab tools.";
   if (!sc.lane) return "No tool lane for this profile.";
+  if (sc.cut) return cutText(sc);
   if (sc.lane.count) return "No calls by " + s.profile + " in this step's time window.";
   if (lab.error) return "None on record for this profile. The lab was unreachable when the board last looked.";
   return "None on record for this profile.";
@@ -687,6 +717,8 @@ function renderCaseRail(sel){
     if (openStep){ const os = idx.byId.get(openStep.step_id); subText = openStep.step_id + " \u00b7 " + (os ? kindOf(os) : words(openStep.state)); }
     else if (ms.length && ms.every((s) => s.state === "pending" || s.state === "not_reached")) subText = words(ms[0].state === "not_reached" ? "not reached" : "pending");
     else subText = plural(ms.length, "step") + " \u00b7 " + plural(m.claims || 0, "claim");
+    const dropped = ms.filter((s) => kindOf(s) === "dropped").length;
+    if (dropped && !openStep) subText += " \u00b7 " + dropped + " dropped";
     const on = !!sel.step && sel.step.profile === m.profile;
     const b = add(h("button", "ri" + (on ? " on" : ""), null, {type:"button", title:m.role + " \u00b7 " + m.profile}), h("span", "mg", m.monogram || "?"),
       add(h("div", "grow"), h("div", "t ell", m.role || m.profile), h("div", "s ell", subText)), glyph(rollKind(ms)));
@@ -698,16 +730,63 @@ function renderCaseRail(sel){
   }
   r.appendChild(list);
 }
-function claimRow(c, clamp, on){
+function claimRow(c, mode, on, key){
   const ids = c.cited_events || [], meta = [plural(ids.length, "cited event")];
   if ((c.verdicts || []).length) meta.push(c.verdicts.map((v) => words(v.disposition || "reviewed")).join(", "));
   if ((c.contradicted_by || []).length) meta.push("contradicted by " + c.contradicted_by.join(", "));
   if ((c.contradicts || []).length) meta.push("contradicts " + c.contradicts.join(", "));
   const metaRow = h("div", "row sm mut", null, {style:"gap:16px;margin-top:4px;flex-wrap:wrap"});
   for (const m of meta) metaRow.appendChild(h("span", "wrap", m));
+  const text = c.statement || "(empty statement)";
+  const stmt = mode === "full" ? h("div", "stmt full", text) : clip(text, mode === "clamp3" ? 3 : 2, "cl:" + (key || c.claim_id || text.slice(0, 40)), "stmt");
   return add(h("div", "cl" + (on ? " on" : ""), null, {"data-claim":c.claim_id || ""}),
     add(h("div"), h("div", "kind", c.kind || "no kind"), h("div", "mono xs faint wrap", c.claim_id || "(no claim id)", {style:"margin-top:2px"})),
-    add(h("div", null, null, {style:"min-width:0"}), h("div", "stmt " + clamp, c.statement || "(empty statement)", {title:c.statement || ""}), metaRow));
+    add(h("div", null, null, {style:"min-width:0"}), stmt, metaRow));
+}
+// Clipped text that keyboard users can open: fitClips adds a Show more button once layout shows the text is cut.
+function clip(text, lines, key, cls){
+  const open = ui.openText.has(key);
+  return add(h("div", "clipw", null, {"data-clip":key, "data-lines":lines}), h("div", (cls ? cls + " " : "") + (open ? "full" : "clamp" + lines), text));
+}
+function fitClips(){
+  document.querySelectorAll("#app [data-clip]").forEach((w) => {
+    if (w.querySelector(":scope > .more")) return;
+    const key = w.dataset.clip, t = w.firstChild, cls = "clamp" + w.dataset.lines;
+    if (!ui.openText.has(key) && t.scrollHeight <= t.clientHeight + 1) return;
+    const b = h("button", "more", null, {type:"button"});
+    const sync = () => { const open = ui.openText.has(key); t.classList.toggle("full", open); t.classList.toggle(cls, !open); b.textContent = open ? "Show less" : "Show more"; b.setAttribute("aria-expanded", String(open)); };
+    b.addEventListener("click", (e) => { e.stopPropagation(); if (ui.openText.has(key)) ui.openText.delete(key); else ui.openText.add(key); sync(); });
+    sync();
+    w.appendChild(b);
+  });
+}
+// Toggles that re-render keep keyboard focus on the toggle with the same key.
+function toggleBtn(key, label, onClick){
+  const b = h("button", "more", label, {type:"button", "data-toggle":key, "aria-expanded":String(ui.showAll.has(key))});
+  b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); renderView(); const again = document.querySelector('[data-toggle="' + CSS.escape(key) + '"]'); if (again) again.focus(); });
+  return b;
+}
+function idList(ids, key, cap){
+  const all = ui.showAll.has(key), wrap = h("div", "ids mono sm sec");
+  for (const id of all ? ids : ids.slice(0, cap)) wrap.appendChild(h("span", null, id));
+  const box = add(h("div"), wrap);
+  if (ids.length > cap) box.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + num(ids.length), () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
+  return box;
+}
+// Lines above a step's claims: why its citations are not counted, and cited IDs the board could not find.
+function handoffNotes(s){
+  const f = idx.feedBy.get(s.step_id), out = [];
+  if (!f || !f.handoff) return out;
+  if (f.counted === false){
+    const why = f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
+      : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
+      : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
+      : "Its citations are not counted.";
+    out.push(h("div", "hnote", why));
+  }
+  const unk = f.unknown_cited_ids || [];
+  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"), idList(unk, "unk:" + s.step_id, 24)));
+  return out;
 }
 function noHandoffShort(s){
   const f = idx.feedBy.get(s.step_id);
@@ -738,7 +817,7 @@ function gateCard(w){
   card.appendChild(h("p", "wrap", lead, {style:"margin:10px 0 10px;font-size:14px;line-height:20px;color:var(--ink-2)"}));
   if (decisions.length){
     card.appendChild(h("div", "sm mut", s.name + " also requested " + plural(decisions.length, "decision") + " in its handoff:", {style:"margin:0 0 6px"}));
-    const ol = h("ol"); for (const d of decisions.slice(0, 2)) ol.appendChild(h("li", "clamp3", d, {title:d})); card.appendChild(ol);
+    const ol = h("ol"); decisions.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 3, "gd:" + s.step_id + ":" + i)))); card.appendChild(ol);
   }
   card.appendChild(add(h("div", "row sm mut", null, {style:"gap:6px"}), icon("arrow-up-right"), "Decide in Hermes \u2192 Human gates. This board is read-only."));
   return card;
@@ -748,9 +827,15 @@ function waveRowEl(r, on){
   const mgs = h("span", "row", null, {style:"gap:4px;flex:none"});
   for (const m of Array.from(new Set(steps.map((s) => s.monogram)))) mgs.appendChild(h("span", "mg", m || "?"));
   const names = waveNames(steps);
+  const dropped = steps.filter((s) => kindOf(s) === "dropped").length;
+  const terminal = steps.every((s) => s.state === "done" || kindOf(s) === "dropped");
+  const stepsCell = gated ? add(h("span", "pill"), glyph("blocked"), words(steps.find((s) => GATE.has(s.state)).state))
+    : dropped ? add(h("span", "sm mut dropcell", null, {title:dropped + " of " + plural(steps.length, "step") + " dropped"}),
+      (terminal ? steps.filter((s) => s.state === "done").length + " done" : plural(steps.length, "step")) + " \u00b7 ", glyph("dropped"), dropped + " dropped")
+    : h("span", "sm mut", plural(steps.length, "step"));
   const wv = add(h("div", "wv"), glyph(rollKind(steps)), h("span", "b5", "Wave " + w.wave),
     add(h("span", "row", null, {style:"gap:8px"}), mgs, h("span", "ell sec", names, {title:names})),
-    gated ? add(h("span", "pill"), glyph("blocked"), words(steps.find((s) => GATE.has(s.state)).state)) : h("span", "sm mut", plural(steps.length, "step")),
+    stepsCell,
     h("span", "sm mut num", gated || cc === null || steps.every((s) => s.state !== "done") ? "" : plural(cc, "claim")),
     waveTimeEl(w));
   const li = add(h("div", "li btn" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1", "aria-expanded":r.multi ? String(r.expanded) : null}), wv);
@@ -774,8 +859,8 @@ function renderCaseMain(sel){
   const head = h("div", "sect", null, {style:"padding-top:24px"});
   add(head, add(h("div", "row", null, {style:"gap:10px;margin-bottom:8px"}), h("h1", "h1", "Case question", {style:"flex:none;white-space:nowrap"}),
     h("span", "mono mut ell", p && p.workflow_id ? p.workflow_id : (state.case && state.case.case_id) || "")));
-  head.appendChild(h("p", "clamp2", state.case && state.case.question ? state.case.question : "No question in the input.",
-    {style:"margin:0 0 12px;font-size:14px;line-height:20px;color:var(--ink-2);max-width:880px", title:state.case && state.case.question || ""}));
+  head.appendChild(add(h("div", null, null, {style:"margin:0 0 12px;max-width:880px"}),
+    clip(state.case && state.case.question ? state.case.question : "No question in the input.", 2, "q", "sec stmt")));
   const facts = h("div", "row sm mut", null, {style:"gap:20px;flex-wrap:wrap"});
   const wt = windowText(state.case);
   if (wt) add(facts, add(h("span"), "Window ", h("span", "mono sec", wt)));
@@ -799,7 +884,7 @@ function renderCaseMain(sel){
     if (lc) add(aside, (lc.kind || "claim") + " \u00b7 ", h("span", "mono", lc.claim_id || ""), " \u00b7 " + (lc.role || ""));
     add(g, add(h("div", "sec-h"), "Latest conclusion", aside));
     const box = h("div", "box", null, {style:"padding:14px 16px"});
-    box.appendChild(lc ? h("div", "clamp3 stmt", lc.statement || "(empty statement)", {title:lc.statement || ""}) : h("div", "mut", "No conclusion yet. The first done step's first claim appears here."));
+    box.appendChild(lc ? clip(lc.statement || "(empty statement)", 3, "lc:" + (lc.claim_id || ""), "stmt") : h("div", "mut", "No conclusion yet. The first done step's first claim appears here."));
     g.appendChild(box);
     m.appendChild(g);
   }
@@ -809,7 +894,7 @@ function renderCaseMain(sel){
   const aside = open ? ["wave " + open.wave].concat(c.blocked ? [c.blocked + " blocked"] : [], c.working ? [c.working + " working"] : [], c.dropped ? [c.dropped + " dropped"] : []).join(" \u00b7 ")
     : [plural(idx.waveList.length, "wave"), plural(steps.length, "step"), plural(idx.claims.length, "claim"), plural(idx.verdicts, "verdict")].join(" \u00b7 ");
   add(wsec, add(h("div", "sec-h"), "Waves", h("span", "aside", aside)));
-  const list = h("div", "box list", null, {id:"case-list"});
+  const list = h("div", "box list" + (idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) ? " wv-wide" : ""), null, {id:"case-list"});
   for (const r of sel.rows) list.appendChild(r.sub ? stepRowEl(r, r.key === ui.caseKey) : waveRowEl(r, r.key === ui.caseKey));
   if (!sel.rows.length) list.appendChild(h("div", "empty", "No steps: the input could not be read."));
   wsec.appendChild(list);
@@ -821,8 +906,9 @@ function renderCaseMain(sel){
     const ca = h("span", "aside");
     if (ho) add(ca, plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 disposition " : ""), ho.disposition ? h("span", "mono", ho.disposition) : null);
     add(csec, add(h("div", "sec-h"), "Claims from " + s.name, ca));
+    for (const n of handoffNotes(s)) csec.appendChild(n);
     const box = h("div", "box", null, {style:"padding:0 16px"});
-    if (ho && (ho.claims || []).length) for (const cl of ho.claims) box.appendChild(claimRow(cl, "clamp2"));
+    if (ho && (ho.claims || []).length) ho.claims.forEach((cl, i) => box.appendChild(claimRow(cl, "clamp2", false, s.step_id + ":" + i)));
     else box.appendChild(h("div", "empty wrap", ho ? "This handoff has no claims." : noHandoffText(s), {style:"padding:14px 0"}));
     csec.appendChild(box);
     m.appendChild(csec);
@@ -837,15 +923,11 @@ function stepHeader(s){
   add(d, add(h("div", "sm", null, {style:"display:flex;flex-direction:column;gap:4px;margin-top:12px"}), stEl(kindOf(s), stateWords(s)), h("span", "mono mut ell", s.profile || "")));
   return d;
 }
-function cappedList(key, items, cap, cls, loose){
+function cappedList(key, items, cap, lines, loose){
   const all = ui.showAll.has(key), ol = h("ol", "dec" + (loose ? " loose" : ""));
-  for (const d of all ? items : items.slice(0, cap)) ol.appendChild(h("li", cls, d, {title:d}));
+  (all ? items : items.slice(0, cap)).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, lines, key + ":" + i))));
   const frag = add(h("div"), ol);
-  if (items.length > cap){
-    const b = h("button", "sm mut", all ? "Show fewer" : "Show all " + items.length, {type:"button", style:"margin:0 0 6px"});
-    b.addEventListener("click", () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); renderView(); });
-    frag.appendChild(b);
-  }
+  if (items.length > cap) frag.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + items.length, () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
   return frag;
 }
 function decisionsSec(s, full){
@@ -853,8 +935,8 @@ function decisionsSec(s, full){
   const sec = h("div", "dsec");
   add(sec, add(h("div", "sec-h"), "Requested decisions", list.length ? h("span", "aside", String(list.length)) : null));
   if (!list.length){ sec.appendChild(h("div", "sm mut", ho ? "None requested." : noHandoffShort(s))); return sec; }
-  if (full) sec.appendChild(cappedList("dec:" + s.step_id, list, 3, "clamp3", true));
-  else { const ol = h("ol", "dec"); for (const d of list.slice(0, 2)) ol.appendChild(h("li", "clamp2", d, {title:d})); sec.appendChild(ol); }
+  if (full) sec.appendChild(cappedList("dec:" + s.step_id, list, 3, 3, true));
+  else { const ol = h("ol", "dec"); list.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 2, "dd:" + s.step_id + ":" + i)))); sec.appendChild(ol); }
   sec.appendChild(h("div", "sm mut", "Requests in the handoff; the workflow does not check them.", {style:"margin-top:4px"}));
   return sec;
 }
@@ -995,25 +1077,30 @@ function agentPane(s, full, focus){
     body.appendChild(add(h("div", null, null, {style:"padding:16px 16px 8px"}), add(h("div", "sec-h"), "Tool calls", h("span", "aside", aside))));
     body.appendChild(sc.calls.length ? callsTable(sc.calls) : h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:0 16px"}));
     if (sc.calls.length && sc.shared.length) body.appendChild(h("div", "xs faint wrap", "Calls are logged per profile; " + sc.shared.map((o) => o.name).join(", ") + " overlapped this step, so some calls may be theirs.", {style:"padding:6px 16px 0"}));
+    if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 16px 0"}));
     const ho = handoff(s), hs = h("div", null, null, {style:"padding:20px 16px 8px"});
     const ha = h("span", "aside");
     if (ho) add(ha, plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " : ""), ho.disposition ? h("span", "mono", ho.disposition) : null);
     add(hs, add(h("div", "sec-h"), "Handoff", ha));
-    if (ho && (ho.claims || []).length){ const box = h("div"); for (const c of ho.claims) box.appendChild(claimRow(c, "clamp2")); hs.appendChild(box); }
+    for (const n of handoffNotes(s)) hs.appendChild(n);
+    if (ho && (ho.claims || []).length){ const box = h("div"); ho.claims.forEach((c, i) => box.appendChild(claimRow(c, focus ? "full" : "clamp2", false, s.step_id + ":" + i))); hs.appendChild(box); }
     else hs.appendChild(h("div", "sm mut wrap", ho ? "This handoff has no claims." : s.state === "working" ? "Not posted yet. Claims appear here when " + s.name + " hands off" + (nextWave(s.wave) ? " to wave " + nextWave(s.wave).wave : "") + "." : noHandoffText(s)));
     body.appendChild(hs);
   } else {
     body.style.padding = "8px 4px";
     if (sc.calls.length) body.appendChild(callsTable(sc.calls));
     else body.appendChild(h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:6px 12px"}));
+    if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 12px 0"}));
     const ho = handoff(s);
     body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") : noHandoffText(s), {style:"padding:12px 12px 6px"}));
   }
   pane.appendChild(body);
   return pane;
 }
-function livePane(profile, focus){
-  const pane = h("section", "pane" + (focus ? " focus" : ""), null, {"data-pane":"live"});
+function livePane(profile, focus, line){
+  const pane = h("section", "pane" + (focus ? " focus" : "") + (line ? " line" : ""), null, {"data-pane":"live"});
+  // Nothing streams for this profile: one line, and no stream path that would only 404.
+  if (line){ add(pane, add(h("div", "pane-h", null, {title:liveNote(profile) || ""}), icon("monitor"), h("span", "t", "Live screen"), h("span", null, "\u00b7 No live screen for this profile"))); return pane; }
   const b = browserOf(profile), a = b && b.action;
   add(pane, add(h("div", "pane-h"), icon("monitor"), h("span", "t", "Live screen"),
     h("span", null, "\u00b7 " + (profile || "no profile") + (a ? " \u00b7 lab_browser " + a.action : "")),
@@ -1050,14 +1137,16 @@ function renderAgentsMain(){
   if (!model.length){ m.appendChild(h("div", "empty", ui.filter ? "No " + ui.filter + " agents." : "No steps: the input could not be read.")); return; }
   if (ui.paneFocus >= model.length) ui.paneFocus = 0;
   const grid = h("div", "panes");
-  const els = model.map((p, i) => p.type === "live" ? livePane(p.profile, i === ui.paneFocus) : agentPane(p.step, i === 0, i === ui.paneFocus));
+  const live = model.find((p) => p.type === "live"), line = !!live && !liveOwner(live.profile) && !browserOf(live.profile);
+  const els = model.map((p, i) => p.type === "live" ? livePane(p.profile, i === ui.paneFocus, line) : agentPane(p.step, i === 0, i === ui.paneFocus));
   els.forEach((el, i) => el.addEventListener("mousedown", () => { if (ui.paneFocus !== i){ ui.paneFocus = i; document.querySelectorAll(".pane.focus").forEach((x) => x.classList.remove("focus")); el.classList.add("focus"); } }));
-  if (ui.zoom){ grid.style.gridTemplate = "1fr / 1fr"; grid.appendChild(els[ui.paneFocus]); }
+  if (ui.zoom){ grid.style.gridTemplate = (line && model[ui.paneFocus].type === "live" ? "36px" : "1fr") + " / 1fr"; grid.appendChild(els[ui.paneFocus]); }
   else if (els.length === 3){
-    grid.style.gridTemplateColumns = "1fr 1fr"; grid.style.gridTemplateRows = "1.25fr 1fr";
+    grid.style.gridTemplateColumns = "1fr 1fr"; grid.style.gridTemplateRows = line ? "36px minmax(0,1fr)" : "1.25fr 1fr";
     els[0].style.gridRow = "1 / 3";
     add(grid, els[0], els[1], els[2]);
-  } else { grid.style.gridTemplateColumns = "1fr 1fr"; add(grid, els[0], els[1]); }
+  } else if (line){ grid.style.gridTemplate = "36px minmax(0,1fr) / 1fr"; add(grid, els[1], els[0]); }
+  else { grid.style.gridTemplateColumns = "1fr 1fr"; add(grid, els[0], els[1]); }
   m.appendChild(grid);
 }
 
@@ -1087,10 +1176,11 @@ function renderAgentMain(s){
   const cited = claims.reduce((n, c) => n + (c.cited_events || []).length, 0), vd = claims.reduce((n, c) => n + (c.verdicts || []).length, 0);
   const aside = ho ? Array.from(kinds, ([k, n]) => n + " " + k).concat([plural(cited, "cited event"), plural(vd, "verdict")]).join(" \u00b7 ") : "";
   add(sec, add(h("div", "sec-h"), "Claims", h("span", "aside", aside)));
+  for (const n of handoffNotes(s)) sec.appendChild(n);
   const box = h("div", "box clbox", null, {style:"padding:0 16px"});
   if (claims.length){
     if (ui.claimSel >= claims.length) ui.claimSel = claims.length - 1;
-    claims.forEach((c, i) => { const el = claimRow(c, "clamp3", i === ui.claimSel); el.addEventListener("click", () => { ui.claimSel = i; markClaim(); }); box.appendChild(el); });
+    claims.forEach((c, i) => { const el = claimRow(c, "full", i === ui.claimSel); el.addEventListener("click", () => { ui.claimSel = i; markClaim(); }); box.appendChild(el); });
   } else {
     box.appendChild(h("div", "empty wrap", ho ? "This handoff has no claims." : noHandoffText(s), {style:"padding:14px 0"}));
     const f = idx.feedBy.get(s.step_id);
@@ -1103,7 +1193,7 @@ function renderAgentMain(s){
     const rs = add(h("div", "sect"), add(h("div", "sec-h"), "Reviews", h("span", "aside", String(reviews.length))));
     const rb = h("div", "box", null, {style:"padding:0 16px"});
     for (const rv of reviews) rb.appendChild(add(h("div", "cl"), add(h("div"), h("div", "kind", words(rv.disposition || "review")), h("div", "mono xs faint wrap", rv.review_id || "", {style:"margin-top:2px"})),
-      add(h("div", null, null, {style:"min-width:0"}), h("div", "stmt clamp3", rv.rationale || "", {title:rv.rationale || ""}), h("div", "sm mut wrap", "names " + (rv.claim_ids || []).join(", "), {style:"margin-top:4px"}))));
+      add(h("div", null, null, {style:"min-width:0"}), h("div", "stmt full", rv.rationale || ""), h("div", "sm mut wrap", "names " + (rv.claim_ids || []).join(", "), {style:"margin-top:4px"}))));
     rs.appendChild(rb); m.appendChild(rs);
   }
   if (!ho || OPEN.has(s.state)){
@@ -1111,6 +1201,7 @@ function renderAgentMain(s){
     if (sc.calls.length){
       const ts = add(h("div", "sect"), add(h("div", "sec-h"), "Tool calls", h("span", "aside", plural(sc.calls.length, "call"))));
       ts.appendChild(add(h("div", "box", null, {style:"padding:4px 0"}), callsTable(sc.calls)));
+      if (sc.cut) ts.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"margin-top:6px"}));
       m.appendChild(ts);
     }
   }
@@ -1126,7 +1217,7 @@ function renderAgentDetails(s){
   const ho = handoff(s), u = s.usage, t = s.timing || {};
   const lim = ho ? ho.limitations || [] : [];
   const ls = add(h("div", "dpad"), add(h("div", "sec-h"), "Limitations", lim.length ? h("span", "aside", String(lim.length)) : null));
-  if (lim.length) ls.appendChild(cappedList("lim:" + s.step_id, lim, 4, "clamp3", true));
+  if (lim.length) ls.appendChild(cappedList("lim:" + s.step_id, lim, 4, 3, true));
   else ls.appendChild(h("div", "sm mut", ho ? "None stated." : noHandoffShort(s)));
   d.appendChild(ls);
   d.appendChild(decisionsSec(s, true));
@@ -1147,6 +1238,7 @@ function renderAgentDetails(s){
         h("span", e.error ? "mono err" : "mono sec", e.error ? "error" : n === null || n === undefined ? "\u2014" : num(n), {title:e.error || ""})));
     }
     ts.appendChild(list);
+    if (sc.cut) ts.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"margin-top:6px"}));
   }
   d.appendChild(ts);
   if (liveOwner(s.profile) || browserOf(s.profile)) d.appendChild(liveSec(s.profile));
@@ -1228,8 +1320,7 @@ function renderEvidenceDetails(e){
     const p = add(h("div", "dpad"), h("div", "sec-h", "No event selected"), h("div", "sm mut", idx.events.length ? "Pick an event with j and k." : "Events appear here after the lab looks them up."));
     d.appendChild(p);
     if (pend.length){
-      d.appendChild(add(h("div", "dsec"), add(h("div", "sec-h"), "Pending lookups", h("span", "aside", String(pend.length))),
-        h("div", "mono sm sec bw", pend.slice(0, 60).join(" ") + (pend.length > 60 ? " \u2026" : ""), {style:"line-height:18px"})));
+      d.appendChild(add(h("div", "dsec"), add(h("div", "sec-h"), "Pending lookups", h("span", "aside", String(pend.length))), idList(pend, "pend", 60)));
     }
     return;
   }
@@ -1243,7 +1334,7 @@ function renderEvidenceDetails(e){
   for (const x of cites){
     const id = x.c.claim_id || "(no claim id)";
     cs.appendChild(add(h("div", "row", null, {style:"gap:8px;align-items:flex-start;margin-bottom:6px"}), h("span", "mono sm", id, {style:"flex:none"}),
-      h("span", "sm sec clamp3", x.c.statement || "", {title:x.c.statement || ""})));
+      add(h("div", "grow"), clip(x.c.statement || "", 3, "cb:" + e.id + ":" + id, "sm sec"))));
   }
   if (!cites.length) cs.appendChild(h("div", "sm mut", "Not cited by a counted claim."));
   d.appendChild(cs);
@@ -1353,6 +1444,7 @@ function renderView(){
     }
     else if (ev === "evidence"){ clear($("rail")); const list = evFiltered(), e = evSelected(list); renderEvidenceMain(e, list); renderEvidenceDetails(e); }
     else if (ev === "inbox"){ clear($("rail")); clear($("details")); renderInbox(); }
+    fitClips();
   });
   refreshLiveText();
 }
@@ -1608,7 +1700,7 @@ $("scrim").addEventListener("mousedown", (e) => { if (e.target === $("scrim")) c
 addEventListener("hashchange", () => { readHash(); applyRoute(); });
 phoneMq.addEventListener("change", applyRoute);
 let resizeTimer = null;
-addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state) renderHealth(); }, 150); });
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (state){ renderHealth(); renderView(); } }, 150); });
 readHash();
 applyRoute();
 renderMark();

@@ -53,7 +53,7 @@ const CSS = `
 .hw-who{width:240px;flex:none;min-width:0}
 .hw-who b{display:block;font-weight:500}
 .hw-who code{display:block;font-family:var(--hw-mono);font-size:11px;line-height:16px;color:var(--hw-ink3)}
-.hw-remit{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:16px;color:var(--hw-ink2)}
+.hw-remit{flex:1 1 auto;min-width:0;font-size:12px;line-height:16px;color:var(--hw-ink2)}
 @container (max-width:760px){.hw-who{width:180px}}
 .hw-screen{padding:16px;display:flex;flex-direction:column;gap:12px}
 .hw-label{font-size:12px;line-height:16px;color:var(--hw-ink3)}
@@ -96,6 +96,17 @@ const sheet = () => jsx('style', {href:'hunt-command-workspace-ui', precedence:'
 // DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
 // NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 // THIS SOFTWARE.
+//
+// The MIT License (MIT) (for portions derived from Feather). Copyright (c) 2013-2026 Cole Bemis.
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright
+// notice and this permission notice shall be included in all copies or substantial portions of the Software. THE
+// SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+// COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const ICONS = {
   monitor: [['rect',{width:20,height:14,x:2,y:3,rx:2}],['line',{x1:8,x2:16,y1:21,y2:21}],['line',{x1:12,x2:12,y1:17,y2:21}]],
   chevronDown: [['path',{d:'m6 9 6 6 6-6'}]],
