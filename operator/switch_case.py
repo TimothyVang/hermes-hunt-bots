@@ -90,7 +90,7 @@ def main():
     while rc and time.time() - t0 < 3600:
         if avail_mib() >= start_memory_mib():
             rc, st = lab('start', 600)
-            say(f"start rc={rc} {st.get('state')} {st.get('reason')}")
+            say(f"start rc={rc} {st.get('state')} {st.get('reason')} network={st.get('network')}")
         if rc:
             time.sleep(5)
     if rc:

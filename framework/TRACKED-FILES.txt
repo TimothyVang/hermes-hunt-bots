@@ -150,6 +150,7 @@ hermes-skills/security-audit/WEB-PROTOCOL-AND-AUTH.md
 hermes-skills/threat-hunt/SKILL.md
 hermes_temporal/activities.py
 hermes_temporal/board.py
+hermes_temporal/board_page.html
 hermes_temporal/cli.py
 hermes_temporal/contracts.py
 hermes_temporal/execution.py

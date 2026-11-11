@@ -337,14 +337,14 @@ class RuntimeTests(unittest.TestCase):
 
     def test_argv_has_only_loopback_user_networking_and_fixed_guest_devices(self):
         home, _, record = self.record()
-        argv = runtime.build_argv(self.qemu, self.disk, self.seed, record, home / "serial.log")
+        argv = runtime.build_argv(self.qemu, self.disk, self.seed, dict(record, network="restricted"), home / "serial.log")
         for prohibited in ("-net", "-nic", "-fsdev", "-virtfs", "-spice", "-daemonize", "-snapshot", "-no-reboot"):
             self.assertNotIn(prohibited, argv)
         joined = " ".join(argv)
         for prohibited in ("bridge", "tap,", "hostfwd=tcp::", "0.0.0.0", "[::]", "9200", "-:22", "usb-host", "vfio", "clipboard"):
             self.assertNotIn(prohibited, joined)
         net = argv[argv.index("-netdev") + 1]
-        self.assertEqual(net, "user,id=net0,hostfwd=tcp:127.0.0.1:31004-:8765,hostfwd=tcp:127.0.0.1:31005-:8005,"
+        self.assertEqual(net, "user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:31004-:8765,hostfwd=tcp:127.0.0.1:31005-:8005,"
                               "hostfwd=tcp:127.0.0.1:31006-:5601")
         self.assertEqual(argv[argv.index("-vnc") + 1], "127.0.0.1:25102,websocket=127.0.0.1:31003")
         self.assertEqual(argv[argv.index("-qmp") + 1], "tcp:127.0.0.1:31001,server=on,wait=off")
@@ -359,6 +359,66 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(blocks[1]["backing"])
         self.assertTrue(blocks[2]["read-only"])
         self.assertTrue(blocks[3]["read-only"])
+
+    def launch_network(self, previous=None):
+        """Start once (after an optional stopped previous record) and return (stored network, -netdev value)."""
+        if previous is not None:
+            home, _, record = self.record(state="stopped", pid=None)
+            record = {key: value for key, value in dict(record, **previous).items() if value is not None or key == "pid"}
+            (home / "state.json").write_text(json.dumps(record))
+        with contextlib.ExitStack() as stack:
+            popen, client = self.launch_boundaries(stack)
+            # A previous record is probed first; its QMP is gone, so the launch proceeds.
+            stack.enter_context(mock.patch.object(runtime, "_owned", side_effect=[
+                runtime.QMPUnavailable, contextlib.nullcontext(client)] if previous is not None
+                else [contextlib.nullcontext(client)]))
+            result = self.start()
+        argv = popen.call_args.args[0]
+        stored = json.loads((self.state_dir / runtime.PROFILE / "state.json").read_text())
+        self.assertEqual(result["network"], stored["network"])
+        return stored["network"], argv[argv.index("-netdev") + 1]
+
+    def test_only_the_first_boot_of_a_lab_has_outbound_nat(self):
+        network, net = self.launch_network()
+        self.assertEqual(network, "provisioning")
+        self.assertTrue(net.startswith("user,id=net0,hostfwd=tcp:127.0.0.1:31004-:8765,"))
+        self.assertNotIn("restrict", net)
+        for previous in ({"network": "provisioning", "reason": "powered_down"},
+                         {"network": "restricted", "reason": "process_exited"},
+                         {"network": None, "reason": "powered_down"}):
+            with self.subTest(previous=previous):
+                network, net = self.launch_network(previous)
+                self.assertEqual(network, "restricted")
+                self.assertTrue(net.startswith("user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:31004-:8765,"))
+
+    def test_a_first_boot_whose_guest_never_ran_keeps_provisioning(self):
+        for reason in ("launch_failed", "qemu_exited"):
+            with self.subTest(reason=reason):
+                network, net = self.launch_network({"network": "provisioning", "reason": reason})
+                self.assertEqual(network, "provisioning")
+                self.assertNotIn("restrict", net)
+        network, _ = self.launch_network({"network": "restricted", "reason": "qemu_exited"})
+        self.assertEqual(network, "restricted")
+
+    def test_status_of_a_vm_launched_before_network_modes_reports_it_unrestricted(self):
+        home, _, record = self.record()
+        client = mock.Mock()
+        client.execute.return_value = {"running": True, "status": "running"}
+        for stored, reported in (("restricted", "restricted"), ("provisioning", "provisioning"), (None, "unrestricted_legacy")):
+            with self.subTest(stored=stored):
+                saved = dict(record, network=stored) if stored else record
+                (home / "state.json").write_text(json.dumps(saved))
+                with mock.patch.object(runtime, "_owned", return_value=contextlib.nullcontext(client)):
+                    result = runtime.invoke("status", state_dir=self.state_dir)
+                self.assertEqual((result["state"], result["network"]), ("running", reported))
+        # The legacy label is reported only; the record keeps no mode, so the next launch is restricted.
+        self.assertNotIn("network", json.loads((home / "state.json").read_text()))
+
+    def test_unknown_network_mode_in_state_is_refused(self):
+        home, _, record = self.record()
+        (home / "state.json").write_text(json.dumps(dict(record, network="open")))
+        result = runtime.invoke("status", state_dir=self.state_dir)
+        self.assertEqual(result["reason"], "invalid_state")
 
     def test_qmp_arbitrary_command_is_not_available(self):
         transport = ScriptedSocket([{"QMP": {}}, {"return": {}, "id": 1}])
