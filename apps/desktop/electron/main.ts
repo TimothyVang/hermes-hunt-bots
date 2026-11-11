@@ -1399,6 +1399,13 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
+
+// The renderer's index.html <title> would otherwise rename every app window
+// "Hermes" on load, whatever product this build is.
+function keepProductTitle(win: BrowserWindow): void {
+  win.on('page-title-updated', event => event.preventDefault())
+}
+
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -12248,7 +12255,7 @@ function spawnSecondaryWindow({
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12280,6 +12287,7 @@ function spawnSecondaryWindow({
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  keepProductTitle(win)
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
   // The preload asks for its skin before it can publish its own active route.
   // Register the profile carried in the window URL before loading the renderer.
@@ -12353,7 +12361,7 @@ function spawnBrowserWindow(tabId) {
     height: BROWSER_WINDOW_HEIGHT,
     minWidth: BROWSER_WINDOW_MIN_WIDTH,
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12375,6 +12383,7 @@ function spawnBrowserWindow(tabId) {
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  keepProductTitle(win)
   attachRendererConsoleCapture(win, 'browser-window', rememberLog)
 
   installWindowRendererLifecycle(win, {
@@ -12465,7 +12474,7 @@ function createInstanceWindow(
     ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12493,6 +12502,7 @@ function createInstanceWindow(
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  keepProductTitle(win)
 
   // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
   // primary and session windows: a crashed instance renderer logs with its
@@ -13550,7 +13560,7 @@ function createWindow() {
     ),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -13773,6 +13783,7 @@ function createWindow() {
 
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
+  keepProductTitle(mainWindow)
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
   // policy (crashed/oom/killed → bounded reload via the shared rolling budget, then

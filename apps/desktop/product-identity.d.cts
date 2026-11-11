@@ -3,6 +3,9 @@ interface ProductIdentity {
   light: boolean
   /** True for a Store-submission build (Windows Store packaging identity). */
   store: boolean
+  /** True for the Hunt Bots fork: its own state and lock, no upstream feed.
+   *  Absent on channel-build identities, which are never the fork. */
+  fork?: boolean
   /** Display name. e.g. "Hermes Light" */
   displayName: string
   /** OS-level app identity. e.g. "com.nousresearch.hermes-light" */

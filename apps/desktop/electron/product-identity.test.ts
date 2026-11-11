@@ -143,15 +143,16 @@ test('nonstable identity preserves an explicit isolated userData directory', asy
 test.each([
   [undefined, 'Hermes', 'hermes', 'latest', 'canary'],
   ['bundled', 'Hermes Agent', 'hermes', 'latest', 'canary'],
-  ['light', 'Hermes Light', 'hermes-light', 'light', 'light-canary']
+  ['light', 'Hermes Light', 'hermes-light', 'light', 'light-canary'],
+  ['hunt-bots', 'Hunt Bots', 'hermes', null, null]
 ] as const)(
   '%s separates stable, canary and independent commits',
   async (
     variant: string | undefined,
     display: string,
     cli: string,
-    channel: string,
-    canaryChannel: string
+    channel: string | null,
+    canaryChannel: string | null
   ): Promise<void> => {
     const stable: ProductIdentity = await identityForVariant(variant)
     assert.equal(stable.displayName, display)
@@ -219,6 +220,46 @@ test('light and bundled retain distinct OS markers from the full client', async 
       assert.notEqual(other.channel, full.channel)
     }
   }
+})
+
+test('hunt-bots is its own product: own names, state and lock, no Nous identity, no release feed', async (): Promise<void> => {
+  const full: ProductIdentity = await identityForVariant(undefined)
+  const fork: ProductIdentity = await identityForVariant('hunt-bots')
+
+  assert.equal(fork.fork, true)
+  assert.equal(fork.displayName, 'Hunt Bots')
+  assert.equal(fork.cliName, full.cliName)
+  assert.equal(fork.channel, null)
+
+  for (const field of ['displayName', 'appId', 'appNamePascal', 'artifactNamePascal', 'windowsExecutableName', 'msixAppIdWithOrg'] as const) {
+    assert.notEqual(fork[field], full[field], field)
+    assert.doesNotMatch(fork[field], /nous/i, field)
+  }
+
+  // Electron derives the single-instance lock from userData, so sharing it
+  // with Hermes would make one app refuse to start while the other runs.
+  const runtime: { applyDesktopIdentity: typeof applyDesktopIdentity } = await import('./product-identity')
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-fork-'))
+  const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Hermes') }
+
+  try {
+    const named: string | null = runtime.applyDesktopIdentity(
+      { getPath: (key: string): string => paths[key], setPath: (key: string, value: string): void => { paths[key] = value }, setName: (): void => {} },
+      fork,
+      {}
+    )
+    assert.equal(named, 'Hunt Bots')
+    assert.equal(paths.userData, path.join(root, 'HuntBots'))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+
+  delete require.cache[require.resolve('../electron-builder.config.cjs')]
+  const config: PackagingConfiguration = require('../electron-builder.config.cjs')
+  assert.equal(config.extraMetadata.productName, 'Hunt Bots')
+  assert.equal(config.win.executableName, 'Hunt Bots')
+  assert.equal(config.publish, null)
+  assert.equal(config.mac.publish, null)
 })
 
 test('packaging isolates boot metadata and executable names without renaming release artifacts', async (): Promise<void> => {

@@ -25,7 +25,8 @@ export const PRODUCT_IDENTITY: Readonly<ProductIdentity> =
 
 /** Pin before the first userData lookup and single-instance lock. Electron's
  * later display-name changes must not redirect an installed build's state.
- * Stable keeps its historical userData and runtime naming behavior.
+ * Stable keeps its historical userData and runtime naming behavior; a fork
+ * product (Hunt Bots) never shares Hermes's state or single-instance lock.
  */
 export function applyDesktopIdentity(
   app: {
@@ -36,7 +37,7 @@ export function applyDesktopIdentity(
   identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY,
   env: NodeJS.ProcessEnv = process.env
 ): string | null {
-  if (!identity.token && identity.appNamePascal === identity.artifactNamePascal) {
+  if (!identity.token && !identity.fork && identity.appNamePascal === identity.artifactNamePascal) {
     return null
   }
 

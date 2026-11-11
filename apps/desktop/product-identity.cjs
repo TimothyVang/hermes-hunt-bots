@@ -1,6 +1,7 @@
 // The desktop product identity — THE single source for every name-shaped
 // value a variant owns. HERMES_DESKTOP_VARIANT=light builds "Hermes
-// Light", the remote-only client; everything else is full "Hermes".
+// Light", the remote-only client; hunt-bots builds the Hunt Bots fork;
+// everything else is full "Hermes".
 //
 // Consumed at build time by electron-builder.config.cjs (packaging
 // identity). electron/product-identity.ts is the typed runtime accessor.
@@ -19,12 +20,23 @@ const variants = {
     display: 'Hermes Agent',
     kebab: 'hermes-bundled',
     pascal: 'HermesBundled'
+  },
+  // The hermes-hunt-bots fork's own product: no Nous publisher identity and
+  // no upstream release feed, so it never updates itself into Hermes.
+  'hunt-bots': {
+    display: 'Hunt Bots',
+    kebab: 'hunt-bots',
+    pascal: 'HuntBots',
+    org: { reverseDomain: 'io.github.timothyvang', pascal: 'TimothyVang' }
   }
 }
 
+/** @type {{ reverseDomain: string, pascal: string }} */
+const NOUS = { reverseDomain: 'com.nousresearch', pascal: 'NousResearch' }
+
 const variant = process.env.HERMES_DESKTOP_VARIANT || ''
-if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+if (!['', 'light', 'bundled', 'store', 'hunt-bots'].includes(variant)) {
+  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store, hunt-bots`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled
@@ -33,7 +45,10 @@ if (!['', 'light', 'bundled', 'store'].includes(variant)) {
 // MSIX package identity. The Store re-signs on submission.
 const store = variant === 'store'
 const light = variant === 'light'
+const fork = variant === 'hunt-bots'
+/** @type {{ display: string, kebab: string, pascal: string, org?: { reverseDomain: string, pascal: string } }} */
 const name = variants[store ? 'bundled' : (variant || '')]
+const org = name.org || NOUS
 
 // The electron-updater feed channel this build PUBLISHES to. A canary
 // tag (vX.Y.Z+canary.YYYYMMDDTHHMMSSZ) writes canary.yml / light-canary.yml;
@@ -65,15 +80,16 @@ if (store && (canary || buildCommit)) {
 const identity = {
   store,
   light,
+  fork,
   displayName,
-  appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
-  // Store and commit builds do not publish a release feed.
-  channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
+  appId: `${org.reverseDomain}.${name.kebab}${kebabSuffix}`,
+  // Store, commit and fork builds do not publish a release feed.
+  channel: store || buildCommit || fork ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: `${name.pascal}${pascalSuffix}`,
   artifactNamePascal: name.pascal,
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
-  msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
+  msixAppIdWithOrg: `${org.pascal}.${name.pascal}${pascalSuffix}`,
   ...(store
     ? {
         storeMsix: {
