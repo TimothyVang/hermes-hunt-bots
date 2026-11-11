@@ -113,26 +113,53 @@ class CheckKeys(unittest.TestCase):
         self.assertEqual(result['failures'], [{'fact_id': 'attack.drop', 'problems': ['omp exited 1']}])
         self.assertFalse((self.out / f'reply-{CASE}-1.txt').exists())
 
-    def test_omp_runs_without_tools_or_any_mcp_source_from_a_scratch_directory(self):
+    def test_a_rerun_removes_only_this_cases_earlier_outputs(self):
+        self.out.mkdir()
+        stale = [f'packet-{CASE}-9.json', f'reply-{CASE}-9.txt', f'keys-{CASE}.json']
+        kept = [f'packet-{CASE}-b-1.json', f'keys-{CASE}-b.json', 'notes.txt']
+        for name in stale + kept:
+            (self.out / name).write_text('old', encoding='utf-8')
+        ck.run_check(CASE, self.out, self.reviewer({}), packets_only=True)
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()),
+                         sorted(kept + [f'packet-{CASE}-1.json', f'packet-{CASE}-2.json']))
+
+    def omp(self, settings, model):
+        """Run one review with omp faked: settings answers `omp config get`; returns what the review call saw."""
         packet = self.out / 'packet-x.json'
-        packet.parent.mkdir(parents=True)
+        packet.parent.mkdir(parents=True, exist_ok=True)
         packet.write_text('{}', encoding='utf-8')
         seen = {}
 
-        def run(command, cwd, **options):
+        def run(command, cwd=None, **options):
+            if command[1:3] == ['config', 'get']:
+                value = settings.get(command[3])
+                return SimpleNamespace(returncode=0 if value is not None else 1, stdout=json.dumps({'value': value}), stderr='')
             seen.update(command=command, files=sorted(path.name for path in Path(cwd).iterdir()),
-                        overlay=(Path(cwd) / 'no-mcp.yml').read_text(encoding='utf-8'))
+                        overlay=json.loads((Path(cwd) / 'no-mcp.yml').read_text(encoding='utf-8')))
             return SimpleNamespace(returncode=0, stdout='[]', stderr='')
         with patch.object(ck.subprocess, 'run', run):
-            self.assertEqual(ck.omp_reviewer('claude-opus-5-5')(packet), '[]')
+            review = ck.omp_reviewer(model)
+            self.assertEqual(review(packet), '[]')
+        return review, seen
+
+    def test_omp_runs_without_tools_or_any_mcp_source_from_a_scratch_directory(self):
+        review, seen = self.omp({'disabledProviders': ['google', {'path': '/w', 'id': 'github'}]}, 'claude-opus-5-5')
         self.assertEqual(seen['command'][:2], ['omp', '-p'])
         for flag in ('--no-tools', '--no-session', '--no-context-files', '--no-extensions'):
             self.assertIn(flag, seen['command'])
         self.assertEqual(seen['command'][seen['command'].index('--config') + 1], 'no-mcp.yml')
         self.assertEqual(seen['files'], ['no-mcp.yml', 'packet-x.json'])
-        self.assertEqual(seen['overlay'].split('\n')[0], 'disabledProviders:')
-        self.assertEqual({line.strip('- ').strip() for line in seen['overlay'].split('\n')[1:] if line},
-                         set(ck.DISCOVERY_PROVIDERS))
+        # The user's own entries are kept, and every discovery provider, cursor included, is added.
+        self.assertEqual(seen['overlay']['disabledProviders'],
+                         ['google', {'path': '/w', 'id': 'github'}] + list(ck.DISCOVERY_PROVIDERS) + ['cursor'])
+        self.assertEqual(review.model, 'claude-opus-5-5')
+
+    def test_a_cursor_reviewer_model_keeps_cursor_and_the_default_model_is_recorded(self):
+        review, seen = self.omp({'modelRoles': {'default': 'cursor/composer-2'}}, None)
+        self.assertNotIn('cursor', seen['overlay']['disabledProviders'])
+        self.assertNotIn('--model', seen['command'])
+        self.assertEqual(review.model, 'cursor/composer-2 (omp default model role)')
+        self.assertEqual(self.omp({}, None)[0].model, 'unknown')
 
 
 if __name__ == '__main__':

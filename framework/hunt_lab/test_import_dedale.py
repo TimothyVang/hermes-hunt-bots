@@ -248,21 +248,24 @@ class ImportCase(unittest.TestCase):
         a_delete = evt("2025-01-06T10:45:45.000Z", C2, SYSMON, 116, unparsed, winlog={"event_data": {"ProcessGuid": GUID_A}})
         other_delete = evt("2025-01-06T10:45:50.000Z", C2, SYSMON, 117, unparsed, winlog={"event_data": {"ProcessGuid": "{z}"}})
         a_access = evt("2025-01-06T10:46:00.000Z", C2, SYSMON, 111, sysmon(10, "process"), process=dict(scv, entity_id=GUID_A))
-        # Another entity_id, but pid 2768 inside the process lifetime: the importer's pid rule assigns it.
-        a_dns = evt("2025-01-06T10:47:00.000Z", C2, SYSMON, 112, sysmon(22, "network"), process=dict(scv, entity_id="{x}"))
+        # No entity_id, but pid 2768 inside the process lifetime: the importer's pid rule assigns it.
+        a_dns = evt("2025-01-06T10:47:00.000Z", C2, SYSMON, 112, sysmon(22, "network"), process=scv)
+        # The same pid in the lifetime, but its own entity_id names another process: never a sibling.
+        x_dns = evt("2025-01-06T10:47:30.000Z", C2, SYSMON, 118, sysmon(22, "network"), process=dict(scv, entity_id="{x}"))
         a_class_2 = evt("2025-01-06T10:48:00.000Z", C2, SYSMON, 113, sysmon(22, "network"), process=dict(scv, entity_id=GUID_A))
         after_life = evt("2025-01-06T10:55:00.000Z", C2, SYSMON, 114, sysmon(10, "process"), process=dict(scv, entity_id="{y}"))
         other = evt("2025-01-06T10:56:00.000Z", C2, SYSMON, 115, sysmon(10, "process"),
                     process={"entity_id": "{other}", "pid": 7777, "name": "cmd.exe"})
         data = build_dataset(self.root / "siblings", class_1=CLASS_1 + [a_file], class_2=(CLASS_2, a_class_2),
-                             hour_10=HOUR_10 + [a_file, a_delete, other_delete, a_access, a_dns, a_class_2, after_life, other])
+                             hour_10=HOUR_10 + [a_file, a_delete, other_delete, a_access, a_dns, x_dns, a_class_2,
+                                                after_life, other])
         _, evidence, operator = self.run_import(data=data)
         events, truth, _ = self.load(evidence, operator)
         ids = {event["winlog"]["record_id"]: event["event"]["id"] for event in events if event["host"]["name"] == C2}
         facts = {fact["fact_id"]: fact for fact in truth["facts"]}
         scv_fact = facts["attack.client2.scvhost.2768"]
         self.assertEqual(scv_fact["evidence_event_groups"][2], [ids[110]])
-        # Class-2, out-of-lifetime and other-process events, and another process's deletion, never are siblings.
+        # Class-2, out-of-lifetime, other-process and other-entity_id events, and another process's deletion, never are.
         self.assertEqual(scv_fact["evidence_sibling_groups"], [[ids[111]], [ids[112]], [ids[116]]])
         self.assertEqual(facts["attack.client2.powershell.4100"]["evidence_sibling_groups"], [[], []])
         groups = scv_fact["evidence_event_groups"]

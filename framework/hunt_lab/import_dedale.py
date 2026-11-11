@@ -331,8 +331,8 @@ def unparsed_sysmon(record):
 
 def sibling_positions(rows, matcher, assigned, labelled):
     """(process index, group key) -> positions of events that carry no class-1 or class-2 label and belong to exactly
-    one fact process: by the rule that assigned its labelled events or, for a Sysmon file deletion winlogbeat
-    failed to parse, by its own ProcessGuid."""
+    one fact process: by the rule that assigned its labelled events, unless the event's own process.entity_id names
+    another process, or, for a Sysmon file deletion winlogbeat failed to parse, by its own ProcessGuid."""
     hosts = {process["host"].lower() for process, _ in assigned.values()}
     siblings = defaultdict(list)
     for position, (timestamp, host, _, _, line) in enumerate(rows):
@@ -343,7 +343,10 @@ def sibling_positions(rows, matcher, assigned, labelled):
         if unparsed:
             found, key = matcher.by_guid.get((short_host(host), unparsed[0]), []), group_key(record, unparsed[1])
         else:
-            found, key = matcher.match(record, short_host(host), timestamp)[1], group_key(record)
+            own = field(record, "process", "entity_id")
+            found = [process for process in matcher.match(record, short_host(host), timestamp)[1]
+                     if not own or process["guid"] == own]
+            key = group_key(record)
         if len(found) == 1 and id(found[0]) in assigned:
             siblings[id(found[0]), key].append(position)
     return siblings
