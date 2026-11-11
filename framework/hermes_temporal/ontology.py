@@ -27,9 +27,24 @@ _MAX_SNAPSHOT_BYTES = 32768
 MAX_HANDOFF_BYTES = 16384
 
 
+_FIELD_NAME = re.compile(r"[A-Za-z0-9_]{1,40}\Z")
+
+
 def _obj(value: object, fields: set[str], name: str) -> dict:
-    if type(value) is not dict or set(value) != fields:
-        raise ValueError(f"{name} must contain exactly the specified fields")
+    # The message reaches the step's one correction retry; naming the fields lets the model fix them.
+    # Live: a Purple Team review failed this check twice with no hint and halted a hunt.
+    if type(value) is not dict:
+        raise ValueError(f"{name} must contain exactly the specified fields (a JSON object with "
+                         f"{', '.join(sorted(fields))})")
+    if set(value) != fields:
+        missing = sorted(fields - set(value))
+        extra = [key for key in value if key not in fields]
+        named = sorted(key for key in extra if type(key) is str and _FIELD_NAME.fullmatch(key))[:8]
+        parts = [f"missing {', '.join(missing)}"] if missing else []
+        if extra:
+            parts.append("unexpected " + ", ".join(named + ([f"{len(extra) - len(named)} more"]
+                                                             if len(extra) > len(named) else [])))
+        raise ValueError(f"{name} must contain exactly the specified fields ({'; '.join(parts)})")
     return value
 
 
