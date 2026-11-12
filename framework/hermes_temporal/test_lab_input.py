@@ -553,6 +553,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.assertEqual((request.synthetic_only, request.data_origin, request.tool_driven), (False, "work-connected", True))
         for step in request.steps:
             self.assertIn(CONNECTED_TEXT, step.prompt)
+            self.assertNotIn("synthetic", step.prompt.lower())
 
     def test_a_vm_case_claiming_the_connected_origin_or_bad_hosts_is_refused(self):
         vm = FakeLab(case=CONNECTED_CASE)
@@ -563,7 +564,13 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.addCleanup(hosted.close)
         with self.assertRaises(lab_input.LabInputError):
             self.collect(hosted, data_origin="work-export")
-        for hosts in ([], ["ws-01", "ws-01"], ["ws\n01"], "ws-01", [1], [f"h{n}" for n in range(51)]):
+        unlabelled, state_dir = self.connected({**TOOL_CASE, "case_id": "work-conn-002"})
+        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+        with self.assertRaises(lab_input.LabInputError), \
+                patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            lab_input.collect_tool_input(state_dir)
+        self.assertEqual(unlabelled.paths(), ["/case"])
+        for hosts in ([], ["ws-01", "ws-01"], ["ws\n01"], [" ws-01"], "ws-01", [1], [f"h{n}" for n in range(51)]):
             _lab, state_dir = self.connected({**CONNECTED_CASE, "hosts": hosts})
             runtime = fake_runtime({**self.STATUS, "state": "stopped"})
             with self.subTest(hosts=hosts), self.assertRaises(lab_input.LabInputError), \

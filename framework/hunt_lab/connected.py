@@ -499,6 +499,9 @@ def _open(config_path, case_path, environ, transport, home=None):
     """The validated case and an opened WorkElastic; the key leaves the environment before anything else runs."""
     config = load_config(config_path)
     case = load_case(case_path)
+    served = json.dumps(case).lower()
+    if any(name.lower() in served for name in (parse.urlsplit(config['url']).hostname, config['index'])):
+        raise ConnectError('the case file names the cluster host or the index pattern; /case is what the bots see')
     try:
         key = read_api_key(environ, config['api_key_env'])
     except ValueError as failure:

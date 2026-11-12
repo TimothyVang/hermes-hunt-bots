@@ -369,7 +369,8 @@ def case_metadata(path: Path) -> dict:
     if "network_capture" in case and case["network_capture"] != NO_CAPTURE:
         raise PreparationError(f'case.json network_capture may only be "{NO_CAPTURE}"')
     if "data_origin" in case and case["data_origin"] not in DATA_ORIGINS:
-        raise PreparationError("case.json data_origin may only be " + " or ".join(f'"{origin}"' for origin in DATA_ORIGINS))
+        raise PreparationError("case.json data_origin may only be " + " or ".join(
+            f'"{origin}"' for origin in DATA_ORIGINS if origin != CONNECTED_ORIGIN))
     if case.get("data_origin") == CONNECTED_ORIGIN:
         raise PreparationError(f'a "{CONNECTED_ORIGIN}" case is never seeded into the VM; '
                                "serve it on this PC with python -m hunt_lab.connected serve")

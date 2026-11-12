@@ -328,7 +328,8 @@ def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
 def _hosts_ok(case: dict) -> bool:
     hosts = case.get("hosts")
     return (isinstance(hosts, list) and 1 <= len(hosts) <= _MAX_HOSTS
-            and all(isinstance(host, str) and 0 < len(host) <= 100 and host.isprintable() for host in hosts)
+            and all(isinstance(host, str) and 0 < len(host) <= 100 and host.isprintable() and host.strip() == host
+                    for host in hosts)
             and len(set(hosts)) == len(hosts))
 
 

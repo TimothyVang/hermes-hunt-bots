@@ -226,7 +226,9 @@ class RefusalTests(ConnectedCase):
                                  (dict(hosts=[{}]), 'hosts'), (dict(truth='x'), 'must hold exactly'),
                                  (dict(schema_version=2), 'schema_version'), (dict(schema_version=True), 'schema_version'),
                                  (dict(sources=[]), 'sources'), (dict(sources=[{'artifact': 'x'}]), 'sources'),
-                                 (dict(sources=[{'artifact': 'x', 'coverage': ' '}]), 'sources')):
+                                 (dict(sources=[{'artifact': 'x', 'coverage': ' '}]), 'sources'),
+                                 (dict(sources=[{'artifact': 'x', 'coverage': 'events on ELASTIC.example.test'}]), 'cluster host'),
+                                 (dict(question=f'What is in {INDEX}?'), 'index pattern')):
             with self.subTest(change=change):
                 self.case_path = self.write('case.json', {**self.case, **change})
                 self.assertIn(expected, self.refused())
