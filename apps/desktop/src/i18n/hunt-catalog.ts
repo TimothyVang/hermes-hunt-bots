@@ -3,10 +3,26 @@ import { PRODUCT_NAME } from '@/variant'
 import type { BundledLocale, Translations } from './types'
 
 // The Hunt Command build (IS_HUNT_VARIANT) renames the desktop app, not the Hermes agent it runs.
-// A string naming the app ("Hermes Desktop", "the Hermes app") says PRODUCT_NAME in every bundled
-// locale; "Hermes" as the agent, its backend or CLI stays, and so does Nous where it names a
-// service the app still talks to (Portal sign-in, the plugin catalog, diagnostics uploads).
-const APP_PHRASE = /\bHermes(?: [Dd]esktop\b|(?= app\b))/g
+// A string naming the app ("Hermes Desktop", "the Hermes app" and each bundled language's forms of
+// them) says PRODUCT_NAME; "Hermes" as the agent, its backend or CLI stays, and so does Nous where it
+// names a service the app still talks to (Portal sign-in, the plugin catalog, diagnostics uploads).
+// Applied in order; each keeps the language's own word for "app" and drops only Hermes (and "Desktop").
+const APP_NAME_RULES: readonly [RegExp, (name: string) => string][] = [
+  // German compounds: Hermes-App, Hermes-Desktop-App.
+  [/\bHermes-(?:Desktop-)?(?=App\b)/g, name => `${name.replace(/ /g, '-')}-`],
+  // English: the Hermes app, the Hermes desktop app.
+  [/\bHermes(?: [Dd]esktop)?(?= app\b)/g, name => name],
+  // Hermes Desktop (every language), Hermes desktop (ar, ru), Hermes-Desktop (de).
+  [/\bHermes[ -][Dd]esktop\b/g, name => name],
+  // Chinese and Japanese desktop editions: Hermes 桌面版 / 桌面端 / デスクトップ(版), spaced from CJK text after it.
+  [/Hermes ?(?:桌面版|桌面端|デスクトップ版?(?!アプリ))(?=[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}])/gu, name => `${name} `],
+  [/Hermes ?(?:桌面版|桌面端|デスクトップ版?(?!アプリ))/g, name => name],
+  // Chinese and Japanese "app" after the name: Hermes 应用, Hermes 桌面應用程式, Hermes デスクトップアプリ.
+  [/Hermes(?= ?(?:桌面|デスクトップ)?(?:应用|應用|アプリ))/g, name => name],
+  // "app" before the name: application (de bureau) Hermes, aplicación (de escritorio) de Hermes,
+  // приложение / приложении Hermes (every case), تطبيق Hermes.
+  [/(?<=(?:\b[Aa]pplication|\b[Aa]plicación|\b[Aa]pp)(?: de bureau| de escritorio)?(?: de)? |приложени\p{L}* |تطبيق )Hermes\b/gu, name => name]
+]
 
 // Strings where a bare "Hermes" is the app (the tray's Quit menu, relaunching it, its test notification).
 const APP_WORD_KEYS = new Set([
@@ -22,7 +38,7 @@ const DISTRIBUTION_KEYS = new Set([
 ])
 
 function rename(text: string, key: string): string {
-  const named = text.replace(APP_PHRASE, PRODUCT_NAME)
+  const named = APP_NAME_RULES.reduce((out, [pattern, to]) => out.replace(pattern, to(PRODUCT_NAME)), text)
 
   if (APP_WORD_KEYS.has(key)) {
     return named.replace(/\bHermes\b/g, PRODUCT_NAME)

@@ -99,8 +99,10 @@ function resolveCheckoutHead(
 // A GitHub https, ssh or scp-style remote URL with an optional .git suffix: also
 // www.github.com, an explicit port (ssh://git@github.com:22/…) and GitHub's ssh-over-443
 // host (ssh.github.com). The host must end at a port or path, so github.com.example.net never matches.
+// Userinfo takes no `#`, `?` or `\` (git reads `https://evil.com#@github.com/…` as host evil.com),
+// and an scp-style user no `:` either (`evil.com:x@github.com:…` is host evil.com).
 const GITHUB_REMOTE_RE =
-  /^(?:https?:\/\/(?:[^@/]+@)?(?:www\.)?github\.com(?::\d+)?\/|ssh:\/\/(?:[^@/]+@)?(?:ssh\.)?github\.com(?::\d+)?\/|(?:[^@/\s]+@)?(?:ssh\.)?github\.com:)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i
+  /^(?:https?:\/\/(?:[^@/?#\\\s]+@)?(?:www\.)?github\.com(?::\d+)?\/|ssh:\/\/(?:[^@/?#\\\s]+@)?(?:ssh\.)?github\.com(?::\d+)?\/|(?:[^@/:?#\\\s]+@)?(?:ssh\.)?github\.com:)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i
 
 /**
  * Whether the installer gets the stamp's branch. Fresh installs and stock

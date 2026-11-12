@@ -85,6 +85,7 @@ test('a fork build repairs with its branch only a checkout of its own repo; othe
     'https://github.com/TimothyVang/hermes-hunt-bots.git',
     'https://github.com/timothyvang/Hermes-Hunt-Bots',
     'https://token@github.com/TimothyVang/hermes-hunt-bots.git/',
+    'https://user:token@github.com/TimothyVang/hermes-hunt-bots.git',
     'https://www.github.com/TimothyVang/hermes-hunt-bots.git',
     'https://github.com:443/TimothyVang/hermes-hunt-bots',
     'git@github.com:TimothyVang/hermes-hunt-bots.git',
@@ -106,6 +107,13 @@ test('a fork build repairs with its branch only a checkout of its own repo; othe
     'https://notgithub.com/TimothyVang/hermes-hunt-bots.git',
     'ssh://git@ssh.github.com.example.net:443/TimothyVang/hermes-hunt-bots.git',
     'git@github.com:22/TimothyVang/hermes-hunt-bots.git',
+    // Userinfo tricks git resolves to another host.
+    'https://evil.com#@github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://evil.com?@github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://evil.com\\@github.com/TimothyVang/hermes-hunt-bots.git',
+    'ssh://git@evil.com#@github.com/TimothyVang/hermes-hunt-bots.git',
+    'evil.com:x@github.com:TimothyVang/hermes-hunt-bots.git',
+    'evil.com#@github.com:TimothyVang/hermes-hunt-bots.git',
     '',
     new Error('no origin')
   ]) {
