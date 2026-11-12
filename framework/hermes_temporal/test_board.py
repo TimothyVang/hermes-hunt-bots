@@ -824,8 +824,6 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.assertEqual(len(resolved), 2)
 
     def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
-        from . import board, lab_input
-
         lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
                       instance="a" * 32, refuse_unknown=True)
         self.addCleanup(lab.close)
