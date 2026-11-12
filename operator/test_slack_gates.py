@@ -199,9 +199,10 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(len(self.cli.calls), 2)
         self.assertEqual(decision[:4], [sg.PYTHON, '-B', '-m', 'hermes_temporal.cli'])
         decision_id = f'{CHILD}:wave-1:review:{nonce}'
-        self.assertEqual(decision[-12:-1], ['decision', CHILD, '--step-id', 'wave-1', '--phase', 'review',
+        self.assertEqual(decision[-18:-7], ['decision', CHILD, '--step-id', 'wave-1', '--phase', 'review',
                                             '--choice', 'approve', '--decision-id', decision_id, '--evidence-note'])
-        note = decision[-1]
+        self.assertEqual(decision[-6:], ['--decided-by', 'Ada Lovelace', '--via', 'slack', '--slack-user', OPERATOR])
+        note = decision[-7]
         self.assertRegex(note, r'^Decided by Ada Lovelace \(Slack user U0ADA\) via Slack at '
                                r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ; card ' + nonce + r'\. Checked: '
                          + re.escape(NOTE) + '$')

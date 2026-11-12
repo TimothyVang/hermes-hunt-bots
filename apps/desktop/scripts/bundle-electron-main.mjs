@@ -12,9 +12,10 @@ const repoRoot = resolve(import.meta.dirname, '../../..')
 // Evaluate the one identity module in a fresh process. Its CJS cache and the
 // caller's environment must not carry a previous variant into this artifact.
 function productIdentity(source, stamp) {
-  const variant = stamp.updateMechanism === 'microsoft-store' ? 'store'
+  const variant = stamp.variant === 'hunt' ? 'hunt'
+    : stamp.updateMechanism === 'microsoft-store' ? 'store'
     : stamp.payload === 'bootstrap' ? '' : stamp.payload
-  if (!['', 'bundled', 'light', 'store'].includes(variant)) {
+  if (!['', 'bundled', 'light', 'store', 'hunt'].includes(variant)) {
     throw new Error(`Invalid desktop stamp payload: ${stamp.payload}`)
   }
   return execFileSync(process.execPath, ['-e', 'console.log(JSON.stringify(require(process.argv[1])))',

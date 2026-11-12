@@ -87,6 +87,8 @@ export interface InstallStamp {
   displayVersion: string | null
   distance: number | null
   payload: ArtifactKind
+  /** HERMES_DESKTOP_VARIANT=hunt: the Hunt Command rebrand of a bootstrap artifact. Absent otherwise. */
+  variant?: 'hunt'
   /** Present on bundled artifacts. Validated at build time, never discovered at boot. */
   runtime?: PayloadRuntime
   /** Complete channel inputs, absent on legacy releases and one-off builds. */

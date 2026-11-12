@@ -87,6 +87,21 @@ const debugEntry = (command: string, env: Record<string, string>) =>
     ? path.resolve(__dirname, './src/debug/dev-only.ts')
     : path.resolve(__dirname, './src/debug/dev-only.noop.ts')
 
+// HERMES_DESKTOP_VARIANT=hunt is this fork's Hunt Command build (HUNT-BOTS.md): src/variant.ts
+// reads the baked variant, the variant's bundled plugins replace the empty stock set, and the
+// document is retitled and pre-paints dark before its first boot palette exists (the design is
+// dark). Every other variant builds the stock renderer.
+const desktopVariant = process.env.HERMES_DESKTOP_VARIANT ?? ''
+const huntVariant = desktopVariant === 'hunt'
+
+export const huntIndexHtml = {
+  name: 'hunt-command-index',
+  transformIndexHtml: (html: string): string =>
+    html
+      .replace('<title>Hermes</title>', '<title>Hunt Command</title>')
+      .replace("const dark = window.matchMedia('(prefers-color-scheme: dark)').matches", 'const dark = true')
+}
+
 // The emoji picker (frimousse) fetches `<emojibaseUrl>/<locale>/data.json` at
 // runtime. Its default is a CDN; Electron must work offline, so serve the
 // bundled emojibase-data package at a stable local path instead — middleware
@@ -137,7 +152,8 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets(), ...(huntVariant ? [huntIndexHtml] : [])],
+  define: { __HERMES_DESKTOP_VARIANT__: JSON.stringify(desktopVariant) },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -234,6 +250,9 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
+      ...(huntVariant
+        ? { '@/contrib/variant-plugins': path.resolve(__dirname, './src/contrib/variant-plugins.hunt.ts') }
+        : {}),
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),

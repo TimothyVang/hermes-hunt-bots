@@ -134,3 +134,34 @@ it('shows native removal steps, data location, and Apps settings on a managed Wi
   expect(run).not.toHaveBeenCalled()
   expect(screen.queryByRole('button', { name: /Uninstall/ })).toBeNull()
 })
+
+it('the Hunt Command build names its folder and offers no Apps settings button on Windows', async (): Promise<void> => {
+  vi.resetModules()
+  vi.doMock('@/variant', () => ({ DESKTOP_VARIANT: 'hunt', IS_HUNT_VARIANT: true, PRODUCT_NAME: 'Hunt Command' }))
+
+  try {
+    // A fresh module instance after resetModules: the variant is read at module load.
+    const { UninstallSection: HuntUninstallSection } = await import('./uninstall-section')
+
+    vi.stubGlobal('hermesDesktop', {
+      uninstall: {
+        summary: async (): Promise<DesktopUninstallSummary> => ({
+          ...summary(false),
+          platform: 'win32',
+          native_removal_instructions: 'Delete the Hunt Command folder at C:\\Builds\\win-unpacked.'
+        }),
+        run: vi.fn(),
+        openAppsSettings: vi.fn()
+      }
+    })
+    render(<HuntUninstallSection />)
+    expect(await screen.findByText(/Hunt Command folder/)).toBeTruthy()
+    expect(screen.getByText(/\/test\/home/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open Apps settings' })).toBeNull()
+    expect(screen.getByText('Uninstall Hunt Command')).toBeTruthy()
+    expect(screen.queryByText(/Hermes/)).toBeNull()
+  } finally {
+    vi.doUnmock('@/variant')
+    vi.resetModules()
+  }
+})

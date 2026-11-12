@@ -251,6 +251,9 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   const updateMechanism = {
     '': 'self',
     bootstrap: 'self',
+    // Hunt Command has no in-app updater, like commit builds: the checkout hand-off
+    // rebuilds stock Hermes. Update by rebuilding with `npm run pack:hunt`.
+    hunt: 'external',
     store: 'microsoft-store',
     bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
     light: platform === 'darwin' ? 'electron-updater' : 'external'
@@ -263,7 +266,9 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   }
   return {
     ...base,
-    payload: variant === "store" ? "bundled" : variant || "bootstrap",
+    payload: variant === "store" ? "bundled" : variant === "hunt" ? "bootstrap" : variant || "bootstrap",
+    // The artifact kind stays bootstrap; the variant only renames it (bundle-electron-main.mjs).
+    ...(variant === "hunt" ? { variant } : {}),
     distribution: "desktop-app",
 
     updateMechanism: commitBuild ? 'external' : updateMechanism,

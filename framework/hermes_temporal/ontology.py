@@ -31,22 +31,25 @@ MAX_PREDECESSORS = 16
 _FIELD_NAME = re.compile(r"[A-Za-z0-9_]{1,40}\Z")
 
 
-def _obj(value: object, fields: set[str], name: str) -> dict:
+def _obj(value: object, fields: set[str], name: str, explained: bool = True) -> dict:
     # The message reaches the step's one correction retry; naming the fields lets the model fix them.
-    # Live: a Purple Team review failed this check twice with no hint and halted a hunt.
+    # Live: a Purple Team review failed this check twice with no hint and halted a hunt. Histories
+    # recorded before handoff-explained-rejections-v1 (explained=False) keep the bare message.
+    if type(value) is dict and set(value) == fields:
+        return value
+    message = f"{name} must contain exactly the specified fields"
+    if not explained:
+        raise ValueError(message)
     if type(value) is not dict:
-        raise ValueError(f"{name} must contain exactly the specified fields (a JSON object with "
-                         f"{', '.join(sorted(fields))})")
-    if set(value) != fields:
-        missing = sorted(fields - set(value))
-        extra = [key for key in value if key not in fields]
-        named = sorted(key for key in extra if type(key) is str and _FIELD_NAME.fullmatch(key))[:8]
-        parts = [f"missing {', '.join(missing)}"] if missing else []
-        if extra:
-            parts.append("unexpected " + ", ".join(named + ([f"{len(extra) - len(named)} more"]
-                                                             if len(extra) > len(named) else [])))
-        raise ValueError(f"{name} must contain exactly the specified fields ({'; '.join(parts)})")
-    return value
+        raise ValueError(f"{message} (a JSON object with {', '.join(sorted(fields))})")
+    missing = sorted(fields - set(value))
+    extra = [key for key in value if key not in fields]
+    named = sorted(key for key in extra if type(key) is str and _FIELD_NAME.fullmatch(key))[:8]
+    parts = [f"missing {', '.join(missing)}"] if missing else []
+    if extra:
+        parts.append("unexpected " + ", ".join(named + ([f"{len(extra) - len(named)} more"]
+                                                         if len(extra) > len(named) else [])))
+    raise ValueError(f"{message} ({'; '.join(parts)})")
 
 
 def _text(value: object, name: str, limit: int, *, ident: bool = False) -> str:
@@ -191,7 +194,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     if type(profile) is not str or profile not in PROFILES:
         raise ValueError("invalid profile")
     snap = validate_snapshot(snapshot, supplied)
-    _obj(raw, _HANDOFF_FIELDS, "handoff")
+    _obj(raw, _HANDOFF_FIELDS, "handoff", explained)
     if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
         raise ValueError("schema_version must be integer 1")
     case_id = _text(raw["case_id"], "case_id", 128, ident=True)
@@ -235,7 +238,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
     claims = []
     current_claim_ids = set()
     for item in claims_raw:
-        _obj(item, _CLAIM_FIELDS, "claim")
+        _obj(item, _CLAIM_FIELDS, "claim", explained)
         claim_id = _text(item["claim_id"], "claim_id", 192, ident=True)
         _check_namespaced(claim_id, "claim", step_id, claim_ids, explained)
         claim_ids.add(claim_id)
@@ -271,7 +274,7 @@ def validate_handoff(raw: object, *, snapshot: object, evidence_ids: Iterable[st
         raise ValueError("only framework-reviewer may supply reviews")
     review_ids = set(prior_reviews)
     for item in reviews_raw:
-        _obj(item, _REVIEW_FIELDS, "review")
+        _obj(item, _REVIEW_FIELDS, "review", explained)
         review_id = _text(item["review_id"], "review_id", 192, ident=True)
         _check_namespaced(review_id, "review", step_id, review_ids, explained)
         review_ids.add(review_id)

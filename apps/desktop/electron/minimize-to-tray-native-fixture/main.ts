@@ -31,7 +31,8 @@ async function run() {
       primary.focus()
     },
     isQuittingForHandoff: () => false,
-    log: console.log
+    log: console.log,
+    productName: 'Hermes'
   })
 
   controller.registerWindow(primary, { closeToTray: true })

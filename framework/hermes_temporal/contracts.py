@@ -231,6 +231,24 @@ class ExecutionResult:
             raise ValueError("diagnostic must be at most 640 printable ASCII characters")
 
 
+# Who sent a gate decision and through which channel. All three empty is an unidentified decision
+# (any client from before identity existed); otherwise a name and a channel are required, and a
+# Slack user ID exactly when the channel is slack.
+DECIDER_CHANNELS = frozenset({"cli", "slack", "automated"})
+MAX_DECIDER_CHARS = 200
+SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]{2,20}\Z")
+
+
+def valid_decider(decided_by: object, via: object, slack_user: object) -> bool:
+    if not (isinstance(decided_by, str) and isinstance(via, str) and isinstance(slack_user, str)):
+        return False
+    if not (decided_by or via or slack_user):
+        return True
+    return (0 < len(decided_by) <= MAX_DECIDER_CHARS and decided_by.isprintable()
+            and " ".join(decided_by.split()) == decided_by and via in DECIDER_CHANNELS
+            and (SLACK_USER_ID.match(slack_user) is not None if via == "slack" else not slack_user))
+
+
 @dataclass(frozen=True)
 class WorkflowDecision:
     step_id: str
@@ -238,6 +256,22 @@ class WorkflowDecision:
     decision: str
     decision_id: str
     evidence_note: str = ""
+    decided_by: str = ""
+    via: str = ""
+    slack_user: str = ""
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """One decision a gate took, as the status query reports it: the gate (a step ID, or ``wave-<n>``),
+    phase and choice, the decision ID, and who sent it through which channel (empty when unidentified)."""
+    gate: str
+    phase: str
+    decision: str
+    decision_id: str
+    decided_by: str = ""
+    via: str = ""
+    slack_user: str = ""
 
 
 @dataclass(frozen=True)
@@ -286,3 +320,5 @@ class WorkflowStatus:
     # Parallel workflows only: every step's state. ``step_id`` then holds the open wave's gate
     # ID (``wave-<n>``), or the step awaiting reconciliation.
     steps: list[StepState] = field(default_factory=list)
+    # Every decision a gate took, oldest first; a run whose first gate decision predates the record lists none.
+    decisions: list[GateDecision] = field(default_factory=list)
