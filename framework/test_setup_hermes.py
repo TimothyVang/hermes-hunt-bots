@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import setup_hermes
+from doctor import main as doctor_main
 
 
 NAMES = (
@@ -232,6 +233,7 @@ class SetupAllTests(unittest.TestCase):
         self.home = Path(self.temp.name) / 'runtime' / 'lab-home'
         self.ready = version_probe({'docker': '29.1.3\n', 'temporal': 'temporal version 1.5.1\n'})
         self.lab_install = patch('lab.install', return_value={'profile': 'framework-network-analyst'})
+        self.doctor = self.enterContext(patch('doctor.main', return_value=0))
 
     @staticmethod
     def native(pending=()):
@@ -289,10 +291,13 @@ class SetupAllTests(unittest.TestCase):
             installed.assert_called_once()
             native['apply'].assert_called_once()
             native['not_ready'].assert_called_once()
+            self.doctor.assert_called_once_with(
+                ['--home', str(self.home.resolve()), '--hermes', str(Path(sys.executable).resolve())],
+                kit_root=self.root)
         steps = [line for line in stdout.splitlines() if line.startswith('setup: ')]
         self.assertEqual(steps, ['setup: prerequisites', 'setup: profiles', 'setup: policy files',
                                  'setup: lab plugin and desktop pages', 'setup: team policy', 'setup: check',
-                                 'setup: complete'])
+                                 'setup: doctor', 'setup: complete'])
         self.assertIn('Docker: Docker engine 29.1.3', stdout)
         self.assertIn('Temporal CLI: temporal version 1.5.1', stdout)
 
@@ -312,6 +317,28 @@ class SetupAllTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('setup: stopped at check: Native team policy is not ready: framework-builder model.default', stderr)
         self.assertNotIn('setup: complete', stdout)
+
+    def test_all_reports_retained_soul_edits_and_stops_at_doctor(self):
+        import native_team
+        factory = native_install(self.home)
+        with self.native()[0], self.lab_install:
+            code, _stdout, _stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 0)
+        soul = self.home / 'profiles/framework-researcher/SOUL.md'
+        soul.write_text('Kept user identity edit\n', encoding='utf-8')
+        models = {str(path): {'state': 'mapping', 'default': native_team.PROFILES[path.parent.name]['model'],
+                              'provider': native_team.PROVIDER}
+                  for path in self.home.glob('profiles/*/config.yaml')}
+        with patch('lab.bundles', return_value={}), patch('doctor.hermes_model_reader', return_value=lambda _paths: models), \
+                self.native()[0], self.lab_install:
+            self.doctor.side_effect = lambda argv, kit_root: doctor_main(argv, kit_root=kit_root)
+            code, stdout, stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 1)
+        self.assertIn('profiles/framework-researcher/SOUL.md', stdout)
+        self.assertIn('doctor: 1 drift', stdout)
+        self.assertIn('setup: stopped at doctor:', stderr)
+        self.assertNotIn('setup: complete', stdout)
+        self.assertEqual(soul.read_text(encoding='utf-8'), 'Kept user identity edit\n')
 
 
 if __name__ == '__main__':

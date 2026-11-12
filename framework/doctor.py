@@ -178,14 +178,14 @@ def diagnose(home, read_models, kit_root=HERE):
     return drift
 
 
-def main(argv=None, read_models=None):
+def main(argv=None, read_models=None, kit_root=HERE):
     parser = argparse.ArgumentParser(description='Report where a Hermes home\'s installed hunt bots differ from this repo.')
     parser.add_argument('--home', metavar='PATH', help='Hermes home to check (otherwise HERMES_HOME or the standard platform home).')
     parser.add_argument('--hermes', metavar='PATH', help='Hermes executable whose Python reads config.yaml '
                                                         '(otherwise LAB_HERMES_EXE, else hermes on PATH).')
     args = parser.parse_args(argv)
     try:
-        drift = diagnose(args.home, read_models or hermes_model_reader(args.hermes))
+        drift = diagnose(args.home, read_models or hermes_model_reader(args.hermes), kit_root)
     except (DoctorError, OSError) as exc:
         print(f'doctor: cannot check: {exc}', file=sys.stderr)
         return 2

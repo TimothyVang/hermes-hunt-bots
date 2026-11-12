@@ -292,12 +292,13 @@ def check_temporal(runner=subprocess.run, which=shutil.which):
 def setup_all(hermes_override=None, home=None, kit_root=HERE, process_factory=subprocess.Popen,
               runner=subprocess.run, which=shutil.which):
     """Every setup step in order, stopping at the first failure: prerequisites, the six profiles, each new
-    profile's reviewed policy file, the lab plugin and desktop pages, the remaining team policy, then check.
+    profile's reviewed policy file, the lab plugin and desktop pages, the remaining team policy, then check and doctor.
 
     A profile gets its policy file before plugins are enabled: enabling writes Hermes' default settings into
     a profile's config.yaml, which `apply` then keeps as custom conflicts."""
     import lab
     import native_team
+    import doctor
     state = {}
 
     def prerequisites():
@@ -338,9 +339,13 @@ def setup_all(hermes_override=None, home=None, kit_root=HERE, process_factory=su
             raise SetupError('Native team policy is not ready: ' + '; '.join(pending))
         print(f'native_team check: every reviewed setting is ready in all {len(native_team.PROFILES)} profiles.')
 
+    def drift_check():
+        if doctor.main(['--home', str(state['root']), '--hermes', state['executable']], kit_root=kit_root):
+            raise SetupError('Installed files differ from the repo or could not be checked; see doctor above. Existing edits were preserved.')
+
     for name, step in (('prerequisites', prerequisites), ('profiles', profiles), ('policy files', policy_files),
                        ('lab plugin and desktop pages', lab_components), ('team policy', team_policy),
-                       ('check', policy_check)):
+                       ('check', policy_check), ('doctor', drift_check)):
         print(f'setup: {name}', flush=True)
         try:
             step()

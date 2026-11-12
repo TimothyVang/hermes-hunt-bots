@@ -52,7 +52,7 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
    ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes '<lab hermes.exe>' --home ..\..\runtime\lab-home all
    ```
 
-   Answer `y` to each `profile install` prompt. The command checks Hermes, Docker and the Temporal CLI, creates the Hermes home if it does not exist yet, installs each missing profile, writes each new profile's policy file (`native_team.py initialize`), installs and enables the lab plugin and the desktop pages, applies the remaining policy (`native_team.py apply`) and checks it (`native_team.py check`). It ends `setup: complete`, or stops at the first failure with `setup: stopped at <step>: <reason>`. Running it again keeps what is already installed. Without `--hermes`, it uses `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+   Answer `y` to each `profile install` prompt. The command checks Hermes, Docker and the Temporal CLI, creates the Hermes home if it does not exist yet, installs each missing profile, writes each new profile's policy file (`native_team.py initialize`), installs and enables the lab plugin and the desktop pages, applies the remaining policy (`native_team.py apply`), checks it (`native_team.py check`) and runs doctor. It ends `setup: complete` only with zero drift, or stops at the first failure with `setup: stopped at <step>: <reason>`. Running it again keeps what is already installed, including edited `SOUL.md` files, which doctor reports without overwriting them. Without `--hermes`, it uses `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
 
    Later, check that the installed bots still match the repo:
 

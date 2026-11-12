@@ -93,8 +93,15 @@ def sync_bundle(parent, name, files):
                 actual.add(relative.as_posix())
             elif not stat.S_ISDIR(info.st_mode):
                 raise ValueError('Non-regular bundle entry refused')
-        if actual != set(old) | {MARKER}:
-            raise ValueError('Unknown bundle files refused')
+        expected = set(old) | {MARKER}
+        missing = expected - actual
+        if missing:
+            raise ValueError('Missing bundle files refused: ' +
+                             ', '.join(str(destination / relative) for relative in sorted(missing)))
+        unknown = actual - expected
+        if unknown:
+            raise ValueError('Unknown bundle files refused: ' +
+                             ', '.join(str(destination / relative) for relative in sorted(unknown)))
         for relative, digest in old.items():
             if (relative not in files or not isinstance(digest, str)
                     or hashlib.sha256((destination / relative).read_bytes()).hexdigest() != digest):
