@@ -187,7 +187,22 @@ ol.dec.loose li{margin-bottom:8px}
 .tlx .ticks span{position:absolute;top:0;width:40px;text-align:center;white-space:nowrap}
 .dot{position:absolute;top:13px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--ink-2);padding:0}
 .dot.on{width:10px;height:10px;margin-left:-5px;top:11px;background:var(--accent)}
-.list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(0,1fr) 180px;gap:12px}
+.list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(160px,1fr) 180px;gap:12px}
+/* The summary keeps at least 160px: a narrower list drops Category, then Host (both stay in the event's details),
+   then Cited by, rather than letting the columns overlap. */
+#ev-list{container-type:inline-size}
+@container (max-width:791px){
+ .list > .li.evr{grid-template-columns:104px 96px 96px minmax(160px,1fr) 120px}
+ .list > .li.evr > :nth-child(4){display:none}
+}
+@container (max-width:647px){
+ .list > .li.evr{grid-template-columns:104px 96px minmax(160px,1fr) 120px}
+ .list > .li.evr > :nth-child(3){display:none}
+}
+@container (max-width:539px){
+ .list > .li.evr{grid-template-columns:104px 96px minmax(0,1fr)}
+ .list > .li.evr > :nth-child(6){display:none}
+}
 /* toasts */
 #toasts{position:fixed;right:16px;bottom:40px;display:flex;flex-direction:column;gap:8px;z-index:30;pointer-events:none}
 #app[data-v="case"] ~ #toasts,#app[data-v="agent"] ~ #toasts,#app[data-v="evidence"] ~ #toasts{right:336px}
@@ -235,6 +250,8 @@ ol.dec.loose li{margin-bottom:8px}
 #app.ph .wv.sub{grid-template-columns:20px minmax(72px,1fr) minmax(0,auto) 48px}
 #app.ph .wv.sub > :nth-child(4){display:none}
 #app.ph .wv.sub > :nth-child(5){display:none}
+#app.ph .wv.sub > .wv-flag{display:block;grid-row:2;grid-column:2 / -1}
+#app.ph .wv.sub:has(> .wv-flag){row-gap:2px}
 #app.ph .cl{grid-template-columns:minmax(0,1fr);gap:4px}
 #app.ph .evr{grid-template-columns:96px minmax(0,1fr)}
 #app.ph .evr > :nth-child(2),#app.ph .evr > :nth-child(3),#app.ph .evr > :nth-child(4),#app.ph .evr > :nth-child(6){display:none}
@@ -811,7 +828,9 @@ function stepFlags(s){
       short.push(plural(unk.length, "unknown ID"));
       long.push(unknownIdsLead() + " " + unk.slice(0, 24).join(", ") + (unk.length > 24 ? " and " + num(unk.length - 24) + " more" : "") + ".");
     }
-  } else if (s.state === "done" && f.parse_error){ short.push("handoff not parsed"); long.push("Handoff not parsed: " + f.parse_error + "."); }
+  } else if (f.result_status === "completed"){ short.push("handoff not parsed"); long.push(noHandoffText(s)); }
+  // A result that is not completed has no output to parse; a dropped step's cause already names why.
+  else if (f.result_status && !(kindOf(s) === "dropped" && cause(s))){ short.push("result " + words(f.result_status)); long.push(noHandoffText(s)); }
   return short.length ? {text:short.join(" \u00b7 "), title:long.join("\n")} : null;
 }
 function flagEl(s, cls, tag){ const fl = stepFlags(s); return fl ? h(tag || "span", cls, fl.text, {title:fl.title}) : null; }
@@ -878,7 +897,7 @@ function stepRowEl(r, on){
   const why = kindOf(s) === "dropped" ? cause(s) : "";
   const st = stEl(kindOf(s), stateWords(s));
   if (why){ st.appendChild(h("span", "cause", ": " + why)); st.title = stateWords(s) + ": " + why; }
-  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, flagEl(s, "sm sec ell") || h("span"),
+  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, flagEl(s, "sm sec ell wv-flag") || h("span"),
     h("span", "sm mut num", s.state === "done" && typeof s.claims === "number" ? plural(s.claims, "claim") : ""), timeEl(s, "sm sec num"));
   const li = add(h("div", "li btn subrow" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1"}), wv);
   li.addEventListener("click", () => { if (ui.caseKey === r.key) openAgent(s); else { ui.caseKey = r.key; renderView(); } });
@@ -1303,13 +1322,6 @@ function renderEvidenceMain(sel, list){
   const box = h("div", "box", null, {style:"padding:8px 0"});
   const t0 = tl.start_ms, t1 = tl.end_ms;
   const ticks = h("div", "ticks");
-  if (t0 !== null && t0 !== undefined && t1 > t0){
-    const span = t1 - t0, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
-    const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9)) || steps[steps.length - 1];
-    // Each label centres on its time but stays inside the track, so the first and last times are never cut.
-    for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t1; x += stepMs) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16),
-      {style:"left:clamp(0px, calc(" + ((x - t0) / span * 100) + "% - 20px), calc(100% - 40px))"}));
-  }
   box.appendChild(add(h("div", "tlx", null, {style:"height:24px;align-items:start"}), h("span", "th", "Host", {style:"padding-left:12px"}), ticks, h("span")));
   const byHost = new Map();
   for (const e of idx.events){ const k = e.host || "(no host)"; if (!byHost.has(k)) byHost.set(k, []); byHost.get(k).push(e); }
@@ -1355,6 +1367,20 @@ function renderEvidenceMain(sel, list){
   es.appendChild(lb);
   m.appendChild(es);
   m.appendChild(h("div", "pad-end"));
+  // Ticks go in once the page is laid out (a resize re-renders), so their step can follow the track's width.
+  if (t0 !== null && t0 !== undefined && t1 > t0) fillTicks(ticks, t0, t1);
+}
+// Labels sit in 40px boxes (the text is about 32px), centre on their time and stay inside the track, which moves an end
+// label inward by up to 20px. The step is the finest whose clamped boxes are at least 40px apart, so no two labels touch.
+// Without a layout (width 0) only the count limit applies.
+function fillTicks(ticks, t0, t1){
+  const span = t1 - t0, width = ticks.clientWidth, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
+  const times = (step) => { const out = []; for (let x = Math.ceil(t0 / step) * step; x <= t1; x += step) out.push(x); return out; };
+  const left = (x) => Math.min(Math.max(0, (x - t0) / span * width - 20), width - 40);
+  const fits = (step) => times(step).every((x, i, a) => !i || left(x) - left(a[i - 1]) >= 40);
+  const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9) && (!width || fits(x))) || steps[steps.length - 1];
+  for (const x of times(stepMs)) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16),
+    {style:"left:clamp(0px, calc(" + ((x - t0) / span * 100) + "% - 20px), calc(100% - 40px))"}));
 }
 function renderEvidenceDetails(e){
   const d = $("details"); clear(d);

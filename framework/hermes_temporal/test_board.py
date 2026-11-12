@@ -277,6 +277,23 @@ class BoardDerivationTests(unittest.TestCase):
             handoff, error = parse_handoff(output)
             self.assertTrue(handoff is None or isinstance(handoff["claims"], list), error)
 
+    def test_rows_name_an_unparsed_or_incomplete_result_in_any_state(self) -> None:
+        review = _mid_run(self.child, 3, "awaiting_review", "hypotheses")
+        review["results"][2] = dict(review["results"][2], output="Notes first.\n{\"claims\": [")
+        stopped = _mid_run(self.child, 5, "handoff_validation_rejected", "intel", "COMPLETED")
+        stopped["results"][4] = dict(stopped["results"][4], output="not a handoff")
+        unknown = _mid_run(self.child, 3, "needs_reconciliation", "hypotheses")
+        unknown["results"][2] = dict(unknown["results"][2], status="unknown", output="", reason_code="execution_error")
+        for child, step_id, state_name, flag, title in (
+                (review, "hypotheses", "awaiting_review", "handoff not parsed", "Handoff not parsed: "),
+                (stopped, "intel", "stopped", "handoff not parsed", "Handoff not parsed: "),
+                (unknown, "hypotheses", "awaiting_review", "result unknown", "Result unknown (execution_error).")):
+            state = build_state(self.raw, self.parent, child)
+            self.assertEqual(next(step["state"] for step in state["steps"] if step["step_id"] == step_id), state_name)
+            rail = _render_page(state, "agents")["rail"]
+            self.assertEqual(rail["text"].count(flag), 1, (step_id, rail["text"]))
+            self.assertTrue(any(line.startswith(title) for line in rail["titles"]), (step_id, rail["titles"]))
+
     def test_fenced_output_with_leading_prose_parses(self) -> None:
         body = self.child["results"][0]["output"]
         handoff, error = parse_handoff("I checked the case.\n```json\n" + body + "\n```")
