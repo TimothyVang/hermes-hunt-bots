@@ -30,10 +30,11 @@ LICENSES = (
 DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple(
     'licenses/' + name for name in LICENSES)
 BACKEND_FILES = (
-    '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py',
+    '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py', 'lab_stack.py',
     'query_adapter.py', 'endpoints.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
     'actionability.py', 'plugin.yaml', 'assets.json',
-    'guest/compose.yaml', 'guest/arkime.ini', 'guest/bootstrap_guest.sh',
+    'guest/compose.yaml', 'guest/compose.stack.yaml', 'guest/Dockerfile.lab', 'guest/arkime.ini',
+    'guest/bootstrap_guest.sh',
     'guest/ingest.py', 'guest/lab_server.py', 'guest/image-lock.json',
     'guest/kibana.yml', 'guest/kibana_setup.py',
     'fixtures/dns-lab-001/events.jsonl', 'fixtures/dns-lab-001/traffic.pcap',

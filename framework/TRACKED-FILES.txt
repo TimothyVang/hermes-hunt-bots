@@ -202,7 +202,9 @@ hunt_lab/fixtures/dns-lab-001/events.jsonl
 hunt_lab/fixtures/dns-lab-001/traffic.pcap
 hunt_lab/guest/arkime.ini
 hunt_lab/guest/bootstrap_guest.sh
+hunt_lab/guest/compose.stack.yaml
 hunt_lab/guest/compose.yaml
+hunt_lab/guest/Dockerfile.lab
 hunt_lab/guest/image-lock.json
 hunt_lab/guest/ingest.py
 hunt_lab/guest/kibana.yml
@@ -213,6 +215,7 @@ hunt_lab/humanize.py
 hunt_lab/import_dedale.py
 hunt_lab/import_elastic.py
 hunt_lab/lab_browser.py
+hunt_lab/lab_stack.py
 hunt_lab/managed.py
 hunt_lab/plugin.yaml
 hunt_lab/prepare_guest.py
@@ -223,6 +226,7 @@ hunt_lab/screencast.py
 hunt_lab/test_connected.py
 hunt_lab/test_import_dedale.py
 hunt_lab/test_import_elastic.py
+hunt_lab/test_lab_stack.py
 hunt_lab/test_scenario.py
 imager_import.py
 install_desktop.py

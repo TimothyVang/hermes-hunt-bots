@@ -1019,7 +1019,7 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
         command = parse_command(arguments)
         case_id = _case_id(arguments)
         served = serving_lab(runtime, state_dir, profile, case_id)
-        if served.origin != 'vm':
+        if served.origin not in ('vm', 'container'):
             raise QueryFailure('no_lab_browser')
         try:
             kibana = endpoint(served.kibana_url) if served.kibana_url else None

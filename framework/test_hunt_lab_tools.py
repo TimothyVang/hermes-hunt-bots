@@ -43,6 +43,7 @@ def guest_lab_server():
 VM_INSTANCE = 'hermes-framework-network-analyst-case-lab-med-001-6873a567'
 VM_SECRET = '5e' * 32
 CONNECTED_SECRET = 'c0' * 32
+CONTAINER_SECRET = 'd0' * 32
 
 
 def deploy_vm(state_dir, instance=VM_INSTANCE, secret=VM_SECRET):
@@ -370,7 +371,8 @@ INSTANCE = 'a' * 32
 
 
 class ResolverTests(unittest.TestCase):
-    """endpoints.resolve: the VM or the host-side connected service, whichever serves the case (ADR 0005)."""
+    """endpoints.resolve: the VM, the host-side connected service or a container lab, whichever serves the case
+    (ADR 0005)."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -578,6 +580,104 @@ class ResolverTests(unittest.TestCase):
                                  check=True).stdout.replace(str(endpoints.caller_file(seed)), '')
         self.assertEqual({line.strip().split(':(')[0].lower() for line in listing.splitlines() if ':(' in line},
                          {user, 'nt authority\\system'}, listing)
+
+    def stack(self, guest, **changes):
+        """Write a container lab's state.json as `hunt_lab.lab_stack start` does, serving `guest`'s case.
+        Kibana and Arkime get two other valid ports (port ^ 1 and port ^ 2); the resolver never calls them."""
+        port = guest.server.server_address[1]
+        state = {'version': 1, 'case_id': guest.case_id, 'project': 'hunt-lab-' + guest.case_id,
+                 'instance': guest.instance, 'secret': guest.secret, 'lab_port': port, 'kibana_port': port ^ 1,
+                 'arkime_port': port ^ 2, 'started_at': 1.0, **changes}
+        folder = self.analyst / endpoints.CONTAINER_STATE / changes.get('case_id', guest.case_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+        return port
+
+    def container(self, case_id='team-med-001'):
+        guest = GuestStub(case_id=case_id, instance='d' * 32, secret=CONTAINER_SECRET)
+        self.addCleanup(guest.close)
+        return guest
+
+    def test_resolver_finds_container_lab(self):
+        guest = self.container()
+        port = self.stack(guest)
+        result = self.call('elastic_search', {'q': 'host.name:ws-01'}, case_id='team-med-001')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual([path for path, _, _ in guest.requests], ['/case', '/es/search'])
+        served = endpoints.resolve(self.state_dir, 'team-med-001', runtime=self.runtime)
+        self.assertEqual((served.origin, served.lab_url, served.arkime_url, served.kibana_url, served.instance),
+                         ('container', f'http://127.0.0.1:{port}', f'http://127.0.0.1:{port ^ 2}',
+                          f'http://127.0.0.1:{port ^ 1}', 'd' * 32))
+        self.assertEqual(served.secret, CONTAINER_SECRET)
+        self.assertEqual(set(guest.secrets), {CONTAINER_SECRET})
+        # The connected service serves another case, so it is never asked.
+        self.assertEqual((self.vm.requests, self.connected.requests), ([], []))
+        self.assertEqual(self.call('elastic_search', {}, case_id='other-001')['error'], 'owned_vm_not_running')
+
+    def test_container_and_vm_serving_one_case_is_ambiguous(self):
+        self.runtime.state = 'running'
+        guest = self.container(CASE)
+        self.stack(guest)
+        for name, arguments in (('elastic_search', {}), ('hunt_lab_query', {'dataset': 'case'})):
+            with self.subTest(tool=name):
+                self.assertEqual(self.call(name, arguments, case_id=CASE)['error'], 'ambiguous_lab')
+        self.assertEqual(self.vm.endpoint_calls() + guest.endpoint_calls(), [])
+        # A container lab and the connected service on one case, and two labs with no case named, likewise.
+        self.runtime.state = 'stopped'
+        connected_case = self.container('work-conn-001')
+        self.stack(connected_case)
+        self.assertEqual(self.call('elastic_search', {})['error'], 'ambiguous_lab')
+        self.assertEqual(connected_case.endpoint_calls() + self.connected.endpoint_calls(), [])
+        with self.assertRaises(endpoints.QueryFailure) as caught:
+            endpoints.resolve(self.state_dir, None, runtime=self.runtime)
+        self.assertEqual(str(caught.exception), 'ambiguous_lab')
+
+    def test_container_state_files_malformed_named_for_another_case_or_down(self):
+        guest = self.container()
+        self.stack(guest)
+        for bad in ({'version': 2}, {'version': True}, {'project': 'hunt-lab-other-001'}, {'instance': 'D' * 32},
+                    {'secret': 'c0' * 31}, {'lab_port': 0}, {'kibana_port': '80'}, {'arkime_port': None},
+                    {'started_at': 'now'}, {'extra': 1}):
+            with self.subTest(state=bad):
+                self.stack(guest, **bad)
+                self.assertEqual(self.call('elastic_search', {}, case_id='team-med-001')['error'],
+                                 'container_state_invalid')
+        port = guest.server.server_address[1]
+        self.stack(guest, kibana_port=port)
+        self.assertEqual(self.call('elastic_search', {}, case_id='team-med-001')['error'], 'container_state_invalid')
+        self.stack(guest)
+        # A state file under another case's folder never answers for its own case.
+        (self.analyst / endpoints.CONTAINER_STATE / 'team-med-002').mkdir()
+        (self.analyst / endpoints.CONTAINER_STATE / 'team-med-002' / 'state.json').write_bytes(
+            (self.analyst / endpoints.CONTAINER_STATE / 'team-med-001' / 'state.json').read_bytes())
+        self.assertEqual(self.call('elastic_search', {}, case_id='team-med-002')['error'], 'container_state_invalid')
+        # An empty state file is a start still writing it; a stopped stack fails only its own case.
+        (self.analyst / endpoints.CONTAINER_STATE / 'team-med-002' / 'state.json').write_bytes(b'')
+        self.assertEqual(self.call('elastic_search', {}, case_id='team-med-002')['error'], 'owned_vm_not_running')
+        guest.close()
+        self.assertEqual(self.call('elastic_search', {}, case_id='team-med-001')['error'], 'lab_unreachable')
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+
+    def test_lab_browser_opens_a_container_lab_on_its_published_urls(self):
+        guest = self.container()
+        guest.overrides['/case'] = (200, {'case_id': 'team-med-001', 'question': 'synthetic', 'time_range_utc': {
+            'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-03T00:00:00Z'}}, {})
+        port = self.stack(guest)
+        opened = []
+
+        def session(root, scope):
+            opened.append(scope)
+            raise endpoints.QueryFailure('session_recorded')
+
+        with patch.object(lab_browser, '_session', side_effect=session):
+            result = lab_browser.call({'case_id': 'team-med-001', 'action': 'snapshot'}, runtime=self.runtime,
+                                      state_dir=self.state_dir, profile='framework-researcher',
+                                      browser_root=self.analyst / 'browser')
+        self.assertEqual(result['error'], 'session_recorded')
+        [scope] = opened
+        self.assertEqual(scope.origins, (f'http://127.0.0.1:{port}', f'http://127.0.0.1:{port ^ 2}',
+                                         f'http://127.0.0.1:{port ^ 1}'))
+        self.assertEqual(scope.lab_secret, CONTAINER_SECRET)
 
 
 class RegistrationTests(unittest.TestCase):

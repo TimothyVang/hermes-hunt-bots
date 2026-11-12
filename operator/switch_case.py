@@ -25,7 +25,8 @@ from hunt_lab.runtime import _available_memory_mib as avail_mib  # noqa: E402  s
 
 
 def lab(action, timeout=600, lane=DEFAULT_LANE):
-    r = subprocess.run([lane.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', action], env=lane.env(),
+    # --vm: this tool drives the lab VM; without it hunt-lab acts on the container lab whenever Docker answers.
+    r = subprocess.run([lane.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', action, '--vm'], env=lane.env(),
                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout)
     line = next((l for l in r.stdout.splitlines() if l.startswith('{')), '{}')
     return r.returncode, json.loads(line)

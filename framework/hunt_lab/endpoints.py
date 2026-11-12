@@ -1,16 +1,16 @@
 """The one read-only answer to "which loopback lab serves this case" (ADR 0005).
 
-A case is served either by the analyst VM's guest lab service, found through the runtime's read-only
-`status`, or by the host-side connected service (`hunt_lab.connected serve`), found through the
-`hunt-lab-connected/state.json` it writes beside the VM's state dir. Resolving never starts, stops or
-creates anything. Every failure is a fixed snake_case code; a guest's own code is relayed only as
-`detail`, never its free text.
+A case is served by the analyst VM's guest lab service, found through the runtime's read-only `status`; by
+the host-side connected service (`hunt_lab.connected serve`), found through the `hunt-lab-connected/state.json`
+it writes beside the VM's state dir; or by a container lab (`hunt_lab.lab_stack`), found through the
+`hunt-lab-container/<case_id>/state.json` it writes there. Resolving never starts, stops or creates anything.
+Every failure is a fixed snake_case code; a guest's own code is relayed only as `detail`, never its free text.
 
 Each lab service answers only a caller that sends its instance secret in X-Hunt-Lab-Secret, and names its
 instance in X-Hunt-Lab-Instance on every answer. The secret sits in a state file only the owning user can
-read (`owner_only`): the connected service's state.json, or for the VM the `<seed>.secret.json` written
-beside the seed ISO that deployment.json boots. The resolver reads it and `get` sends it; it is never
-returned, logged or shown.
+read (`owner_only`): the connected service's or the container lab's state.json, or for the VM the
+`<seed>.secret.json` written beside the seed ISO that deployment.json boots. The resolver reads it and `get`
+sends it; it is never returned, logged or shown.
 """
 from __future__ import annotations
 
@@ -43,6 +43,11 @@ STATE_KEYS = frozenset({'version', 'pid', 'port', 'case_id', 'instance', 'secret
 VM_CALLER_VERSION = 1
 VM_CALLER_KEYS = frozenset({'version', 'instance', 'secret'})
 DEPLOYMENT_MAX = 65536
+CONTAINER_STATE = 'hunt-lab-container'
+CONTAINER_VERSION = 1
+CONTAINER_PROJECT_PREFIX = 'hunt-lab-'
+CONTAINER_KEYS = frozenset({'version', 'case_id', 'project', 'instance', 'secret', 'lab_port', 'kibana_port',
+                            'arkime_port', 'started_at'})
 
 
 class QueryFailure(Exception):
@@ -60,9 +65,11 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 @dataclass(frozen=True)
 class LabEndpoint:
-    """A lab service that answered `/case`: the VM's (`origin='vm'`) or the connected one (`'connected'`).
+    """A lab service that answered `/case`: the VM's (`origin='vm'`), the connected one (`'connected'`) or a
+    container lab's (`'container'`).
 
-    `arkime_url` and `kibana_url` are the VM status's own values, unvalidated; each user checks them.
+    `arkime_url` and `kibana_url` are the VM status's own values, unvalidated, or the container lab's published
+    ports; each user checks them.
     `secret` is the caller secret `get` sends; it is left out of the repr.
     """
 
@@ -283,6 +290,56 @@ def connected_state(state_dir):
     return state
 
 
+def container_state(path):
+    """One container lab's state.json (hunt_lab.lab_stack): None when absent or still empty, else validated."""
+    try:
+        with Path(path).open('rb') as handle:
+            data = handle.read(MAX_STATE + 1)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise QueryFailure('container_state_invalid') from None
+    if not data:
+        return None
+    try:
+        state = json.loads(data) if len(data) <= MAX_STATE else None
+    except ValueError:
+        state = None
+    ports = [state.get(key) for key in ('lab_port', 'kibana_port', 'arkime_port')] if isinstance(state, dict) else []
+    if (not isinstance(state, dict) or set(state) != CONTAINER_KEYS or type(state['version']) is not int
+            or state['version'] != CONTAINER_VERSION
+            or not isinstance(state['case_id'], str) or not CASE_ID.fullmatch(state['case_id'])
+            or state['project'] != CONTAINER_PROJECT_PREFIX + state['case_id']
+            or not isinstance(state['instance'], str) or not INSTANCE.fullmatch(state['instance'])
+            or not isinstance(state['secret'], str) or not SECRET.fullmatch(state['secret'])
+            or any(type(port) is not int or not 0 < port < 65536 for port in ports) or len(set(ports)) != 3
+            or type(state['started_at']) not in (int, float)):
+        raise QueryFailure('container_state_invalid')
+    return state
+
+
+def container_states(state_dir, case_id=None):
+    """The container labs beside the VM's state dir: only `case_id`'s when given, else every case's."""
+    root = Path(state_dir).parent / CONTAINER_STATE
+    if case_id is not None:
+        names = [case_id] if CASE_ID.fullmatch(case_id) else []
+    else:
+        try:
+            names = sorted(child.name for child in root.iterdir() if child.is_dir())
+        except FileNotFoundError:
+            return []
+        except OSError:
+            raise QueryFailure('container_state_invalid') from None
+    states = []
+    for name in names:
+        state = container_state(root / name / 'state.json')
+        if state is not None:
+            if state['case_id'] != name:
+                raise QueryFailure('container_state_invalid')
+            states.append(state)
+    return states
+
+
 def _vm(runtime, state_dir, profile):
     status = runtime.invoke('status', state_dir=state_dir, profile=LAB_OWNER)
     if status.get('profile') != LAB_OWNER or status.get('state') != 'running':
@@ -300,20 +357,29 @@ def _connected(state, profile):
                        secret=state['secret'])
 
 
+def _container(state, profile):
+    base = f"http://127.0.0.1:{state['lab_port']}"
+    case = get(base, '/case', profile, instance=state['instance'], secret=state['secret'])
+    return LabEndpoint(base, 'container', case, instance=state['instance'],
+                       arkime_url=f"http://127.0.0.1:{state['arkime_port']}",
+                       kibana_url=f"http://127.0.0.1:{state['kibana_port']}", secret=state['secret'])
+
+
 def resolve(state_dir, case_id=None, *, runtime, profile=None, environ=None):
     """The one lab serving `case_id` (or, without one, the one lab serving any case), else a fixed code.
 
-    - owned_vm_not_running: neither the VM nor a connected service is up; a connected service whose state.json
-      names another case is not asked, so it counts as not up.
+    - owned_vm_not_running: no lab is up (the VM, a connected service or a container lab); a connected service
+      or container lab whose state.json names another case is not asked, so it counts as not up.
     - case_mismatch: a lab answered, but none for `case_id`.
-    - ambiguous_lab: the VM and the connected service both serve it.
+    - ambiguous_lab: more than one lab serves it (any two of the VM, the connected service and container labs).
     - key_in_bot_environment: with `environ` (a bot's own process environment), a connected case is refused
       while that environment holds the variable the service read its API key from.
-    A lab that fails to answer is skipped when the other one serves the case; otherwise its code is raised.
+    A lab that fails to answer is skipped when another one serves the case; otherwise its code is raised.
     """
     if state_dir is None:
         raise QueryFailure('lab_state_unavailable')
     state = connected_state(state_dir)
+    containers = container_states(state_dir, case_id)
     failures = []
 
     def answered(find):
@@ -327,7 +393,8 @@ def resolve(state_dir, case_id=None, *, runtime, profile=None, environ=None):
     # A service serving another case is not asked: a stale state file would cost every VM tool call a timeout.
     probe = state is not None and (case_id is None or state['case_id'] == case_id)
     connected = answered(lambda: _connected(state, profile)) if probe else None
-    found = [lab for lab in (vm, connected) if lab is not None]
+    stacks = [answered(lambda stack=stack: _container(stack, profile)) for stack in containers]
+    found = [lab for lab in (vm, connected, *stacks) if lab is not None]
     matches = [lab for lab in found if case_id is None or lab.case.get('case_id') == case_id]
     if len(matches) > 1:
         raise QueryFailure('ambiguous_lab')

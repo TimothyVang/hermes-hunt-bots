@@ -1,0 +1,228 @@
+# The practice lab as host containers, one compose project per case (hunt_lab/lab_stack.py runs it and sets the
+# variables below). It serves the same guest files the VM does (lab_server.py, ingest.py, kibana_setup.py,
+# arkime.ini, kibana.yml), unmodified. compose.yaml stays the VM guest's until the VM is removed.
+#
+# - Nothing here has a network route out. Every service sits on the internal network `backend` only, except
+#   `relay`, whose one job is to publish the three ports on 127.0.0.1: Docker publishes no port of a container
+#   that is on internal networks alone.
+# - lab_server.py reads Arkime and Kibana on its own loopback (127.0.0.1:8005 and :5601), so the lab service,
+#   Kibana and the Arkime viewer share one network namespace, held by `netns`. Restarting any one of them
+#   leaves the other two in place.
+# - Elasticsearch has no fixed address; Arkime and Kibana get its address by environment.
+# - The guest's bootstrap steps (Arkime database, event and intel ingest, capture import, Kibana data view)
+#   are one-shot services.
+# - Images are pinned to the digests in image-lock.json; the lab image is built from Dockerfile.lab.
+name: ${PROJECT:?}
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23@sha256:4d0724bb8d78d7a2330693623e26ca4d621079d062ecc8a30b3e1fc180ec14c1
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      xpack.ml.enabled: 'false'
+      ingest.geoip.downloader.enabled: 'false'
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    mem_limit: 1536m
+    volumes:
+      - elastic-data:/usr/share/elasticsearch/data
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS http://localhost:9200/_cluster/health >/dev/null']
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    restart: 'no'
+
+  netns:
+    image: ${LAB_IMAGE:?}
+    build:
+      context: .
+      dockerfile: Dockerfile.lab
+    init: true
+    command: [sleep, infinity]
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    mem_limit: 32m
+    networks: [backend]
+    restart: 'no'
+
+  # The guest's systemd unit hermes-hunt-lab-api: user nobody, read-only, no privileges.
+  lab:
+    image: ${LAB_IMAGE:?}
+    pull_policy: never
+    network_mode: service:netns
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    mem_limit: 256m
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      LAB_ELASTICSEARCH: http://elasticsearch:9200
+    command: [python3, /lab/lab_server.py, --bind, 0.0.0.0, --port, '8765', --case, /lab/evidence/case.json,
+              --network-scope, tag, --secret-file, /run/lab/lab-secret]
+    volumes:
+      - ./lab_server.py:/lab/lab_server.py:ro
+      - ${EVIDENCE_DIR:?}:/lab/evidence:ro
+      - ${SECRET_FILE:?}:/run/lab/lab-secret:ro
+      # lab_server.py names its instance from cloud-init's file; here it is a plain file lab_stack writes.
+      - ${INSTANCE_FILE:?}:/var/lib/cloud/data/instance-id:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      netns:
+        condition: service_started
+    restart: 'no'
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.23@sha256:920b24f689833d34205f426f5359864378a572e829c53016073f0a6837c2e995
+    network_mode: service:netns
+    environment:
+      NODE_OPTIONS: --max-old-space-size=800
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    mem_limit: 1280m
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      netns:
+        condition: service_started
+    restart: 'no'
+
+  arkime-init:
+    image: ghcr.io/arkime/arkime/arkime:v6.9.1@sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0
+    command: /opt/arkime/db/db.pl http://elasticsearch:9200 init --ifneeded --shards 1 --replicas 0
+    networks: [backend]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: 'no'
+
+  ingest:
+    image: ${LAB_IMAGE:?}
+    pull_policy: never
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+    command:
+      - sh
+      - -ec
+      - |
+        python3 /guest/ingest.py --elasticsearch http://elasticsearch:9200 --case /evidence/case.json --events /evidence/events.jsonl
+        if [ -f /evidence/intel.jsonl ]; then
+          python3 /guest/ingest.py --elasticsearch http://elasticsearch:9200 --case /evidence/case.json --intel /evidence/intel.jsonl
+        fi
+    volumes:
+      - ./ingest.py:/guest/ingest.py:ro
+      - ${EVIDENCE_DIR:?}:/evidence:ro
+    networks: [backend]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: 'no'
+
+  # The guest's capture import, tagged case:<case_id>. A case without a capture has no traffic.pcap here.
+  pcap-import:
+    image: ghcr.io/arkime/arkime/arkime:v6.9.1@sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0
+    environment:
+      ARKIME__elasticsearch: http://elasticsearch:9200
+      CASE_ID: ${CASE_ID:?}
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -f /evidence/traffic.pcap ]; then
+          exec /opt/arkime/bin/capture -c /opt/arkime/etc/config.ini -n hermes-lab -r /evidence/traffic.pcap --copy -t "case:$$CASE_ID"
+        fi
+    volumes:
+      - ./arkime.ini:/opt/arkime/etc/config.ini:ro
+      - ${EVIDENCE_DIR:?}:/evidence:ro
+      - arkime-pcap:/opt/arkime/raw
+    networks: [backend]
+    depends_on:
+      arkime-init:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  arkime:
+    image: ghcr.io/arkime/arkime/arkime:v6.9.1@sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0
+    command: /opt/arkime/bin/docker.sh viewer --wait-for-db http://elasticsearch:9200 -- -n hermes-lab
+    network_mode: service:netns
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+      ARKIME__elasticsearch: http://elasticsearch:9200
+    mem_limit: 512m
+    volumes:
+      - ./arkime.ini:/opt/arkime/etc/config.ini:ro
+      - arkime-pcap:/opt/arkime/raw
+    depends_on:
+      pcap-import:
+        condition: service_completed_successfully
+      netns:
+        condition: service_started
+    restart: 'no'
+
+  # The guest's last step: point the Kibana data view at this case.
+  kibana-setup:
+    image: ${LAB_IMAGE:?}
+    pull_policy: never
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+    command: [python3, /guest/kibana_setup.py, --elasticsearch, 'http://elasticsearch:9200',
+              --kibana, 'http://netns:5601', --case, /evidence/case.json]
+    volumes:
+      - ./kibana_setup.py:/guest/kibana_setup.py:ro
+      - ${EVIDENCE_DIR:?}:/evidence:ro
+    networks: [backend]
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+      kibana:
+        condition: service_started
+    restart: 'no'
+
+  # Publishes the lab service, Kibana and Arkime on 127.0.0.1 only, relaying each to the shared namespace.
+  relay:
+    image: ${LAB_IMAGE:?}
+    pull_policy: never
+    init: true
+    user: '65534:65534'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    mem_limit: 64m
+    command:
+      - sh
+      - -ec
+      - |
+        socat TCP-LISTEN:8765,fork,reuseaddr TCP:netns:8765 &
+        socat TCP-LISTEN:5601,fork,reuseaddr TCP:netns:5601 &
+        exec socat TCP-LISTEN:8005,fork,reuseaddr TCP:netns:8005
+    networks: [backend, edge]
+    ports:
+      - 127.0.0.1:${LAB_PORT:?}:8765
+      - 127.0.0.1:${KIBANA_PORT:?}:5601
+      - 127.0.0.1:${ARKIME_PORT:?}:8005
+    depends_on:
+      netns:
+        condition: service_started
+    restart: 'no'
+
+volumes:
+  elastic-data:
+  arkime-pcap:
+
+networks:
+  backend:
+    internal: true
+  edge:
