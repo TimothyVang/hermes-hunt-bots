@@ -91,6 +91,12 @@ WRITE_CLUSTER_PRIVILEGES = ('all', 'manage', 'manage_security', 'manage_api_key'
                             'manage_slm', 'create_snapshot', 'manage_enrich', 'manage_token', 'manage_saml',
                             'manage_oidc', 'grant_api_key', 'delegate_pki', 'manage_autoscaling',
                             'manage_logstash_pipelines', 'cancel_task')
+# The key's own role descriptors may grant only these (an allow-list; the asked names below are a second layer).
+ALLOWED_CLUSTER = frozenset({'monitor'})
+ALLOWED_INDEX = frozenset({'read', 'view_index_metadata'})
+DESCRIPTOR_KEYS = frozenset({'cluster', 'indices', 'applications', 'run_as', 'metadata', 'transient_metadata',
+                             'remote_indices', 'remote_cluster', 'global', 'restriction', 'description'})
+INDEX_ENTRY_KEYS = frozenset({'names', 'privileges', 'allow_restricted_indices', 'field_security', 'query'})
 # A role can grant single actions instead of a named privilege; _has_privileges answers action names on any
 # version, so the write and admin actions are asked about one by one too.
 WRITE_INDEX_ACTIONS = (
@@ -158,7 +164,7 @@ HIDDEN = re.compile('\x00(\\d+)\x00')
 # The field before a colon: a Lucene term, so !, ^ and ~ end the one before it and a ^2 / ~2 number is its
 # own token. Wildcards stay (Lucene reads event.\* as a field pattern). _exists_ names a field too.
 FIELD = re.compile(r'([\^~]?)([^\s()!^~:"\[\]{}/\\]+)\s*:')
-EXISTS = re.compile(r'\b_exists_\s*:\s*[(\s"]*([^\s()"]+)')
+EXISTS = re.compile(r'\b_exists_\s*:\s*(\([^()]*\)|"[^"]*"|[^\s()]+)')
 # Lucene's escapes, as its parser decodes them in field names and terms.
 LUCENE_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(.))', re.DOTALL)
 # Shard failure types that refuse the query itself.
@@ -409,12 +415,14 @@ class WorkElastic:
             self.version = check_version(info)
         except ValueError as failure:
             raise ConnectError(str(failure)) from None
+        self._check_role_descriptors()
         resolved = self.require('GET', '/_resolve/index/' + self._index_path(), None, 'resolve the index pattern')
         names = [self.index, *sorted({name for kind in ('indices', 'aliases', 'data_streams')
                                       for item in resolved.get(kind, []) if isinstance(item, dict)
-                                      for members in (item.get('backing_indices'), item.get('indices'))
+                                      for members in (item.get('backing_indices'), item.get('indices'), item.get('aliases'))
                                       for name in (item.get('name'), *(members if isinstance(members, list) else ()))
                                       if isinstance(name, str)})]
+        # A second layer behind the allow-list: the write and admin privileges and actions, asked by name.
         cluster_asked = [*WRITE_CLUSTER_PRIVILEGES, *WRITE_CLUSTER_ACTIONS, *self._known('cluster', NEWER_CLUSTER_PRIVILEGES)]
         index_asked = [*WRITE_INDEX_PRIVILEGES, *WRITE_INDEX_ACTIONS, *self._known('index', NEWER_INDEX_PRIVILEGES)]
         indices, cluster = {}, {}
@@ -440,6 +448,36 @@ class WorkElastic:
         self.aggregatable = frozenset(name for name, types in fields.items()
                                       if any(isinstance(kind, dict) and kind.get('aggregatable') for kind in types.values()))
         self.pit = self._open_pit()
+
+    def _check_role_descriptors(self):
+        """Allow-list the key's own role descriptors: its rights are its owner's, limited to these.
+
+        Only monitor on the cluster and read / view_index_metadata on indices are allowed; run_as, remote,
+        application and global privileges, restricted indices and a key without descriptors are refused."""
+        refused = ConnectError('key_not_read_only: use an API key created with role descriptors that grant only '
+                               f'read and view_index_metadata on {self.index} and the monitor cluster privilege, '
+                               'with no run_as; a key without role descriptors has its owner\'s rights')
+        own = self.require('GET', '/_security/_authenticate', None, 'read the key identity').get('api_key')
+        if not isinstance(own, dict) or not isinstance(own.get('id'), str) or not own['id']:
+            raise refused
+        keys = self.require('GET', '/_security/api_key?id=' + parse.quote(own['id'], safe=''), None,
+                            'read the key role descriptors').get('api_keys')
+        found = [key for key in keys if isinstance(key, dict) and key.get('id') == own['id']] if isinstance(keys, list) else []
+        descriptors = found[0].get('role_descriptors') if len(found) == 1 else None
+        if not isinstance(descriptors, dict) or not descriptors:
+            raise refused
+        for descriptor in descriptors.values():
+            if (not isinstance(descriptor, dict) or set(descriptor) - DESCRIPTOR_KEYS
+                    or any(descriptor.get(name) for name in ('run_as', 'applications', 'global', 'remote_indices',
+                                                             'remote_cluster'))
+                    or not isinstance(descriptor.get('cluster', []), list)
+                    or set(descriptor.get('cluster', [])) - ALLOWED_CLUSTER
+                    or not isinstance(descriptor.get('indices', []), list)
+                    or any(not isinstance(entry, dict) or set(entry) - INDEX_ENTRY_KEYS
+                           or entry.get('allow_restricted_indices') is True
+                           or not isinstance(entry.get('privileges'), list)
+                           or set(entry['privileges']) - ALLOWED_INDEX for entry in descriptor.get('indices', []))):
+                raise refused
 
     def _known(self, kind, privileges):
         """The privilege names this cluster knows; it answers HTTP 400 illegal_argument_exception to an unknown one."""
@@ -537,25 +575,30 @@ class WorkElastic:
 
         def rewrite(match):
             if match.group('group') is None:
-                return documents([match.group('quoted') or match.group('bare')])
+                return keep(documents([match.group('quoted') or match.group('bare')]))
             if not CITATION_GROUP_BODY.match(match.group('group')):
                 raise lab_server.BackendQueryError('invalid_query')
-            return documents(re.findall(r'evt-\d+', match.group('group')))
+            return keep(documents(re.findall(r'evt-\d+', match.group('group'))))
 
         phrases = []
+
+        def keep(value):
+            """Hide a text from the field scan (a phrase, an escape, or a rewritten citation's _id values)."""
+            phrases.append(value)
+            return f'\x00{len(phrases) - 1}\x00'
 
         def hide(match):
             if re.fullmatch(r'"evt-\d+"', match.group(0)):
                 return match.group(0)
-            phrases.append(match.group(0))
-            return f'\x00{len(phrases) - 1}\x00'
+            return keep(match.group(0))
 
         def decode(value):
             return LUCENE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)) if match.group(1) else match.group(2),
                                      value)
 
-        # _exists_ takes a field name, also quoted, so it is read with phrases shown.
-        exists = EXISTS.findall(decode(text))
+        # _exists_ takes field names, also quoted or as a group, so it is read with phrases shown.
+        exists = [term.strip('"').lstrip('+-!') for group in EXISTS.findall(decode(text))
+                  for term in re.findall(r'"[^"]*"|[^\s()"]+', group) if term not in ('AND', 'OR', 'NOT', '&&', '||')]
         text = CITATION.sub(rewrite, QUOTED.sub(hide, text))
         # Lucene decodes escapes (event\.id and \u0065vent.id are event.id); phrases stay hidden as text.
         unescaped = decode(HIDDEN.sub(
@@ -563,8 +606,10 @@ class WorkElastic:
         names = [*exists, *((re.sub(r'\A\d+(?:\.\d+)?', '', name) if after else name).lstrip('+-')
                             for after, name in FIELD.findall(unescaped))]
         # A field pattern reaching event.id or one of its sub-fields (event.id.keyword) reads the cluster's event.id.
+        protected = {'event.id', 'event.id.keyword', 'event.id.text',
+                     *(field for field in self.fields if field.startswith('event.id.'))}
         if re.search(r'\bevent\.id\b', unescaped) or any(fnmatch.fnmatchcase(field, name) for name in names
-                                                          for field in ('event.id', 'event.id.keyword', 'event.id.text')):
+                                                          for field in protected):
             raise lab_server.BackendQueryError('invalid_query')
         return HIDDEN.sub(lambda match: phrases[int(match.group(1))], text)
 

@@ -41,6 +41,12 @@ class FakeElastic:
         self.unknown = set()
         self.backing = [BACKING]
         self.aliases = []
+        self.indices = []
+        # The key's identity and its own role descriptors, as GET /_security/api_key answers them.
+        self.identity = {'username': 'operator', 'api_key': {'id': 'key-1', 'name': 'hunt'}}
+        self.descriptors = {'hunt': {'cluster': ['monitor'], 'indices': [
+            {'names': [INDEX], 'privileges': ['read', 'view_index_metadata'], 'allow_restricted_indices': False}],
+            'applications': [], 'run_as': [], 'metadata': {}, 'transient_metadata': {'enabled': True}}}
         self.docs = [{'_index': '.ds-logs-windows-000001', '_id': f'AbC{n}x_-', 'sort': [1761991200000000000 + n, n],
                       '_source': {'@timestamp': f'2026-11-01T10:0{n}:00Z', 'host': {'name': 'ws-01'},
                                   'event': {'id': 'source-id', 'code': '1'}, 'process': {'name': 'cmd.exe'}}}
@@ -73,8 +79,13 @@ class FakeElastic:
         if path == '/':
             return 200, json.dumps({'version': {'number': self.version}}).encode()
         if path == '/_resolve/index/' + INDEX:
-            return 200, json.dumps({'indices': [], 'aliases': self.aliases, 'data_streams': [
+            return 200, json.dumps({'indices': self.indices, 'aliases': self.aliases, 'data_streams': [
                 {'name': DATA_STREAM, 'backing_indices': self.backing}]}).encode()
+        if path == '/_security/_authenticate':
+            return 200, json.dumps(self.identity).encode()
+        if path == '/_security/api_key?id=key-1':
+            return 200, json.dumps({'api_keys': [{'id': 'key-1', 'name': 'hunt',
+                                                  'role_descriptors': self.descriptors}]}).encode()
         if path == '/_security/user/_has_privileges':
             status, granted = self.privileges(value)
             return status, json.dumps(granted).encode()
@@ -262,6 +273,32 @@ class RefusalTests(ConnectedCase):
         """The _has_privileges requests of the read-only check, not the one-name probes of newer names."""
         return [value for _, path, value in self.elastic.requests if path.endswith('_has_privileges')
                 and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+
+    def test_only_a_key_whose_own_descriptors_grant_read_only_rights_passes(self):
+        read = {'names': [INDEX], 'privileges': ['read', 'view_index_metadata']}
+        for change in ({'run_as': ['elastic']},
+                       {'cluster': ['monitor', 'cluster:admin/xpack/security/user/set_enabled']},
+                       {'cluster': ['monitor', 'cluster:admin/ilm/stop']},
+                       {'indices': [read, {'names': ['other-alias'], 'privileges': ['write']}]},
+                       {'indices': [dict(read, allow_restricted_indices=True)]},
+                       {'remote_indices': [dict(read, clusters=['*'])]},
+                       {'applications': [{'application': 'kibana', 'privileges': ['all'], 'resources': ['*']}]},
+                       {'unknown_section': True}):
+            with self.subTest(change=change):
+                self.elastic = FakeElastic()
+                self.elastic.descriptors = {'hunt': {**self.elastic.descriptors['hunt'], **change}}
+                self.assertIn('role descriptors', self.refused(check=True))
+                self.assertFalse(any(path.endswith('_has_privileges') for _, path, _ in self.elastic.requests))
+        for setting, value in (('descriptors', {}), ('identity', {'username': 'operator'})):
+            with self.subTest(setting=setting):
+                self.elastic = FakeElastic()
+                setattr(self.elastic, setting, value)
+                self.assertIn('without role descriptors has its owner', self.refused(check=True))
+        self.elastic = FakeElastic()
+        self.elastic.indices = [{'name': 'logs-windows-old', 'aliases': ['other-alias']}]
+        self.elastic.index_grants = {'other-alias': {'write': True}}
+        self.assertIn('key_not_read_only', self.refused(check=True))
+        self.assertIn('other-alias', self.privilege_checks()[0]['index'][0]['names'])
 
     def test_a_cluster_older_than_7_12_is_refused(self):
         self.elastic.version = '7.11.2'
@@ -510,7 +547,8 @@ class ServiceTests(ConnectedCase):
                         (r'a!event.\*:source-id', 'invalid_query'), (r'a^2event\.id:source-id', 'invalid_query'),
                         ('a~2event.id:source-id', 'invalid_query'), (r'\*.keyword:source-id', 'invalid_query'),
                         (r'event.i\*.keyword:source-id', 'invalid_query'), ('_exists_:"event.id"', 'invalid_query'),
-                        ('_exists_:("event.id")', 'invalid_query')):
+                        ('_exists_:("event.id")', 'invalid_query'), ('_exists_:(host.name OR "event.id")', 'invalid_query'),
+                        (r'_exists_:(+event.i\*)', 'invalid_query')):
             with self.subTest(q=q):
                 self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
         self.assertEqual(len(self.elastic.searches()), searches)
@@ -523,6 +561,15 @@ class ServiceTests(ConnectedCase):
                 self.assertTrue(self.tool('elastic_search', q=q)['ok'])
                 self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
                                  sent or q)
+
+    def test_mapped_event_id_sub_fields_and_rewritten_ids_are_handled(self):
+        _server, source, _state, _environ = self.start()
+        source.fields = source.fields | {'event.id.raw'}
+        self.assertEqual(self.tool('elastic_search', q=r'\*.raw:source-id').get('detail'), 'invalid_query')
+        source.citations['evt-0000000000000009'] = ['event.id:x']
+        self.assertTrue(self.tool('elastic_search', q='evt-0000000000000009')['ok'])
+        self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
+                         '(_id:"event.id:x")')
 
     def test_the_clusters_own_event_id_is_never_aggregated(self):
         _server, source, _state, _environ = self.start()
