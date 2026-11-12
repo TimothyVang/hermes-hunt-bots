@@ -13,6 +13,7 @@ import http.client
 import json
 from pathlib import Path
 import re
+import time
 from urllib import error, parse, request
 
 LAB_OWNER = 'framework-network-analyst'
@@ -112,25 +113,33 @@ def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None):
         if instance is not None and exc.headers.get(INSTANCE_HEADER) != instance:
             raise QueryFailure('lab_instance_mismatch') from None
         raise QueryFailure('lab_http_' + str(exc.code), _guest_error(exc)) from None
-    except http.client.HTTPException:
-        # Something that does not speak HTTP holds the port.
-        raise QueryFailure('lab_unreachable' if instance is None else 'lab_instance_mismatch') from None
     except (error.URLError, TimeoutError, OSError):
         raise QueryFailure('lab_unreachable') from None
+    except http.client.HTTPException:
+        raise QueryFailure('lab_unreachable' if instance is None else 'lab_instance_mismatch') from None
     except ValueError:
         raise QueryFailure('lab_invalid_response') from None
 
 
 def connected_state(state_dir):
-    """The connected service's state.json beside the VM's state dir: None when absent or still being written."""
+    """The connected service's state.json beside the VM's state dir: None when absent or still being written.
+
+    On Windows the service replacing the file blocks a read for a moment, which is waited out.
+    """
     path = Path(state_dir).parent / CONNECTED_STATE / 'state.json'
-    try:
-        with path.open('rb') as handle:
-            data = handle.read(MAX_STATE + 1)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        raise QueryFailure('connected_state_invalid') from None
+    for attempt in range(20):
+        try:
+            with path.open('rb') as handle:
+                data = handle.read(MAX_STATE + 1)
+            break
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            if attempt == 19:
+                raise QueryFailure('connected_state_invalid') from None
+            time.sleep(0.05)
+        except OSError:
+            raise QueryFailure('connected_state_invalid') from None
     if not data:
         return None
     try:

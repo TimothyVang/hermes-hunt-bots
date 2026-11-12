@@ -556,7 +556,7 @@ def start(config_path, case_path, state_dir, *, environ=None, transport=None):
             server.server_close()
         if source is not None:
             source.close()
-        state.unlink(missing_ok=True)
+        _while_unread(lambda: state.unlink(missing_ok=True))
         raise
     return server, source, state
 

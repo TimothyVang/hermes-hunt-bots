@@ -1029,8 +1029,7 @@ class _LabRefused(Exception):
     """The lab answered with something the board will not display."""
 
 
-# The lab resolver's refusals that mean a lab is up but is not this input's.
-_RESOLVER_REFUSALS = {
+_LAB_UP_NOT_THIS_INPUT = {
     "case_mismatch": "the lab has a different case loaded than this input",
     "ambiguous_lab": "both the VM and a connected service serve this case (ambiguous_lab)",
 }
@@ -1466,8 +1465,8 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
         try:
             served = resolve_lab(args.lab_state_dir, case_id)
         except LabInputError as exc:
-            if exc.code in _RESOLVER_REFUSALS:
-                raise _LabRefused(_RESOLVER_REFUSALS[exc.code]) from None
+            if exc.code in _LAB_UP_NOT_THIS_INPUT:
+                raise _LabRefused(_LAB_UP_NOT_THIS_INPUT[exc.code]) from None
             raise
         try:
             arkime = loopback_base(served.arkime_url)

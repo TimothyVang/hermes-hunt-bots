@@ -517,12 +517,14 @@ class ToolDrivenInputTests(unittest.TestCase):
     def test_a_real_connected_case_is_not_yet_exported(self):
         connected_case = {**TOOL_CASE, "case_id": "work-conn-001", "data_origin": "work-connected",
                           "network_capture": "none", "hosts": ["ws-01"]}
-        _lab, state_dir = self.connected(connected_case)
+        lab, state_dir = self.connected(connected_case)
         runtime = fake_runtime({**self.STATUS, "state": "stopped"})
         for approval in (None, "work-export"):
-            with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError), \
+            with self.subTest(approval=approval), \
+                    self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable or incomplete$"), \
                     patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
                 lab_input.collect_tool_input(state_dir, data_origin=approval)
+        self.assertEqual(lab.paths(), ["/case", "/case"])
 
 
 if __name__ == "__main__":
