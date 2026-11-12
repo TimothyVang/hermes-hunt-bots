@@ -274,6 +274,21 @@ class StackTests(unittest.TestCase):
         self.assertEqual(result['lab_console_url'], result['lab_url'] + '/?key=' + state['secret'])
         self.assertEqual(result['services']['ingest'], 'exited(0)')
 
+    def test_start_replies_carry_the_console_url_once_running(self):
+        # The desktop shows Open lab from the start reply itself, so a running start reply must carry the URL.
+        ready = iter([(False, None, 'lab_unreachable'), (True, {'ready': True}, None)])
+        with patch.object(lab_stack, '_health', lambda state: next(ready)), patch.object(lab_stack.time, 'sleep'):
+            result = self.invoke('start', wait=60)
+        state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        self.assertEqual(result['state'], 'running')
+        self.assertEqual(result['lab_console_url'], 'http://127.0.0.1:%d/?key=%s' % (state['lab_port'], state['secret']))
+        # Start on a lab that already runs reports it, with the URL, and launches nothing.
+        self.health = (True, {'ready': True}, None)
+        again = self.invoke('start')
+        self.assertEqual((again['state'], again['lab_console_url']), ('running', result['lab_console_url']))
+        self.assertEqual(len(self.launched), 1)
+        self.assertEqual(self.invoke('status')['lab_console_url'], result['lab_console_url'])
+
     def test_status_names_the_failed_step_and_a_stalled_start(self):
         self.invoke('start')
         cases = (
