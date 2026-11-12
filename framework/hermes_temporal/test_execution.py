@@ -302,6 +302,65 @@ class ExecutionReceiptTests(unittest.TestCase):
         result = self.invoke_plain(StreamProcess(b'', 2, ('\n'.join(lines) + '\n').encode('utf-8')))
         self.assertEqual(result.diagnostic, 'exit code 2: ValueError: blob [redacted]')
 
+    def test_redaction_covers_key_names_quotes_and_escapes(self):
+        # Each line and the exact diagnostic text it must become (review of #45 found these unredacted).
+        table = [
+            ('ValueError: secret_key=abc123def', 'ValueError: secret_key=[redacted]'),
+            ('ValueError: SECRET_KEY "a b"', 'ValueError: SECRET_KEY "[redacted]"'),
+            ('ValueError: private_key=MIIEabc123', 'ValueError: private_key=[redacted]'),
+            ('ValueError: aws_secret_access_key=abc123def', 'ValueError: aws_secret_access_key=[redacted]'),
+            ('ValueError: password "it\\"s abc123"', 'ValueError: password "[redacted]"'),
+            ('ValueError: api_key=\\"abc123def\\"', 'ValueError: api_key=\\"[redacted]\\"'),
+            ('ValueError: {\\"api_key\\": \\"abc123def\\"}', 'ValueError: {\\"api_key\\": \\"[redacted]\\"}'),
+            ('ValueError: token `abc123def`', 'ValueError: token `[redacted]`'),
+            ('ValueError: secret_key=`abc123def`', 'ValueError: secret_key=`[redacted]`'),
+            ('ValueError: token=abc\\def', 'ValueError: token=[redacted]'),
+            ('ValueError: sk_live_abc123def rejected', 'ValueError: [redacted] rejected'),
+        ]
+        for line, expected in table:
+            with self.subTest(line=line):
+                self.assertEqual(execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False),
+                                 'exit code 1: ' + expected)
+
+    def test_key_shapes_and_backslash_values_are_redacted(self):
+        # Review of #50: narrowing the sk_/pk_/rk_ rule exposed the first seven forms and `token=\\\\abc123`,
+        # all redacted on trunk; whsec_, npm_, xapp- and aws_access_key_id= were never covered.
+        secrets = ['sk_prod_abc12345', 'pk_9f8e7d6c5b', 'rk_live_abc-123456789', 'sk_live_abc_def123456',
+                   'sk_test_51FAKE_abcd1234efgh', 'sk_org_FAKE1234abcdEFGH5678', 'sk_12345678',
+                   'whsec_' + 'Ab3' * 8, 'npm_' + 'a1B2c3' * 6, 'xapp-1-A0123ABCD-456789']
+        lines = [f'ValueError: key {secret} rejected' for secret in secrets] + [
+            'ValueError: token=\\abc123', 'ValueError: token=\\\\abc123', 'ValueError: aws_access_key_id=EXAMPLEID123']
+        for line, secret in zip(lines, secrets + ['abc123', 'abc123', 'EXAMPLEID123']):
+            with self.subTest(line=line):
+                diagnostic = execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False)
+                self.assertNotIn(secret, diagnostic)
+                self.assertIn('[redacted]', diagnostic)
+
+    def test_random_sk_pk_rk_tokens_trunk_redacted_stay_redacted_except_identifier_shapes(self):
+        # Review of #50: a fuzz of the sk_/pk_/rk_ rule found keys with 1-2 digits per segment (sk_El2hpChYgC)
+        # visible. Trunk redacted any such token of 8+ body characters holding a digit; the only exceptions
+        # now are bodies whose every segment is a word, a number of up to 7 digits, or a word of up to 7
+        # letters with a 1-2 digit suffix (pk_users_v2, pk_receipts_2024).
+        import random
+        import re
+        import string
+        identifier = re.compile(r'[A-Za-z]*|[0-9]{1,7}|[A-Za-z]{1,7}[0-9]{1,2}')
+        alphabet = string.ascii_letters + string.digits + '_-'
+        rng = random.Random(20261111)
+        checked = readable = 0
+        for _ in range(4000):
+            token = rng.choice(('sk_', 'pk_', 'rk_')) + ''.join(rng.choice(alphabet) for _ in range(rng.randint(8, 28)))
+            if not any(character.isdigit() for character in token[3:]):
+                continue
+            if all(identifier.fullmatch(segment) for segment in re.split('[_-]', token[3:])):
+                readable += 1
+                continue
+            checked += 1
+            with self.subTest(token=token):
+                self.assertNotIn(token, execution_module._redact(f'KeyError: {token} rejected'))
+        self.assertGreater(checked, 3000)
+        self.assertLess(readable, checked // 20)
+
     def test_redaction_keeps_ordinary_words_and_identifiers(self):
         lines = [
             'RuntimeError: token limit exceeded',
@@ -309,6 +368,12 @@ class ExecutionReceiptTests(unittest.TestCase):
             'KeyError: secret manager unavailable',
             'sqlite3.IntegrityError: UNIQUE constraint failed: pk_receipts_execution',
             'RuntimeError: max_tokens "4096" is too large',
+            # Review of #45: the first two were over-redacted; the third guards the added key names.
+            'KeyError: pk_users_v2',
+            "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+            'KeyError: access_key_id missing',
+            'KeyError: pk_receipts_2024',
+            'KeyError: npm_config_cache',
         ]
         for line in lines:
             with self.subTest(line=line):

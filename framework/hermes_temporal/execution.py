@@ -43,19 +43,42 @@ MAX_LOG_SCAN_BYTES = 4 * 1024 * 1024
 _ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 _EXCEPTION_LINE = re.compile(r'(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|Exit|Interrupt|Failure)\b(?::.*)?\Z')
 _ERROR_LINE = re.compile(r'(?i)\b(?:error|fatal|failed)\b')
-_SECRET_KEY = r'(?i)\b([\w-]*(?:api[_-]?key|token|secret|password|passwd|credentials?|signature|sig))\b'
+_SECRET_KEY = (r'(?i)\b([\w-]*(?:(?:api|secret|private|access|signing|encryption)[_-]?key(?:[_-]?id)?|token|secret'
+               r'|password|passwd|credentials?|signature|sig))\b')
+# The only `sk_`/`pk_`/`rk_` segment shapes that read as identifier parts: a word, a number of up to seven
+# digits (`2024`), or a short word with a one- or two-digit suffix (`v2`, `utf8`). Any other segment holding
+# a digit (`El2hpChYgC`, `abc12345`, `9f8e7d6c5b`) marks a key.
+_IDENTIFIER_SEGMENT = re.compile(r'[A-Za-z]*|\d{1,7}|[A-Za-z]{1,7}\d{1,2}')
+
+
+def _stripe_key(text: str) -> bool:
+    """Whether an `sk_`/`pk_`/`rk_` token is a key rather than an identifier such as `pk_users_v2`."""
+    body = text[3:]
+    if body.lower().startswith(('live_', 'test_')):
+        return True
+    return not all(_IDENTIFIER_SEGMENT.fullmatch(segment) for segment in re.split(r'[_-]', body))
+
+
 _SECRETS = (
     (re.compile(r'(?i)\b((?:proxy-)?authorization|set-cookie|cookie)\b\s*[:=].*'), r'\1: [redacted]'),
     (re.compile(r'(?i)\b(bearer|basic)\s+[^\s,;]+'), r'\1 [redacted]'),
     # A quoted value after a key name and a separator or a space (`api_key "..."`), up to its closing quote
-    # or, when stderr cut it off, the end of the line.
-    (re.compile(_SECRET_KEY + r'(["\']?\s*[:=]\s*|\s+)(["\'])(?:(?!\3).)*\3?'), r'\1\2\3[redacted]\3'),
-    (re.compile(_SECRET_KEY + r'(["\']?\s*[:=]\s*["\']?)[^\s"\',;&]+'), r'\1\2[redacted]'),
+    # or, when stderr cut it off, the end of the line. Quotes may be backslash-escaped (JSON inside a string)
+    # or backticks, and escaped quotes inside the value do not end it. After a bare space the value must hold
+    # a letter or digit, so a parser's "Unexpected token '<'" stays readable.
+    (re.compile(_SECRET_KEY + r'(\\?["\']?\s*[:=]\s*|\s+(?=\\?["\'`](?:\\.|[^"\'`\\])*[A-Za-z0-9]))'
+                r'(\\?)(["\'`])(?:(?!\3\4)(?:\\.|[^\\]))*(?:\3\4)?'), r'\1\2\3\4[redacted]\3\4'),
+    # An unquoted value; a quoted one was redacted above and is not redacted twice.
+    (re.compile(_SECRET_KEY + r'(\\?["\']?\s*[:=]\s*\\*["\'`]?)(?!\[redacted\])[^\s"\'`,;&\\][^\s"\'`,;&]*'),
+     r'\1\2[redacted]'),
     (re.compile(r'://[^/\s@]+@'), '://[redacted]@'),
     (re.compile(r'(?i)(https?://[^\s?#]+)[?#]\S*'), r'\1?[redacted]'),
     (re.compile(r'(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}'), '[redacted]'),
-    # Stripe-style `sk_live_...`; a digit is required so identifiers such as `pk_receipts` stay readable.
-    (re.compile(r'(?i)\b(?:sk|pk|rk)_(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{8,}'), '[redacted]'),
+    (re.compile(r'(?i)\b(?:sk|pk|rk)_[A-Za-z0-9_-]{8,}'),
+     lambda match: '[redacted]' if _stripe_key(match[0]) else match[0]),
+    # Stripe webhook secrets, npm tokens and Slack app tokens; npm's 36-character body keeps
+    # `npm_config_*` environment names readable.
+    (re.compile(r'\b(?:whsec_[A-Za-z0-9+/=]{16,}|npm_[A-Za-z0-9]{36}\b|xapp-\d-[A-Za-z0-9-]{8,})'), '[redacted]'),
     (re.compile(r'(?i)\bxox[a-z]-[A-Za-z0-9-]+'), '[redacted]'),
     (re.compile(r'\b(?:gh[pousr]_|github_pat_|glpat-|hf_|AKIA|ASIA|AIza)[A-Za-z0-9_-]{8,}'), '[redacted]'),
     (re.compile(r'\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*'), '[redacted]'),
