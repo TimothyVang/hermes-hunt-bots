@@ -62,7 +62,7 @@ export interface DesktopUninstallIpcDeps {
   ipcMain: {
     handle: (channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => void
   }
-  stamp: Readonly<Partial<Pick<InstallStamp, 'distribution' | 'source' | 'payload' | 'updateMechanism'>>> | null
+  stamp: Readonly<Partial<Pick<InstallStamp, 'distribution' | 'source' | 'payload' | 'updateMechanism' | 'variant'>>> | null
   fallbackSummary: () => UninstallSummaryDetails
   probeSummary: () => Promise<UninstallSummaryDetails>
   runUninstall: (mode: string) => Promise<DesktopUninstallResult>
@@ -135,12 +135,14 @@ const UNINSTALL_MODES: string[] = ['gui', 'lite', 'full', 'data']
 //                app must not remove any code, its own bundle included.
 //   'bundled'  — a bundled or light artifact. The OS owns app removal.
 //   'external' — another package manager owns updates and removal.
+//   'hunt'     — the Hunt Command build (stamp variant 'hunt'): a folder its
+//                owner built and placed; removal is deleting that folder.
 //   'standard' — everything else: the git-clone install the desktop
 //                installer bootstraps, or a `hermes desktop` source build.
 //                The classic script flow (venv python + rm the bundle) works.
 //
 // Only 'standard' installs may use the desktop cleanup script.
-const INSTALL_KINDS = ['nix', 'bundled', 'external', 'standard'] as const
+const INSTALL_KINDS = ['nix', 'bundled', 'external', 'hunt', 'standard'] as const
 type InstallKind = (typeof INSTALL_KINDS)[number]
 
 /**
@@ -155,7 +157,8 @@ function resolveInstallKind({
   distribution,
   source,
   payload = 'bootstrap',
-  updateMechanism
+  updateMechanism,
+  variant
 }: NonNullable<DesktopUninstallIpcDeps['stamp']> = {}): InstallKind {
   if (distribution === 'nix' || source === 'nix') {
     return 'nix'
@@ -163,6 +166,10 @@ function resolveInstallKind({
 
   if (payload === 'bundled' || payload === 'light') {
     return 'bundled'
+  }
+
+  if (variant === 'hunt') {
+    return 'hunt'
   }
 
   if (updateMechanism === 'external') {
@@ -200,6 +207,13 @@ function nativeRemovalInstructions(kind, platform, appPath = null) {
       'This Hermes desktop app was installed by Nix. Uninstall it the same way you installed it: ' +
       'remove hermes-agent from your flake or profile, then rebuild.'
     )
+  }
+
+  if (kind === 'hunt') {
+    // Self-built and unregistered: no installer or package manager owns it.
+    return appPath
+      ? `Delete the Hunt Command folder at ${appPath}.`
+      : 'Delete the Hunt Command folder from wherever you built or saved it.'
   }
 
   if (kind === 'external') {

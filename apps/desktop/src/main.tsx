@@ -42,6 +42,7 @@ import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
 import { ThemeProvider } from './themes/context'
+import { PRODUCT_NAME } from './variant'
 
 installClipboardShim()
 // Chromium serializes selection copies (Cmd+C, right-click Copy) with the
@@ -64,7 +65,7 @@ if (import.meta.env.MODE !== 'production' || import.meta.env.VITE_PERF_PROBE ===
 const winParam = new URLSearchParams(window.location.search).get('win')
 
 if (winParam === 'hud') {
-  document.title = 'Hermes HUD'
+  document.title = `${PRODUCT_NAME} HUD`
 }
 
 // Each transparent root used to force its host layers see-through when it

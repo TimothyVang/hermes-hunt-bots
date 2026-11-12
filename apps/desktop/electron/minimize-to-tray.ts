@@ -14,6 +14,8 @@ interface Options {
   restoreMainWindow: () => void
   isQuittingForHandoff: () => boolean
   log: (message: string) => void
+  /** The tray's tooltip and menu name ('Hermes'; the Hunt Command build's own name). */
+  productName: string
 }
 
 /** Device-local native preference; renderer windows only cache its status. */
@@ -183,13 +185,13 @@ export function createMinimizeToTray(options: Options) {
             height: process.platform === 'darwin' ? 18 : 24
           })
         )
-        tray.setToolTip('Hermes')
+        tray.setToolTip(options.productName)
         tray.setContextMenu(
           Menu.buildFromTemplate([
-            { label: 'Show Hermes', click: restore },
+            { label: `Show ${options.productName}`, click: restore },
             { type: 'separator' },
             // Do not bypass the ordinary active-work confirmation or teardown.
-            { label: 'Quit Hermes', click: () => app.quit() }
+            { label: `Quit ${options.productName}`, click: () => app.quit() }
           ])
         )
 

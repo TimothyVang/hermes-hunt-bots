@@ -225,6 +225,18 @@ class ToolCallTests(unittest.TestCase):
                        '?[redacted]', 'Cite the matching evt- log events', 'frame numbers are supporting evidence'):
             self.assertIn(phrase, schema['description'])
 
+    def test_static_bot_texts_do_not_call_the_loaded_case_synthetic(self):
+        # Live (work-export proof hunt): six step outputs called real data synthetic, repeating these texts.
+        # Only the stage prompts know a case's origin; static texts may name synthetic cases conditionally.
+        texts = {name: json.dumps(schema) for name, schema in query_adapter.SCHEMAS.items()}
+        bots = Path(query_adapter.__file__).resolve().parents[1] / 'hermes-bots'
+        souls = sorted(bots.glob('framework-*/SOUL.md'))
+        self.assertEqual(len(souls), 6)
+        texts.update({path.parent.name + '/SOUL.md': path.read_text(encoding='utf-8') for path in souls})
+        for name, text in texts.items():
+            with self.subTest(text=name):
+                self.assertNotIn('synthetic', text.lower().replace("a synthetic case's feed", ''))
+
     def test_citation_forms_taught_by_the_tools_are_what_the_scorer_extracts(self):
         packets = query_adapter.SCHEMAS['packet_fields']['description']
         intel = query_adapter.SCHEMAS['intel_lookup']['description']

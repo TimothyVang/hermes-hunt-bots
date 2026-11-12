@@ -30,14 +30,14 @@ PINNED_TINY_A = {
     "traffic.pcap": "7e4aff3de6f373253dfb873b4647a90a8a8de1ff077e5155fd311b0bb83743c8",
     "intel.jsonl": "a72e80d54060d5fa2ba17133827c007b3a5950e9078c1ca1c6b9a5342e2d15c6",
     "case.json": "34b75640a1b64421d2af9f6ab2282f27823c0220d03b1a66a9f63220c708b549",
-    "truth.json": "7c4b5859e750c44a7456831abf7da1ee4968530b1af364fff58a30ad2b481587",
+    "truth.json": "1bdc861ecbd97126d9f7fdb6ed4044201b5ba2a2ae81f9134219fc9bec0de6b3",
 }
 PINNED_MEDIUM_A = {
     "events.jsonl": "3aff6df769254ddb2aa5bf71fa006f1efb9c2e7c3b335a670204158590517060",
     "traffic.pcap": "b50612822339f4e95974c61fd94ff71fcd32e77034b37a629c1049c162e59d77",
     "intel.jsonl": "a17f8bf3e5604f4ae0063bbddfe8cc64704ac25736e0307199e66cb35b04924e",
     "case.json": "fbc0636ac931f0509a187a147e3d77324a28155fb2a0a631832628a77aa51811",
-    "truth.json": "efbe22f0949a172832c2d536a15984ea7f350ef8c7ecebb6747abe9a82f6d74d",
+    "truth.json": "9d8764233ea5e3328fabb94f8b8bb432a73472b9140b01e790cdf095dfee3d12",
 }
 
 
@@ -181,6 +181,8 @@ class GeneratedTinyCase(unittest.TestCase):
     INTEL_ALTERNATIVE = ("attack.c2.jittered-https-beacon", 0, scenario.C2)
     # (process, DNS name): an attack process's lookup that sits beside several groups, so it must be no sibling.
     AMBIGUOUS_SIBLING = ("synchost.exe", "srv-files-02." + scenario.ZONE)
+    # (fact, group, http direction, pattern of the byte count stated in its observation)
+    STATED_BYTES = (("attack.delivery.lookalike-download", 1, "response", r"\(([\d,]+) response bytes at the gateway\)"),)
 
     @classmethod
     def setUpClass(cls):
@@ -286,6 +288,15 @@ class GeneratedTinyCase(unittest.TestCase):
     def fact_events(self, fact_id, group=0):
         fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
         return [self.by_id[event_id] for event_id in fact["evidence_event_groups"][group]]
+
+    def test_stated_byte_counts_equal_the_gateway_records(self):
+        for fact_id, group, direction, pattern in self.STATED_BYTES:
+            with self.subTest(fact=fact_id):
+                fact = next(fact for fact in self.truth["facts"] if fact["fact_id"] == fact_id)
+                stated = int(re.search(pattern, fact["observation"]).group(1).replace(",", ""))
+                proxied = [row for row in self.fact_events(fact_id, group) if row["event"]["provider"] == scenario.PROXY]
+                self.assertTrue(proxied)
+                self.assertEqual(stated, sum(row["http"][direction]["bytes"] for row in proxied))
 
     def test_frame_alternatives_are_the_written_frames_of_each_groups_events(self):
         frames = parse_pcap((self.evidence / "traffic.pcap").read_bytes(), self)["frames"]
@@ -438,6 +449,8 @@ class GeneratedTinyStoryB(GeneratedTinyCase):
     PORTS = {443, 80, 445, 3389, 9389}
     INTEL_ALTERNATIVE = ("attack.recon.portal-path-probing", 0, scenario.B_ATTACKER)
     AMBIGUOUS_SIBLING = None
+    STATED_BYTES = (("attack.exfiltration.https-post", 1, "request", r"totalling (\d+) request bytes at the gateway"),
+                    ("decoy.cdn-large-uploads", 1, "request", r"\((\d+) request bytes in total at the gateway\)"))
 
     def check_story_truth(self, facts):
         children = self.fact_events("attack.execution.webshell-commands", 1)

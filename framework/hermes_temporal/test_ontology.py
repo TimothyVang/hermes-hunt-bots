@@ -101,9 +101,23 @@ class OntologyTests(unittest.TestCase):
              "unknown claim kind"),
             (handoff("evidence", "framework-researcher", claims=[claim("evidence:c1", contradicts=("x:c1",))]),
              "contradiction target is not a current or predecessor claim"),
+            (handoff("evidence", "framework-researcher", claims=[dict(claim("evidence:c1"), extra=1)]),
+             "claim must contain exactly the specified fields"),
+            (handoff("evidence", "framework-researcher", claims=["not an object"]),
+             "claim must contain exactly the specified fields"),
+            (dict(handoff("evidence", "framework-researcher"), stray=1), "handoff must contain exactly the specified fields"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, f"^{message}$"):
                 validate_handoff(raw, **common)
+        # Recorded live (Q4 team-k3-003313 purple): a review with a stray claim_id key, rejected with the bare text.
+        review = {"claim_id": "x", "review_id": "evidence:r1", "claim_ids": ["x"], "disposition": "review_ready",
+                  "rationale": "Reviewed.", "evidence_ids": []}
+        with self.assertRaisesRegex(ValueError, r"^review must contain exactly the specified fields$"):
+            validate_handoff(handoff("evidence", "framework-reviewer", reviews=[review]),
+                             **dict(common, profile="framework-reviewer"))
+        with self.assertRaisesRegex(ValueError, r"^review must contain exactly the specified fields \(unexpected claim_id\)$"):
+            validate_handoff(handoff("evidence", "framework-reviewer", reviews=[review]),
+                             **dict(common, profile="framework-reviewer", explained=True))
 
     def test_instructions_state_every_enforced_enum_and_prefix_rule(self):
         # Live native runs failed validation on rules the prompt never stated
