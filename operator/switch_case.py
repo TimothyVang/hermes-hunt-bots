@@ -14,12 +14,13 @@ import json
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 from lab_paths import DEFAULT_LANE, FRAMEWORK, PYTHON
 
 sys.path.insert(0, str(FRAMEWORK))
+from hunt_lab import runtime as lab_runtime  # noqa: E402
+from hunt_lab.endpoints import resolve  # noqa: E402
 from hunt_lab.runtime import _available_memory_mib as avail_mib  # noqa: E402  same probe the lab's start uses
 
 
@@ -41,10 +42,15 @@ def say(msg):
     print(time.strftime('%H:%M:%S ') + msg, flush=True)
 
 
-def health(url):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(url + '/health', headers={'X-Hermes-Profile': 'hunt-board'})
-    return json.loads(opener.open(req, timeout=30).read())
+def serving_lab(lane=DEFAULT_LANE):
+    """The lab serving the lane's case, with the caller secret its service requires (hunt_lab.endpoints.resolve).
+
+    Raises hunt_lab.endpoints.QueryFailure with a fixed code when no lab serves one."""
+    return resolve(lane.state_dir, runtime=lab_runtime, profile='hunt-board')
+
+
+def health(served):
+    return served.get('/health', 'hunt-board', 30)
 
 
 def ready(h, instance=None, case_id=None):
@@ -100,7 +106,7 @@ def main():
     while time.time() - t1 < 2400:
         rc, st = lab('status', 180)
         try:
-            h = health(st['lab_url'])
+            h = health(serving_lab())
             if ready(h, instance, case_id):
                 break
         except Exception:

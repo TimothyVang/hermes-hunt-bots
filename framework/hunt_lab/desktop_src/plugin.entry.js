@@ -344,7 +344,7 @@ function runningState(current, owner, result, ready) {
   }
   const consoleUrl = consoleFrameUrl(result.console_websocket_url);
   const arkime = loopbackUrl(result.arkime_url);
-  const lab = loopbackUrl(result.lab_url);
+  const lab = loopbackUrl(result.lab_console_url);
   return jsxs('div', { className: 'hc-run', children: [
     facts([
       ['State', vmStatus(current, result)],

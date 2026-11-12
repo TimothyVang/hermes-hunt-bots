@@ -2,14 +2,16 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import time
 import unittest
 from unittest import mock
 
-from hunt_lab import managed, prepare_guest
+from hunt_lab import endpoints, managed, prepare_guest
 
 
 class ManagedTests(unittest.TestCase):
@@ -254,6 +256,32 @@ class ReseedTests(unittest.TestCase):
         self.assertFalse(any('key' in name or 'truth' in name or 'test' in name for name in names))
         self.assertFalse(result['deployment_updated'])
 
+    def test_each_seed_carries_a_new_secret_that_only_its_owner_can_read(self):
+        seeds = [Path(prepare_guest.reseed(self.args())['seed']) for _ in range(2)]
+        secrets = []
+        for seed in seeds:
+            iso = pycdlib.PyCdlib()
+            iso.open(str(seed))
+            try:
+                carried = io.BytesIO()
+                iso.get_file_from_iso_fp(carried, rr_path='/lab-secret')
+            finally:
+                iso.close()
+            caller = json.loads(endpoints.caller_file(seed).read_text(encoding='ascii'))
+            self.assertEqual(caller, {'version': 1, 'instance': self.read_iso(seed)[0]['instance-id'],
+                                      'secret': carried.getvalue().decode('ascii').strip()})
+            self.assertRegex(caller['secret'], r'^[0-9a-f]{64}$')
+            secrets.append(caller['secret'])
+            if os.name == 'nt':
+                for path in (seed, endpoints.caller_file(seed)):
+                    listing = subprocess.run(['icacls', str(path)], capture_output=True, text=True,
+                                             check=True).stdout.replace(str(path), '')
+                    self.assertEqual(len([line for line in listing.splitlines() if ':(' in line]), 2, listing)
+                    self.assertIn('NT AUTHORITY\\SYSTEM:(F)', listing)
+        self.assertNotEqual(*secrets)
+        (self.state / 'deployment.json').write_text(json.dumps({'seed': str(seeds[1])}), encoding='utf-8')
+        self.assertEqual(endpoints.vm_caller(self.state), (self.read_iso(seeds[1])[0]['instance-id'], secrets[1]))
+
     def test_reloading_a_case_writes_a_fresh_seed_and_never_overwrites(self):
         first = Path(prepare_guest.reseed(self.args())['seed'])
         before, first_id = first.read_bytes(), self.read_iso(first)[0]['instance-id']
@@ -310,6 +338,25 @@ class ReseedTests(unittest.TestCase):
         self.assertEqual(result['previous_seed'], str(old_seed))
         self.assertEqual(old_seed.read_bytes(), b'existing seed')
         self.assertTrue(result['deployment_updated'])
+
+
+class ConsoleUrlTests(unittest.TestCase):
+    def test_a_running_status_names_the_console_with_the_deployed_seeds_secret_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            seed = root / 'media' / 'cidata.iso'
+            seed.parent.mkdir()
+            (root / 'deployment.json').write_text(json.dumps({'seed': str(seed)}), encoding='utf-8')
+            status = {'state': 'running', 'lab_url': 'http://127.0.0.1:41001'}
+            with mock.patch.object(managed.runtime, 'invoke', side_effect=lambda *_a, **_k: dict(status)):
+                self.assertIsNone(managed._view(root, {}, None)['lab_console_url'])
+                endpoints.write_vm_caller(seed, 'hermes-framework-network-analyst-native-v1', 'ab' * 32)
+                self.assertEqual(managed._view(root, {}, None)['lab_console_url'],
+                                 'http://127.0.0.1:41001/?key=' + 'ab' * 32)
+                status['state'] = 'stopped'
+                self.assertIsNone(managed._view(root, {}, None)['lab_console_url'])
+                status.update(state='running', lab_url='http://192.0.2.1:41001')
+                self.assertIsNone(managed._view(root, {}, None)['lab_console_url'])
 
 
 if __name__ == '__main__':

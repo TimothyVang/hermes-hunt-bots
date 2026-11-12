@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
+import hmac
 import json
 import re
+import secrets
 import sys
 import threading
 import time
@@ -1050,6 +1052,7 @@ class LabObserver:
         self._lab_url: str | None = None
         self._arkime_url: str | None = None
         self._instance: str | None = None
+        self._secret: str | None = None
         self._network_scope: str | None = None
         # Entries at or before this /activity sequence (e.g. earlier checks or hunts)
         # are not this run's tool calls and are never shown.
@@ -1068,7 +1071,7 @@ class LabObserver:
             if self._lab_url is None:
                 endpoints = self._resolve()
                 self._lab_url, self._arkime_url = endpoints["lab_url"], endpoints.get("arkime_url")
-                self._instance = endpoints.get("instance")
+                self._instance, self._secret = endpoints.get("instance"), endpoints.get("secret")
                 scope = self._call("/health").get("network_scope")
                 self._network_scope = scope if scope in ("tag", "window") else "tag"
             self._poll_activity()
@@ -1091,7 +1094,7 @@ class LabObserver:
 
     def _call(self, path: str) -> dict:
         body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS,
-                         instance=self._instance)
+                         instance=self._instance, secret=self._secret)
         if self._case_id is not None and body.get("case_id") != self._case_id:
             raise _LabRefused("the lab has a different case loaded than this input")
         return body
@@ -1308,7 +1311,7 @@ def content_security_policy(port: int) -> str:
             f"connect-src http://127.0.0.1:{port}; base-uri 'none'; form-action 'none'")
 
 
-def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
+def _handler(board: Board, token: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def version_string(self) -> str:
             return "HuntBoard"
@@ -1324,23 +1327,39 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             port = self.server.server_address[1]
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if self.headers.get("Host") != f"127.0.0.1:{port}":
                 # Refuse other Host names so a rebinding page cannot read the board.
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
             elif path == "/":
                 csp = content_security_policy(port)
-                self._send(200, PAGE.replace("__CSP__", csp).encode("utf-8"), "text/html; charset=utf-8",
-                           {"Content-Security-Policy": csp})
+                page = PAGE.replace("__CSP__", csp).replace("__BOARD_TOKEN__", token)
+                self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
             elif path == "/state.json":
+                origin = self.headers.get("Origin")
+                cross = origin is not None or self.headers.get("Sec-Fetch-Site", "none") not in ("same-origin", "none")
+                if cross and not self._has_token(query):
+                    # A read from another origin, the desktop's opaque sandbox included, needs this run's page token.
+                    # Electron sends no Origin from a file:// page, so Sec-Fetch-Site is checked as well.
+                    self._send(403, b"forbidden\n", "text/plain; charset=utf-8", {"Vary": "Origin"})
+                    return
                 headers = {"Vary": "Origin"}
-                if self.headers.get("Origin") == "null":
+                if origin == "null":
                     headers["Access-Control-Allow-Origin"] = "null"
                 self._send(200, board.state_bytes(), "application/json; charset=utf-8", headers)
             elif live_path := _LIVE_PATH.fullmatch(path):
-                self._live(*live_path.groups())
+                # Without the token, only a plain <img> load: its pixels stay unreadable to another origin's script.
+                if self._has_token(query) or (self.headers.get("Sec-Fetch-Dest") == "image"
+                                              and self.headers.get("Origin") is None):
+                    self._live(*live_path.groups())
+                else:
+                    self._send(403, b"forbidden\n", "text/plain; charset=utf-8")
             else:
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+        def _has_token(self, query: str) -> bool:
+            values = parse.parse_qs(query, keep_blank_values=True).get("token", [])
+            return len(values) == 1 and hmac.compare_digest(values[0].encode("utf-8"), token.encode("utf-8"))
 
         def _live(self, profile: str, kind: str) -> None:
             live = board.live
@@ -1409,9 +1428,13 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(board: Board, port: int) -> ThreadingHTTPServer:
-    """Bind the read-only board to loopback only; ``port=0`` picks a free port."""
-    server = ThreadingHTTPServer((BIND_HOST, port), _handler(board))
+    """Bind the read-only board to loopback only; ``port=0`` picks a free port.
+
+    Each server draws a new page token (``server.token``) that ``GET /`` writes into the page; see ``do_GET``."""
+    token = secrets.token_urlsafe(32)
+    server = ThreadingHTTPServer((BIND_HOST, port), _handler(board, token))
     server.daemon_threads = True
+    server.token = token
     return server
 
 
@@ -1437,11 +1460,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workflow-id", required=True, help="practice parent workflow ID")
     parser.add_argument("--input", required=True, help="the supplied-evidence hunt JSON the practice was started with")
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="loopback port to serve on")
-    lab = parser.add_mutually_exclusive_group()
-    lab.add_argument("--lab-state-dir",
-                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's case "
-                          "is found from it (the VM's status, or a connected service's state)")
-    lab.add_argument("--lab-url", type=_lab_url, help="tool-driven input: the lab API, http://127.0.0.1:<port>")
+    parser.add_argument("--lab-state-dir",
+                        help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's "
+                             "case, and the caller secret it requires, are found from it (the VM's status, or a "
+                             "connected service's state)")
     parser.add_argument("--arkime-url", type=_lab_url,
                         help="Arkime viewer for copyable session links, http://127.0.0.1:<port> (default: from status)")
     parser.add_argument("--activity-after", type=int, default=0,
@@ -1457,9 +1479,6 @@ def _parser() -> argparse.ArgumentParser:
 def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
     override = {"arkime_url": args.arkime_url} if args.arkime_url else {}
     after = max(0, args.activity_after)
-    if args.lab_url:
-        endpoints = {"lab_url": args.lab_url, "arkime_url": None, **override}
-        return LabObserver(lambda: endpoints, case_id, activity_after=after)
 
     def resolve() -> dict:
         try:
@@ -1472,7 +1491,8 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
             arkime = loopback_base(served.arkime_url)
         except LabInputError:
             arkime = None
-        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, **override}
+        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, "secret": served.secret,
+                **override}
 
     return LabObserver(resolve, case_id, activity_after=after)
 
@@ -1490,9 +1510,9 @@ def main(argv: list[str] | None = None) -> int:
     if initial["input_errors"]:
         print("error: input is not a readable supplied-evidence hunt", file=sys.stderr)
         return 2
-    has_lab = bool(args.lab_state_dir or args.lab_url)
+    has_lab = bool(args.lab_state_dir)
     if initial["mode"] == "tool_driven" and not has_lab:
-        print("error: a tool-driven input needs --lab-state-dir or --lab-url", file=sys.stderr)
+        print("error: a tool-driven input needs --lab-state-dir", file=sys.stderr)
         return 2
     if initial["mode"] != "tool_driven" and (has_lab or args.arkime_url):
         print("error: lab options apply only to a tool-driven input", file=sys.stderr)

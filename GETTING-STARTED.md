@@ -6,14 +6,14 @@ Use one project folder with two parts: `repo/`, the Git clone, and `runtime/` ne
 
 ## 1. Clone and check (5 minutes)
 
-You need Git and Python 3.10 or newer (tested on 3.13).
+You need Git and Python 3.10 or newer (tested on 3.13). On Windows, build the venv from a python.org Python, not the Microsoft Store Python: in a venv built from Store Python 3.13.14, two process-tree tests in `framework/test_benchmark_process.py` fail.
 
 ```powershell
 mkdir hermes-hunt-bots; cd hermes-hunt-bots; mkdir runtime
 git clone -b hunt-bots https://github.com/TimothyVang/hermes-hunt-bots.git repo
 cd repo
 py -3 -m venv .venv-dev
-.\.venv-dev\Scripts\python.exe -m pip install -r framework\hermes_temporal\requirements.txt pycdlib
+.\.venv-dev\Scripts\python.exe -m pip install --require-hashes --only-binary :all: -r framework\requirements-hunt.lock
 .\.venv-dev\Scripts\python.exe scripts\hunt_bots_check.py
 ```
 
@@ -22,11 +22,13 @@ mkdir -p hermes-hunt-bots/runtime && cd hermes-hunt-bots
 git clone -b hunt-bots https://github.com/TimothyVang/hermes-hunt-bots.git repo
 cd repo
 python3 -m venv .venv-dev
-.venv-dev/bin/python -m pip install -r framework/hermes_temporal/requirements.txt pycdlib
+.venv-dev/bin/python -m pip install --require-hashes --only-binary :all: -r framework/requirements-hunt.lock
 .venv-dev/bin/python scripts/hunt_bots_check.py
 ```
 
-The last line must end in `-> PASS`. On a fresh clone it runs about 1,090 framework tests in roughly five minutes; some are skipped because they need the private range kit, Windows, or a live lab. Install [gitleaks](https://github.com/gitleaks/gitleaks) to add the secret scan.
+`framework/requirements-hunt.lock` pins every package the bots, the operator tools and the tests need, with the hash of each published file. pip refuses a download whose hash is not in the lock, and `--only-binary :all:` stops it from falling back to building a source archive. With uv, `uv pip sync --no-config --no-build --python .venv-dev framework/requirements-hunt.lock` does the same (`--no-config` keeps the `[tool.uv]` settings of the upstream `pyproject.toml`, such as `exclude-newer`, out of the install), and a venv made with `uv venv --no-config --python <python.org python.exe> .venv-dev` works too. To change a pin, edit `framework/requirements-hunt.txt` and regenerate the lock with the `uv pip compile` command at the top of that file. The lock does not cover the Temporal time-skipping test server that the workflow tests start: the SDK downloads that binary on first use without a hash check.
+
+The last line must end in `-> PASS`. It runs the framework tests, the operator tests and the gate's own tests in about eight minutes; a few are skipped because they need the private range kit, the optional orchestration or LangChain OpenAI packages, another operating system, symbolic or hard links the host cannot create, `IMAGER_BIN` (a built imager binary), `BENCHMARK_ATTACK_PROVENANCE` (the pinned ATT&CK bundle outside the repository), or Node or Bun on `PATH` (the board page, Desktop contract and film tests). A Python without the lock installed fails at once with `missing: temporalio` (or another package) instead of skipping suites. The tests run with the Python given by `--python <python.exe>`, else the `HUNT_BOTS_PYTHON` environment variable, else the Python running the script, so another Python can start the gate as long as it points at this venv. `--log <file>` writes every test's name and output to that file, `--policy` runs only the file-list checks in seconds, and installing [gitleaks](https://github.com/gitleaks/gitleaks) adds the secret scan.
 
 ## 2. Generate a synthetic case (no VM, no model)
 
@@ -44,15 +46,21 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 1. Install Hermes. This repository is a fork of Hermes 0.23.0; build it from source with the upstream [CONTRIBUTING.md](CONTRIBUTING.md), or use an official Hermes install of the same version.
 2. Sign in to a model provider in that home.
-3. Install the six profiles, the hunting-lab plugin, and the desktop pages:
+3. Register the six profiles and give each its reviewed policy, then install the hunting-lab plugin and the desktop pages. Name the lab's `hermes` executable once in `$hermes`; every command uses it, so no other `hermes` on PATH runs. Each profile gets its policy file (`initialize`) before `setup_hermes.py install` enables plugins, because that writes Hermes' default settings, which `apply` keeps as custom conflicts:
 
    ```powershell
-   ..\.venv-dev\Scripts\python.exe setup_hermes.py --home ..\..\runtime\lab-home install
-   ..\.venv-dev\Scripts\python.exe native_team.py --home ..\..\runtime\lab-home apply
-   ..\.venv-dev\Scripts\python.exe native_team.py --home ..\..\runtime\lab-home check
+   $hermes = '<lab hermes.exe>'
+   $env:HERMES_HOME = [IO.Path]::GetFullPath("$PWD\..\..\runtime\lab-home")
+   foreach ($bot in 'framework-coordinator', 'framework-researcher', 'framework-builder', 'framework-reviewer', 'framework-librarian', 'framework-network-analyst') {
+     & $hermes profile install ".\hermes-bots\$bot"
+     ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home initialize $bot
+   }
+   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes $hermes --home ..\..\runtime\lab-home install
+   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home apply
+   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home check
    ```
 
-   `check` should report every setting `ready`. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+   Answer `y` to each `profile install` prompt. `check` prints the Hermes executable it used, then should report every setting `ready`. Without `--hermes`, the helpers use `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
 4. Optional: build the Hunt Command desktop app, which has the Hunting Lab, Hunt Board and Cybersecurity workspace pages built in (copies installed by step 3 are then skipped in favour of the built-in ones). From the repository root, with the Node version in `.nvmrc`:
 
    ```powershell

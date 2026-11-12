@@ -29,7 +29,7 @@ from . import humanize
 from .actionability import CLICK_ACTIONABLE
 from .browser_policy import (KIBANA_INDEX, LabScope, Refused, check_expression, decide, document_allowed,
                              kibana_window, origin)
-from .endpoints import QueryFailure, endpoint
+from .endpoints import SECRET_HEADER, QueryFailure, endpoint
 from .query_adapter import _case_id, _failure, _schema, serving_lab
 
 
@@ -489,6 +489,11 @@ class BrowserSession:
                 args['postData'] = base64.b64encode(verdict.body.encode('utf-8')).decode('ascii')
             if verdict.expression is not None:
                 record['scoped_expression'] = verdict.expression[:300]
+            if self.scope.lab_secret and origin(verdict.url or url) == self.scope.lab_origin:
+                # The lab service answers only its caller; the page never sees this header.
+                headers = [{'name': name, 'value': value} for name, value in (req.get('headers') or {}).items()
+                           if name.lower() != SECRET_HEADER.lower()]
+                args['headers'] = headers + [{'name': SECRET_HEADER, 'value': self.scope.lab_secret}]
             self.cdp.post('Fetch.continueRequest', args, session)
         self.requests.append(record)
 
@@ -1018,7 +1023,7 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
             raise QueryFailure('no_lab_browser')
         try:
             kibana = endpoint(served.kibana_url) if served.kibana_url else None
-            scope = LabScope.from_case(served.case, served.lab_url, endpoint(served.arkime_url), kibana)
+            scope = LabScope.from_case(served.case, served.lab_url, endpoint(served.arkime_url), kibana, served.secret)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise QueryFailure('lab_invalid_response') from None
         root = Path(browser_root) if browser_root else Path(state_dir).parent / 'hunt-lab-browser' / profile

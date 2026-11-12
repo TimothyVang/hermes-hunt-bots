@@ -40,7 +40,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from lab_paths import DEFAULT_LANE, FRAMEWORK, PRACTICE
-from tool_loops import activity_since, lab_url, last_seq
+from tool_loops import activity_since, last_seq, serving_lab
 
 sys.path.insert(0, str(FRAMEWORK))
 from hermes_temporal.contracts import MAX_PROMPT_BYTES, USAGE_KEYS, ExecutionRequest, HermesStep  # noqa: E402
@@ -167,24 +167,24 @@ def strict_json(text):
 
 
 def lab_base():
-    """The running lab's URL, or None when it cannot be read; tool calls are then recorded as null."""
+    """The running lab (with its caller secret), or None when it cannot be read; tool calls are then recorded as null."""
     try:
-        return lab_url()
+        return serving_lab()
     except (Exception, SystemExit) as exc:
         log(f'lab activity unavailable, tool calls will be recorded as null: {exc}')
         return None
 
 
-def lab_seq(url):
+def lab_seq(served):
     try:
-        return None if url is None else last_seq(url)
+        return None if served is None else last_seq(served)
     except Exception:
         return None
 
 
-def lab_calls(url, seq):
+def lab_calls(served, seq):
     try:
-        return None if seq is None else len(activity_since(url, seq))
+        return None if seq is None else len(activity_since(served, seq))
     except Exception:
         return None
 

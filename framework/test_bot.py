@@ -1,4 +1,5 @@
 from contextlib import closing
+import os
 import sqlite3
 import subprocess
 import sys
@@ -20,9 +21,9 @@ class ExecutionTests(unittest.TestCase):
                   '--scope', 'A bounded task', '--acceptance', 'A real result')
         self.call('start', '1')
 
-    def call(self, *args, success=True):
+    def call(self, *args, success=True, env=None):
         result = subprocess.run([sys.executable, str(BOT), '-w', str(self.workspace), *args],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=env)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         return result
 
@@ -52,11 +53,36 @@ class ExecutionTests(unittest.TestCase):
         self.call('recover-run', '1', '--by', 'human', '--note', 'Checked process and output')
         self.assertEqual(self.state(), 'blocked')
 
-    def test_missing_hermes_executable_blocks_task(self):
+    def test_missing_hermes_executable_is_refused_before_launch(self):
         missing = str(self.workspace / 'missing-hermes-executable')
+        result = self.call('run', '--adapter', 'hermes', '--profile', 'researcher',
+                           '--allow-profile-config', '--executable', missing, '1', success=False)
+        self.assertIn(missing, result.stderr)
+        self.assertEqual(self.state(), 'active')
+        environment = {**os.environ, 'LAB_HERMES_EXE': missing}
+        result = self.call('run', '--adapter', 'hermes', '--profile', 'researcher',
+                           '--allow-profile-config', '1', success=False, env=environment)
+        self.assertIn(f'LAB_HERMES_EXE: {missing}', result.stderr)
+        self.assertEqual(self.state(), 'active')
+
+    def test_run_uses_lab_hermes_exe(self):
+        # A different `hermes` first on PATH must not run; Python stands in for the lab CLI and
+        # names itself in its usage error for the Hermes arguments.
+        on_path = Path(self.temp.name) / 'path-bin'
+        on_path.mkdir()
+        decoy = on_path / ('hermes.exe' if os.name == 'nt' else 'hermes')
+        decoy.write_bytes(b'')
+        decoy.chmod(0o755)
+        environment = {**os.environ, 'PATH': str(on_path) + os.pathsep + os.environ.get('PATH', ''),
+                       'LAB_HERMES_EXE': sys.executable}
         self.call('run', '--adapter', 'hermes', '--profile', 'researcher',
-                  '--allow-profile-config', '--executable', missing, '1', success=False)
+                  '--allow-profile-config', '1', success=False, env=environment)
         self.assertEqual(self.state(), 'blocked')
+        with closing(sqlite3.connect(self.workspace / 'workflow.sqlite3')) as db:
+            path = db.execute("SELECT path FROM artifacts WHERE description='CLI stderr'").fetchone()[0]
+        stderr = Path(path).read_text(encoding='utf-8', errors='replace')
+        self.assertIn('unknown option --profile', stderr)
+        self.assertNotIn(str(decoy), stderr)
 
     def events(self):
         with closing(sqlite3.connect(self.workspace / 'workflow.sqlite3')) as db:
@@ -93,10 +119,17 @@ class ExecutionTests(unittest.TestCase):
             ('--adapter', 'hermes', '--profile', 'researcher', '--allow-profile-config',
              '1', '--', '--yolo'),
         ]
+        # A resolvable LAB_HERMES_EXE, so only the option checks can keep the task active.
+        environment = {**os.environ, 'LAB_HERMES_EXE': sys.executable}
         for options in cases:
             with self.subTest(options=options):
-                self.call('run', *options, success=False)
+                self.call('run', *options, success=False, env=environment)
                 self.assertEqual(self.state(), 'active')
+
+    def test_generic_launch_failure_blocks_task(self):
+        missing = str(self.workspace / 'missing-agent.exe')
+        self.call('run', '--adapter', 'generic', '1', '--', missing, success=False)
+        self.assertEqual(self.state(), 'blocked')
 
 
 class AutoAdvanceTests(unittest.TestCase):

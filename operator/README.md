@@ -32,7 +32,7 @@ Every path derives from this clone's root and its git-ignored `runtime/` folder.
 
 Every Python tool answers `--help` without the lab running. When a tool needs Hermes and `LAB_HERMES_EXE` is unset, it stops with a message naming the variable. It also stops, naming the file, while the lab home holds `.hermes-update-in-progress` (a Hermes update is running there, or a stale marker says which process left it).
 
-The film loop's tests use no lab, browser, Temporal or ffmpeg. Run them from the repository root with `python -m unittest discover -s operator -p "test_*.py"`.
+The film loop's tests use no lab, browser, Temporal or ffmpeg. Run them from the repository root with `python -m unittest discover -s operator -p "test_*.py"`. `scripts/hunt_bots_check.py` runs every operator test as `operator tests:`.
 
 ## Environment
 
@@ -41,7 +41,7 @@ The film loop's tests use no lab, browser, Temporal or ffmpeg. Run them from the
 | `HUNT_BOTS_RUNTIME` | `runtime/` next to the clone (`<repo>/../runtime`) | Root of all local state, outside the Git work tree on purpose: the lab refuses VM state inside any Git repository. Loop state goes to `practice/tool-loops/`, gate outputs to `practice/gate-runs/`. |
 | `HUNT_BOTS_LAB_HOME` | `$HUNT_BOTS_RUNTIME/lab-home` | The Hermes home holding the six profiles and the lab VM state. |
 | `LAB_HERMES_EXE` | none (required for lab and watcher calls) | The `hermes` executable for that home. A name on `PATH` or a full path. |
-| `HUNT_BOTS_PYTHON` | the Python running the tool | Interpreter for framework modules (`hermes_temporal.cli`, `hunt_lab.scenario`, `prepare_guest.py`). Needs `framework/hermes_temporal/requirements.txt`. |
+| `HUNT_BOTS_PYTHON` | the Python running the tool | Interpreter for framework modules (`hermes_temporal.cli`, `hunt_lab.scenario`, `prepare_guest.py`). Install `framework/requirements-hunt.lock` into it. `scripts/hunt_bots_check.py` also runs the tests with it. |
 | `HUNT_BOTS_TEMPORAL_ADDRESS` | unset, so the CLI default `127.0.0.1:7233` | Temporal server the worker uses. |
 | `HUNT_BOTS_TASK_QUEUE` | unset, so the CLI default `hermes-temporal` | Task queue the worker polls. |
 | `FFMPEG` | `ffmpeg` on `PATH` | `assemble.py`, `film/edit.py`, `film/review.py`. |
@@ -84,7 +84,7 @@ python operator\tool_loops.py lab-med-001 runtime\operator-only\lab-med-001\trut
 # Why did loop 3 halt?
 python operator\diagnose_rejections.py runtime\practice\tool-loops\loop-03=loop-03-lab-med-001:round:001
 
-# Record a hunt and cut the video
+# Record a hunt and cut the video (toolcam reads the lab's caller secret from the lab home's deployed seed)
 bun operator\toolcam\toolcam.mjs runtime\practice\cam <lab_url> <arkime_url> lab-med-001 <startEpoch> <stopEpoch> <activityAfter>
 bun operator\toolcam\card.mjs runtime\practice\end.html runtime\practice\end.png
 python operator\toolcam\assemble.py runtime\practice\cam runtime\practice\hunt.mp4 --end-card runtime\practice\end.png

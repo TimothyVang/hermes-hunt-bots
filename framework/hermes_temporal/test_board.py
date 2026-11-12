@@ -6,6 +6,7 @@ import copy
 import http.client
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -23,7 +24,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
-from .test_lab_input import FakeLab, write_connected_state  # noqa: E402
+from .test_lab_input import VM_SECRET, FakeLab, write_connected_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
 
 FIXTURES = Path(__file__).with_name("fixtures") / "board"
@@ -583,7 +584,7 @@ class BoardServerTests(unittest.TestCase):
         self.assertEqual(len(state["steps"]), 9)
         self.assertTrue(state["temporal"]["reachable"])
         self.assertIsNone(state["live"])
-        self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
+        self.assertEqual(self.request("GET", f"/live/framework-researcher.jpg?token={self.server.token}")[0], 404)
 
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
@@ -594,12 +595,59 @@ class BoardServerTests(unittest.TestCase):
             self.assertEqual(headers["Allow"], "GET")
         self.assertEqual(self.request("GET", "/", {"Host": f"rebind.test:{self.port}"})[0], 404)
 
-    def test_cors_header_only_for_opaque_origin(self) -> None:
-        _, headers, _ = self.request("GET", "/state.json", {"Origin": "null"})
+    def page_token(self) -> str:
+        """The token the served page sends, read from the page as its own script does."""
+        body = self.request("GET", "/")[2].decode("utf-8")
+        match = re.search(r'const BOARD_TOKEN = "([A-Za-z0-9_-]+)";', body)
+        self.assertIsNotNone(match, "the served page carries no token")
+        return match.group(1)
+
+    def test_opaque_origin_without_token_gets_no_state(self) -> None:
+        wrong = self.server.token[:-1] + ("A" if self.server.token[-1] != "A" else "B")
+        for path in ("/state.json", "/state.json?token=", f"/state.json?token={wrong}",
+                     f"/state.json?token={self.server.token}x", f"/state.json?t={self.server.token}"):
+            # The desktop's file:// renderer sends a cross-site read with Sec-Fetch-Site and no Origin.
+            for sent in ({"Origin": "null"}, {"Origin": "http://evil.test"},
+                         {"Origin": f"http://127.0.0.1:{self.port}"},
+                         {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}, {"Sec-Fetch-Site": "same-site"}):
+                status, headers, body = self.request("GET", path, sent)
+                self.assertEqual((status, body), (403, b"forbidden\n"), (path, sent))
+                self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertEqual(self.calls, 0)
+
+    def test_page_token_reads_state(self) -> None:
+        token = self.page_token()
+        self.assertEqual(token, self.server.token)
+        self.assertGreaterEqual(len(token), 43)
+        status, headers, body = self.request("GET", f"/state.json?token={token}", {"Origin": "null"})
+        self.assertEqual(status, 200)
         self.assertEqual(headers.get("Access-Control-Allow-Origin"), "null")
-        for origin in ({"Origin": "http://evil.test"}, {}):
-            _, headers, _ = self.request("GET", "/state.json", origin)
+        self.assertEqual(len(json.loads(body)["steps"]), 9)
+        # The token is not a CORS grant for another origin, so its script still cannot read the answer.
+        status, headers, _ = self.request("GET", f"/state.json?token={token}", {"Origin": "http://evil.test"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+        # No Origin from a same-origin read or a local reader such as operator/film/record.py: no token needed.
+        for sent in ({}, {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}, {"Sec-Fetch-Site": "none"}):
+            status, headers, _ = self.request("GET", "/state.json", sent)
+            self.assertEqual(status, 200, sent)
             self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertEqual(self.request("GET", f"/state.json?token={token}&token={token}", {"Origin": "null"})[0], 403)
+
+    def test_each_server_run_draws_a_new_token(self) -> None:
+        restarted = make_server(self.board, 0)
+        thread = threading.Thread(target=restarted.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(restarted.server_close)
+        self.addCleanup(restarted.shutdown)
+        self.assertNotEqual(restarted.token, self.server.token)
+        port = restarted.server_address[1]
+        for token, expected in ((self.server.token, 403), (restarted.token, 200)):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request("GET", f"/state.json?token={token}", headers={"Origin": "null"})
+            self.assertEqual(connection.getresponse().status, expected)
+            connection.close()
 
     def test_polls_at_most_once_per_interval_and_reports_unreachable(self) -> None:
         self.request("GET", "/state.json")
@@ -646,7 +694,10 @@ class LiveBoardTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(5)
 
-    def request(self, path: str, headers: dict | None = None):
+    def request(self, path: str, headers: dict | None = None, token: bool = True):
+        """GET ``path``; ``/live/`` paths carry the server's page token unless ``token`` is false."""
+        if token and path.startswith("/live/"):
+            path += f"?token={self.server.token}"
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             connection.request("GET", path, headers=headers or {})
@@ -658,7 +709,7 @@ class LiveBoardTests(unittest.TestCase):
     def open_stream(self, profile: str):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         self.addCleanup(connection.close)
-        connection.request("GET", f"/live/{profile}.mjpg")
+        connection.request("GET", f"/live/{profile}.mjpg?token={self.server.token}")
         return connection.getresponse()
 
     def read_part(self, response, boundary: str, first: bool = False) -> tuple[dict, bytes]:
@@ -690,6 +741,17 @@ class LiveBoardTests(unittest.TestCase):
             self.assertEqual(self.request(path)[0], 404, path)
         self.live.add("framework-coordinator", 1.0, b"other")
         self.assertIsNone(self.live.latest("framework-coordinator"))
+
+    def test_live_frames_need_the_page_token_or_a_plain_image_load(self) -> None:
+        self.live.add(TH, 1.0, b"frame")
+        for path in (f"/live/{TH}.jpg", f"/live/{TH}.mjpg"):
+            for headers in ({}, {"Origin": "null"}, {"Sec-Fetch-Dest": "empty", "Origin": "null"},
+                            {"Sec-Fetch-Dest": "image", "Origin": "null"}):
+                self.assertEqual(self.request(path, headers, token=False)[::2], (403, b"forbidden\n"), (path, headers))
+            self.assertEqual(self.request(f"{path}?token=stale", token=False)[0], 403)
+        # An <img> without crossorigin (the desktop's lab_browser card): another origin's script cannot read it.
+        self.assertEqual(self.request(f"/live/{TH}.jpg", {"Sec-Fetch-Dest": "image"}, token=False)[::2],
+                         (200, b"frame"))
 
     def test_latest_jpg_is_404_until_a_frame_then_the_newest_frame(self) -> None:
         self.assertEqual(self.request(f"/live/{TH}.jpg")[0], 404)
@@ -834,7 +896,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.addCleanup(self.lab.close)
 
     def observer(self, case_id: str = "lab-med-001") -> LabObserver:
-        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME}, case_id)
+        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, case_id)
 
     def test_cited_ids_accept_four_or_more_digits(self) -> None:
         handoff, _ = parse_handoff(_handoff("scope", "framework-coordinator", "evt-0001, evt-000123 and evt-12."))
@@ -883,7 +945,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_untagged_window_scoped_lab_links_without_case_tag(self) -> None:
         lab = FakeLab(activity=ACTIVITY, network_scope="window")
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, "lab-med-001")
         observer.refresh([])
         lanes = {lane["profile"]: lane for lane in build_state(self.raw, None, None, observer.snapshot())["tools"]["lanes"]}
         url = parse.urlsplit(lanes["framework-network-analyst"]["entries"][0]["arkime_ui_url"])
@@ -900,7 +962,8 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_observer_skips_tool_calls_made_before_the_hunt(self) -> None:
         lab = FakeLab(events=[], activity=[dict(ACTIVITY[0], seq=seq) for seq in range(1, 8)])
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None}, "lab-med-001", activity_after=5)
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001",
+                               activity_after=5)
         observer.refresh([])
         self.assertEqual([entry["seq"] for entry in observer.snapshot()["activity"]], [6, 7])
 
@@ -910,7 +973,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         activity = [dict(ACTIVITY[0], seq=seq) for seq in range(1, 251)]
         lab = FakeLab(events=events, activity=activity)
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001")
         cited = [f"evt-{number:06d}" for number in range(1, 71)]
         observer.refresh(cited)
         snapshot = observer.snapshot()
@@ -949,6 +1012,24 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.assertFalse(down.snapshot()["reachable"])
         self.assertEqual(len(resolved), 2)
 
+    def test_the_observer_sends_the_resolved_labs_secret_and_nothing_without_it(self) -> None:
+        for secret in (None, "0" * 64):
+            with self.subTest(secret=secret):
+                observer = LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": None, "secret": secret},
+                                       "lab-med-001")
+                observer.refresh(["evt-000101"])
+                snapshot = observer.snapshot()
+                self.assertEqual((snapshot["reachable"], snapshot["activity"], snapshot["events"]), (False, [], {}))
+        self.assertEqual(self.lab.requests, [])
+        self.assertEqual(set(self.lab.refused), {"/health"})
+        other = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, instance="a" * 32)
+        self.addCleanup(other.close)
+        observer = self.state_dir_observer(other, "lab-med-001")
+        observer.refresh(["evt-000101"])
+        self.assertTrue(observer.snapshot()["reachable"], observer.snapshot())
+        self.assertEqual(sorted(observer.snapshot()["events"]), ["evt-000101"])
+        self.assertNotIn(VM_SECRET, json.dumps(observer.snapshot()))
+
     def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
         lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
                       instance="a" * 32, refuse_unknown=True)
@@ -976,7 +1057,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         patcher = mock.patch.object(lab_input.importlib, "import_module", return_value=runtime)
         patcher.start()
         self.addCleanup(patcher.stop)
-        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_url=None, lab_state_dir=state_dir)
+        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_state_dir=state_dir)
         return board._lab_observer(args, case_id)
 
     def test_the_state_dir_lab_names_another_case_or_two_labs_serving_this_one(self) -> None:
@@ -1017,9 +1098,10 @@ class ToolDrivenBoardTests(unittest.TestCase):
             tool_path.write_text(json.dumps(self.raw), encoding="utf-8")
             inline_path = FIXTURES / "lab-input.json"
             self.assertEqual(main(["--workflow-id", "w", "--input", str(tool_path)]), 2)
-            self.assertEqual(main(["--workflow-id", "w", "--input", str(inline_path), "--lab-url", self.lab.url]), 2)
-            with self.assertRaises(SystemExit):
-                main(["--workflow-id", "w", "--input", str(tool_path), "--lab-url", "http://localhost:8765"])
+            self.assertEqual(main(["--workflow-id", "w", "--input", str(inline_path), "--lab-state-dir", directory]), 2)
+            # A bare lab URL cannot carry the lab service's caller secret, so the board takes only the state dir.
+            with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+                main(["--workflow-id", "w", "--input", str(tool_path), "--lab-url", self.lab.url])
         self.assertEqual(self.lab.requests, [])
 
 
