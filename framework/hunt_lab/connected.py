@@ -124,15 +124,18 @@ WRITE_CLUSTER_ACTIONS = (
     'cluster:admin/xpack/security/role_mapping/put', 'cluster:admin/xpack/security/service_account/token/create',
     'cluster:admin/xpack/license/put', 'cluster:admin/features/reset', 'cluster:admin/nodes/reload_secure_settings')
 # Privilege names added after 7.12. A cluster that does not know one refuses it alone (HTTP 400), and then no
-# key can hold it there, so each is asked about by itself.
+# key can hold it there, so each is asked about by itself. A name that grants no action reads as held by every
+# key (manage_data_stream_global_retention on 8.19), so such names stay out; the actions above cover them.
 NEWER_INDEX_PRIVILEGES = ('manage_data_stream_lifecycle', 'manage_failure_store', 'cross_cluster_replication_internal')
 NEWER_CLUSTER_PRIVILEGES = ('manage_service_account', 'manage_user_profile', 'manage_search_application',
                             'manage_behavioral_analytics', 'post_behavioral_analytics_event', 'manage_search_synonyms',
                             'manage_search_query_rules', 'manage_connector', 'write_connector_secrets',
-                            'manage_inference', 'manage_data_stream_global_retention', 'write_fleet_secrets',
-                            'manage_esql')
-# A bare evt-N starts a term (optionally after a NOT -), so srv-evt-01 is not a citation.
-BARE = r'(?<![\w.])(?<![\w.]-)evt-\d+(?![\w.*?-])'
+                            'manage_inference', 'write_fleet_secrets', 'manage_esql')
+# Index names per _has_privileges request (each name is answered for every asked privilege).
+PRIVILEGE_BATCH = 200
+# A bare evt-N starts a term (optionally after a NOT -), so srv-evt-01 is not a citation. \x00 ends a hidden
+# escape or phrase, so srv\-evt-01 (one Lucene term) is not one either.
+BARE = r'(?<![\w.\x00])(?<![\w.\x00]-)evt-\d+(?![\w.*?\x00-])'
 CITED = r'(?:"evt-(?:\d+)"|' + BARE + ')'
 # One pass, so _id values already put in by a rewrite are never scanned again.
 CITATION = re.compile(r'\bevent\.id\s*:\s*\((?P<group>[^()]*)\)'
@@ -142,8 +145,12 @@ CITATION_FORM = re.compile(r'evt-\d{16}\Z')
 # An escaped character is hidden like a phrase, so \" is never taken for a phrase's quote.
 QUOTED = re.compile(r'\\.|"(?:\\.|[^"\\])*"')
 HIDDEN = re.compile('\x00(\\d+)\x00')
-# A field name before its colon, wildcards included (Lucene reads event.\* as a field pattern).
-FIELD = re.compile(r'([A-Za-z0-9_.*?@+!-]+)\s*:')
+# The field before a colon: a Lucene term, so !, ^ and ~ end the one before it and a ^2 / ~2 number is its
+# own token. Wildcards stay (Lucene reads event.\* as a field pattern). _exists_ names a field too.
+FIELD = re.compile(r'([\^~]?)([^\s()!^~:"\[\]{}/\\]+)\s*:')
+EXISTS = re.compile(r'\b_exists_\s*:\s*([^\s()]+)')
+# Lucene's escapes, as its parser decodes them in field names and terms.
+LUCENE_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(.))', re.DOTALL)
 # Shard failure types that refuse the query itself.
 QUERY_ERRORS = frozenset({'query_shard_exception', 'parse_exception'})
 
@@ -200,10 +207,13 @@ def load_case(path, now=None):
         raise ConnectError(f'a connected case must say "data_origin": "{DATA_ORIGIN}"')
     if case.get('network_capture') != lab_server.NO_CAPTURE:
         raise ConnectError('a connected case has no packet capture: it must say "network_capture": "none"')
+    window = case.get('time_range_utc')
     try:
+        if set(window) != {'start_inclusive', 'end_exclusive'}:
+            raise ValueError('time_range_utc keys')
         bounds = [lab_server.datetime.fromisoformat(value.replace('Z', '+00:00')) for value in lab_server.window(case)]
     except (KeyError, TypeError, ValueError, AttributeError):
-        raise ConnectError('time_range_utc needs ISO start_inclusive and end_exclusive') from None
+        raise ConnectError('time_range_utc needs ISO start_inclusive and end_exclusive, and nothing else') from None
     if any(bound.tzinfo is None for bound in bounds):
         raise ConnectError('time_range_utc times need a UTC offset, such as Z')
     start, end = (bound.timestamp() for bound in bounds)
@@ -273,8 +283,9 @@ def citation(doc_id):
 def refuse_regex(text):
     """Lucene /regex/ terms can be costly on a shared production cluster; quoted and escaped slashes are text.
 
-    Inside a range ([a TO b], {a TO b}) Lucene does not read a " as a phrase quote, so there a " is refused
-    (invalid_query) and a / is a regex; an unclosed phrase is refused too, as it would hide what follows."""
+    Inside a range ([a TO b], {a TO b}) a " is refused (invalid_query) rather than parsed: an unmatched one is
+    plain text to Lucene there and could pair with a later one to hide a /, which counts as a regex in a range
+    too. An unclosed phrase is refused as well, as it would hide what follows."""
     quoted = escaped = ranged = False
     for character in text:
         if escaped:
@@ -391,15 +402,21 @@ class WorkElastic:
         resolved = self.require('GET', '/_resolve/index/' + self._index_path(), None, 'resolve the index pattern')
         names = [self.index, *sorted({name for kind in ('indices', 'aliases', 'data_streams')
                                       for item in resolved.get(kind, []) if isinstance(item, dict)
-                                      for name in (item.get('name'), *(item.get('backing_indices')
-                                                                       if isinstance(item.get('backing_indices'), list) else ()))
+                                      for members in (item.get('backing_indices'), item.get('indices'))
+                                      for name in (item.get('name'), *(members if isinstance(members, list) else ()))
                                       if isinstance(name, str)})]
         cluster_asked = [*WRITE_CLUSTER_PRIVILEGES, *WRITE_CLUSTER_ACTIONS, *self._known('cluster', NEWER_CLUSTER_PRIVILEGES)]
         index_asked = [*WRITE_INDEX_PRIVILEGES, *WRITE_INDEX_ACTIONS, *self._known('index', NEWER_INDEX_PRIVILEGES)]
-        granted = self.require('POST', '/_security/user/_has_privileges', {
-            'cluster': cluster_asked,
-            'index': [{'names': names, 'privileges': ['read', *index_asked]}]}, 'check key privileges')
-        indices, cluster = granted.get('index', {}), granted.get('cluster', {})
+        indices, cluster = {}, {}
+        # In batches, so one answer stays far below the response cap however many indices the pattern holds.
+        for start in range(0, len(names), PRIVILEGE_BATCH):
+            body = {'index': [{'names': names[start:start + PRIVILEGE_BATCH], 'privileges': ['read', *index_asked]}]}
+            if start == 0:
+                body['cluster'] = cluster_asked
+            granted = self.require('POST', '/_security/user/_has_privileges', body, 'check key privileges')
+            indices.update(granted['index'] if isinstance(granted.get('index'), dict) else {})
+            if start == 0 and isinstance(granted.get('cluster'), dict):
+                cluster = granted['cluster']
         # Fail closed: every asked name must come back, and false.
         if (not isinstance(indices.get(self.index), dict) or indices[self.index].get('read') is not True
                 or any(not isinstance(indices.get(name), dict) or indices[name].get(privilege) is not False
@@ -523,11 +540,15 @@ class WorkElastic:
             return f'\x00{len(phrases) - 1}\x00'
 
         text = CITATION.sub(rewrite, QUOTED.sub(hide, text))
-        # Lucene reads escaped characters as themselves (event\.id is event.id); phrases stay hidden as text.
-        bare = HIDDEN.sub(lambda match: phrases[int(match.group(1))][1:] if phrases[int(match.group(1))][0] == '\\'
-                          else ' ', text)
-        if (re.search(r'\bevent\.id\b', bare)
-                or any(fnmatch.fnmatchcase('event.id', name.lstrip('+!-')) for name in FIELD.findall(bare))):
+        # Lucene decodes escapes (event\.id and \u0065vent.id are event.id); phrases stay hidden as text.
+        unescaped = LUCENE_ESCAPE.sub(
+            lambda match: chr(int(match.group(1), 16)) if match.group(1) else match.group(2),
+            HIDDEN.sub(lambda match: phrases[int(match.group(1))] if phrases[int(match.group(1))][0] == '\\' else ' ',
+                       text))
+        names = [*EXISTS.findall(unescaped),
+                 *((re.sub(r'\A\d+(?:\.\d+)?', '', name) if after else name).lstrip('+-')
+                   for after, name in FIELD.findall(unescaped))]
+        if re.search(r'\bevent\.id\b', unescaped) or any(fnmatch.fnmatchcase('event.id', name) for name in names):
             raise lab_server.BackendQueryError('invalid_query')
         return HIDDEN.sub(lambda match: phrases[int(match.group(1))], text)
 

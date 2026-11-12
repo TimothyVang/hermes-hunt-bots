@@ -39,6 +39,8 @@ class FakeElastic:
         self.omit_cluster = False
         # Privilege names this cluster does not know (a cluster older than the name).
         self.unknown = set()
+        self.backing = [BACKING]
+        self.aliases = []
         self.docs = [{'_index': '.ds-logs-windows-000001', '_id': f'AbC{n}x_-', 'sort': [1761991200000000000 + n, n],
                       '_source': {'@timestamp': f'2026-11-01T10:0{n}:00Z', 'host': {'name': 'ws-01'},
                                   'event': {'id': 'source-id', 'code': '1'}, 'process': {'name': 'cmd.exe'}}}
@@ -71,8 +73,8 @@ class FakeElastic:
         if path == '/':
             return 200, json.dumps({'version': {'number': self.version}}).encode()
         if path == '/_resolve/index/' + INDEX:
-            return 200, json.dumps({'indices': [], 'aliases': [], 'data_streams': [
-                {'name': DATA_STREAM, 'backing_indices': [BACKING]}]}).encode()
+            return 200, json.dumps({'indices': [], 'aliases': self.aliases, 'data_streams': [
+                {'name': DATA_STREAM, 'backing_indices': self.backing}]}).encode()
         if path == '/_security/user/_has_privileges':
             status, granted = self.privileges(value)
             return status, json.dumps(granted).encode()
@@ -203,7 +205,6 @@ class RefusalTests(ConnectedCase):
                                ('cluster_grants', {'manage_slm': True}),
                                ('cluster_grants', {'cancel_task': True}),
                                ('omit_cluster', True),
-                               # Partial and post-7.12 grants (U2 review, each live on 8.19.23 before the fix).
                                ('index_grants', {INDEX: {'indices:admin/delete': True}}),
                                ('index_grants', {INDEX: {'manage_data_stream_lifecycle': True}}),
                                ('index_grants', {BACKING: {'delete': True}}),
@@ -229,6 +230,36 @@ class RefusalTests(ConnectedCase):
         self.assertIn('manage_search_application', asked['cluster'])
         self.assertIn('cluster:admin/ingest/pipeline/put', asked['cluster'])
         self.assertIn('indices:admin/delete', asked['index'][0]['privileges'])
+        self.elastic = FakeElastic()
+        self.elastic.cluster_grants = {'manage_data_stream_global_retention': True}
+        self.assertEqual(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                         transport=self.elastic)['read_only'], True)
+
+    def test_every_backing_index_and_alias_member_is_asked_in_batches(self):
+        backing = [f'.ds-{DATA_STREAM}-2026.11.01-{n:06d}' for n in range(450)]
+        for setting, value, granted in (('backing', backing, backing[-1]),
+                                        ('aliases', [{'name': 'logs-windows-current', 'indices': ['prod-000123']}],
+                                         'prod-000123')):
+            with self.subTest(setting=setting):
+                self.elastic = FakeElastic()
+                setattr(self.elastic, setting, value)
+                self.elastic.index_grants = {granted: {'delete_index': True}}
+                self.assertIn('key_not_read_only', self.refused(check=True))
+                batches = [asked['index'][0]['names'] for asked in self.privilege_checks()]
+                self.assertIn(granted, [name for batch in batches for name in batch])
+                self.assertTrue(all(len(batch) <= connected.PRIVILEGE_BATCH for batch in batches))
+        self.assertEqual(len(batches), 1)
+        self.elastic = FakeElastic()
+        self.elastic.backing = backing
+        self.assertTrue(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                        transport=self.elastic)['read_only'])
+        self.assertEqual([('cluster' in asked, len(asked['index'][0]['names'])) for asked in self.privilege_checks()],
+                         [(True, 200), (False, 200), (False, 52)])
+
+    def privilege_checks(self):
+        """The _has_privileges requests of the read-only check, not the one-name probes of newer names."""
+        return [value for _, path, value in self.elastic.requests if path.endswith('_has_privileges')
+                and 'read' in value.get('index', [{}])[0].get('privileges', ())]
 
     def test_a_cluster_older_than_7_12_is_refused(self):
         self.elastic.version = '7.11.2'
@@ -303,6 +334,8 @@ class RefusalTests(ConnectedCase):
                                  (dict(hosts=[]), 'hosts'), (dict(hosts=['ws-01', 'ws-01']), 'hosts'),
                                  (dict(hosts=[{}]), 'hosts'), (dict(truth='x'), 'must hold exactly'),
                                  (dict(schema_version=2), 'schema_version'), (dict(schema_version=True), 'schema_version'),
+                                 (dict(time_range_utc={'start_inclusive': START, 'end_exclusive': END,
+                                                       'note': 'from elastic.example.test'}), 'nothing else'),
                                  (dict(sources=[]), 'sources'), (dict(sources=[{'artifact': 'x'}]), 'sources'),
                                  (dict(sources=[{'artifact': 'x', 'coverage': ' '}]), 'sources'),
                                  (dict(sources=[{'artifact': 'x', 'coverage': 'events on ELASTIC.example.test'}]), 'cluster host'),
@@ -470,13 +503,17 @@ class ServiceTests(ConnectedCase):
                         ('host.name:"ws-01 AND host.name:/ws-0[2]/', 'invalid_query'),
                         (r'event\.id:source-id', 'invalid_query'), (r'ev\ent.id:source-id', 'invalid_query'),
                         (r'event.\*:source-id', 'invalid_query'), (r'-event\.i?:source-id', 'invalid_query'),
-                        (r'\*:source-id', 'invalid_query')):
+                        (r'\*:source-id', 'invalid_query'), (r'\u0065vent.id:source-id', 'invalid_query'),
+                        (r'event.i\u0064:source-id', 'invalid_query'), (r'_exists_:event.i\*', 'invalid_query'),
+                        (r'a!event.\*:source-id', 'invalid_query'), (r'a^2event\.id:source-id', 'invalid_query'),
+                        ('a~2event.id:source-id', 'invalid_query')):
             with self.subTest(q=q):
                 self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
         self.assertEqual(len(self.elastic.searches()), searches)
         cited = self.tool('elastic_search', size=1)['result']['hits'][0]['event.id']
         for q, sent in (('host.name:[a TO z] AND message:"[a TO /b/]"', None), ('srv-evt-0000000000000001', None),
                         ('host.name:srv-evt-01 OR evt-01-x', None), (r'message:event\.ids', None),
+                        (r'host.name:srv\-evt-0000000000000001 OR evt-0000000000000001\-x', None),
                         (f'process.name:cmd.exe -{cited}', 'process.name:cmd.exe -(_id:"AbC0x_-")')):
             with self.subTest(q=q):
                 self.assertTrue(self.tool('elastic_search', q=q)['ok'])
