@@ -2,11 +2,11 @@
 
 This folder holds the framework-managed threat-hunt benchmark. It is **parked**: kept and tested, but not part of the product. The roadmap returns to it at R5. Until then:
 
-- The portable ZIP (`framework/package_portable.py`) does not ship it, its tests, or its nine invented evaluator keys (`benchmarks/fixtures/*/evaluator/truth.json`).
+- The portable ZIP (`framework/package_portable.py`) does not ship it, its tests, or its nine invented evaluator keys (`benchmarks/fixtures/*/evaluator/truth.json`). The gate's policy check applies its private-state and capture rules to `research/` as it does to `framework/`, and `.github/CODEOWNERS` covers `/research/`.
 - The default gate (`python scripts/hunt_bots_check.py`) does not run its tests. Nothing under `framework/` or `operator/` imports it.
 - It still drives the real ledger. It imports `bot`, `workflows` and `langchain_adapter` from `../../framework/` through `benchmark_paths.py`, so it only runs from a full checkout (or from a `snapshot-source` copy, which holds both in one folder).
 
-What the benchmark does, its CLI and its data contracts are in [benchmarks/README.md](benchmarks/README.md). The OTRF and attack_data importers are in [benchmarks/importers/README.md](benchmarks/importers/README.md). `envision_protocol.py` (the bounded HTTP transport the model adapter uses) moved here with it, because nothing else imports it.
+What the benchmark does, its CLI and its data contracts are in [benchmarks/README.md](benchmarks/README.md). The OTRF and attack_data importers are in [benchmarks/importers/README.md](benchmarks/importers/README.md). `envision_protocol.py` (bounded JSON and HTTP helpers for the benchmark's contracts and model adapters) moved here with it, because no tracked code outside the benchmark imports it. The untracked, git-ignored Envision bridge scripts some checkouts still keep in `framework/` imported it; their docs were removed in #68.
 
 ## Run the tests
 

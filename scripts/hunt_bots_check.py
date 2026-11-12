@@ -26,6 +26,8 @@ PRIVATE_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.env', '.pem', '.key', '.vhdx
 PRIVATE_NAMES = {'.env', 'auth.json', 'credentials.json', 'cookies.json', 'state.db'}
 # Synthetic fixtures that are part of the reviewed public file list.
 ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
+# Top-level folders whose files get the private-state and capture checks (research/ holds the parked benchmark).
+GUARDED = ('framework', 'research')
 # Modules whose absence makes test suites skip themselves; the gate refuses to run without them.
 REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
 SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
@@ -59,9 +61,9 @@ def policy_problems():
         pure = PurePosixPath(path)
         if pure.parts[0] == 'runtime':
             problems.append(f'{path}: runtime/ is local lab state and must never be committed (rule 1)')
-        if pure.parts[0] == 'framework' and (pure.suffix.lower() in PRIVATE_SUFFIXES or pure.name.lower() in PRIVATE_NAMES):
-            problems.append(f'{path}: private-state file type under framework/ (rule 1)')
-        if pure.parts[0] == 'framework' and pure.suffix.lower() in {'.pcap', '.pcapng'} and path not in ALLOWED_CAPTURES:
+        if pure.parts[0] in GUARDED and (pure.suffix.lower() in PRIVATE_SUFFIXES or pure.name.lower() in PRIVATE_NAMES):
+            problems.append(f'{path}: private-state file type under {pure.parts[0]}/ (rule 1)')
+        if pure.parts[0] in GUARDED and pure.suffix.lower() in {'.pcap', '.pcapng'} and path not in ALLOWED_CAPTURES:
             problems.append(f'{path}: packet captures must be reviewed synthetic fixtures (rule 1)')
     if not (ROOT / 'THIRD-PARTY-NOTICES.md').is_file():
         problems.append('THIRD-PARTY-NOTICES.md is missing (rule 9)')

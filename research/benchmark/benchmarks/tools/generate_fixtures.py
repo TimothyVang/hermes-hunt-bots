@@ -23,7 +23,7 @@ This script turns each into a public bundle plus evaluator truth:
 - Difficulty is measured from the generated records by
   benchmark_difficulty.measure_case and must equal the authored expectation.
 
-Usage, from framework/:
+Usage, from research/benchmark/:
   py -3 -B benchmarks/tools/generate_fixtures.py             # rewrite fixtures + example digests
   py -3 -B benchmarks/tools/generate_fixtures.py --output DIR  # fixtures only, into DIR
 Rerunning produces byte-identical files. Invented data only; no network.

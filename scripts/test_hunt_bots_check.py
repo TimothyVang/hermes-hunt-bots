@@ -17,6 +17,7 @@ from unittest import mock
 SPEC = importlib.util.spec_from_file_location('hunt_bots_check', Path(__file__).with_name('hunt_bots_check.py'))
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+REAL_POLICY = gate.policy_problems
 
 PASSING = 'import unittest\n\nclass Good(unittest.TestCase):\n    def test_holds(self):\n        self.assertTrue(True)\n'
 
@@ -182,6 +183,19 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('benchmark tests failed: FAIL: test_benchmark_breaks', out)
         self.assertEqual(self.run_gate()[0], 0)
+
+    def test_policy_guards_research_like_framework(self):
+        (self.root / 'framework' / 'TRACKED-FILES.txt').write_text('ok.py\n', encoding='utf-8')
+        (self.root / 'THIRD-PARTY-NOTICES.md').write_text('', encoding='utf-8')
+        files = ['framework/ok.py', 'research/benchmark/state.sqlite3', 'research/benchmark/.env',
+                 'research/benchmark/capture.pcap', 'research/benchmark/ok.py']
+        with mock.patch.object(gate, 'tracked', return_value=files):
+            count, problems = REAL_POLICY()
+        self.assertEqual(count, 5)
+        self.assertEqual(problems, [
+            'research/benchmark/state.sqlite3: private-state file type under research/ (rule 1)',
+            'research/benchmark/.env: private-state file type under research/ (rule 1)',
+            'research/benchmark/capture.pcap: packet captures must be reviewed synthetic fixtures (rule 1)'])
 
 
 if __name__ == '__main__':
