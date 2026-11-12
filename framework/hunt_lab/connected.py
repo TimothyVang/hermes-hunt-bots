@@ -2,7 +2,7 @@
 """Serve one work-connected case from the lab PC: the lab service's tool routes over a read-only work Elastic.
 
 The connected mode of ADR 0005 (planning notes): the lab service, not the bots, holds a read-only API key to
-the operator's work Elastic and answers the bots' existing tools on 127.0.0.1. The VM is not involved. Standard
+the operator's work Elastic and answers the bots' existing tools on 127.0.0.1. The container lab is not involved. Standard
 library only.
 
 CLI (run from framework/, in the operator's own terminal; never from a bot or a Hermes profile):

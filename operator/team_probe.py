@@ -166,10 +166,11 @@ def strict_json(text):
     return json.loads(text, object_pairs_hook=unique_object, parse_constant=constant)
 
 
-def lab_base():
-    """The running lab (with its caller secret), or None when it cannot be read; tool calls are then recorded as null."""
+def lab_base(case_id, lane=DEFAULT_LANE):
+    """The lab serving the input's case (with its caller secret), or None when it cannot be read; tool calls are
+    then recorded as null."""
     try:
-        return serving_lab()
+        return serving_lab(lane, case_id)
     except (Exception, SystemExit) as exc:
         log(f'lab activity unavailable, tool calls will be recorded as null: {exc}')
         return None
@@ -520,7 +521,7 @@ def main(args, launch=invoke_step):
         record_usage=True)
     probe = Probe(args, raw, truth, out, config, launch)
     (out / 'work').mkdir(parents=True)
-    probe.lab = lab_base()
+    probe.lab = lab_base(raw['ontology']['case_id'], DEFAULT_LANE)
     summary = summarize(probe.run())
     (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(render(summary))

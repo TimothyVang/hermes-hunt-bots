@@ -8,7 +8,6 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { KeepAwakeMode } from '../electron/power-save'
-import type { QemuVmStatus } from '../electron/qemu-vm'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
@@ -624,16 +623,6 @@ declare global {
           roots: string[],
           options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[] }
         ) => Promise<{ root: string; label: string }[]>
-      }
-      qemu: {
-        capture: () => Promise<string | null>
-        inputControl: (enabled: boolean) => Promise<unknown>
-        key: (key: string, down: boolean) => Promise<void>
-        setPaneVisible: (visible: boolean) => Promise<unknown>
-        start: (mode?: 'install' | 'boot-existing' | 'firmware-smoke') => Promise<unknown>
-        status: () => Promise<QemuVmStatus>
-        stop: (graceful: boolean) => Promise<unknown>
-        pointer: (x: number, y: number, button?: 'left' | 'right', down?: boolean) => Promise<void>
       }
       terminal: {
         attach: (id: string) => Promise<boolean>

@@ -136,21 +136,18 @@ def session(fake, lab='http://127.0.0.1:41001', root=None, demo=lab_browser.DEMO
                                       pid=1, rng=random.Random(7), sleep=lambda _seconds: None, demo=demo)
 
 
-LAB_INSTANCE = 'hermes-framework-network-analyst-case-lab-med-001-6873a567'
+LAB_INSTANCE = 'a7' * 16
 LAB_SECRET = '7a' * 32
 
 
 class LabStub:
-    """The guest lab service's /case endpoint for one loaded case, answering only its secret, and the VM state dir
-    (deployment.json and the seed's caller file) its callers read that secret from."""
+    """The lab service's /case endpoint for one loaded case, answering only its secret, and the container lab
+    state.json beside the analyst's state dir its callers read that secret from."""
 
     def __init__(self, case_id=CASE):
         case = {'case_id': case_id, 'question': 'synthetic', 'time_range_utc': WINDOW}
+        self.case_id = case_id
         self.state_dir = Path(tempfile.mkdtemp()) / 'hunt-lab-vm'
-        seed = self.state_dir / 'media' / 'cidata.iso'
-        seed.parent.mkdir(parents=True)
-        (self.state_dir / 'deployment.json').write_text(json.dumps({'seed': str(seed)}), encoding='utf-8')
-        endpoints.write_vm_caller(seed, LAB_INSTANCE, LAB_SECRET)
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -169,21 +166,25 @@ class LabStub:
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
+        self.up()
+
+    def up(self):
+        """Write the container lab state.json `hunt_lab.lab_stack start` writes for this case."""
+        folder = self.state_dir.parent / endpoints.CONTAINER_STATE / self.case_id
+        folder.mkdir(parents=True, exist_ok=True)
+        state = {'version': 1, 'case_id': self.case_id, 'project': 'hunt-lab-' + self.case_id,
+                 'instance': LAB_INSTANCE, 'secret': LAB_SECRET, 'lab_port': self.server.server_address[1],
+                 'kibana_port': int(KIBANA.rsplit(':', 1)[1]), 'arkime_port': int(ARKIME.rsplit(':', 1)[1]),
+                 'started_at': 1.0}
+        (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+
+    def down(self):
+        shutil.rmtree(self.state_dir.parent / endpoints.CONTAINER_STATE / self.case_id)
 
     def close(self):
         self.server.shutdown()
         self.server.server_close()
         shutil.rmtree(self.state_dir.parent, ignore_errors=True)
-
-
-class Runtime:
-    def __init__(self, lab_url, state='running'):
-        self.lab_url, self.state, self.calls = lab_url, state, []
-
-    def invoke(self, action, *, state_dir, profile):
-        self.calls.append((action, state_dir, profile))
-        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url, 'arkime_url': ARKIME,
-                'kibana_url': KIBANA}
 
 
 def query(url):
@@ -350,7 +351,6 @@ class ToolTests(unittest.TestCase):
     def setUp(self):
         self.lab = LabStub()
         self.addCleanup(self.lab.close)
-        self.runtime = Runtime(self.lab.url)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -362,16 +362,16 @@ class ToolTests(unittest.TestCase):
         start = patch.object(lab_browser, '_start', return_value=fake.session) if fake else \
             patch.object(lab_browser, '_start', side_effect=AssertionError('no browser may start'))
         with start:
-            return lab_browser.call({'case_id': CASE, **arguments}, runtime=self.runtime, state_dir=self.lab.state_dir,
+            return lab_browser.call({'case_id': CASE, **arguments}, state_dir=self.lab.state_dir,
                                     profile='framework-researcher', browser_root=self.root)
 
     def test_refused_without_a_running_lab_or_for_another_case(self):
-        self.runtime.state = 'stopped'
-        self.assertEqual(self.call(action='open', page='arkime_sessions')['error'], 'owned_vm_not_running')
-        self.runtime.state = 'running'
-        result = lab_browser.call({'case_id': 'dns-lab-001', 'action': 'snapshot'}, runtime=self.runtime,
+        self.lab.down()
+        self.assertEqual(self.call(action='open', page='arkime_sessions')['error'], 'lab_not_running')
+        self.lab.up()
+        result = lab_browser.call({'case_id': 'dns-lab-001', 'action': 'snapshot'},
                                   state_dir=self.lab.state_dir, profile=ANALYST, browser_root=self.root)
-        self.assertEqual(result['error'], 'case_mismatch')
+        self.assertEqual(result['error'], 'lab_not_running')
         self.assertEqual(self.call(action='snapshot', **{'case_id': None})['error'], 'explicit_case_id_required')
         self.assertFalse((self.root / 'audit.jsonl').exists())
 
@@ -386,7 +386,6 @@ class ToolTests(unittest.TestCase):
                           {'action': 'snapshot', 'url': 'http://example.com'}):
             with self.subTest(arguments=arguments):
                 self.assertFalse(self.call(**arguments)['ok'])
-        self.assertEqual(self.runtime.calls, [])
 
     def test_open_lands_on_the_lab_page_and_snapshot_refs_map_to_backend_nodes(self):
         fake = FakeBrowser()
@@ -737,7 +736,7 @@ class DemoModeTests(unittest.TestCase):
         with patch.object(lab_browser, '_browser_executable', return_value='edge'), \
                 patch.object(lab_browser.subprocess, 'Popen', popen), \
                 patch.object(lab_browser, '_WebSocket', lambda _url: fake):
-            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'},
                                       state_dir=self.lab.state_dir, profile='framework-researcher',
                                       browser_root=browsers / 'framework-researcher')
             lab_browser.shutdown()
@@ -759,7 +758,7 @@ class DemoModeTests(unittest.TestCase):
             return launched[-1]
 
         def snapshot():
-            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'},
                                       state_dir=self.lab.state_dir, profile='framework-researcher',
                                       browser_root=browsers / 'framework-researcher')
             self.assertTrue(result['ok'], result)
@@ -805,7 +804,7 @@ class DemoModeTests(unittest.TestCase):
         def snapshot_after_host_restart(scale):
             (browsers / 'demo.json').write_text(json.dumps({'scale': scale}), encoding='utf-8')
             lab_browser._SESSIONS.clear()
-            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=Runtime(self.lab.url),
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'},
                                       state_dir=self.lab.state_dir, profile='framework-researcher',
                                       browser_root=browsers / 'framework-researcher')
             self.assertTrue(result['ok'], result)

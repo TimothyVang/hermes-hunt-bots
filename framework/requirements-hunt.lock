@@ -14,10 +14,6 @@ protobuf==7.36.2 \
     --hash=sha256:e11e1f0180583a2af89db6a2ecd9e8dc40aa6d2988ca175bfd0e6d12ea72d74e \
     --hash=sha256:f4fee11ec330d238b34a05c9b675f693c20415d1c5bd7d5320cc2f8a798eb9cf
     # via temporalio
-pycdlib==1.14.0 \
-    --hash=sha256:8ec306b31d9c850f28c5fda52438d904edd1e8fcf862c5ffd756272efac9f422 \
-    --hash=sha256:a905827335f0066af3fd416c5cf9b1f29dffaf4d0914b714555213d1809f38d4
-    # via -r requirements-hunt.txt
 python-dateutil==2.9.0.post0 ; python_full_version < '3.11' \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427

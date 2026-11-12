@@ -219,7 +219,7 @@ def _install_profiles(chosen, executable, root, process_factory):
 
 def _report_lab(components):
     print('Built-in hunting lab and Desktop companion installed and enabled: ' + components['profile'])
-    print('First explicit Start prepares public runtime assets automatically; no VM was started by setup.')
+    print('Setup started no lab; hunt-lab start runs the practice lab as Docker containers.')
     print('Profile registration does not establish Desktop rendering or provider/model readiness.')
 
 

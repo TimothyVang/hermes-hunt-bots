@@ -178,13 +178,12 @@ module.exports = {
       from: 'assets/icon.ico',
       to: 'icon.ico'
     },
-    // Hunt Command compiles the framework/ desktop plugins (AGPL-3.0, with noVNC MPL-2.0
-    // and Lucide ISC inside) into its renderer, whose minified bundle drops their source
-    // comments, so their license texts ship beside the app (THIRD-PARTY-NOTICES.md).
+    // Hunt Command compiles the framework/ desktop plugins (AGPL-3.0, with Lucide ISC
+    // inside) into its renderer, whose minified bundle drops their source comments,
+    // so their license texts ship beside the app (THIRD-PARTY-NOTICES.md).
     ...(hunt
       ? [
           { from: '../../framework/hunt_lab/desktop/licenses', to: 'licenses/hunt-command' },
-          { from: '../../framework/hunt_lab/desktop/console-provenance.json', to: 'licenses/hunt-command/console-provenance.json' },
           { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' },
           { from: '../../LICENSE', to: 'licenses/hunt-command/LICENSE.Hermes-MIT' },
           { from: huntSourceNotice(), to: 'licenses/hunt-command/SOURCE.txt' }

@@ -2,12 +2,13 @@
 
     python scripts/hunt_bots_check.py                 policy gate + framework, operator and gate tests + gitleaks (if installed)
     python scripts/hunt_bots_check.py --policy        policy gate only (seconds)
+    python scripts/hunt_bots_check.py --benchmark     policy gate + the parked benchmark's tests (research/benchmark/) only
     python scripts/hunt_bots_check.py --python EXE    run the tests with EXE (default: $HUNT_BOTS_PYTHON, else this Python)
     python scripts/hunt_bots_check.py --log FILE      also write every test's full output to FILE
 
 The policy gate enforces HUNT-BOTS.md rules 1, 8 and 9: tracked framework/ files equal
-framework/TRACKED-FILES.txt, nothing under runtime/ is tracked, no private-state files under
-framework/, and THIRD-PARTY-NOTICES.md exists. The tests need a Python with
+framework/TRACKED-FILES.txt, nothing under runtime/ is tracked, no private-state files or captures
+under framework/ or research/, and THIRD-PARTY-NOTICES.md exists. The tests need a Python with
 framework/requirements-hunt.lock installed; without one of its test packages the gate fails with
 `missing: <module>` instead of skipping those suites. Paste the summary line into the PR's
 Verification section. Stdlib only; run from anywhere inside the repository.
@@ -25,10 +26,14 @@ PRIVATE_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.env', '.pem', '.key', '.vhdx
 PRIVATE_NAMES = {'.env', 'auth.json', 'credentials.json', 'cookies.json', 'state.db'}
 # Synthetic fixtures that are part of the reviewed public file list.
 ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
+# Top-level folders whose files get the private-state and capture checks (research/ holds the parked benchmark).
+GUARDED = ('framework', 'research')
 # Modules whose absence makes test suites skip themselves; the gate refuses to run without them.
-REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
+REQUIRED_MODULES = ('temporalio', 'websockets')
 SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
           ('gate tests', 'scripts', 'test_hunt_bots_check.py'))
+# The parked benchmark (research/benchmark/README.md) runs only on demand, never in the default gate.
+BENCHMARK_SUITES = (('benchmark tests', 'research/benchmark', 'test*.py'),)
 FAILED_TEST = re.compile(r'^(?:FAIL|ERROR): .+$', re.MULTILINE)
 MISSING_PROBE = (
     'import importlib, sys\n'
@@ -56,9 +61,9 @@ def policy_problems():
         pure = PurePosixPath(path)
         if pure.parts[0] == 'runtime':
             problems.append(f'{path}: runtime/ is local lab state and must never be committed (rule 1)')
-        if pure.parts[0] == 'framework' and (pure.suffix.lower() in PRIVATE_SUFFIXES or pure.name.lower() in PRIVATE_NAMES):
-            problems.append(f'{path}: private-state file type under framework/ (rule 1)')
-        if pure.parts[0] == 'framework' and pure.suffix.lower() in {'.pcap', '.pcapng'} and path not in ALLOWED_CAPTURES:
+        if pure.parts[0] in GUARDED and (pure.suffix.lower() in PRIVATE_SUFFIXES or pure.name.lower() in PRIVATE_NAMES):
+            problems.append(f'{path}: private-state file type under {pure.parts[0]}/ (rule 1)')
+        if pure.parts[0] in GUARDED and pure.suffix.lower() in {'.pcap', '.pcapng'} and path not in ALLOWED_CAPTURES:
             problems.append(f'{path}: packet captures must be reviewed synthetic fixtures (rule 1)')
     if not (ROOT / 'THIRD-PARTY-NOTICES.md').is_file():
         problems.append('THIRD-PARTY-NOTICES.md is missing (rule 9)')
@@ -94,6 +99,8 @@ def resolve_python(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='hermes-hunt-bots local pre-PR gate')
     parser.add_argument('--policy', action='store_true', help='run the policy gate only')
+    parser.add_argument('--benchmark', action='store_true',
+                        help="run the parked benchmark's tests (research/benchmark/) instead of the default suites")
     parser.add_argument('--python', default=os.environ.get('HUNT_BOTS_PYTHON') or sys.executable,
                         help='interpreter for the tests (default: $HUNT_BOTS_PYTHON, else this Python)')
     parser.add_argument('--log', type=Path, help='write the full test output to this file')
@@ -104,12 +111,13 @@ def main(argv=None):
     results = [f'policy: {count} tracked files, {len(problems)} problem(s)']
     failed = bool(problems)
     if not args.policy:
-        failed |= run_tests(resolve_python(args.python), args.log, results)
+        suites = BENCHMARK_SUITES if args.benchmark else SUITES
+        failed |= run_tests(resolve_python(args.python), args.log, results, suites)
     print('hunt-bots-check: ' + '; '.join(results) + ('  -> FAIL' if failed else '  -> PASS'))
     return 1 if failed else 0
 
 
-def run_tests(python, log_path, results):
+def run_tests(python, log_path, results, suites=SUITES):
     print(f'hunt-bots-check: testing with {python}', flush=True)
     missing = missing_modules(python)
     if missing is None:
@@ -120,7 +128,7 @@ def run_tests(python, log_path, results):
         return True
     failed = False
     log = []
-    for label, folder, pattern in SUITES:
+    for label, folder, pattern in suites:
         tests = run_suite(python, folder, pattern)
         tail = [line for line in tests.stderr.splitlines() if line.startswith(('Ran ', 'OK', 'FAILED'))]
         results.append(f'{label}: ' + (' '.join(tail[-2:]) or f'no test report, exit {tests.returncode}'))

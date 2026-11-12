@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Point the lab's Kibana at the loaded case: a case-filtered alias, its data view and the case window.
 
-Runs on the guest after ingest (bootstrap_guest.sh). Every step converges, so a reseeded instance
-switches Kibana to its new case. The data view reads the alias `hunt-lab-case-events`, which
+Runs in the container lab's one-shot kibana-setup service after ingest. Every step converges, so running it
+again for another case switches Kibana to that case. The data view reads the alias `hunt-lab-case-events`, which
 Elasticsearch filters to the case's event.dataset, so Discover shows only the loaded case.
 """
 import argparse
@@ -61,7 +61,7 @@ def configure(elastic, kibana, case, call=request):
     if not isinstance(case_id, str) or not CASE_ID.fullmatch(case_id):
         raise ValueError('invalid case_id')
     start, end = case_window(case)
-    # Re-adding an alias replaces its filter, so a reseed moves the alias to the new case atomically.
+    # Re-adding an alias replaces its filter, so loading another case moves the alias to it atomically.
     call(elastic, '/_aliases', 'POST', {'actions': [{'add': {
         'index': EVENT_STORE, 'alias': CASE_ALIAS, 'filter': {'term': {'event.dataset': case_id}}}}]})
     call(kibana, '/api/data_views/data_view', 'POST', {'override': True, 'data_view': {

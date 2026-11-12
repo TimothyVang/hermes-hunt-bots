@@ -1033,7 +1033,7 @@ class _LabRefused(Exception):
 
 _LAB_UP_NOT_THIS_INPUT = {
     "case_mismatch": "the lab has a different case loaded than this input",
-    "ambiguous_lab": "both the VM and a connected service serve this case (ambiguous_lab)",
+    "ambiguous_lab": "more than one lab serves this case (ambiguous_lab)",
 }
 
 
@@ -1065,7 +1065,7 @@ class LabObserver:
         self._status = {"reachable": None, "error": None, "observed_at": None, "last_success_at": None}
 
     def refresh(self, cited: Iterable[str]) -> None:
-        """One observation; never raises. Endpoints are re-resolved after a failure (VM ports change)."""
+        """One observation; never raises. Endpoints are re-resolved after a failure (ports change on restart)."""
         observed_at = _utc_now()
         try:
             if self._lab_url is None:
@@ -1462,7 +1462,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="loopback port to serve on")
     parser.add_argument("--lab-state-dir",
                         help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's "
-                             "case, and the caller secret it requires, are found from it (the VM's status, or a "
+                             "case, and the caller secret it requires, are found from it (a container lab's or a "
                              "connected service's state)")
     parser.add_argument("--arkime-url", type=_lab_url,
                         help="Arkime viewer for copyable session links, http://127.0.0.1:<port> (default: from status)")
