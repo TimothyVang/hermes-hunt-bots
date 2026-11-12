@@ -3,6 +3,7 @@
 Run from the repository root: python -m unittest discover -s operator -p "test_lab_paths.py"
 """
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,10 +23,18 @@ class LaneUpdateGuardTest(unittest.TestCase):
             with patch.dict(os.environ, {'LAB_HERMES_EXE': sys.executable}):
                 self.assertEqual(Path(lane.hermes_exe()).resolve(), Path(sys.executable).resolve())
                 marker = home / '.hermes-update-in-progress'
-                marker.write_text(f'{os.getpid()}\n')
-                with self.assertRaises(SystemExit) as caught:
-                    lane.hermes_exe()
-            self.assertIn(str(marker), str(caught.exception))
+                dead = subprocess.Popen([sys.executable, '-c', 'pass'])
+                dead.wait()
+                head = f'{dead.pid}\n2026-11-11T16:06:00Z\nct:1.000\n'
+                # Owner alive; owner gone but its delegate running; owner and delegate both gone.
+                for body, message in ((f'{os.getpid()}\n', 'update is in progress'),
+                                      (head + f'delegate:{os.getpid()} ct:2.000\n', 'update is in progress'),
+                                      (head + f'delegate:{dead.pid} ct:2.000\n', 'stale Hermes update marker')):
+                    marker.write_text(body)
+                    with self.subTest(body=body), self.assertRaises(SystemExit) as caught:
+                        lane.hermes_exe()
+                    self.assertIn(message, str(caught.exception))
+                    self.assertIn(str(marker), str(caught.exception))
             self.assertTrue(marker.exists())
 
 

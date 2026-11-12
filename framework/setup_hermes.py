@@ -150,16 +150,14 @@ def _validate_manifest(path, entry):
 
 
 def resolve_hermes(override=None):
-    """--hermes, else LAB_HERMES_EXE, else `hermes` on PATH (lab.hermes_executable); None when not found."""
+    """--hermes, else LAB_HERMES_EXE, else `hermes` on PATH (lab.hermes_executable).
+
+    Raises SetupError naming what was tried (for example a LAB_HERMES_EXE that does not exist)."""
     import lab
     try:
-        return _hermes_executable(lab, override)
-    except ValueError:
-        return None
-
-
-def _hermes_executable(lab, override):
-    return lab.hermes_executable(str(Path(override).expanduser()) if override else None)
+        return lab.hermes_executable(str(Path(override).expanduser()) if override else None)
+    except ValueError as exc:
+        raise SetupError(f'{exc}\n{missing_hermes_message()}') from None
 
 
 def missing_hermes_message():
@@ -169,13 +167,14 @@ def missing_hermes_message():
 
 def check(hermes_override=None, kit_root=HERE):
     catalog = load_catalog(kit_root)
-    executable = resolve_hermes(hermes_override)
     print(f'Validated {len(catalog)} authored Hermes distributions.')
-    if executable:
-        print(f'Hermes CLI available: {executable}')
-        return 0
-    print(missing_hermes_message())
-    return 1
+    try:
+        executable = resolve_hermes(hermes_override)
+    except SetupError as exc:
+        print(exc)
+        return 1
+    print(f'Hermes CLI available: {executable}')
+    return 0
 
 
 def install(selected=None, hermes_override=None, kit_root=HERE, process_factory=subprocess.Popen, home=None):
@@ -194,10 +193,7 @@ def install(selected=None, hermes_override=None, kit_root=HERE, process_factory=
     lab.refuse_during_update(root)
     if not any(entry['name'] == lab.PROFILE for entry, _ in chosen):
         chosen.append(known[lab.PROFILE])
-    try:
-        executable = _hermes_executable(lab, hermes_override)
-    except ValueError as exc:
-        raise SetupError(f'{exc}\n{missing_hermes_message()}') from None
+    executable = resolve_hermes(hermes_override)
     installed = []
     for entry, directory in chosen:
         if lab.registered_profile(root, entry['name'], required=False) is not None:

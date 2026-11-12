@@ -380,11 +380,17 @@ class LabInstallTests(unittest.TestCase):
         dead.wait()
         self.assertTrue(lab._pid_alive(os.getpid()))
         self.assertFalse(lab._pid_alive(dead.pid))
+        self.assertFalse(lab._pid_alive(2 ** 32 - 1))  # a corrupt huge pid is not alive, and does not raise
         stale = (f'A stale Hermes update marker blocks this home: {marker} names process {dead.pid}, which is not '
                  'running. If no Hermes update is running, delete that file, then retry.')
+        both_stale = (f'A stale Hermes update marker blocks this home: {marker} names processes {dead.pid} and '
+                      f'{dead.pid}, which are not running. If no Hermes update is running, delete that file, then retry.')
         live = f'A Hermes update is in progress for this home ({marker} exists); retry after it finishes'
-        # Owner gone; owner alive; a claim still being written; unreadable content.
-        for body, message in ((f'{dead.pid}\n2026-11-11T16:06:00Z\nct:1.000\n', stale),
+        head = f'{dead.pid}\n2026-11-11T16:06:00Z\nct:1.000\n'
+        # Owner gone; owner gone but its delegate (Hermes update_lock rule 6) still running; both gone;
+        # owner alive; a claim still being written; unreadable content.
+        for body, message in ((head, stale), (head + f'delegate:{os.getpid()} ct:2.000\n', live),
+                              (head + f'delegate:{dead.pid} ct:2.000\nrun:abc\n', both_stale),
                               (f'{os.getpid()}\n2026-11-11T16:06:00Z\nct:1.000\n', live), ('', live), ('garbage\n', live)):
             marker.write_text(body)
             with self.subTest(body=body), self.assertRaises(ValueError) as caught:

@@ -153,6 +153,14 @@ class SetupHermesTests(unittest.TestCase):
         self.assertIn(setup_hermes.PLATFORM_URL, str(error.exception))
         factory.assert_not_called()
 
+    def test_check_names_a_lab_hermes_exe_that_does_not_exist(self):
+        missing = str(self.root / 'gone' / 'hermes.exe')
+        output = io.StringIO()
+        with patch.dict(os.environ, {'LAB_HERMES_EXE': missing}), redirect_stdout(output):
+            self.assertEqual(setup_hermes.check(None, self.root), 1)
+        self.assertIn(f'(LAB_HERMES_EXE: {missing})', output.getvalue())
+        self.assertIn(setup_hermes.INSTALL_URL, output.getvalue())
+
     def test_linked_distribution_file_is_rejected_before_install(self):
         external = self.root / 'external.txt'
         external.write_text('not a soul', encoding='utf-8')

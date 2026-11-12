@@ -177,33 +177,42 @@ def hermes_executable(explicit=None):
 def refuse_during_update(home):
     """Refuse while a Hermes update holds this home; running the CLI then can stop a hunt's gateway.
 
-    The marker's first line is its owner's pid (Hermes `hermes_cli/update_lock.py`). A marker whose
-    owner is gone is named stale, with how to clear it; it is never deleted here."""
+    The marker names its owner's pid on line 1 and may name a delegate (`delegate:<pid> ct:<n>`) on a
+    later line (Hermes `hermes_cli/update_lock.py`); the update is live while either runs. A marker
+    whose processes are all gone is named stale, with how to clear it; it is never deleted here."""
     marker = Path(home) / UPDATE_MARKER
     if not (marker.exists() or marker.is_symlink()):
         return
-    pid = _marker_owner(marker)
-    if pid is not None and not _pid_alive(pid):
-        raise ValueError(f'A stale Hermes update marker blocks this home: {marker} names process {pid}, which is '
-                         'not running. If no Hermes update is running, delete that file, then retry.')
+    pids = _marker_pids(marker)
+    if pids and not any(_pid_alive(pid) for pid in pids):
+        named = f'process {pids[0]}, which is' if len(pids) == 1 else f'processes {pids[0]} and {pids[1]}, which are'
+        raise ValueError(f'A stale Hermes update marker blocks this home: {marker} names {named} not running. '
+                         'If no Hermes update is running, delete that file, then retry.')
     raise ValueError(f'A Hermes update is in progress for this home ({marker} exists); retry after it finishes')
 
 
-def _marker_owner(marker):
-    """The owner pid on the marker's first line; None when unreadable or still being written."""
+_DELEGATE_LINE = re.compile(r'delegate:([0-9]+) ct:[0-9]+(?:\.[0-9]+)?')
+
+
+def _marker_pids(marker):
+    """The owner pid (line 1) and any delegate pid; empty when unreadable or still being written."""
     try:
         with open(marker, 'rb') as handle:
-            first = handle.read(4096).split(b'\n', 1)[0].strip()
+            lines = handle.read(4096).decode('ascii', 'replace').splitlines()
     except OSError:
-        return None
-    return int(first) if first.isdigit() and 0 < int(first) < 2 ** 32 else None
+        return ()
+    owner = lines[0].strip() if lines else ''
+    if not (owner.isdigit() and 0 < int(owner) < 2 ** 32):
+        return ()
+    delegates = [int(match[1]) for match in map(_DELEGATE_LINE.fullmatch, lines[3:]) if match]
+    return (int(owner), *[pid for pid in delegates if 0 < pid < 2 ** 32][:1])
 
 
 def _pid_alive(pid):
     if os.name != 'nt':
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, OverflowError):
             return False
         except PermissionError:
             return True
@@ -211,6 +220,7 @@ def _pid_alive(pid):
     import ctypes
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
     kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
     kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
     handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
