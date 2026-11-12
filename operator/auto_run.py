@@ -19,7 +19,8 @@ LOG = TOOL_LOOPS / 'auto-run.log'
 def main():
     args = tool_loops.parse_args(sys.argv[1:], prog='auto_run.py', description=__doc__)
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    sc.wait_ready(sc.start('--case-id', args.dev_case))
+    sc.start('--case-id', args.dev_case)
+    sc.wait_ready(args.dev_case)
     with LOG.open('a', encoding='utf-8') as out:
         loop = subprocess.Popen([sys.executable, '-B', '-u', str(Path(__file__).with_name('tool_loops.py')), *sys.argv[1:]],
                                 stdout=out, stderr=subprocess.STDOUT)

@@ -1,12 +1,18 @@
 """Operator tool_loops behavior that a live loop depends on."""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import sys
 import tempfile
+import threading
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
+import team_probe
 import tool_loops as tl
+from hunt_lab import endpoints
 
 
 class ChildOutputTest(unittest.TestCase):
@@ -190,6 +196,97 @@ class BaseInputTest(unittest.TestCase):
         synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
         self.assertEqual(tl.build_input(synthetic, 'new brief', {}, 'dedale-001')['scope'],
                          'Synthetic dedale-001 only; new brief')
+
+
+class StubLab:
+    """A loopback container lab for one case: answers /case and /activity only to a caller sending its secret,
+    naming its instance on every answer, and records each path it was asked."""
+
+    def __init__(self, case_id, instance, secret, entries):
+        self.case_id, self.instance, self.secret, self.entries, self.paths = case_id, instance, secret, entries, []
+        lab = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                url = urlsplit(self.path)
+                if self.headers.get(endpoints.SECRET_HEADER) != lab.secret:
+                    status, body = 401, {'error': 'caller_not_authorized'}
+                else:
+                    lab.paths.append(url.path)
+                    status, body = 200, lab.answer(url.path, parse_qs(url.query))
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header(endpoints.INSTANCE_HEADER, lab.instance)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def answer(self, path, query):
+        if path == '/case':
+            return {'case_id': self.case_id}
+        after = int(query.get('after', ['0'])[0])
+        return {'entries': [e for e in self.entries if e['seq'] > after], 'more': False}
+
+    def write_state(self, analyst):
+        """The state.json `hunt_lab.lab_stack start` writes for this lab beside the analyst's state dir."""
+        port = self.server.server_address[1]
+        state = {'version': 1, 'case_id': self.case_id, 'project': 'hunt-lab-' + self.case_id,
+                 'instance': self.instance, 'secret': self.secret, 'lab_port': port, 'kibana_port': port ^ 1,
+                 'arkime_port': port ^ 2, 'started_at': 1.0}
+        folder = Path(analyst) / endpoints.CONTAINER_STATE / self.case_id
+        folder.mkdir(parents=True)
+        (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class TwoLabsTest(unittest.TestCase):
+    """With container labs, more than one lab can be up; the loops name their case so the resolver picks
+    that case's lab instead of answering ambiguous_lab."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name)
+        analyst = self.tmp / 'profiles' / 'framework-network-analyst'
+        self.other = StubLab('lab-med-001', 'a' * 32, 'a1' * 32, [{'seq': 1, 'tool': 'elastic_search'}])
+        self.mine = StubLab('team-med-004', 'b' * 32, 'b2' * 32, [{'seq': 1, 'tool': 'elastic_search'}])
+        for lab in (self.other, self.mine):
+            self.addCleanup(lab.close)
+            lab.write_state(analyst)
+        self.lane = types.SimpleNamespace(name='', state_dir=analyst / 'hunt-lab-vm', env=lambda: {})
+
+    def test_run_config_reads_the_activity_of_its_own_cases_lab(self):
+        def drive(*_args, **_kwargs):
+            # The round's bots call tools on the case's lab while the gate driver runs.
+            self.mine.entries.append({'seq': 2, 'tool': 'arkime_sessions'})
+            return Mock(stdout='')
+
+        def fake_tcli(*args, lane=None, timeout=180):
+            return (0, '', '') if args[0] == 'practice' else (1, '', 'no round')
+
+        with patch.object(tl, 'GATE_RUNS', self.tmp), patch.object(tl, 'ROUNDS', 1), \
+                patch.object(tl, 'tcli', fake_tcli), patch.object(tl.subprocess, 'run', drive), \
+                patch.object(tl, 'log'):
+            _run, calls = tl.run_config('loop-t', {'scope': 'Synthetic team-med-004 only; brief'}, 'brief', {},
+                                        'team-med-004', 'truth.json', d=self.tmp / 'loop-t', lane=self.lane)
+        self.assertEqual(calls, [{'seq': 2, 'tool': 'arkime_sessions'}])
+        self.assertEqual(self.other.paths, [])
+
+    def test_team_probe_records_tool_calls_from_its_cases_lab(self):
+        served = team_probe.lab_base('team-med-004', self.lane)
+        self.assertEqual(served.lab_url, f'http://127.0.0.1:{self.mine.server.server_address[1]}')
+        self.assertEqual(team_probe.lab_seq(served), 1)
+        self.assertEqual(self.other.paths, [])
 
 
 if __name__ == '__main__':

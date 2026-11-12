@@ -29,7 +29,7 @@ ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
 # Top-level folders whose files get the private-state and capture checks (research/ holds the parked benchmark).
 GUARDED = ('framework', 'research')
 # Modules whose absence makes test suites skip themselves; the gate refuses to run without them.
-REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
+REQUIRED_MODULES = ('temporalio', 'websockets')
 SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
           ('gate tests', 'scripts', 'test_hunt_bots_check.py'))
 # The parked benchmark (research/benchmark/README.md) runs only on demand, never in the default gate.

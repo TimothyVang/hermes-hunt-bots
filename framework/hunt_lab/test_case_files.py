@@ -89,6 +89,20 @@ class EvidenceFileTests(unittest.TestCase):
         with self.assertRaisesRegex(case_files.CaseError, 'outside the source workspace'):
             case_files.state_location(str(case_files.SOURCE_ROOT / 'hunt-lab-container'))
 
+    def test_state_inside_a_git_work_tree_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix='hermes-case-files-test-') as temp:
+            tree = Path(temp).resolve()
+            (tree / '.git').mkdir()
+            for location in (tree, tree / 'hunt-lab-container'):
+                with self.subTest(location=location), \
+                        self.assertRaisesRegex(case_files.CaseError, 'outside Git worktrees'):
+                    case_files.state_location(str(location))
+
+    def test_a_filesystem_root_is_refused_as_the_state_directory(self):
+        root = Path(tempfile.gettempdir()).resolve().anchor
+        with self.assertRaisesRegex(case_files.CaseError, 'filesystem root'):
+            case_files.state_location(root)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -201,7 +201,7 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
     d.mkdir(parents=True, exist_ok=True)
     raw = build_input(base, brief, guidance, case_id)
     (d / 'input.json').write_text(json.dumps(raw, indent=2), encoding='utf-8')
-    served = serving_lab(lane)
+    served = serving_lab(lane, case_id)
     seq0 = last_seq(served)
     wf = workflow_id(name, case_id, lane)
     rc, out, err = tcli('practice', wf, '--input', str(d / 'input.json'), '--rounds', str(ROUNDS), lane=lane)
@@ -210,7 +210,7 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
     t0 = time.time()
     drv = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('drive_gates.py')), wf, *GATE_ARGS],
                          env=lane.env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=4 * 3600)
-    calls = activity_since(serving_lab(lane), seq0)
+    calls = activity_since(serving_lab(lane, case_id), seq0)
     (d / 'activity.json').write_text(json.dumps(calls, indent=1), encoding='utf-8')
     rounds = []
     for n in range(1, ROUNDS + 1):

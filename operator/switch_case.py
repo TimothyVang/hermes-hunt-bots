@@ -35,10 +35,11 @@ def say(msg):
     print(time.strftime('%H:%M:%S ') + msg, flush=True)
 
 
-def serving_lab(lane=DEFAULT_LANE, case_id=None):
-    """The lab serving the lane's case, with the caller secret its service requires (hunt_lab.endpoints.resolve).
+def serving_lab(lane, case_id):
+    """The lab serving `case_id` on this lane, with the caller secret its service requires (hunt_lab.endpoints.resolve).
 
-    Raises hunt_lab.endpoints.QueryFailure with a fixed code when no lab serves one."""
+    The case is named because container labs for several cases can be up at once; without it the resolver
+    answers ambiguous_lab. Raises hunt_lab.endpoints.QueryFailure with a fixed code when no lab serves it."""
     return resolve(lane.state_dir, case_id, profile='hunt-board')
 
 
@@ -67,7 +68,7 @@ def wait_ready(case_id, timeout=READY_SECONDS):
     deadline, failure = time.time() + timeout, None
     while True:
         try:
-            served = serving_lab(case_id=case_id)
+            served = serving_lab(DEFAULT_LANE, case_id)
             h = health(served)
             if ready(h, case_id):
                 break

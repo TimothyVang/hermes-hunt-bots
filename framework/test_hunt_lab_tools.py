@@ -174,10 +174,17 @@ class ToolCallTests(unittest.TestCase):
                 self.assertEqual(self.guest.requests[0][0], '/case')
         self.assertEqual(set(self.guest.secrets), {GUEST_SECRET})
 
-    def test_case_mismatch_stops_before_any_scoped_query(self):
+    def test_a_case_with_no_lab_up_stops_before_any_scoped_query(self):
         result = self.call('elastic_search', {'case_id': 'dns-lab-001'})
         self.assertEqual((result['ok'], result['error']), (False, 'lab_not_running'))
         self.assertEqual(self.guest.endpoint_calls(), [])
+
+    def test_case_mismatch_stops_before_any_scoped_query(self):
+        # A container state.json filed for dns-lab-001 whose lab answers /case for another case.
+        stack(self.analyst, 'dns-lab-001', self.guest.server.server_address[1], GUEST_INSTANCE, GUEST_SECRET)
+        result = self.call('elastic_search', {'case_id': 'dns-lab-001'})
+        self.assertEqual((result['ok'], result['error']), (False, 'case_mismatch'))
+        self.assertEqual([path for path, _, _ in self.guest.requests], ['/case'])
 
     def test_out_of_bounds_arguments_never_reach_the_lab(self):
         invalid = [
