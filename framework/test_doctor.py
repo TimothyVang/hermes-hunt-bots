@@ -42,7 +42,7 @@ class DoctorTests(unittest.TestCase):
         for destination, files in lab.bundles(self.home, profiles).items():
             install_desktop.sync_bundle(destination.parent, destination.name, files)
         (self.home / 'profiles' / lab.PROFILE / 'plugins' / 'hunt-lab' / '__pycache__').mkdir()
-        (self.home / 'profiles' / lab.PROFILE / 'plugins' / 'hunt-lab' / '__pycache__' / 'runtime.cpython-313.pyc').write_bytes(b'')
+        (self.home / 'profiles' / lab.PROFILE / 'plugins' / 'hunt-lab' / '__pycache__' / 'lab_stack.cpython-313.pyc').write_bytes(b'')
 
     def run_doctor(self, read_models):
         stdout, stderr = io.StringIO(), io.StringIO()
