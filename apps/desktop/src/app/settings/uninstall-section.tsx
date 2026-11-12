@@ -5,6 +5,7 @@ import type { DesktopUninstallMode, DesktopUninstallResult, DesktopUninstallSumm
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { IS_HUNT_VARIANT, PRODUCT_NAME } from '@/variant'
 
 import { SectionHeading, SettingsBreadcrumbContext } from './primitives'
 
@@ -97,12 +98,15 @@ export function UninstallSection(): ReactElement | null {
 
     return (
       <div className={cn('mx-auto w-full max-w-2xl', !hasBreadcrumb && 'mt-8')}>
-        <SectionHeading icon={AlertTriangle} page title={u.uninstallHermes} />
+        <SectionHeading icon={AlertTriangle} page title={IS_HUNT_VARIANT ? `Uninstall ${PRODUCT_NAME}` : u.uninstallHermes} />
         <div className="flex flex-col gap-2 rounded-xl border border-border/60 bg-background/40 px-4 py-3">
-          <p className="text-xs text-muted-foreground">{u.managedBody}</p>
+          <p className="text-xs text-muted-foreground">
+            {IS_HUNT_VARIANT ? `${PRODUCT_NAME} is a folder you built, so it cannot remove itself.` : u.managedBody}
+          </p>
           <p className="text-sm font-medium">{summary.native_removal_instructions}</p>
           <p className="text-xs text-muted-foreground">{u.dataKept(summary.hermes_home)}</p>
-          {summary.platform === 'win32' && (
+          {/* Hunt Command is a self-built folder Windows never registered as an app. */}
+          {summary.platform === 'win32' && !IS_HUNT_VARIANT && (
             <div className="mt-1">
               <Button onClick={(): void => void bridge.openAppsSettings()} size="sm" variant="outline">
                 {u.openAppsSettings}

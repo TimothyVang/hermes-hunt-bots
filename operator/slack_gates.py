@@ -8,9 +8,10 @@ and turns an allowlisted operator's answer into the existing hermes_temporal.cli
      card's nonce, opens a modal that asks "What did you check?".
   2. The modal's submission (view_submission) is checked again, then the record is claimed by renaming it to
      claimed/, so each gate is decided once. The bridge confirms through `status` that the gate is still open
-     and sends one decision with the ID <child>:<gate>:review:<nonce> and a note naming the operator, their
-     Slack user ID, the time and the card. A sent decision is appended to decisions.jsonl and the card is
-     updated; a failed one puts the record back and shows only an error code.
+     and sends one decision with the ID <child>:<gate>:review:<nonce>, a note naming the operator, their
+     Slack user ID, the time and the card, and the decider fields the workflow records with the gate (the
+     operator's name, via slack, their Slack user ID). A sent decision is appended to decisions.jsonl and the
+     card is updated; a failed one puts the record back and shows only an error code.
 
 It uses Socket Mode, so it opens no inbound port; Temporal and the board stay on loopback. Tokens come only
 from SLACK_BOT_TOKEN and SLACK_APP_TOKEN in the environment. Needs slack-sdk==3.45.0. The bots get no part
@@ -420,7 +421,8 @@ class Bridge:
                 error = 'expired'
         if error is None:
             sent = self.run([PYTHON, *record['decision_cli'][1:], '--choice', choice, '--decision-id', decision_id,
-                             '--evidence-note', note])
+                             '--evidence-note', note, '--decided-by', self.args.operator_name, '--via', 'slack',
+                             '--slack-user', user])
             if sent is None:
                 error = 'decision_timeout'
             elif sent[0]:
@@ -464,8 +466,8 @@ def parse_args(argv=None):
                          '(synthetic lab cases only)')
     args = ap.parse_args(argv)
     args.operator_name = ' '.join(args.operator_name.split())
-    if not args.operator_name or len(args.operator_name) > 200:
-        ap.error('--operator-name must be 1 to 200 characters')
+    if not args.operator_name or len(args.operator_name) > 200 or not args.operator_name.isprintable():
+        ap.error('--operator-name must be 1 to 200 printable characters')
     bad = [user for user in args.operator_user if not USER_ID.match(user)]
     if bad:
         ap.error(f'not a Slack user ID: {", ".join(bad)}')

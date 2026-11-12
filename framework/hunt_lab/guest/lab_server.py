@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only synthetic hunting API. Fixed indices, bounded results, no raw packet/auth APIs.
 
-Every query is scoped server-side to the loaded case: events by event.dataset,
+Every query is scoped server-side to the loaded case: events by the event source (LabElastic: event.dataset),
 intel by case_id, network sessions by the Arkime case tag and the case window.
 Arkime is reached only through two fixed read routes on guest loopback. A case whose
 case.json says "network_capture": "none" has no sessions; its network queries are refused.
@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
 import math
+from operator import itemgetter
 import os
 from pathlib import Path
 import re
@@ -340,12 +341,47 @@ def lucene(q):
                              'lenient': True}}
 
 
-def event_query(case, q):
-    filters = [{'term': {'event.dataset': case['case_id']}}]
-    clause = lucene(q)
-    if clause:
-        filters.append(clause)
-    return {'bool': {'filter': filters}}
+class LabElastic:
+    """The guest's own Elasticsearch, where ingest.py gives every case event event.dataset = case_id and its evt- event.id.
+
+    The event source answers every Elasticsearch read the endpoints make: how the case is scoped, and how events
+    are ordered, cited and paged. make_server takes another source in its place (ADR 0005's connected service on
+    the host); the routes, allowlists and error codes stay the same. event_query returns {'bool': {'filter': [...]}}
+    so an endpoint can add its own filters.
+    """
+
+    def __init__(self, base):
+        self.base = base
+
+    def search(self, index, body, ignore_unavailable=False):
+        return es_search(self.base, index, body, ignore_unavailable)
+
+    def event_query(self, case, q):
+        filters = [{'term': {'event.dataset': case['case_id']}}]
+        clause = lucene(q)
+        if clause:
+            filters.append(clause)
+        return {'bool': {'filter': filters}}
+
+    def sort(self, order):
+        return [{'@timestamp': order}, {'event.id': order}]
+
+    def document(self, hit):
+        """The hit's record as the bot sees it; its event.id is the citation."""
+        return hit['_source']
+
+    def encode_after(self, sort):
+        return base64.urlsafe_b64encode(json.dumps(sort, separators=(',', ':')).encode()).decode().rstrip('=')
+
+    def decode_after(self, token):
+        token = text(token, 400)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,400}', token):
+            raise ValueError('Invalid after token')
+        value = json.loads(base64.urlsafe_b64decode(token + '=' * (-len(token) % 4)))
+        if (not isinstance(value, list) or len(value) != 2 or type(value[0]) is not int
+                or not isinstance(value[1], str) or len(value[1]) > 128):
+            raise ValueError('Invalid after token')
+        return value
 
 
 def network_filters(server):
@@ -367,10 +403,10 @@ def query(server, dataset, params):
     host = text(values.get('host'), 100)
     case = server.case
     if dataset == 'events':
-        search = event_query(case, q)
+        search = server.source.event_query(case, q)
         if host:
             search['bool']['filter'].append({'term': {'host.name': host}})
-        index, fields, sort = EVENT_INDEX, EVENT_FIELDS, [{'@timestamp': 'asc'}, {'event.id': 'asc'}]
+        index, fields, sort, record = EVENT_INDEX, EVENT_FIELDS, server.source.sort('asc'), server.source.document
     else:
         filters = network_filters(server)
         if host:
@@ -378,29 +414,14 @@ def query(server, dataset, params):
         if q:
             filters.append({'simple_query_string': {'query': q, 'fields': ['dns.host', 'network.protocol'], 'default_operator': 'and'}})
         search = {'bool': {'filter': filters}}
-        index, fields, sort = NETWORK_INDEX, NETWORK_FIELDS, [{'firstPacket': 'asc'}]
-    response = es_search(server.elastic, index, {'query': search, 'size': limit, 'from': offset, 'sort': sort,
-                                                 '_source': fields, 'track_total_hits': True, 'timeout': '10s'})
+        index, fields, sort, record = NETWORK_INDEX, NETWORK_FIELDS, [{'firstPacket': 'asc'}], itemgetter('_source')
+    response = server.source.search(index, {'query': search, 'size': limit, 'from': offset, 'sort': sort,
+                                            '_source': fields, 'track_total_hits': True, 'timeout': '10s'})
     hits = response['hits']
     return {'case_id': case['case_id'], 'dataset': dataset, 'total': hits['total']['value'],
             'total_relation': hits['total']['relation'], 'offset': offset, 'limit': limit,
             'returned': len(hits['hits']), 'more': offset + len(hits['hits']) < hits['total']['value'],
-            'records': [hit['_source'] for hit in hits['hits']], 'read_only': True}
-
-
-def encode_after(sort):
-    return base64.urlsafe_b64encode(json.dumps(sort, separators=(',', ':')).encode()).decode().rstrip('=')
-
-
-def decode_after(token):
-    token = text(token, 400)
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,400}', token):
-        raise ValueError('Invalid after token')
-    value = json.loads(base64.urlsafe_b64decode(token + '=' * (-len(token) % 4)))
-    if (not isinstance(value, list) or len(value) != 2 or type(value[0]) is not int
-            or not isinstance(value[1], str) or len(value[1]) > 128):
-        raise ValueError('Invalid after token')
-    return value
+            'records': [record(hit) for hit in hits['hits']], 'read_only': True}
 
 
 def es_search_endpoint(server, params):
@@ -411,17 +432,18 @@ def es_search_endpoint(server, params):
         raise ValueError('sort must be asc or desc')
     requested = field_list(values.get('fields'), SEARCH_FIELDS, DEFAULT_FIELDS)
     fields = list(ALWAYS_FIELDS) + [field for field in requested if field not in ALWAYS_FIELDS]
-    body = {'query': event_query(server.case, values.get('q')), 'size': size,
-            'sort': [{'@timestamp': order}, {'event.id': order}], '_source': fields,
+    source = server.source
+    body = {'query': source.event_query(server.case, values.get('q')), 'size': size,
+            'sort': source.sort(order), '_source': fields,
             'track_total_hits': True, 'timeout': '10s'}
     if 'after' in values:
-        body['search_after'] = decode_after(values['after'])
-    hits = es_search(server.elastic, EVENT_INDEX, body)['hits']
+        body['search_after'] = source.decode_after(values['after'])
+    hits = source.search(EVENT_INDEX, body)['hits']
     rows = hits['hits']
     return {'case_id': server.case['case_id'], 'total': hits['total']['value'],
             'total_relation': hits['total']['relation'], 'returned': len(rows),
-            'hits': [flatten(hit['_source'], fields) for hit in rows],
-            'next_after': encode_after(rows[-1]['sort']) if len(rows) == size else None}
+            'hits': [flatten(source.document(hit), fields) for hit in rows],
+            'next_after': source.encode_after(rows[-1]['sort']) if len(rows) == size else None}
 
 
 def es_aggs_endpoint(server, params):
@@ -448,16 +470,16 @@ def es_aggs_endpoint(server, params):
         bounds = []
     else:
         raise BackendQueryError('field_not_allowed')
+    source = server.source
     # One citable event per bucket, so a per-category sweep of a process needs no second search.
-    aggregation['aggs'] = {'sample': {'top_hits': {'size': 1, '_source': ['event.id'],
-                                                   'sort': [{'@timestamp': 'asc'}, {'event.id': 'asc'}]}}}
-    query = event_query(server.case, values.get('q'))
+    aggregation['aggs'] = {'sample': {'top_hits': {'size': 1, '_source': ['event.id'], 'sort': source.sort('asc')}}}
+    query = source.event_query(server.case, values.get('q'))
     query['bool']['filter'] += bounds
-    response = es_search(server.elastic, EVENT_INDEX, {
+    response = source.search(EVENT_INDEX, {
         'query': query, 'size': 0, 'track_total_hits': True, 'timeout': '10s', 'aggs': {'values': aggregation}})
     result = response['aggregations']['values']
     buckets = [{'key': bucket.get('key_as_string', bucket['key']), 'count': bucket['doc_count'],
-                'sample_event_id': sample_event_id(bucket)}
+                'sample_event_id': sample_event_id(source, bucket)}
                for bucket in result['buckets']]
     value = {'case_id': server.case['case_id'], 'field': field, 'total': response['hits']['total']['value'],
              'buckets': buckets}
@@ -466,9 +488,9 @@ def es_aggs_endpoint(server, params):
     return value
 
 
-def sample_event_id(bucket):
+def sample_event_id(source, bucket):
     hits = bucket.get('sample', {}).get('hits', {}).get('hits', [])
-    value = pick(hits[0].get('_source', {}), ['event', 'id']) if hits else MISSING
+    value = pick(source.document(hits[0]), ['event', 'id']) if hits else MISSING
     return None if value is MISSING else value
 
 
@@ -478,9 +500,10 @@ def es_detect_endpoint(server, params):
     if not name:
         raise ValueError('name is required')
     fields = list(DEFAULT_FIELDS)
-    response = es_search(server.elastic, EVENT_INDEX, {
-        'query': event_query(server.case, values.get('q')), 'size': 10,
-        'sort': [{'@timestamp': 'asc'}, {'event.id': 'asc'}], '_source': fields,
+    source = server.source
+    response = source.search(EVENT_INDEX, {
+        'query': source.event_query(server.case, values.get('q')), 'size': 10,
+        'sort': source.sort('asc'), '_source': fields,
         'track_total_hits': True, 'timeout': '10s',
         'aggs': {'hosts': {'terms': {'field': 'host.name', 'size': 20}},
                  'first': {'min': {'field': '@timestamp'}}, 'last': {'max': {'field': '@timestamp'}}}})
@@ -489,7 +512,7 @@ def es_detect_endpoint(server, params):
             'hosts': [{'key': bucket['key'], 'count': bucket['doc_count']} for bucket in aggs['hosts']['buckets']],
             'first': aggs['first'].get('value_as_string') if aggs['first'].get('value') is not None else None,
             'last': aggs['last'].get('value_as_string') if aggs['last'].get('value') is not None else None,
-            'sample': [flatten(hit['_source'], fields) for hit in response['hits']['hits']]}
+            'sample': [flatten(source.document(hit), fields) for hit in response['hits']['hits']]}
 
 
 def intel_endpoint(server, params):
@@ -503,7 +526,7 @@ def intel_endpoint(server, params):
             requested.append(item)
     if len(requested) > 50:
         raise ValueError('At most 50 values')
-    response = es_search(server.elastic, INTEL_INDEX, {
+    response = server.source.search(INTEL_INDEX, {
         'query': {'bool': {'filter': [{'term': {'case_id': server.case['case_id']}},
                                       {'terms': {'indicator.value': requested}}]}},
         'size': 500, '_source': list(INTEL_FIELDS), 'timeout': '10s',
@@ -901,7 +924,7 @@ def health(server):
     events = query(server, 'events', {'limit': ['1']})
     captured = has_capture(server.case)
     sessions = query(server, 'network', {'limit': ['1']})['total'] if captured else 0
-    intel = es_search(server.elastic, INTEL_INDEX, {
+    intel = server.source.search(INTEL_INDEX, {
         'query': {'bool': {'filter': [{'term': {'case_id': server.case['case_id']}}]}},
         'size': 0, 'track_total_hits': True, 'timeout': '10s'}, ignore_unavailable=True)
     viewer_ready = answers(ARKIME + '/')
@@ -1044,12 +1067,13 @@ def instance_id(path=INSTANCE_ID_FILE):
     return value if INSTANCE_ID.fullmatch(value) else None
 
 
-def make_server(bind, port, case, elastic, network_scope='tag', instance=None, capture=None):
+def make_server(bind, port, case, source, network_scope='tag', instance=None, capture=None):
+    """source: the event source, or the guest Elasticsearch URL that LabElastic reads."""
     if network_scope not in ('tag', 'window'):
         raise ValueError('network_scope must be tag or window')
     server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
-    server.elastic = elastic
+    server.source = LabElastic(source) if isinstance(source, str) else source
     server.case = case
     server.network_scope = network_scope
     server.instance_id = instance

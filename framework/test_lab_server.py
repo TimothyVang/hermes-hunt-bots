@@ -569,6 +569,83 @@ class DataOriginConsoleTests(ServerCase):
         self.assertEqual(lab_server.DATA_ORIGINS, DATA_ORIGINS)
 
 
+class CitingSource:
+    """A source whose records carry no event.id: it scopes, orders, pages and cites by itself, as a host service would."""
+
+    def __init__(self):
+        self.calls = []
+
+    def search(self, index, body, ignore_unavailable=False):
+        self.calls.append(dict(index=index, body=body))
+        hits = [{'_id': f'doc-{n}', '_source': {'@timestamp': f'2026-03-02T00:00:0{n}Z', 'host': {'name': 'ws-01'}},
+                 'sort': [n, n + 100]} for n in (1, 2)]
+        sample = {'hits': {'hits': hits[:1]}}
+        return {'hits': {'total': {'value': 2, 'relation': 'eq'}, 'hits': hits},
+                'aggregations': {'values': {'buckets': [{'key': 'ws-01', 'doc_count': 2, 'sample': sample}]},
+                                 'hosts': {'buckets': [{'key': 'ws-01', 'doc_count': 2}]},
+                                 'first': {'value': None}, 'last': {'value': None}}}
+
+    def event_query(self, case, q):
+        return {'bool': {'filter': [{'range': {'@timestamp': {'gte': case['time_range_utc']['start_inclusive']}}},
+                                    {'citing': q}]}}
+
+    def sort(self, order):
+        return [{'@timestamp': order}, {'_shard_doc': order}]
+
+    def document(self, hit):
+        return dict(hit['_source'], event={'id': 'evt-9' + hit['_id'][-1]})
+
+    def encode_after(self, sort):
+        return f'p{sort[1]}'
+
+    def decode_after(self, token):
+        return [0, int(token[1:])]
+
+
+class EventSourceTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.source = CitingSource()
+        self.server = lab_server.make_server('127.0.0.1', 0, CASE, self.source)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def sent(self, path, q):
+        status, value = self.request(path)
+        self.assertEqual(status, 200, value)
+        body = self.source.calls[-1]['body']
+        self.assertEqual((self.source.calls[-1]['index'], body['query']), ('hunt-lab-events', self.source.event_query(CASE, q)))
+        return value, body
+
+    def test_another_source_scopes_orders_pages_and_cites_every_event_read(self):
+        value, body = self.sent('/es/search?q=s&size=2&sort=desc&after=p7', 's')
+        self.assertEqual((body['sort'], body['search_after']), ([{'@timestamp': 'desc'}, {'_shard_doc': 'desc'}], [0, 7]))
+        self.assertEqual(([hit['event.id'] for hit in value['hits']], value['next_after']), (['evt-91', 'evt-92'], 'p102'))
+        value, body = self.sent('/events?q=e', 'e')
+        self.assertEqual(body['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual([record['event']['id'] for record in value['records']], ['evt-91', 'evt-92'])
+        value, body = self.sent('/es/aggs?q=a&field=host.name', 'a')
+        self.assertEqual(body['aggs']['values']['aggs']['sample']['top_hits']['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual(value['buckets'], [{'key': 'ws-01', 'count': 2, 'sample_event_id': 'evt-91'}])
+        value, body = self.sent('/es/detect?name=x&q=d', 'd')
+        self.assertEqual(body['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual([row['event.id'] for row in value['sample']], ['evt-91', 'evt-92'])
+        self.assertEqual(self.elastic.calls, [])
+
+    def test_network_sessions_and_health_read_through_the_source_without_event_citations(self):
+        sessions = self.request('/network')[1]['records']
+        self.assertEqual((self.source.calls[-1]['index'], [session.get('event') for session in sessions]),
+                         ('arkime_sessions3-*', [None, None]))
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['event_count'], value['network_session_count'], value['intel_count']), (200, 2, 2, 2))
+        self.assertEqual(sorted({call['index'] for call in self.source.calls}),
+                         ['arkime_sessions3-*', 'hunt-lab-events', 'hunt-lab-intel'])
+        self.assertEqual(self.elastic.calls, [])
+
+
 class FakeTsharkPipe:
     def __init__(self, data, process):
         self.data, self.process = io.BytesIO(data), process
