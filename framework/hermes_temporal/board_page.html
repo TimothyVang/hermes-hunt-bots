@@ -388,6 +388,8 @@ function stateWords(s){
   if (k === "dropped") return s.state;
   return k + (retried ? " \u00b7 retried" : "");
 }
+// Why a step ended without its handoff: the workflow's reason, then the run's diagnostic (exit code and redacted cause).
+function cause(s){ return [words(s.reason), s.result && s.result.diagnostic].filter(Boolean).join(": "); }
 function stepSince(s){
   const t = s.timing || {};
   if (!OPEN.has(s.state)) return null;
@@ -800,7 +802,7 @@ function noHandoffText(s){
   if (f && !f.handoff) return "Handoff not parsed: " + (f.parse_error || "unparsed") + (f.output_chars ? " (" + num(f.output_chars) + " characters)." : ".");
   if (s.state === "working") return "Not posted yet. Claims appear here when " + s.name + " hands off.";
   if (GATE.has(s.state)) return s.state === "awaiting_review" ? "The handoff waits for human review." : "Waiting for approval to start.";
-  if (s.state === "dropped" || s.state === "stopped") return words(s.state) + " before a handoff" + (s.reason ? ": " + words(s.reason) : "") + (s.result && s.result.diagnostic ? " (" + s.result.diagnostic + ")" : "") + ".";
+  if (s.state === "dropped" || s.state === "stopped") return words(s.state) + " before a handoff" + (cause(s) ? ": " + cause(s) : "") + ".";
   if (s.state === "done") return "No handoff on record.";
   return "Not reached yet.";
 }
@@ -1021,7 +1023,7 @@ function agentSub(s, grouped){
     return "wave " + s.wave + " \u00b7 " + (f && !f.handoff && f.parse_error ? "handoff not parsed" : typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
   }
   if (k === "working" || k === "done") return add(h("span"), k + " \u00b7 ", timeEl(s));
-  if (k === "dropped") return s.state + " \u00b7 " + (s.reason ? words(s.reason) : s.profile);
+  if (k === "dropped") return s.state + " \u00b7 " + (cause(s) || s.profile);
   return stateWords(s);
 }
 function renderAgentRail(selId){
@@ -1034,7 +1036,7 @@ function renderAgentRail(selId){
   for (const s of o.list){
     const on = s.step_id === selId;
     const sub = agentSub(s, o.grouped);
-    const b = add(h("button", "ri sm8" + (on ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(on), "data-step":s.step_id, title:s.name + " \u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s)}),
+    const b = add(h("button", "ri sm8" + (on ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(on), "data-step":s.step_id, title:s.name + " \u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s) + (cause(s) ? " \u00b7 " + cause(s) : "")}),
       glyph(kindOf(s)), add(h("div", "grow"), add(h("div", "t ell"), s.name + " ", h("span", "r", "\u00b7 " + (s.monogram || ""))), add(h("div", "s ell"), sub)));
     b.addEventListener("click", () => {
       if (effView() === "agent" || phone()) openAgent(s);
@@ -1377,7 +1379,7 @@ function renderInbox(){
     const l = h("div", "list");
     for (const s of list){
       const b = add(h("button", "li", null, {type:"button", style:"padding:10px 16px;gap:12px"}), glyph(kindOf(s)),
-        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut ell", sub(s))), timeEl(s, "sm mut"));
+        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut ell", sub(s), {title:sub(s)})), timeEl(s, "sm mut"));
       b.addEventListener("click", () => openAgent(s));
       l.appendChild(b);
     }
@@ -1388,7 +1390,7 @@ function renderInbox(){
   group("Done", steps.filter((s) => s.state === "done").sort((a, b) => ((b.timing || {}).ended_ms || 0) - ((a.timing || {}).ended_ms || 0) || b.index - a.index),
     (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"), true);
   group("Waiting", steps.filter((s) => kindOf(s) === "idle"), (s) => "wave " + s.wave + " \u00b7 " + stateWords(s).replace(/^idle \u00b7 /, ""), true);
-  group("Dropped", steps.filter((s) => kindOf(s) === "dropped"), (s) => "wave " + s.wave + " \u00b7 " + s.state + (s.reason ? " \u00b7 " + words(s.reason) : ""), true);
+  group("Dropped", steps.filter((s) => kindOf(s) === "dropped"), (s) => "wave " + s.wave + " \u00b7 " + s.state + (cause(s) ? " \u00b7 " + cause(s) : ""), true);
   m.appendChild(h("div", "pad-end"));
 }
 
