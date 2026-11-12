@@ -4,12 +4,12 @@ This benchmark compares **complete six-identity AI teams** doing threat hunting,
 
 ## Offline validation
 
-From `framework/`, with Python 3.9+ and no optional packages:
+From `research/benchmark/`, with Python 3.9+ and no optional packages. The benchmark imports `bot`, `workflows` and `langchain_adapter` from `../../framework/` through `benchmark_paths.py`:
 
 ```powershell
 py -3 -B benchmark.py validate --experiment benchmarks/examples/experiment.json --bundle-root benchmarks
 py -3 -B benchmark.py validate --experiment benchmarks/examples/experiment-graduated.json --bundle-root benchmarks
-py -3 -B bot.py workflow show benchmarks/team-workflow.json
+py -3 -B ../../framework/bot.py workflow show benchmarks/team-workflow.json
 ```
 
 Use `python3` instead of `py -3` on macOS/Linux. `--bundle-root` explicitly declares the portable bundle containing the manifest and all its relative references; absent it, the manifest's parent is the bundle root. No `..`, aliases, hardlinks, symlinks, reparse paths or absolute manifest references are accepted. Validation creates no state and makes no network requests.
@@ -74,7 +74,7 @@ Live LangChain execution requires the existing optional Python 3.10+ runtime and
 
 **Rejected-output diagnostics.** A narrative call that fails `invalid_response` or `output_limit` after an answer arrived keeps an evaluator-only `rejected_response` record (`error_code`, `error_field`, `byte_count`, `truncated`, and an artifact holding the first `max_response_bytes` bytes with any reasoning block removed). Rejected answers never reach a prompt, checker or score. `status` shows `format_error`, `report.json` adds `format_failures`, and `diagnose` adds `aggregate.format_failures_by_reason`. In the first fully automatic local run (DeepSeek-R1-0528-Qwen3-8B Q4_K_S, three agent-consensus cases, no structured output) every scope attempt failed `invalid_response` and all three trials ended `budget_exhausted`: the benchmark then measured format compliance, not hunting.
 
-**Timeouts and stable source.** `status` and `advance` list each stage's calls with `elapsed_ms`, `timeout_seconds`, `timeout_margin_ms` and the budget charge; `report.json` adds `timeouts`, `reconciliations` and `automatic_retries`. Choose each role's `timeout_seconds` from these margins: a slow local 8B reasoning model needed 446 s for a 10.6k-token scope stage and exceeded 600 s on the next. For long runs, `py -3 benchmark.py snapshot-source --output NEW_DIR` copies the fingerprinted sources, every module they import and the declared data files (`benchmarks/` data, `hermes-bots/catalog.json`, `roles/*.txt`) into `NEW_DIR/framework/` with `SOURCE-MANIFEST.json`; run `py -3 NEW_DIR/framework/benchmark.py --state-root $state …` so concurrent edits never change the adapter fingerprint mid-run. State roots must lie outside `NEW_DIR`; a test performs a real dispatch from a snapshot to keep the declared file list complete.
+**Timeouts and stable source.** `status` and `advance` list each stage's calls with `elapsed_ms`, `timeout_seconds`, `timeout_margin_ms` and the budget charge; `report.json` adds `timeouts`, `reconciliations` and `automatic_retries`. Choose each role's `timeout_seconds` from these margins: a slow local 8B reasoning model needed 446 s for a 10.6k-token scope stage and exceeded 600 s on the next. For long runs, `py -3 benchmark.py snapshot-source --output NEW_DIR` copies the fingerprinted sources, every module they import (the benchmark's own and `bot.py`, `workflows.py` and `langchain_adapter.py` from `framework/`) and the declared data files (`benchmarks/` data, and `hermes-bots/catalog.json` and `roles/*.txt` from `framework/`) into one folder, `NEW_DIR/framework/`, with `SOURCE-MANIFEST.json`; run `py -3 NEW_DIR/framework/benchmark.py --state-root $state …` so concurrent edits never change the adapter fingerprint mid-run. State roots must lie outside `NEW_DIR`; a test performs a real dispatch from a snapshot to keep the declared file list complete.
 
 Exit codes: validation/preflight failure `2`; execution failure/unknown `1`; successful commands, including honest blocker status and dry runs, `0`. `campaign run` exits 1 on blocked/failed/unknown and `campaign cleanup` exits 1 when cleanup is failed/unknown.
 
@@ -91,7 +91,7 @@ A trial that can never finish does not stall the experiment. When a stage's atte
 
 ## Campaign evidence and explicit release
 
-The separate [range-kit guide](../../hunt-range/benchmark/README.md) documents enrollment, per-phase authority, independent collectors and cleanup. Its executor scripts are intentionally absent from the portable framework. Campaign collection never grants model permission. A release is needed only when private (non-`synthetic`/`public_replay`) evidence would reach a non-loopback route; a literal-loopback route keeps the bytes on this machine.
+The separate [range-kit guide](../../../hunt-range/benchmark/README.md) documents enrollment, per-phase authority, independent collectors and cleanup. Its executor scripts were never part of the portable framework, and the benchmark itself no longer is either. Campaign collection never grants model permission. A release is needed only when private (non-`synthetic`/`public_replay`) evidence would reach a non-loopback route; a literal-loopback route keeps the bytes on this machine.
 
 Cleanup runs a fixed read-only leftover check (Windows `session_check`, Linux `close_sessions`). Any remaining process or session of the guest or dedicated account fails cleanup and quarantines those targets. Until that cleanup succeeds, `preflight` and `run` refuse with `target_quarantined` for any campaign in the same state directory that shares an enrolled VM, machine or AWS account ID. AWS campaigns also require a known worst-case `cloud_cost_bound` from the pinned range kit that is no greater than `limits.max_cloud_cost_usd`. It is checked at preflight and at every dispatch, and recorded with each authorization and step receipt. It is a local pre-check, not billing enforcement. The shipped kit's bound is unknown, so AWS preflight is blocked until a reviewed kit revision cites every rate and a ceiling for every quantity.
 

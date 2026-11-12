@@ -25,6 +25,7 @@ import sys
 import threading
 import uuid
 
+from benchmark_paths import FRAMEWORK, source_root
 import bot
 from benchmark_contracts import (REVIEW_POLICY, BenchmarkError, call_cost_bound, canonical_bytes,
                                  confined_file, decode_json, digest_bytes, max_concurrent_calls,
@@ -106,7 +107,7 @@ def initialize_experiment(state_root, loaded, truth_directory, holdout_registry=
         check_unretired(load_registry(holdout_registry), scenarios)
     elif any(scenario['split'] == 'holdout' for scenario in scenarios):
         _fail('holdout_registry_required', 'holdout_registry')
-    catalog = decode_json(confined_file(HERE, 'hermes-bots/catalog.json').read_bytes())
+    catalog = decode_json(confined_file(FRAMEWORK, 'hermes-bots/catalog.json').read_bytes())
     purposes = {entry['name']: entry['title'] + ': ' + entry['description']
                 for entry in catalog if entry['name'] in set(STAGE_ROLES.values())}
     frozen = decode_json(canonical_bytes({
@@ -468,7 +469,7 @@ def _route_prerequisite(provider, env):
             'from langchain_adapter import PrerequisiteMissing, check_prerequisites\n'
             'try:\n    check_prerequisites(sys.argv[2])\nexcept PrerequisiteMissing:\n    sys.exit(3)\n')
     try:
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(HERE), provider],
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(FRAMEWORK), provider],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, env=env, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired):
@@ -582,7 +583,7 @@ def source_files():
         if name in found:
             continue
         found.add(name)
-        tree = ast.parse(confined_file(HERE, name).read_bytes(), filename=name)
+        tree = ast.parse(confined_file(source_root(name), name).read_bytes(), filename=name)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules = [alias.name for alias in node.names]
@@ -592,9 +593,9 @@ def source_files():
                 continue
             for module in modules:
                 top = module.split('.')[0]
-                if (HERE / top / '__init__.py').is_file():
+                if any((root / top / '__init__.py').is_file() for root in (HERE, FRAMEWORK)):
                     _fail('unsupported_source_package', 'source')
-                if (HERE / (top + '.py')).is_file():
+                if (source_root(top + '.py') / (top + '.py')).is_file():
                     pending.append(top + '.py')
         if name == 'benchmark_campaigns.py':
             from benchmark_campaigns import RECIPES
@@ -606,16 +607,17 @@ def snapshot_source(output):
     """Copy the exact benchmark sources into a NEW directory outside this tree.
 
     Long runs started from the copy are immune to concurrent source edits, so
-    every call keeps one adapter fingerprint. The copy mirrors the repository
-    layout (`NEW_DIR/framework/...`), so the snapshot directory itself is the
-    source tree that state roots must stay outside of. Writes
-    `NEW_DIR/SOURCE-MANIFEST.json` with each file's digest; never overwrites,
-    never runs anything.
+    every call keeps one adapter fingerprint. The copy puts the benchmark and
+    the framework files it uses in one folder (`NEW_DIR/framework/...`), so the
+    snapshot directory itself is the source tree that state roots must stay
+    outside of. Writes `NEW_DIR/SOURCE-MANIFEST.json` with each file's digest;
+    never overwrites, never runs anything.
     """
     destination = Path(os.path.abspath(os.fspath(output)))
-    if destination == HERE or HERE in destination.parents:
+    if any(destination == root or root in destination.parents for root in (HERE, FRAMEWORK)):
         _fail('unsafe_path', 'output')
-    files = [(name, confined_file(HERE, name).read_bytes()) for name in source_files() + list(SOURCE_DATA)]
+    files = [(name, confined_file(source_root(name), name).read_bytes())
+             for name in source_files() + list(SOURCE_DATA)]
     try:
         destination.mkdir()
     except FileExistsError:
@@ -653,7 +655,8 @@ def _source_identity():
     # The generic executable is this module's child entry point: it runs the
     # model child, then registers the checker appendix before bot.py submits.
     child = HERE / 'benchmark_runner.py'
-    sources = {name: digest_bytes(confined_file(HERE, name).read_bytes()) for name in FINGERPRINTED_SOURCES}
+    sources = {name: digest_bytes(confined_file(source_root(name), name).read_bytes())
+               for name in FINGERPRINTED_SOURCES}
     # Versions as the model child sees them: its environment drops PYTHONPATH
     # and the user site, so a package visible only there is absent for it too.
     import site
@@ -717,7 +720,7 @@ def _authorize(store, frozen, trial, model, preceding_seconds=0):
 def _bot_command(ledger, args, env, timeout):
     """Fixed ledger command: 'ok', 'failed', or 'timeout' (outcome uncertain)."""
     try:
-        result = subprocess.run([sys.executable, '-B', str(HERE / 'bot.py'), '--workspace',
+        result = subprocess.run([sys.executable, '-B', str(FRAMEWORK / 'bot.py'), '--workspace',
                                  str(ledger)] + args, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env=env, timeout=timeout, check=False)

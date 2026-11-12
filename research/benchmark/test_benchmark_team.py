@@ -23,6 +23,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import benchmark_paths
 import bot
 import benchmark_decisions
 import benchmark_models
@@ -884,7 +885,8 @@ class _LoopbackFixture(http.server.BaseHTTPRequestHandler):
 # a standard-library loopback transport in place of the optional LangChain SDK.
 CHILD = '''
 import json, sys, urllib.error, urllib.request
-sys.path.insert(0, {framework!r})
+sys.path.insert(0, {benchmark!r})
+import benchmark_paths
 import langchain_adapter
 
 
@@ -995,7 +997,7 @@ class _LoopbackTeamCase(unittest.TestCase):
         SDK check is replaced too, as in the child itself.
         """
         child = Path(self.temp.name) / 'loopback_child.py'
-        child.write_text(CHILD.format(framework=str(HERE)), encoding='utf-8')
+        child.write_text(CHILD.format(benchmark=str(HERE)), encoding='utf-8')
         original = benchmark_runner._source_identity
 
         def injected():
@@ -1370,7 +1372,7 @@ class SnapshotDispatchTests(unittest.TestCase):
         manifest = bundle / 'examples' / 'experiment-snapshot.json'
         manifest.write_bytes(canonical_bytes(experiment))
         child = temp / 'loopback_child.py'
-        child.write_text(CHILD.format(framework=str(framework)), encoding='utf-8')
+        child.write_text(CHILD.format(benchmark=str(framework)), encoding='utf-8')
         environment = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
         result = subprocess.run([sys.executable, '-B', '-c', SNAPSHOT_RUN, str(framework), str(temp / 'state'),
                                  str(bundle), str(manifest), str(child), experiment['experiment_id']],

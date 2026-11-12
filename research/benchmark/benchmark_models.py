@@ -14,6 +14,7 @@ import sys
 import time
 import warnings
 
+import benchmark_paths
 from benchmark_contracts import (
     BenchmarkError, call_cost_bound, canonical_bytes, confined_file, decode_json,
     digest_bytes, stage_output_schema, validate_stage_output,

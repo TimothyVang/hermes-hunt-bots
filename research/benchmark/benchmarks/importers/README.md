@@ -147,7 +147,7 @@ An unparseable real metadata file is a hard failure, never a best-effort guess.
 
 ## Workflow
 
-Run from `framework/` (`python3` instead of `py -3` on macOS/Linux).
+Run from `research/benchmark/` (`python3` instead of `py -3` on macOS/Linux).
 
 1. **Download** the dataset `.zip` and its `datasets/atomic/_metadata/<ID>.yaml` from a pinned commit, into a
    directory outside every source tree, for example `C:/Users/<you>/Desktop/bot-framework-data/otrf/<ID>/`. Record the URL,
