@@ -45,21 +45,18 @@ _EXCEPTION_LINE = re.compile(r'(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|Exit|Int
 _ERROR_LINE = re.compile(r'(?i)\b(?:error|fatal|failed)\b')
 _SECRET_KEY = (r'(?i)\b([\w-]*(?:(?:api|secret|private|access|signing|encryption)[_-]?key(?:[_-]?id)?|token|secret'
                r'|password|passwd|credentials?|signature|sig))\b')
+# The only `sk_`/`pk_`/`rk_` segment shapes that read as identifier parts: a word, a number of up to seven
+# digits (`2024`), or a short word with a one- or two-digit suffix (`v2`, `utf8`). Any other segment holding
+# a digit (`El2hpChYgC`, `abc12345`, `9f8e7d6c5b`) marks a key.
+_IDENTIFIER_SEGMENT = re.compile(r'[A-Za-z]*|\d{1,7}|[A-Za-z]{1,7}\d{1,2}')
 
 
 def _stripe_key(text: str) -> bool:
-    """Whether an `sk_`/`pk_`/`rk_` token is a key rather than an identifier such as `pk_users_v2`.
-
-    Keys are `live_`/`test_` ones, or carry a segment that mixes letters with 3+ digits or is 8+ digits;
-    identifier segments are words, short versions (`v2`) or years (`2024`)."""
+    """Whether an `sk_`/`pk_`/`rk_` token is a key rather than an identifier such as `pk_users_v2`."""
     body = text[3:]
     if body.lower().startswith(('live_', 'test_')):
         return True
-    for segment in re.split(r'[_-]', body):
-        digits = sum(character.isdigit() for character in segment)
-        if 3 <= digits < len(segment) or digits >= 8:
-            return True
-    return False
+    return not all(_IDENTIFIER_SEGMENT.fullmatch(segment) for segment in re.split(r'[_-]', body))
 
 
 _SECRETS = (

@@ -336,6 +336,31 @@ class ExecutionReceiptTests(unittest.TestCase):
                 self.assertNotIn(secret, diagnostic)
                 self.assertIn('[redacted]', diagnostic)
 
+    def test_random_sk_pk_rk_tokens_trunk_redacted_stay_redacted_except_identifier_shapes(self):
+        # Review of #50: a fuzz of the sk_/pk_/rk_ rule found keys with 1-2 digits per segment (sk_El2hpChYgC)
+        # visible. Trunk redacted any such token of 8+ body characters holding a digit; the only exceptions
+        # now are bodies whose every segment is a word, a number of up to 7 digits, or a word of up to 7
+        # letters with a 1-2 digit suffix (pk_users_v2, pk_receipts_2024).
+        import random
+        import re
+        import string
+        identifier = re.compile(r'[A-Za-z]*|[0-9]{1,7}|[A-Za-z]{1,7}[0-9]{1,2}')
+        alphabet = string.ascii_letters + string.digits + '_-'
+        rng = random.Random(20261111)
+        checked = readable = 0
+        for _ in range(4000):
+            token = rng.choice(('sk_', 'pk_', 'rk_')) + ''.join(rng.choice(alphabet) for _ in range(rng.randint(8, 28)))
+            if not any(character.isdigit() for character in token[3:]):
+                continue
+            if all(identifier.fullmatch(segment) for segment in re.split('[_-]', token[3:])):
+                readable += 1
+                continue
+            checked += 1
+            with self.subTest(token=token):
+                self.assertNotIn(token, execution_module._redact(f'KeyError: {token} rejected'))
+        self.assertGreater(checked, 3000)
+        self.assertLess(readable, checked // 20)
+
     def test_redaction_keeps_ordinary_words_and_identifiers(self):
         lines = [
             'RuntimeError: token limit exceeded',
