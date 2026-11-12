@@ -327,7 +327,10 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 <script>
 "use strict";
 (function(){
-const STATE_URL = new URL("/state.json", location.href).href;
+// This server run's token, written into the page when it is served; /state.json and /live/ require it.
+const BOARD_TOKEN = "__BOARD_TOKEN__";
+const tokenUrl = (path) => new URL(path + "?token=" + encodeURIComponent(BOARD_TOKEN), location.href).href;
+const STATE_URL = tokenUrl("/state.json");
 const SVGNS = "http://www.w3.org/2000/svg";
 const LIVE_FRESH_MS = 10000, POLL_MS = 2000, TOAST_MS = 6000;
 const GATE = new Set(["awaiting_approval", "awaiting_review"]);
@@ -548,7 +551,7 @@ function liveProfile(prefer){
 function updateScreen(c){
   const o = liveOwner(c.profile), frames = o ? o.frames : 0;
   if (frames > 0 && !c.img){
-    const src = new URL("/live/" + encodeURIComponent(c.profile) + ".mjpg", location.href).href;
+    const src = tokenUrl("/live/" + encodeURIComponent(c.profile) + ".mjpg");
     const img = h("img", null, null, {alt:"", src:src});
     // The stream ends when the board restarts or the stream cap is reached; reconnect after a pause.
     img.addEventListener("error", () => setTimeout(() => img.setAttribute("src", src), 5000));
@@ -1763,6 +1766,7 @@ function renderAll(){
 async function poll(){
   try {
     const res = await fetch(STATE_URL, {cache:"no-store", credentials:"omit"});
+    if (res.status === 403) throw new Error("HTTP 403: the board server restarted, reload this page");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const next = await res.json();
     if (!next || !Array.isArray(next.steps)) throw new Error("malformed state");
