@@ -56,7 +56,9 @@ async def _lab_input(args: argparse.Namespace) -> None:
 
     if args.data_origin is not None and not args.tool_driven:
         raise ValueError("--data-origin applies only to --tool-driven")
-    raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin) if args.tool_driven
+    if args.case_id is not None and not args.tool_driven:
+        raise ValueError("--case-id applies only to --tool-driven")
+    raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin, case_id=args.case_id) if args.tool_driven
            else collect_lab_input(args.state_dir))
     text = json.dumps(raw, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
     with Path(args.output).open("x", encoding="utf-8", newline="\n") as output:
@@ -233,7 +235,11 @@ def _parser() -> argparse.ArgumentParser:
     lab_input.add_argument("--data-origin", choices=tuple(DATA_ORIGINS),
                            help="with --tool-driven: approve exporting a case whose case.json declares this data_origin "
                                 "(public-dataset: a public research dataset; work-export: the operator's unclassified work "
-                                "log export); it must equal the case's origin, and such a case is refused without it")
+                                "log export; work-connected: a window of the operator's work Elastic served live by "
+                                "hunt_lab.connected); it must equal the case's origin, and such a case is refused without it")
+    lab_input.add_argument("--case-id",
+                           help="with --tool-driven: export this case from whichever lab serves it, the VM or a connected "
+                                "service (default: the one lab serving a case; both serving one is refused as ambiguous)")
     lab_input.set_defaults(handler=_lab_input)
     return parser
 

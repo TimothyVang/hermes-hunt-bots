@@ -120,10 +120,10 @@ Real work hunts take one time window of the operator's own **unclassified** work
 
 ### Serving a work Elastic directly (connected mode)
 
-`hunt_lab/connected.py` is the connected mode of ADR 0005 (planning notes): instead of an export, a lab service on this PC holds a read-only API key to the work Elastic and answers the bots' existing Elasticsearch tools on `127.0.0.1`. The VM is not involved. The bots never see the key or the cluster address. **Not yet a hunt:** `lab-input` does not yet accept the `work-connected` origin (a follow-up unit, with HUNT-BOTS.md rule 2). Until then, use the export above for real hunts.
+`hunt_lab/connected.py` is the connected mode of ADR 0005 (planning notes): instead of an export, a lab service on this PC holds a read-only API key to the work Elastic and answers the bots' existing Elasticsearch tools on `127.0.0.1`. The VM is not involved. The bots never see the key or the cluster address. Its cases say `"data_origin": "work-connected"` (HUNT-BOTS.md rules 1 and 2); `prepare_guest` refuses to seed one into the VM.
 
 - `connect.json` (operator-only, never served) names the cluster: `{"url": "https://elastic.example.internal:9243", "index": "logs-*", "ca_file": "C:\\path\\http_ca.crt"}`. `ca_file` and `api_key_env` (default `HUNT_ELASTIC_API_KEY`) are optional. Cross-cluster patterns (`remote:index`) are refused.
-- `case.json` is what the bots see: `case_id`, `question`, `time_range_utc` (with a UTC offset such as `Z`), `"data_origin": "work-connected"`, `"network_capture": "none"` and optional `hosts` (exact `host.name` values, at most 50). It names no cluster or index. The window must have ended at least 15 minutes ago.
+- `case.json` is what the bots see, the same shape as every lab case: `case_id`, `question`, `"schema_version": 1`, `sources` (`{"artifact", "coverage"}` texts saying what the window holds, such as `{"artifact": "work Elastic", "coverage": "Sysmon process events"}`), `time_range_utc` (with a UTC offset such as `Z`), `"data_origin": "work-connected"`, `"network_capture": "none"` and optional `hosts` (exact `host.name` values, at most 50), and nothing else. It names no cluster or index. The window must have ended at least 15 minutes ago.
 - The API key needs `read` and `view_index_metadata` on the pattern, the `monitor` cluster privilege for the version check (`GET /`; without it the check fails with `HTTP 403`), and nothing that can write, delete or manage. Give it role descriptors limited to the hunted pattern.
 - Before serving, the service asks `_has_privileges` about the pattern and every index, alias and data stream it resolves to, and about the manage-type cluster privileges listed in `connected.py`. It refuses the key if any of those comes back granted or missing. Privileges on indices outside the pattern are not inspected.
 - The service also refuses a key whose text is in the Hermes home's or any profile's `.env` or `config.yaml`.
@@ -153,6 +153,17 @@ How the bots find it (`hunt_lab/endpoints.py`, the one lab resolver behind every
 - `lab_instance_mismatch` when any answer from the connected port lacks the state file's instance token (another process holds the port), and `connected_state_invalid` for a malformed state file. A state file left by a crashed service is skipped while the VM serves the case, and is `lab_unreachable` otherwise.
 - `key_in_bot_environment`: a bot's tool refuses a connected case while the bot's own process environment holds the variable named in `state.json` (`api_key_env`), so start the worker and gateways from a terminal without the key.
 - `no_lab_browser`: `lab_browser` has no Kibana or Arkime to show for a connected case.
+
+Hunt it with the operator's approval of the origin. Start the Temporal worker and the bots' gateways from a terminal that does not hold the key variable, or every tool call answers `key_in_bot_environment`. `--case-id` picks the connected case even while the VM serves another one:
+
+```powershell
+py -3 -m hermes_temporal.cli lab-input --tool-driven --data-origin work-connected --case-id work-conn-001 `
+    --state-dir <hermes home>\profiles\framework-network-analyst\hunt-lab-vm --output ..\runtime\work-conn-001-hunt.json
+py -3 -m hermes_temporal.board --workflow-id <practice id> --input ..\runtime\work-conn-001-hunt.json `
+    --lab-state-dir <hermes home>\profiles\framework-network-analyst\hunt-lab-vm
+```
+
+The bots are told the case is a work log connection (live read-only queries of the operator's work Elastic; unclassified work data), never synthetic. Connected hunts are unscored: work data has no answer key. Use the Slack bridge's minimal cards (HUNT-BOTS.md rule 4).
 
 Live run (2026-11-11, Elasticsearch 8.15.3 in a throwaway container with security and TLS on, synthetic Sysmon-shaped events; the bot tools run through `query_adapter` against `serve` running as its own process with the key only in its environment):
 - `check` reported 8.15.3 and 31 events in scope. A key without `monitor` failed with `HTTP 403`. These keys were refused as `key_not_read_only`: an unrestricted key, a key that could write only to the data stream inside the pattern, and a key holding `manage_slm`. The read-only key placed in a researcher profile's `.env` was refused as `key_in_bot_profile`.

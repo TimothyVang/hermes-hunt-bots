@@ -51,6 +51,7 @@ NO_CAPTURE = 'none'
 DATA_ORIGINS = {
     'public-dataset': ('public research dataset', 'real lab telemetry, no customer data'),
     'work-export': ('work log export', "real telemetry from the operator's environment; unclassified work data"),
+    'work-connected': ('work log connection', "live read-only queries of the operator's work Elastic; unclassified work data"),
 }
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200

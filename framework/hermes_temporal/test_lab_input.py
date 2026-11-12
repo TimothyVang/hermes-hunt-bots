@@ -41,6 +41,16 @@ WORK_CASE = {
     "time_range_utc": {"start_inclusive": "2026-11-01T00:00:00Z", "end_exclusive": "2026-11-01T06:00:00Z"},
 }
 WORK_TEXT = "work log export (real telemetry from the operator's environment; unclassified work data)"
+# As an operator writes it for hunt_lab.connected serve; names no cluster or index.
+CONNECTED_CASE = {
+    "case_id": "work-conn-001", "schema_version": 1, "network_capture": "none", "data_origin": "work-connected",
+    "question": "What ran on ws-01 and ws-02 during the window? Cite event.id values.",
+    "sources": [{"artifact": "work Elastic", "coverage": "Real Sysmon process events from the operator's work Elastic"}],
+    "time_range_utc": {"start_inclusive": "2026-11-01T10:00:00Z", "end_exclusive": "2026-11-01T11:00:00Z"},
+    "hosts": ["ws-01", "ws-02"],
+}
+CONNECTED_TEXT = ("work log connection (live read-only queries of the operator's work Elastic; "
+                  "unclassified work data)")
 
 
 class FakeLab:
@@ -290,7 +300,7 @@ class LabInputTests(unittest.TestCase):
             with patch.object(lab_input, "collect_lab_input", return_value={"synthetic_only": True}):
                 with self.assertRaises(FileExistsError):
                     asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=False,
-                                                                  data_origin=None)))
+                                                                  data_origin=None, case_id=None)))
             self.assertEqual(path.read_text(encoding="utf-8"), "keep")
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
@@ -304,8 +314,8 @@ class LabInputTests(unittest.TestCase):
             with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool, \
                     patch.object(lab_input, "collect_lab_input") as inline:
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
-                                                              data_origin=None)))
-            tool.assert_called_once_with("state", data_origin=None)
+                                                              data_origin=None, case_id=None)))
+            tool.assert_called_once_with("state", data_origin=None, case_id=None)
             inline.assert_not_called()
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"mode": "tool_driven"})
 
@@ -313,7 +323,7 @@ class LabInputTests(unittest.TestCase):
     def test_lab_input_cli_passes_the_data_origin_only_for_tool_driven(self):
         from . import cli
 
-        for origin in ("public-dataset", "work-export"):
+        for origin in ("public-dataset", "work-export", "work-connected"):
             args = cli._parser().parse_args(["lab-input", "--state-dir", "state", "--output", "x.json", "--tool-driven",
                                              "--data-origin", origin])
             self.assertEqual(args.data_origin, origin)
@@ -327,14 +337,21 @@ class LabInputTests(unittest.TestCase):
             path = Path(directory) / "tool.json"
             with patch.object(lab_input, "collect_tool_input", return_value={"mode": "tool_driven"}) as tool:
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(path), tool_driven=True,
-                                                              data_origin="work-export")))
-            tool.assert_called_once_with("state", data_origin="work-export")
+                                                              data_origin="work-connected", case_id="work-conn-001")))
+            tool.assert_called_once_with("state", data_origin="work-connected", case_id="work-conn-001")
             inline = Path(directory) / "inline.json"
             with patch.object(lab_input, "collect_lab_input") as collect, self.assertRaises(ValueError):
                 asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(inline), tool_driven=False,
-                                                              data_origin="public-dataset")))
+                                                              data_origin="public-dataset", case_id=None)))
+            with patch.object(lab_input, "collect_lab_input") as collect_case, self.assertRaises(ValueError):
+                asyncio.run(cli._lab_input(argparse.Namespace(state_dir="state", output=str(inline), tool_driven=False,
+                                                              data_origin=None, case_id="work-conn-001")))
             collect.assert_not_called()
+            collect_case.assert_not_called()
             self.assertFalse(inline.exists())
+        args = cli._parser().parse_args(["lab-input", "--state-dir", "s", "--output", "x", "--tool-driven",
+                                         "--case-id", "work-conn-001"])
+        self.assertEqual(args.case_id, "work-conn-001")
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
     def test_new_input_json_rejects_duplicate_and_nonfinite_values(self):
@@ -477,12 +494,11 @@ class ToolDrivenInputTests(unittest.TestCase):
         return lab, str(analyst / "hunt-lab-vm")
 
     def test_export_finds_a_connected_case_while_the_vm_is_stopped_and_refuses_two_labs(self):
-        case = {**TOOL_CASE, "case_id": "work-conn-001"}
-        lab, state_dir = self.connected(case)
+        lab, state_dir = self.connected(CONNECTED_CASE)
         runtime = fake_runtime({**self.STATUS, "state": "stopped"})
         modules = {"hunt_lab.runtime": runtime}.__getitem__
         with patch.object(lab_input.importlib, "import_module", side_effect=modules):
-            raw = lab_input.collect_tool_input(state_dir)
+            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
         self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
         self.assertEqual(lab.paths(), ["/case"])
         vm = FakeLab()
@@ -490,21 +506,61 @@ class ToolDrivenInputTests(unittest.TestCase):
         runtime = fake_runtime({**self.STATUS, "lab_url": vm.url})
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
                 self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable: ambiguous_lab$"):
-            lab_input.collect_tool_input(state_dir)
+            lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected", case_id="work-conn-001")
+            self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
+            self.assertEqual(lab_input.collect_tool_input(state_dir, case_id="lab-med-001")["ontology"]["case_id"],
+                             "lab-med-001")
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
             self.assertEqual(lab_input.resolve_lab(state_dir, "work-conn-001").origin, "connected")
             self.assertEqual(lab_input.resolve_lab(state_dir, "lab-med-001").origin, "vm")
 
     def test_a_connected_answer_must_carry_its_instance(self):
-        lab, state_dir = self.connected({**TOOL_CASE, "case_id": "work-conn-001"})
+        lab, state_dir = self.connected(CONNECTED_CASE)
         lab.instance = "b" * 32
         runtime = fake_runtime({**self.STATUS, "state": "stopped"})
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
                 self.assertRaisesRegex(lab_input.LabInputError, "lab_instance_mismatch"):
-            lab_input.collect_tool_input(state_dir)
+            lab_input.collect_tool_input(state_dir, data_origin="work-connected")
         self.assertEqual(lab_input.lab_get(lab.url, "/case")["case_id"], "work-conn-001")
         with self.assertRaises(lab_input.LabInputError):
             lab_input.lab_get(lab.url, "/case", instance="a" * 32)
+
+    def test_a_connected_case_is_exported_only_from_a_connected_service_with_its_origin(self):
+        _lab, state_dir = self.connected(CONNECTED_CASE)
+        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            for approval in (None, "work-export", "public-dataset"):
+                with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError):
+                    lab_input.collect_tool_input(state_dir, data_origin=approval)
+            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        self.assertEqual((raw["synthetic_only"], raw["data_origin"]), (False, "work-connected"))
+        self.assertTrue(raw["scope"].startswith("Work log connection work-conn-001 (live read-only queries"))
+        [item] = raw["evidence"]
+        self.assertIn("Untrusted " + CONNECTED_TEXT + " lab case", item["content"])
+        self.assertIn('"hosts":["ws-01","ws-02"]', item["content"])
+        self.assertNotIn("synthetic", (raw["scope"] + item["content"]).lower())
+        request = supplied_evidence_hunt(raw)
+        self.assertEqual((request.synthetic_only, request.data_origin, request.tool_driven), (False, "work-connected", True))
+        for step in request.steps:
+            self.assertIn(CONNECTED_TEXT, step.prompt)
+
+    def test_a_vm_case_claiming_the_connected_origin_or_bad_hosts_is_refused(self):
+        vm = FakeLab(case=CONNECTED_CASE)
+        self.addCleanup(vm.close)
+        with self.assertRaises(lab_input.LabInputError):
+            self.collect(vm, data_origin="work-connected")
+        hosted = FakeLab(case={**WORK_CASE, "hosts": ["ws-01"]})
+        self.addCleanup(hosted.close)
+        with self.assertRaises(lab_input.LabInputError):
+            self.collect(hosted, data_origin="work-export")
+        for hosts in ([], ["ws-01", "ws-01"], ["ws\n01"], "ws-01", [1], [f"h{n}" for n in range(51)]):
+            _lab, state_dir = self.connected({**CONNECTED_CASE, "hosts": hosts})
+            runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+            with self.subTest(hosts=hosts), self.assertRaises(lab_input.LabInputError), \
+                    patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+                lab_input.collect_tool_input(state_dir, data_origin="work-connected")
 
 
 if __name__ == "__main__":

@@ -132,7 +132,8 @@ class ConnectedCase(unittest.TestCase):
         (self.root / 'hermes' / 'profiles' / 'framework-researcher').mkdir()
         self.config = self.write('connect.json', {'url': URL, 'index': INDEX})
         self.case = {'case_id': CASE_ID, 'question': 'What ran on ws-01?', 'data_origin': 'work-connected',
-                     'network_capture': 'none', 'hosts': ['ws-01'],
+                     'network_capture': 'none', 'hosts': ['ws-01'], 'schema_version': 1,
+                     'sources': [{'artifact': 'work Elastic', 'coverage': 'Sysmon process events'}],
                      'time_range_utc': {'start_inclusive': START, 'end_exclusive': END}}
         self.case_path = self.write('case.json', self.case)
         self.elastic = FakeElastic()
@@ -215,10 +216,15 @@ class RefusalTests(ConnectedCase):
                                  (dict(time_range_utc={'start_inclusive': START, 'end_exclusive': '2026-11-01T11:00:00'}),
                                   'UTC offset'),
                                  (dict(hosts=[]), 'hosts'), (dict(hosts=['ws-01', 'ws-01']), 'hosts'),
-                                 (dict(hosts=[{}]), 'hosts')):
+                                 (dict(hosts=[{}]), 'hosts'), (dict(truth='x'), 'must hold exactly'),
+                                 (dict(schema_version=2), 'schema_version'), (dict(schema_version=True), 'schema_version'),
+                                 (dict(sources=[]), 'sources'), (dict(sources=[{'artifact': 'x'}]), 'sources'),
+                                 (dict(sources=[{'artifact': 'x', 'coverage': ' '}]), 'sources')):
             with self.subTest(change=change):
                 self.case_path = self.write('case.json', {**self.case, **change})
                 self.assertIn(expected, self.refused())
+        self.case_path = self.write('case.json', {key: value for key, value in self.case.items() if key != 'sources'})
+        self.assertIn('must hold exactly', self.refused())
         self.case_path = self.write('case.json', self.case)
         for config in ({'url': URL, 'index': 'remote:logs-*'}, {'url': 'http://elastic.example.test', 'index': INDEX},
                        {'url': URL, 'index': INDEX, 'password': 'x'}):

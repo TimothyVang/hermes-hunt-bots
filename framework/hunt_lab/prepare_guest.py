@@ -46,8 +46,10 @@ CAPTURE_FILE = "traffic.pcap"
 NO_CAPTURE = "none"
 # case.json "data_origin" marks an approved real-data case (HUNT-BOTS.md rule 1): a public research
 # dataset or the operator's unclassified work export; absent means synthetic. No other value is accepted.
-# Equal to hermes_temporal.contracts.DATA_ORIGINS (test_hunt_lab_managed keeps them equal).
-DATA_ORIGINS = ("public-dataset", "work-export")
+# Equal to hermes_temporal.contracts.DATA_ORIGINS (test_hunt_lab_managed keeps them equal). A work-connected
+# case is never seeded: only the host-side connected service serves it (ADR 0005).
+DATA_ORIGINS = ("public-dataset", "work-export", "work-connected")
+CONNECTED_ORIGIN = "work-connected"
 INSTANCE_ID = "hermes-framework-network-analyst-native-v1"
 CASE_ID_PATTERN = re.compile(r"[a-z0-9-]{3,64}")
 DEPLOYMENT_KEYS = frozenset({"qemu", "disk", "seed", "memory_mib", "cpus", "accel"})
@@ -368,6 +370,9 @@ def case_metadata(path: Path) -> dict:
         raise PreparationError(f'case.json network_capture may only be "{NO_CAPTURE}"')
     if "data_origin" in case and case["data_origin"] not in DATA_ORIGINS:
         raise PreparationError("case.json data_origin may only be " + " or ".join(f'"{origin}"' for origin in DATA_ORIGINS))
+    if case.get("data_origin") == CONNECTED_ORIGIN:
+        raise PreparationError(f'a "{CONNECTED_ORIGIN}" case is never seeded into the VM; '
+                               "serve it on this PC with python -m hunt_lab.connected serve")
     return case
 
 

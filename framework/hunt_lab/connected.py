@@ -12,8 +12,9 @@ CLI (run from framework/, in the operator's own terminal; never from a bot or a 
 
 CONNECT.json names the cluster and is never served: {"url": "https://HOST:PORT", "index": "logs-*",
 "ca_file": optional PEM bundle, "api_key_env": optional, default HUNT_ELASTIC_API_KEY}. CASE.json is what
-/case serves: case_id, question, time_range_utc, "data_origin": "work-connected", "network_capture": "none"
-and optional "hosts" (exact host.name values); it names no cluster or index.
+/case serves: case_id, question, "schema_version": 1, sources ({artifact, coverage} texts), time_range_utc,
+"data_origin": "work-connected", "network_capture": "none" and optional "hosts" (exact host.name values); it
+names no cluster or index.
 
 The key is read once from the environment variable and removed from this process's environment. It is
 never written, logged or returned, and errors carry only an HTTP status and Elasticsearch error type. TLS
@@ -73,6 +74,9 @@ MAX_PROFILE_FILE = 4 * 1024 * 1024
 # A pattern on another cluster (remote:index) is outside what _has_privileges checks here.
 INDEX_PATTERN = re.compile(r'[A-Za-z0-9*][A-Za-z0-9._*,+-]{0,254}\Z')
 CONFIG_KEYS = frozenset({'url', 'index', 'ca_file', 'api_key_env'})
+# What /case serves, as every lab case: the bots see these and nothing about the cluster.
+CASE_KEYS = frozenset({'case_id', 'question', 'schema_version', 'sources', 'time_range_utc', 'data_origin',
+                       'network_capture'})
 # Names valid on every Elasticsearch from 7.12 (an unknown name fails the whole check); the key must hold none.
 WRITE_INDEX_PRIVILEGES = ('all', 'manage', 'write', 'index', 'create', 'create_doc', 'create_index', 'delete',
                           'delete_index', 'maintenance', 'manage_ilm', 'manage_follow_index', 'manage_leader_index',
@@ -128,6 +132,16 @@ def load_config(path):
 
 def load_case(path, now=None):
     case = _json_file(path, 'the case file')
+    if set(case) - {'hosts'} != CASE_KEYS:
+        raise ConnectError('the case file must hold exactly ' + ', '.join(sorted(CASE_KEYS)) + ' and optional hosts')
+    if type(case['schema_version']) is not int or case['schema_version'] != 1:
+        raise ConnectError('the case schema_version must be 1')
+    if (not isinstance(case['sources'], list) or not case['sources']
+            or not all(isinstance(source, dict) and set(source) == {'artifact', 'coverage'}
+                       and all(isinstance(value, str) and value.strip() for value in source.values())
+                       for source in case['sources'])):
+        raise ConnectError('sources must list {"artifact", "coverage"} texts saying what the window holds, '
+                           'naming no cluster or index')
     if not isinstance(case.get('case_id'), str) or not lab_server.CASE_ID.fullmatch(case['case_id']):
         raise ConnectError('case_id must match [a-z0-9-]{3,64}')
     if not isinstance(case.get('question'), str) or not case['question'].strip():

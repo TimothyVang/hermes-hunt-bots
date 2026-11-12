@@ -2,8 +2,9 @@
 
 ``collect_tool_input`` exports a tool-driven hunt instead: it reads only the loaded
 case's ``/case`` metadata, and the stages query the lab through their own tools. A case
-whose metadata names a ``data_origin`` (a public research dataset or a work export) is
-exported only when the operator passes that same origin, and is then labelled with it, never synthetic.
+whose metadata names a ``data_origin`` (a public research dataset, a work export, or a work Elastic
+window served by the connected service) is exported only when the operator passes that same origin,
+and is then labelled with it, never synthetic.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from urllib import error, parse, request
 
 from hunt_lab.endpoints import INSTANCE_HEADER, LabEndpoint, QueryFailure, resolve
 
-from .contracts import DATA_ORIGINS, origin_text
+from .contracts import DATA_ORIGINS, WORK_CONNECTED, origin_text
 from .hunt import supplied_evidence_hunt
 
 CASE_ID = "dns-lab-001"
@@ -33,6 +34,8 @@ _RECORD_FIELDS = {
                 "network.packets", "network.bytes", "network.protocol", "dns.host"},
 }
 _TOOL_CASE_ID = re.compile(r"[a-z0-9-]{3,64}\Z")
+# Exact host.name values a connected case may be limited to (as hunt_lab.connected.MAX_HOSTS).
+_MAX_HOSTS = 50
 MAX_LAB_RESPONSE = 512 * 1024
 _LAB_TIMEOUT_SECONDS = 12
 
@@ -332,20 +335,33 @@ def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
     )
 
 
-def collect_tool_input(state_dir, *, data_origin: str | None = None) -> dict:
-    """Return a tool-driven hunt for the one loaded case, on the analyst VM or a connected service.
+def _hosts_ok(case: dict) -> bool:
+    hosts = case.get("hosts")
+    return (isinstance(hosts, list) and 1 <= len(hosts) <= _MAX_HOSTS
+            and all(isinstance(host, str) and 0 < len(host) <= 100 and host.isprintable() for host in hosts)
+            and len(set(hosts)) == len(hosts))
 
-    Reads only ``/case`` from the lab ``resolve_lab`` finds; exports no events or sessions.
-    ``data_origin`` records the operator's approval and must equal the case's declared origin:
-    a case that declares one is refused without it, and a synthetic case is refused with one.
+
+def collect_tool_input(state_dir, *, data_origin: str | None = None, case_id: str | None = None) -> dict:
+    """Return a tool-driven hunt for the loaded case, on the analyst VM or a connected service.
+
+    Reads only ``/case`` from the lab ``resolve_lab`` finds for ``case_id`` (default: the one lab
+    serving a case); exports no events or sessions. ``data_origin`` records the operator's approval and
+    must equal the case's declared origin: a case that declares one is refused without it, and a
+    synthetic case is refused with one. A ``work-connected`` case is accepted only from a connected
+    service, which alone serves one, and may name its ``hosts``.
     """
-    case = resolve_lab(state_dir).case
+    lab = resolve_lab(state_dir, case_id)
+    case = lab.case
     case_id = case.get("case_id")
+    connected = case.get("data_origin") == WORK_CONNECTED
+    extra = {"network_capture", "data_origin", *(("hosts",) if connected and "hosts" in case else ())}
     if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None
-            or set(case) - {"network_capture", "data_origin"} != _CASE_FIELDS or case.get("network_capture", "none") != "none"
+            or set(case) - extra != _CASE_FIELDS or case.get("network_capture", "none") != "none"
             or ("data_origin" in case and case["data_origin"] not in tuple(DATA_ORIGINS))
             or type(case.get("schema_version")) is not int or case.get("schema_version") != 1
-            or not _case_body_ok(case)):
+            or not _case_body_ok(case) or connected != (lab.origin == "connected")
+            or ("hosts" in case and not _hosts_ok(case))):
         _reject()
     declared = case.get("data_origin")
     if declared != data_origin:

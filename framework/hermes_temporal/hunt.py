@@ -1,7 +1,8 @@
 """Strict constructor for synthetic supplied-evidence hunts.
 
 A tool-driven hunt may instead run over a real-data case the operator approved for the lab
-(``data_origin`` ``public-dataset`` or ``work-export``); its prompts then state that origin and never call it synthetic.
+(``data_origin`` ``public-dataset``, ``work-export`` or ``work-connected``); its prompts then state that origin and never
+call it synthetic.
 
 Evidence is accepted inline and is never resolved, opened, or fetched from its locator.
 In ``tool_driven`` mode the only inline evidence is the case metadata item; each stage is
