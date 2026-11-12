@@ -6,8 +6,6 @@ The threat-hunt experience runs in **native Hermes**: the coordinator uses Herme
 
 The native roster uses six cybersecurity roles: **Incident Response Lead**, **Threat Hunter**, **Detection Engineer**, **Purple Team Analyst**, **Threat Intelligence Analyst**, and **Network Analyst**. The Network Analyst analyzes approved, human-prepared sanitized Arkime/Wireshark summaries that exclude SSIDs, headers, credentials, cookies, authentication payloads, and authentication/session data, or the loaded lab case through its owned tools: Arkime session metadata and `packet_fields`, decoded allowlisted fields of the case's saved capture with secrets removed (accepted decision ADR 0003 in the planning notes). It must not capture live traffic, open raw captures, packet bytes or tool views other than through those tools, operate Wireshark, or connect to an Arkime endpoint. Existing `framework-*` profile IDs and ledger role identifiers are retained. Installing the role does not authorize connection, capture or collection.
 
-The separate [optional Envision job bridge](#optional-envision-job-bridge) uses only the standard library and does not change the ledger or require Hermes. It is not automatically installed, started, or included in the fixed Hermes ZIP export.
-
 The [optional Temporal integration](hermes_temporal/README.md) adds durable, separately human-gated native Hermes turns, local dispatch receipts, and explicit unknown-outcome reconciliation. Its `hermes_temporal.cli hunt WORKFLOW_ID --input JSON` entrypoint builds a bounded, serial, six-profile supplied-evidence hunt from explicitly supplied inline synthetic evidence; it does not fetch locators or begin paid execution. Optional ontology/context selections and the strict handoff contract are documented in the guide; without an ontology, existing free-text behavior remains. The Temporal stage sequence is serial even though native Hermes `delegate_task` can support parallel-ready branch work; neither implies automatic approval. Every stage still requires human execute and review decisions. Unknown results require reconciliation and do not supply reviewed predecessor output. Temporal is only the outer durability layer: it does not prove model identity or enforce per-role child tools through `delegate_task`, authenticate approval, sanitize evidence, or make hunting autonomous. The integration is included as source in the portable ZIP; the SDK and server are separate opt-in installations. It does not move agent delegation into OMP or require LangGraph. The [native threat-hunt skill](hermes-skills/threat-hunt/SKILL.md) describes native collaboration guidance; authored source guidance does not itself update existing installed profiles. The constructor/API smoke used synthetic handoffs and no provider calls; it is not proof of live model collaboration. 
 
 The [Bot Mode compatibility matrix](desktop/BOT-MODE-COMPATIBILITY.md) covers every section of the official guide, native offline checks, known guide/source discrepancies, and remaining Desktop/guest/provider acceptance checks. Source support does not mean a working live deployment.
@@ -222,7 +220,7 @@ The original [Desktop SDK companion](desktop/REVIEW.md) adds a native workspace 
 
 Normal `setup_hermes.py install` includes the companion and lab. The narrower `install_desktop.py check` / `install_desktop.py install --home <approved-home>` remain available for an explicit companion-only installation. Hash-owned packages can be updated; unknown destinations, user-modified managed files and aliases are refused. Review [provenance, licensing, permissions and prerequisites](desktop/REVIEW.md). No specialist SOUL edits, profile resets, cloning, provider setup or automatic task advancement occur.
 
-[Timestamped video inventory](desktop/VIDEO-INVENTORY.md) covers the complete returned public transcript, not complete audiovisual coverage. [Verification and unresolved blockers](desktop/VERIFICATION.md) distinguish real native UI mounting, source-level group-routing fixes and tests from **unverified live runtime repair and the still-undemonstrated two-bot exchange**. The bundled runtime patch is review-only against its documented Hermes source base; the installer never applies it. Existing Astra/Luna/Terra requirements remain unchanged, with no fallback/substitution. Preserve the known completion-role-label inconsistency and the limits of child-reported identity.
+[Timestamped video inventory](desktop/VIDEO-INVENTORY.md) covers the complete returned public transcript, not complete audiovisual coverage. [Verification and unresolved blockers](desktop/VERIFICATION.md) distinguish real native UI mounting, source-level group-routing fixes and tests from **unverified live runtime repair and the still-undemonstrated two-bot exchange**. The runtime patch that earlier releases bundled has been removed; nothing in this folder applies native source changes. Existing Astra/Luna/Terra requirements remain unchanged, with no fallback/substitution. Preserve the known completion-role-label inconsistency and the limits of child-reported identity.
 
 ## Setup and safety
 
@@ -518,105 +516,3 @@ From this folder, use `py -3 -m unittest discover` on Windows or `python3 -m uni
 The role and handoff design draws on research about Hermes bots and agent workflows; the research collection is separate and is not required to copy or run this folder. This package deliberately uses manual coordination and does not establish that multi-agent setups improve quality, cost, privacy, or security.
 
 Hermes support depends on the destination's OS and architecture; consult the [official platform matrix](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support). The Python 3.9+ standard-library ledger is designed for Windows, macOS and Linux, but only Windows has been exercised in this project's local development context; macOS/Linux behavior is not verified here. Hermes, Python, model providers, and their operating-system permissions are installed and configured separately on each machine. This portability intent is not evidence of a particular Hermes/provider version's compatibility or of a test run for these changes.
-
-## Optional Envision job bridge
-
-`envision_bridge.py` is an explicitly operated, single-operator bridge: a local client submits bounded jobs to an HTTPS queue; an authorized worker polls that queue and calls its configured Foundry deployment. It is **not** a VPN, general HTTP proxy, remote shell, or multi-tenant service. The ledger and Hermes integrations are unchanged.
-
-### Approval and persistence prerequisites
-
-Before deployment, establish the approved relay hostname, certificates, hosting environment, identities, and permitted prompt/result data flow. Public HTTPS connectivity alone does not establish any of these approvals. Do not send CUI/NSS, private GitLab material, credentials, or other unapproved data through the relay.
-
-The worker needs an approved runtime with network access to both Foundry and the relay. A Windows App connection does not give local programs EITaaS routing. A worker started in an interactive developer desktop may survive a lock or disconnect, but can terminate on session logoff, administrative timeout, or VM shutdown. Do not disable CAC-removal or session policies or simulate activity to keep it running. Unattended operation needs an approved persistent service/job host and service identity independent of the personal desktop session.
-
-This component does not install services, register schedules, open firewall rules, provision a relay, or renew OAuth credentials. Its default worker credential is a Foundry bearer access token provisioned privately through the environment. For production, use an approved OAuth application/service identity with externally managed token renewal; personal development tokens are not production credentials. Restart a worker through approved operations when its environment credential changes, after checking in-flight job state.
-
-### Source and private configuration
-
-Python 3.9+ and the standard library are sufficient. The fixed portable ZIP allowlist includes the shared `envision_protocol.py` and its tests because the framework-managed benchmark reuses its bounded transport; it does not include the Envision bridge or queue applications. The ZIP also includes the benchmark sources/tests, documentation, offline example manifests, nine explicitly authored synthetic cases with their invented evaluator keys and their deterministic generator, and the OTRF importer with its field allowlist and an invented sample. It excludes actual experiment configurations, runtime databases/receipts, raw exports, downloaded datasets, import salts, real evaluator truth, credentials, and the separate range-kit scripts/binaries. To deploy this optional Envision application, transfer the reviewed `envision_bridge.py`, `envision_queue.py`, `envision_protocol.py`, and `langchain_adapter.py` together to an approved destination; transfer the three `test_envision_*.py` files too if testing there. Never transfer runtime databases or this workstation's `.env`.
-
-Provision these variables privately; there are no credential CLI arguments or `.env`/token-file readers:
-
-| Variable | Processes that need it |
-|---|---|
-| `ENVISION_BRIDGE_CLIENT_TOKEN` | Relay and local client |
-| `ENVISION_BRIDGE_WORKER_TOKEN` | Relay and worker |
-| `ENVISION_API_KEY` | Worker only; never supplied to the relay or local client |
-
-The two relay tokens must be distinct, 32–8192 visible ASCII characters without whitespace; use strong independently generated secrets. They define one operator boundary: all clients with the client token can inspect that operator's jobs. They are not per-user authorization or data-loss prevention. Do not put secrets in commands, task prompts, artifacts, transcripts, or logs.
-
-The SQLite queue stores submitted prompts and permitted results in plaintext until explicitly deleted. Restrict directory access and backups. Use a separate database, not the ledger/checkpointer DB. Existing non-bridge databases are refused. The default capacity is 1,000 retained jobs (maximum configurable capacity 10,000); completed jobs still occupy capacity until `forget`. `envision-bridge-runtime/` is ignored by Git, but ignore rules do not protect manual copying or already tracked files.
-
-### Explicit launch and use
-
-The following commands are deployment templates, not a provisioned service. Replace the example relay hostname, certificate paths, and full model RID with approved values. Do not use the model RID merely because it appeared in a public example; both relay and worker require their own explicit allowlist.
-
-**Relay host, after approval and private environment provisioning:**
-
-```powershell
-New-Item -ItemType Directory -Force .\envision-bridge-runtime | Out-Null
-py -3 .\envision_bridge.py serve `
-  --database .\envision-bridge-runtime\queue.sqlite3 `
-  --host 0.0.0.0 --port 8765 `
-  --tls-cert C:\approved-certs\relay-chain.pem `
-  --tls-key C:\approved-certs\relay-key.pem `
-  --model ri.language-model-service..language-model.approved-model
-```
-
-The listener emits a JSON readiness record with the actual port and TLS status. It requires TLS 1.2+; expose it only behind the organization's approved access controls and operational protections. This small standard-library listener is not a replacement for a managed internet-facing gateway. Without TLS, the CLI permits only an explicitly requested literal-loopback bind via `--allow-loopback-http`. That flag is for disposable fixtures, not a workaround for certificates or a way to use nonlocal HTTP. Clients verify certificates and never follow redirects.
-
-**Worker in the approved Foundry-accessible runtime:**
-
-```powershell
-py -3 .\envision_bridge.py worker `
-  --queue-url https://relay.approved.example:8765 `
-  --foundry-url https://envision.af.mil `
-  --model ri.language-model-service..language-model.approved-model
-```
-
-This explicitly started process polls until interrupted. Add `--once` to claim at most one job and exit; an empty queue produces a successful exit without calling Foundry. Worker output contains only job IDs/states and fixed error codes, not model text, tokens, headers, or upstream error bodies. An authentication, permission, or connection failure stops the worker instead of repeatedly using bad configuration.
-
-**Local client:**
-
-```powershell
-$queue = 'https://relay.approved.example:8765'
-$job = py -3 .\envision_bridge.py submit --queue-url $queue `
-  --operation auth-check | ConvertFrom-Json
-py -3 .\envision_bridge.py result --queue-url $queue $job.id
-```
-
-`auth-check` calls only `GET /api/v2/ontologies` and returns a status, never ontology contents. A successful job proves access to that endpoint, not model-inference permission. A `401` records `authentication_failed`; `403` records `permission_denied` and is not proof of an invalid token.
-
-For chat, send a reviewed UTF-8 prompt on stdin:
-
-```powershell
-$job = 'Reply with a short greeting.' | py -3 .\envision_bridge.py submit `
-  --queue-url $queue --operation chat `
-  --model ri.language-model-service..language-model.approved-model `
-  --max-output-tokens 256 | ConvertFrom-Json
-py -3 .\envision_bridge.py result --queue-url $queue $job.id
-```
-
-`submit` returns a queued job ID, not a model result. Invoke `result` again when the worker has processed it. Chat is limited to one user message, a 64 KiB UTF-8 prompt, 1–4,096 output tokens, and a 256 KiB text result. The worker calls only the documented OpenAI-compatible chat-completions path with streaming disabled. Tools, arbitrary messages/roles, file access, URLs, headers, shell commands, and user-supplied provider options are not job fields. Tool calls, refusal, truncation, malformed responses, and empty/nontext outputs are not successful handoffs.
-
-After inspecting an approved result, explicitly remove the terminal job:
-
-```powershell
-py -3 .\envision_bridge.py forget --queue-url $queue $job.id
-```
-
-`forget` refuses queued/running jobs. On macOS/Linux use `python3` and the shell's corresponding stdin/variable syntax; no platform-specific package is required.
-
-### Failure and recovery contract
-
-Claims are atomic and durable across relay restart. A job progresses from `queued` to `running`, then `succeeded`, `failed`, or `unknown`. The default claim lease is 120 seconds (`--lease-seconds`, range 10–3,600). The worker caps its upstream timeout to the remaining lease minus a reporting margin. Keep relay and worker clocks synchronized.
-
-Expired running jobs become `unknown` on the next queue operation; they are **never automatically requeued**. Transport failure, malformed output, or lost completion delivery can follow a billable upstream execution. Inspect `unknown` jobs before any explicit resubmission. A client that loses its submit response must likewise not assume no job was created. There is no inference retry, lease renewal, replay, or fallback provider.
-
-### Exercised verification and limits
-
-Windows verification ran `py -3 -m unittest discover`: 93 tests ran, with 86 passing and seven optional-dependency tests skipped. New regression coverage includes concurrent claims, restart persistence, lease expiry, wrong-role rejection, request limits, model allowlists, unsafe output rejection, and refusal to forward credentials through redirects.
-
-A throwaway smoke used real relay/client/worker CLI subprocesses, a disposable SQLite database, synthetic credentials, and a temporary trusted test CA without changing system trust. Verified TLS worked; an untrusted relay certificate failed. A synthetic loopback upstream exercised status-only authentication checks, a text result, a denied request, rejected tool output, restart persistence, role/model restrictions, and explicit deletion. Exactly four upstream fixture requests occurred, without automatic retries. Its servers, certificate files, database, and harness were removed afterward. The bridge itself has no cryptography-package dependency.
-
-These checks do **not** establish real token validity, live model inference, cross-boundary deployment, CAC-removal survival, an approved queue endpoint, or macOS/Linux runtime verification.

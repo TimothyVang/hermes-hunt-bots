@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
+import hmac
 import json
 import re
+import secrets
 import sys
 import threading
 import time
@@ -1309,7 +1311,7 @@ def content_security_policy(port: int) -> str:
             f"connect-src http://127.0.0.1:{port}; base-uri 'none'; form-action 'none'")
 
 
-def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
+def _handler(board: Board, token: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def version_string(self) -> str:
             return "HuntBoard"
@@ -1325,23 +1327,39 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             port = self.server.server_address[1]
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if self.headers.get("Host") != f"127.0.0.1:{port}":
                 # Refuse other Host names so a rebinding page cannot read the board.
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
             elif path == "/":
                 csp = content_security_policy(port)
-                self._send(200, PAGE.replace("__CSP__", csp).encode("utf-8"), "text/html; charset=utf-8",
-                           {"Content-Security-Policy": csp})
+                page = PAGE.replace("__CSP__", csp).replace("__BOARD_TOKEN__", token)
+                self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
             elif path == "/state.json":
+                origin = self.headers.get("Origin")
+                cross = origin is not None or self.headers.get("Sec-Fetch-Site", "none") not in ("same-origin", "none")
+                if cross and not self._has_token(query):
+                    # A read from another origin, the desktop's opaque sandbox included, needs this run's page token.
+                    # Electron sends no Origin from a file:// page, so Sec-Fetch-Site is checked as well.
+                    self._send(403, b"forbidden\n", "text/plain; charset=utf-8", {"Vary": "Origin"})
+                    return
                 headers = {"Vary": "Origin"}
-                if self.headers.get("Origin") == "null":
+                if origin == "null":
                     headers["Access-Control-Allow-Origin"] = "null"
                 self._send(200, board.state_bytes(), "application/json; charset=utf-8", headers)
             elif live_path := _LIVE_PATH.fullmatch(path):
-                self._live(*live_path.groups())
+                # Without the token, only a plain <img> load: its pixels stay unreadable to another origin's script.
+                if self._has_token(query) or (self.headers.get("Sec-Fetch-Dest") == "image"
+                                              and self.headers.get("Origin") is None):
+                    self._live(*live_path.groups())
+                else:
+                    self._send(403, b"forbidden\n", "text/plain; charset=utf-8")
             else:
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+        def _has_token(self, query: str) -> bool:
+            values = parse.parse_qs(query, keep_blank_values=True).get("token", [])
+            return len(values) == 1 and hmac.compare_digest(values[0].encode("utf-8"), token.encode("utf-8"))
 
         def _live(self, profile: str, kind: str) -> None:
             live = board.live
@@ -1410,9 +1428,13 @@ def _handler(board: Board) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(board: Board, port: int) -> ThreadingHTTPServer:
-    """Bind the read-only board to loopback only; ``port=0`` picks a free port."""
-    server = ThreadingHTTPServer((BIND_HOST, port), _handler(board))
+    """Bind the read-only board to loopback only; ``port=0`` picks a free port.
+
+    Each server draws a new page token (``server.token``) that ``GET /`` writes into the page; see ``do_GET``."""
+    token = secrets.token_urlsafe(32)
+    server = ThreadingHTTPServer((BIND_HOST, port), _handler(board, token))
     server.daemon_threads = True
+    server.token = token
     return server
 
 
