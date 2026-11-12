@@ -29,7 +29,7 @@ Every path derives from this clone's root and its git-ignored `runtime/` folder.
 | `toolcam/assemble.py` | Turns tool-cam frames into a 1080p video. Each tool call plays at real speed for 2.5 s; time when the bots are only thinking plays 20x faster under a visible "20x speed" badge. Frames are never reordered or invented. `--end-card` appends a still for `--end-seconds`. | ffmpeg |
 | `toolcam/card.mjs` | Renders a 1920x1080 HTML card to PNG for `--end-card`. | Bun, Edge or Chromium |
 
-Every Python tool answers `--help` without the lab running. When a tool needs Hermes and `LAB_HERMES_EXE` is unset, it stops with a message naming the variable.
+Every Python tool answers `--help` without the lab running. When a tool needs Hermes and `LAB_HERMES_EXE` is unset, it stops with a message naming the variable. It also stops, naming the file, while the lab home holds `.hermes-update-in-progress` (a Hermes update is running there, or a stale marker says which process left it).
 
 The film loop's tests use no lab, browser, Temporal or ffmpeg. Run them from the repository root with `python -m unittest discover -s operator -p "test_*.py"`.
 

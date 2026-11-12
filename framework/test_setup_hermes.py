@@ -2,6 +2,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -123,6 +124,27 @@ class SetupHermesTests(unittest.TestCase):
                 self.assertNotEqual(result, 0)
                 self.assertEqual(factory.call_count, 1)
 
+    def test_install_runs_lab_hermes_exe_and_refuses_before_any_native_call_during_an_update(self):
+        # Review of #51: setup_hermes.install, the real entry to lab.install, still ran the `hermes` on PATH.
+        folders = {}
+        for name, stem in (('path-bin', 'hermes'), ('lab-bin', 'lab-hermes')):
+            folder = Path(self.temp.name) / name
+            folder.mkdir()
+            cli = folder / (stem + ('.exe' if os.name == 'nt' else ''))
+            cli.write_bytes(b'')
+            cli.chmod(0o755)
+            folders[name] = cli
+        factory = Mock(return_value=FakeProcess(returncode=2))
+        with patch.dict(os.environ, {'PATH': str(folders['path-bin'].parent), 'LAB_HERMES_EXE': str(folders['lab-bin'])}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            setup_hermes.install(['framework-coordinator'], None, self.root, factory, self.home)
+        self.assertEqual(Path(factory.call_args[0][0][0]).resolve(), folders['lab-bin'].resolve())
+        factory.reset_mock()
+        (self.home / '.hermes-update-in-progress').write_text('')
+        with self.assertRaisesRegex(ValueError, 'update is in progress'):
+            setup_hermes.install(['framework-coordinator'], sys.executable, self.root, factory, self.home)
+        factory.assert_not_called()
+
     def test_missing_hermes_is_actionable_and_does_not_invoke_installer(self):
         factory = Mock()
         with self.assertRaises(setup_hermes.SetupError) as error:
@@ -130,6 +152,14 @@ class SetupHermesTests(unittest.TestCase):
         self.assertIn(setup_hermes.INSTALL_URL, str(error.exception))
         self.assertIn(setup_hermes.PLATFORM_URL, str(error.exception))
         factory.assert_not_called()
+
+    def test_check_names_a_lab_hermes_exe_that_does_not_exist(self):
+        missing = str(self.root / 'gone' / 'hermes.exe')
+        output = io.StringIO()
+        with patch.dict(os.environ, {'LAB_HERMES_EXE': missing}), redirect_stdout(output):
+            self.assertEqual(setup_hermes.check(None, self.root), 1)
+        self.assertIn(f'(LAB_HERMES_EXE: {missing})', output.getvalue())
+        self.assertIn(setup_hermes.INSTALL_URL, output.getvalue())
 
     def test_linked_distribution_file_is_rejected_before_install(self):
         external = self.root / 'external.txt'

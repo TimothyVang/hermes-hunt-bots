@@ -14,6 +14,8 @@ import install_desktop
 
 ROOT = Path(__file__).absolute().parent
 PROFILE = 'framework-network-analyst'
+# Written into a Hermes home by the self-updating launcher while it updates and restarts that home's gateway.
+UPDATE_MARKER = '.hermes-update-in-progress'
 # Every authored profile receives the read-only hunt tools; only PROFILE owns the VM.
 AUTHORED_PROFILES = (
     'framework-coordinator', 'framework-researcher', 'framework-builder',
@@ -159,6 +161,79 @@ def reload_gateway(profile, python, runner):
     return 'reloaded'
 
 
+def hermes_executable(explicit=None):
+    """The Hermes CLI to run: --hermes, else LAB_HERMES_EXE, else `hermes` on PATH; never a fallback.
+
+    The `hermes` on PATH may be a self-updating launcher, which drains the lab's gateway mid-hunt;
+    LAB_HERMES_EXE names the lab install's own executable."""
+    configured = os.environ.get('LAB_HERMES_EXE', '').strip()
+    name = str(explicit) if explicit else configured or 'hermes'
+    executable = shutil.which(name)
+    if not executable:
+        source = '--hermes' if explicit else 'LAB_HERMES_EXE' if configured else 'PATH'
+        raise ValueError(f'Hermes CLI not found ({source}: {name}); install the framework Hermes prerequisite')
+    return executable
+
+
+def refuse_during_update(home):
+    """Refuse while a Hermes update holds this home; running the CLI then can stop a hunt's gateway.
+
+    The marker names its owner's pid on line 1 and may name a delegate (`delegate:<pid> ct:<n>`) on a
+    later line (Hermes `hermes_cli/update_lock.py`); the update is live while either runs. A marker
+    whose processes are all gone is named stale, with how to clear it; it is never deleted here."""
+    marker = Path(home) / UPDATE_MARKER
+    if not (marker.exists() or marker.is_symlink()):
+        return
+    pids = _marker_pids(marker)
+    if pids and not any(_pid_alive(pid) for pid in pids):
+        named = f'process {pids[0]}, which is' if len(pids) == 1 else f'processes {pids[0]} and {pids[1]}, which are'
+        raise ValueError(f'A stale Hermes update marker blocks this home: {marker} names {named} not running. '
+                         'If no Hermes update is running, delete that file, then retry.')
+    raise ValueError(f'A Hermes update is in progress for this home ({marker} exists); retry after it finishes')
+
+
+_DELEGATE_LINE = re.compile(r'delegate:([0-9]+) ct:[0-9]+(?:\.[0-9]+)?')
+
+
+def _marker_pids(marker):
+    """The owner pid (line 1) and any delegate pid; empty when unreadable or still being written."""
+    try:
+        with open(marker, 'rb') as handle:
+            lines = handle.read(4096).decode('ascii', 'replace').splitlines()
+    except OSError:
+        return ()
+    owner = lines[0].strip() if lines else ''
+    if not (owner.isdigit() and 0 < int(owner) < 2 ** 32):
+        return ()
+    delegates = [int(match[1]) for match in map(_DELEGATE_LINE.fullmatch, lines[3:]) if match]
+    return (int(owner), *[pid for pid in delegates if 0 < pid < 2 ** 32][:1])
+
+
+def _pid_alive(pid):
+    if os.name != 'nt':
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, OverflowError):
+            return False
+        except PermissionError:
+            return True
+        return True
+    import ctypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5  # access denied: it exists
+    try:
+        code = ctypes.c_ulong()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     """Stage both native halves and the existing companion; no VM/download action.
 
@@ -166,15 +241,14 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     profile so each can load its read-only tools; VM lifecycle stays analyst-only.
     """
     root = resolve_home(home)
+    refuse_during_update(root)
     profiles = {PROFILE: registered_profile(root, PROFILE)}
     for name in AUTHORED_PROFILES:
         if name != PROFILE:
             profile = registered_profile(root, name, required=False)
             if profile is not None:
                 profiles[name] = profile
-    executable = shutil.which(str(hermes) if hermes else 'hermes')
-    if not executable:
-        raise ValueError('Hermes CLI not found; install the framework Hermes prerequisite')
+    executable = hermes_executable(hermes)
     python = hermes_python(executable)
     files = bundle_source(kit_root)
     companion_root = Path(kit_root).absolute() / 'desktop' / install_desktop.PLUGIN
@@ -206,10 +280,9 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
 def command(args):
     """Run one explicit native command before ledger access; never fall back."""
     home = resolve_home(args.home)
+    refuse_during_update(home)
     registered_profile(home, PROFILE)
-    executable = shutil.which(str(args.hermes) if args.hermes else 'hermes')
-    if not executable:
-        raise ValueError('Hermes CLI not found; install the framework Hermes prerequisite')
+    executable = hermes_executable(args.hermes)
     if args.lab_operation == 'check':
         # Source and exact registered paths only; no enable, download, or VM RPC.
         bundle_source()
