@@ -1,6 +1,6 @@
 """hermes-hunt-bots local pre-PR gate (no hosted CI): run before opening or updating a PR.
 
-    python scripts/hunt_bots_check.py                 policy gate + framework and operator tests + gitleaks (if installed)
+    python scripts/hunt_bots_check.py                 policy gate + framework, operator and gate tests + gitleaks (if installed)
     python scripts/hunt_bots_check.py --policy        policy gate only (seconds)
     python scripts/hunt_bots_check.py --python EXE    run the tests with EXE (default: $HUNT_BOTS_PYTHON, else this Python)
     python scripts/hunt_bots_check.py --log FILE      also write every test's full output to FILE
@@ -27,7 +27,8 @@ PRIVATE_NAMES = {'.env', 'auth.json', 'credentials.json', 'cookies.json', 'state
 ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
 # Modules whose absence makes test suites skip themselves; the gate refuses to run without them.
 REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
-SUITES = (('framework tests', 'framework'), ('operator tests', 'operator'))
+SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
+          ('gate tests', 'scripts', 'test_hunt_bots_check.py'))
 FAILED_TEST = re.compile(r'^(?:FAIL|ERROR): .+$', re.MULTILINE)
 MISSING_PROBE = (
     'import importlib, sys\n'
@@ -74,9 +75,15 @@ def missing_modules(python):
     return probe.stdout.split() if probe.returncode == 0 else None
 
 
-def run_suite(python, folder):
-    return subprocess.run([python, '-B', '-m', 'unittest', 'discover', '-v'], cwd=ROOT / folder,
-                          capture_output=True, text=True, errors='replace')
+def run_suite(python, folder, pattern):
+    return subprocess.run([python, '-B', '-m', 'unittest', 'discover', '-v', '-p', pattern], cwd=ROOT / folder,
+                          capture_output=True, encoding='utf-8', errors='replace',
+                          env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+
+
+def resolve_python(name):
+    found = shutil.which(name) or name
+    return os.path.abspath(found) if os.path.dirname(found) else found
 
 
 def main(argv=None):
@@ -92,8 +99,7 @@ def main(argv=None):
     results = [f'policy: {count} tracked files, {len(problems)} problem(s)']
     failed = bool(problems)
     if not args.policy:
-        python = os.path.abspath(args.python) if os.path.dirname(args.python) else args.python
-        failed |= run_tests(python, args.log, results)
+        failed |= run_tests(resolve_python(args.python), args.log, results)
     print('hunt-bots-check: ' + '; '.join(results) + ('  -> FAIL' if failed else '  -> PASS'))
     return 1 if failed else 0
 
@@ -109,11 +115,11 @@ def run_tests(python, log_path, results):
         return True
     failed = False
     log = []
-    for label, folder in SUITES:
-        tests = run_suite(python, folder)
+    for label, folder, pattern in SUITES:
+        tests = run_suite(python, folder, pattern)
         tail = [line for line in tests.stderr.splitlines() if line.startswith(('Ran ', 'OK', 'FAILED'))]
         results.append(f'{label}: ' + (' '.join(tail[-2:]) or f'exit {tests.returncode}'))
-        log += [f'===== {label} ({folder}/): {python} -B -m unittest discover -v, exit {tests.returncode}',
+        log += [f'===== {label} ({folder}/): {python} -B -m unittest discover -v -p {pattern}, exit {tests.returncode}',
                 tests.stdout, tests.stderr]
         if tests.returncode:
             failed = True
