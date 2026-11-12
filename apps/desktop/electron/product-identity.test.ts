@@ -15,7 +15,7 @@ import type { AppInfo as BuilderAppInfo, Configuration, Metadata, Packager, Prot
 import { build, type BuildResult } from 'esbuild'
 import { afterEach, beforeEach, test, vi } from 'vitest'
 
-import type { applyDesktopIdentity, ProductIdentity } from './product-identity'
+import type { applyDesktopIdentity, defaultThemeSource, ProductIdentity } from './product-identity'
 
 type PackagingConfiguration = Omit<Configuration, 'extraMetadata' | 'mac' | 'msix' | 'protocols' | 'win'> & {
   extraMetadata: Metadata
@@ -125,6 +125,7 @@ test('nonstable identity preserves an explicit isolated userData directory', asy
   const isolated = path.join(root, 'isolated')
   let selected = ''
   let displayedName = ''
+
   try {
     assert.equal(runtime.applyDesktopIdentity({
       getPath: (): string => assert.fail('The default appData path must not be accessed'),
@@ -218,6 +219,126 @@ test('light and bundled retain distinct OS markers from the full client', async 
       assert.notEqual(other.msixAppIdWithOrg, full.msixAppIdWithOrg)
       assert.notEqual(other.channel, full.channel)
     }
+  }
+})
+
+test('hunt is a stable Hunt Command identity with its own userData and no release feed', async (): Promise<void> => {
+  const full: ProductIdentity = await identityForVariant(undefined)
+  assert.equal(full.hunt, undefined)
+  assert.equal(full.displayName, 'Hermes')
+  assert.equal(full.appNamePascal, 'Hermes')
+  assert.equal(full.channel, 'latest')
+
+  for (const variant of ['bundled', 'light', 'store']) {
+    assert.equal((await identityForVariant(variant)).hunt, undefined, `variant ${variant} must not be hunt`)
+  }
+
+  const hunt: ProductIdentity = await identityForVariant('hunt')
+  assert.equal(hunt.hunt, true)
+  assert.equal(hunt.displayName, 'Hunt Command')
+  assert.equal(hunt.appId, 'io.github.timothyvang.hunt-command')
+  assert.equal(hunt.appNamePascal, 'HuntCommand')
+  assert.equal(hunt.artifactNamePascal, 'HuntCommand')
+  assert.equal(hunt.windowsExecutableName, 'Hunt Command')
+  assert.equal(hunt.channel, null)
+  assert.equal(hunt.sourceRepo, 'TimothyVang/hermes-hunt-bots')
+  assert.equal(full.sourceRepo, undefined)
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
+  assert.equal((await identityForVariant('hunt')).channel, null)
+  delete process.env.HERMES_PAYLOAD_TAG
+  assert.deepEqual(await identityForVariant('hunt'), hunt)
+
+  for (const field of ['displayName', 'appId', 'appNamePascal', 'msixAppIdWithOrg'] as const) {
+    assert.notEqual(hunt[field], full[field])
+  }
+
+  const runtime: {
+    applyDesktopIdentity: typeof applyDesktopIdentity
+    defaultThemeSource: typeof defaultThemeSource
+  } = await import('./product-identity')
+
+  // Before the renderer reports a mode: stock follows the OS, Hunt Command's design is dark.
+  assert.equal(runtime.defaultThemeSource(full), 'system')
+  assert.equal(runtime.defaultThemeSource(hunt), 'dark')
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-hunt-'))
+  const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Hermes') }
+  let name: string = 'Hermes'
+
+  const app: Parameters<typeof applyDesktopIdentity>[0] = {
+    getPath: (key: string): string => paths[key],
+    setPath: (key: string, value: string): void => {
+      paths[key] = value
+    },
+    setName: (value: string): void => {
+      name = value
+    }
+  }
+
+  try {
+    assert.equal(runtime.applyDesktopIdentity(app, full), null)
+    assert.equal(paths.userData, path.join(root, 'Hermes'))
+    assert.equal(runtime.applyDesktopIdentity(app, hunt), 'Hunt Command')
+    assert.equal(paths.userData, path.join(root, 'HuntCommand'))
+    assert.equal(name, 'Hunt Command')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+
+  delete require.cache[require.resolve('../electron-builder.config.cjs')]
+  const config: PackagingConfiguration = require('../electron-builder.config.cjs')
+  // Electron's boot-time userData lookup must already use the Hunt Command name.
+  assert.equal(config.extraMetadata.productName, 'Hunt Command')
+  assert.equal(config.extraMetadata.name, 'HuntCommand')
+  assert.equal(config.publish, null)
+  assert.equal(config.mac.publish, null)
+})
+
+test('Hunt Command ships under its own publisher; every Hermes variant keeps Nous Research', async (): Promise<void> => {
+  const load = (): PackagingConfiguration & { copyright?: string } => {
+    delete require.cache[require.resolve('../electron-builder.config.cjs')]
+
+    return require('../electron-builder.config.cjs')
+  }
+
+  const hunt: ProductIdentity = await identityForVariant('hunt')
+  assert.equal(hunt.msixAppIdWithOrg, 'TimothyVang.HuntCommand')
+  assert.equal(hunt.publisher, 'TimothyVang')
+  assert.match(hunt.copyright ?? '', /^Copyright © 2026 TimothyVang\. Based on Hermes, Copyright \(c\) 2025 Nous Research \(MIT\)\.$/)
+  const huntConfig = load()
+  // electron-builder writes the exe CompanyName from the package author and LegalCopyright from `copyright`.
+  assert.deepEqual(huntConfig.extraMetadata.author, { name: 'TimothyVang' })
+  assert.equal(huntConfig.extraMetadata.desktopName, 'io.github.timothyvang.hunt-command')
+  assert.equal(huntConfig.copyright, hunt.copyright)
+  // The app carries the Hermes MIT notice and states where its AGPL source is.
+  const shipped = (huntConfig.extraResources as { from: string; to: string }[]).map(r => r.to)
+  assert.ok(shipped.includes('licenses/hunt-command/LICENSE.Hermes-MIT'))
+  assert.ok(shipped.includes('licenses/hunt-command/SOURCE.txt'))
+  assert.equal(huntConfig.msix.identityName, 'TimothyVang.HuntCommand')
+  assert.equal(huntConfig.msix.publisher, 'CN=TimothyVang')
+  assert.equal(huntConfig.msix.publisherDisplayName, 'TimothyVang')
+
+  const before = process.env.HERMES_BUILD_COMMIT
+
+  try {
+    process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
+    const commit: ProductIdentity = await identityForVariant('hunt')
+    assert.equal(commit.appId, 'io.github.timothyvang.hunt-command-abcdef1')
+    assert.equal(commit.msixAppIdWithOrg, 'TimothyVang.HuntCommandCommitabcdef1')
+  } finally {
+    if (before === undefined) {delete process.env.HERMES_BUILD_COMMIT}
+    else {process.env.HERMES_BUILD_COMMIT = before}
+  }
+
+  for (const variant of [undefined, 'light', 'bundled', 'store']) {
+    const identity: ProductIdentity = await identityForVariant(variant)
+    assert.match(identity.appId, /^com\.nousresearch\./)
+    assert.match(identity.msixAppIdWithOrg, /^NousResearch\./)
+    assert.equal(identity.publisher, undefined)
+    assert.equal(identity.copyright, undefined)
+    const config = load()
+    assert.equal('copyright' in config, false)
+    assert.equal('author' in config.extraMetadata, false)
+    assert.match(String(config.msix.publisherDisplayName), /^Nous Research/)
   }
 })
 

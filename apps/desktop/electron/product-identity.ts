@@ -25,7 +25,8 @@ export const PRODUCT_IDENTITY: Readonly<ProductIdentity> =
 
 /** Pin before the first userData lookup and single-instance lock. Electron's
  * later display-name changes must not redirect an installed build's state.
- * Stable keeps its historical userData and runtime naming behavior.
+ * Stable keeps its historical userData and runtime naming behavior; the Hunt
+ * Command build always owns its own (never stock Hermes' storage or lock).
  */
 export function applyDesktopIdentity(
   app: {
@@ -36,7 +37,7 @@ export function applyDesktopIdentity(
   identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY,
   env: NodeJS.ProcessEnv = process.env
 ): string | null {
-  if (!identity.token && identity.appNamePascal === identity.artifactNamePascal) {
+  if (!identity.token && !identity.hunt && identity.appNamePascal === identity.artifactNamePascal) {
     return null
   }
 
@@ -47,4 +48,10 @@ export function applyDesktopIdentity(
   app.setName(identity.displayName)
 
   return identity.displayName
+}
+
+/** The native appearance before the renderer reports one: the OS, except the
+ * Hunt Command build, whose design is dark (src/themes/context.tsx agrees). */
+export function defaultThemeSource(identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY): 'dark' | 'system' {
+  return identity.hunt ? 'dark' : 'system'
 }

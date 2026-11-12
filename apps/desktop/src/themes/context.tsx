@@ -20,6 +20,7 @@ import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
+import { IS_HUNT_VARIANT } from '@/variant'
 
 import { $accentOverride } from './accent-override'
 import {
@@ -69,8 +70,10 @@ const normalizeSkin = (name: string | null): string =>
  * setting — and with per-appearance translucency it also handed them light's
  * much heavier tint, tuned for a bright desktop they don't have.
  */
+// The Hunt Command build's design is dark (design/method-v2/canvas), so a fresh
+// profile there starts dark instead of following the OS; an explicit pick still wins.
 const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+  value === 'light' || value === 'dark' || value === 'system' ? value : IS_HUNT_VARIANT ? 'dark' : 'system'
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
@@ -129,12 +132,21 @@ export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
 const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : (localDisplaySkinProfile ?? readBootProfileKey())
 
+// A profile with no Desktop pick starts here. The Hunt Command build opens on its
+// bundled plugin's theme; normalizeSkin still paints DEFAULT_SKIN_NAME while that
+// theme is unregistered (plugin turned off). There the stock `display.skin:
+// default` (a retired name) is no pick either.
+const INITIAL_SKIN_NAME = IS_HUNT_VARIANT ? 'hunt-command' : DEFAULT_SKIN_NAME
+
+const localBootSkin =
+  IS_HUNT_VARIANT && localDisplaySkinName && RETIRED_SKINS.has(localDisplaySkinName) ? null : localDisplaySkinName
+
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend
 // skin the gateway hasn't seeded on this launch) isn't flattened to the default
 // for the rest of the session — it paints as soon as the registry can resolve it.
 const storedSkin = (profile: string): string =>
   skinPref.stored(profile) ??
-  (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
+  (profile === BOOT_PROFILE_KEY ? (localBootSkin ?? INITIAL_SKIN_NAME) : INITIAL_SKIN_NAME)
 
 /** The live profile's committed theme: what the ThemeProvider paints without a preview. */
 export const committedTheme = (): DesktopTheme =>
@@ -459,13 +471,25 @@ const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
-if (typeof window !== 'undefined') {
+const bootPaint = () => {
   const profile = BOOT_PROFILE_KEY
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
   const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
+}
+
+if (typeof window !== 'undefined') {
+  // The Hunt Command build's theme registers with its bundled plugin later in
+  // this same synchronous module graph (discoverBundledPlugins). Painting now
+  // would flash the nous fallback first, so paint once the graph has evaluated;
+  // normalizeSkin still falls back to nous when the plugin is off.
+  if (IS_HUNT_VARIANT && !resolveTheme(storedSkin(BOOT_PROFILE_KEY))) {
+    queueMicrotask(bootPaint)
+  } else {
+    bootPaint()
+  }
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────

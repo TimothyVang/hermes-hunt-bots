@@ -185,7 +185,7 @@ def context_for(state):
                  'halts': o['halts'], 'score_breakdown': o['result']['rounds'], 'tool_calls_by_bot': state['last_calls'].get(k)}
              for k, o in last['lanes'].items()}
     return {'goal': 'find every attack step, decoy, benign pattern and coverage gap with full event.id citations; never '
-                    'blame a decoy; complete all 9 stages; and show the hunt on screen: the Threat Hunter runs its key '
+                    'blame a decoy; complete every step; and show the hunt on screen: the Threat Hunter runs its key '
                     'Elastic searches in Kibana Discover and the Network Analyst its Arkime searches in Arkime',
             'best_so_far': {'loop': best['loop'], 'found_of_18_mean': best['found'], 'driving_coverage_mean': best['coverage'],
                             'lanes': lane_numbers(best), 'brief': best['brief'], 'stage_guidance': best['guidance'],

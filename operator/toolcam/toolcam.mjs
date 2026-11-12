@@ -8,6 +8,7 @@
 import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { pipeline as progress, endCard } from "./progress.mjs";
 
 const args = process.argv.slice(2);
 if (args.length !== 7 || args.includes("--help")) {
@@ -126,18 +127,17 @@ const h = await (await fetch(`${LAB}/health`, { headers: { "X-Hermes-Profile": "
 await card("Six AI bots hunt an intrusion", `${Number(h.event_count).toLocaleString()} events · ${Number(h.network_session_count).toLocaleString()} network sessions · ${Number(h.intel_count).toLocaleString()} intel indicators<br>Each bot drives its own tool: Elastic, Arkime, threat intel, detection tests`);
 log({ kind: "card", title: "opening" });
 let after = Number(AFTER), lastShown = 0, finishedAt = null, endedIso = null;
-let queue = [];
+let queue = [], steps = [];
 while (true) {
   try {
     const a = await (await fetch(`${LAB}/activity?after=${after}&limit=100`, { headers: { "X-Hermes-Profile": "hunt-board" } })).json();
     // The activity log is shared by every hunt: once this workflow has ended, later calls belong to the next one.
     for (const e of a.entries || []) { after = Math.max(after, e.seq); if (!endedIso || e.time <= endedIso) queue.push(e); }
     const s = await (await fetch(`http://127.0.0.1:${BOARD_PORT}/state.json`)).json();
-    const steps = s.steps || [], cur = steps.find(x => !["done", "pending"].includes(x.state));
-    const done = steps.filter(x => x.state === "done").length;
+    steps = s.steps || steps;
     const p = (s.run && s.run.parent) || {};
     const round = p.rounds ? `Round ${p.round_index}/${p.rounds} · ` : "";
-    const pipeline = round + (cur ? `Step ${steps.indexOf(cur) + 1}/9 · ${cur.role || cur.profile} · ${cur.state}` : `${done}/9 steps done`);
+    const pipeline = round + progress(steps);
     // While behind, the frame shows an older queued call, so say so instead of implying it is the current step.
     status = queue.length > 2 ? `Replaying queued calls (${queue.length} waiting) · pipeline now: ${pipeline}` : pipeline;
     await cdp("Runtime.evaluate", { expression: `(()=>{const x=document.getElementById('tc-status'); if(x) x.textContent=${JSON.stringify(status)}})()` });
@@ -156,6 +156,7 @@ while (true) {
   if (finishedAt && Date.now() - finishedAt > 3000) break;
   await sleep(400);
 }
-await card("Hunt complete", "All nine steps finished. Final report written by the Incident Response Lead.");
-log({ kind: "card", title: "complete" }); await sleep(6000);
+const closing = endCard(steps);
+await card(closing.title, esc(closing.sub));
+log({ kind: "card", title: closing.title }); await sleep(6000);
 running = false; await sleep(800); edge.kill(); log({ kind: "end", frames: frame }); process.exit(0);

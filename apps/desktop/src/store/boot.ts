@@ -3,6 +3,7 @@ import { atom, computed } from 'nanostores'
 import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { IS_HUNT_VARIANT, PRODUCT_NAME } from '@/variant'
 
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
@@ -11,7 +12,8 @@ export interface DesktopBootState extends DesktopBootProgress {
 const INITIAL_BOOT_STATE: DesktopBootState = {
   error: null,
   fakeMode: false,
-  message: translateNow('boot.steps.startingHermesDesktop'),
+  // The Hunt Command build names itself (its copy is English-only).
+  message: IS_HUNT_VARIANT ? `Starting ${PRODUCT_NAME}…` : translateNow('boot.steps.startingHermesDesktop'),
   phase: 'renderer.init',
   progress: 2,
   running: true,

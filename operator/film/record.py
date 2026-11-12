@@ -95,7 +95,8 @@ def steps_of(state):
     steps = state.get('steps') if isinstance(state, dict) else None
     if not isinstance(steps, list):
         return None
-    return [{k: s.get(k) for k in ('index', 'step_id', 'role', 'profile', 'state')} for s in steps if isinstance(s, dict)]
+    return [{k: s.get(k) for k in ('index', 'step_id', 'role', 'profile', 'state', 'wave', 'reason')}
+            for s in steps if isinstance(s, dict)]
 
 
 class StatePoller:

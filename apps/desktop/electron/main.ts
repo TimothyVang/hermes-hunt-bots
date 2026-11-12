@@ -448,7 +448,7 @@ import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfil
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { connectPrimaryRemote } from './primary-remote-startup'
-import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
+import { applyDesktopIdentity, defaultThemeSource, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -485,6 +485,7 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
+import { confirmQemuVmExit, registerQemuVmIpc } from './qemu-vm-ipc'
 import {
   createQuickEntryShortcut,
   createQuickEntrySubmitRelay,
@@ -583,7 +584,6 @@ import { registerStreamWorkClock } from './stream-work-clock'
 import { installSystemCaTrust } from './system-ca'
 import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
-import { confirmQemuVmExit, registerQemuVmIpc } from './qemu-vm-ipc'
 import { applyTitleBarOverlay, isHexColor, nativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
   applyWindowsBackdrop,
@@ -1399,6 +1399,10 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
+// Stock windows and tray keep 'Hermes'; the Hunt Command build shows its own name.
+const WINDOW_TITLE = PRODUCT_IDENTITY.hunt ? APP_NAME : 'Hermes'
+// The About panel's copyright: Nous Research, or the Hunt Command build's own (product-identity.cjs).
+const ABOUT_COPYRIGHT: string = PRODUCT_IDENTITY.copyright ?? 'Copyright © 2026 Nous Research'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -1448,10 +1452,10 @@ function readPersistedThemeSource() {
       return parsed.themeSource
     }
   } catch {
-    // Missing / malformed → follow the OS like a fresh install.
+    // Missing / malformed → a fresh install's appearance (the OS; dark for Hunt Command).
   }
 
-  return 'system'
+  return defaultThemeSource()
 }
 
 function writePersistedThemeSource(mode) {
@@ -1793,7 +1797,7 @@ if (IS_WINDOWS) {
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
   applicationVersion: nativeAboutVersion(appVersionInfo(INSTALL_STAMP, '', app.getVersion())),
-  copyright: 'Copyright © 2026 Nous Research'
+  copyright: ABOUT_COPYRIGHT
 })
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
@@ -12209,7 +12213,8 @@ const minimizeToTray = createMinimizeToTray({
   restoreMainWindow: () =>
     ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
   isQuittingForHandoff: () => isQuittingForHandoff,
-  log: rememberLog
+  log: rememberLog,
+  productName: WINDOW_TITLE
 })
 
 function focusWindow(win) {
@@ -12248,7 +12253,7 @@ function spawnSecondaryWindow({
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12353,7 +12358,7 @@ function spawnBrowserWindow(tabId) {
     height: BROWSER_WINDOW_HEIGHT,
     minWidth: BROWSER_WINDOW_MIN_WIDTH,
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12465,7 +12470,7 @@ function createInstanceWindow(
     ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -13550,7 +13555,7 @@ function createWindow() {
     ),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: WINDOW_TITLE,
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -17094,7 +17099,7 @@ function showAboutPanelFresh(): void {
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync ? `${display} — app build out of date, update the desktop app` : display,
-      copyright: 'Copyright © 2026 Nous Research'
+      copyright: ABOUT_COPYRIGHT
     })
     app.showAboutPanel()
   })
@@ -17460,7 +17465,10 @@ registerDesktopUninstallIpc({
   fallbackSummary: fallbackUninstallSummary,
   probeSummary: probeUninstallSummary,
   runUninstall: runDesktopUninstall,
-  removableAppPath: () => resolveRemovableAppPath(process.execPath, process.platform, process.env),
+  // Hunt Command runs from wherever its owner built it (e.g. win-unpacked): name that folder.
+  removableAppPath: () =>
+    resolveRemovableAppPath(process.execPath, process.platform, process.env) ??
+    (PRODUCT_IDENTITY.hunt ? path.dirname(process.execPath) : null),
   openAppsSettings: () => shell.openExternal('ms-settings:appsfeatures')
 })
 

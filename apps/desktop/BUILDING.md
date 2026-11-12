@@ -185,6 +185,48 @@ An explicit keychain path does not make Security.framework work under a scratch
 home. Dependency preparation and product compilation still use the isolated home.
 Hermes state and explicit dependency-cache paths remain build-owned during packaging.
 
+## Hunt Command variant
+
+`HERMES_DESKTOP_VARIANT=hunt` builds this fork's rebrand, **Hunt Command**. It is the
+stock full client (bootstrap payload) with these changes only:
+
+- Identity: name, app ID, executable and userData are Hunt Command's own
+  (`product-identity.cjs`), so its storage, plugin choices and single-instance
+  lock never mix with stock Hermes. It has no release feed (`channel: null`) and no
+  in-app updater (stamped `external`, like commit builds): the checkout hand-off would
+  rebuild stock Hermes. Settings say to update by pulling and rerunning `pack:hunt`,
+  and Uninstall says to delete the app folder.
+- Publisher: TimothyVang, not Nous Research. App ID `io.github.timothyvang.hunt-command`
+  (also the Windows AppUserModelID), MSIX identity `TimothyVang.HuntCommand`, exe
+  CompanyName, and a copyright line that keeps the Hermes MIT notice. Hermes variants
+  keep `com.nousresearch.*`; userData stays `<appData>/HuntCommand`.
+- Notices: the compiled framework/ plugins' license texts (AGPL-3.0, noVNC, Lucide)
+  ship in `resources/licenses/hunt-command/` (see `THIRD-PARTY-NOTICES.md`).
+- First-run install: Hunt Command and stock Hermes share one checkout,
+  `HERMES_HOME/hermes-agent`, and whichever app installs it first decides its
+  source. A fresh install by Hunt Command fetches `install.ps1`/`install.sh` from
+  this fork (`TimothyVang/hermes-hunt-bots`) and clones the fork via
+  `HERMES_REPO_URL`; stock Hermes then runs that checkout too, and `hermes update`
+  follows the fork. An existing checkout keeps its origin: a repair passes the
+  stamp's branch only when that origin is the fork, so an upstream checkout is
+  repaired on its own channel and never moved to the fork.
+- Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
+- Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
+  and Cybersecurity workspace plugins are bundled straight from `framework/`
+  (`src/contrib/variant-plugins.hunt.ts`) and on by default; a same-id copy in
+  `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
+  pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
+  screen drops the Hermes wordmark. Any explicit pick wins.
+
+From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
+`release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
+also packages installers. Both run `scripts/pack-hunt.mjs`, which copies the variant
+icons over the committed `assets/` and restores them afterwards, even on failure.
+Every build writes `resources/licenses/hunt-command/SOURCE.txt` naming its Corresponding
+Source (this repository at the build commit), and says so when the tree was dirty.
+`dist:hunt` makes copies for others, so it refuses a dirty tree or a `HEAD` that no
+remote branch contains.
+
 ## Commit-only builds
 
 To preview a build for a pushed revision, run:

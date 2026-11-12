@@ -19,12 +19,24 @@ const variants = {
     display: 'Hermes Agent',
     kebab: 'hermes-bundled',
     pascal: 'HermesBundled'
+  },
+  // This fork's rebranded full client (HUNT-BOTS.md): its own app identity,
+  // publisher and userData, no release feed.
+  hunt: {
+    display: 'Hunt Command',
+    kebab: 'hunt-command',
+    pascal: 'HuntCommand',
+    org: { reverseDomain: 'io.github.timothyvang', pascal: 'TimothyVang' }
   }
 }
 
+// The publisher every Hermes variant ships under; a variant with its own `org` replaces it.
+/** @type {{ reverseDomain: string, pascal: string }} */
+const NOUS = { reverseDomain: 'com.nousresearch', pascal: 'NousResearch' }
+
 const variant = process.env.HERMES_DESKTOP_VARIANT || ''
-if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+if (!['', 'light', 'bundled', 'store', 'hunt'].includes(variant)) {
+  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store, hunt`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled
@@ -33,7 +45,10 @@ if (!['', 'light', 'bundled', 'store'].includes(variant)) {
 // MSIX package identity. The Store re-signs on submission.
 const store = variant === 'store'
 const light = variant === 'light'
+const hunt = variant === 'hunt'
+/** @type {{ display: string, kebab: string, pascal: string, org?: { reverseDomain: string, pascal: string } }} */
 const name = variants[store ? 'bundled' : (variant || '')]
+const org = name.org || NOUS
 
 // The electron-updater feed channel this build PUBLISHES to. A canary
 // tag (vX.Y.Z+canary.YYYYMMDDTHHMMSSZ) writes canary.yml / light-canary.yml;
@@ -66,14 +81,25 @@ const identity = {
   store,
   light,
   displayName,
-  appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
-  // Store and commit builds do not publish a release feed.
-  channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
+  appId: `${org.reverseDomain}.${name.kebab}${kebabSuffix}`,
+  // Store, commit and Hunt Command builds do not publish a release feed.
+  channel: store || buildCommit || hunt ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: `${name.pascal}${pascalSuffix}`,
   artifactNamePascal: name.pascal,
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
-  msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
+  msixAppIdWithOrg: `${org.pascal}.${name.pascal}${pascalSuffix}`,
+  // The bootstrap installer fetches and clones this fork, never upstream (bootstrap-runner.ts).
+  // Only Hunt Command carries a publisher, so every Hermes identity bakes byte-identical.
+  // Its copyright keeps the MIT notice of the Hermes code it is built from.
+  ...(hunt
+    ? {
+        hunt,
+        sourceRepo: 'TimothyVang/hermes-hunt-bots',
+        publisher: org.pascal,
+        copyright: `Copyright © 2026 ${org.pascal}. Based on Hermes, Copyright (c) 2025 Nous Research (MIT).`
+      }
+    : {}),
   ...(store
     ? {
         storeMsix: {
