@@ -32,6 +32,30 @@ const {
   copyright
 } = require('./product-identity.cjs')
 
+// Hunt Command compiles AGPL-3.0 code into its renderer, so each copy states its terms and
+// where its Corresponding Source is (AGPL-3.0 section 6): this commit of the fork.
+function huntSourceNotice() {
+  const stampPath = path.join(__dirname, 'build/install-stamp.json')
+  const commit = fs.existsSync(stampPath) ? JSON.parse(fs.readFileSync(stampPath, 'utf8')).commit : null
+  const out = path.join(__dirname, 'build/hunt-SOURCE.txt')
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  fs.writeFileSync(
+    out,
+    [
+      `${displayName} is distributed under the GNU Affero General Public License v3.0 (LICENSE.AGPL-3.0):`,
+      'it compiles the AGPL-3.0 framework/ desktop plugins of hermes-hunt-bots into its renderer.',
+      'The Hermes code it is built from keeps its MIT notice (LICENSE.Hermes-MIT); the other',
+      'components keep theirs (the files beside this one, and THIRD-PARTY-NOTICES.md in the source).',
+      '',
+      'Corresponding Source:',
+      `  https://github.com/TimothyVang/hermes-hunt-bots${commit ? `/tree/${commit}` : ''}`,
+      `  commit ${commit || 'unknown (built without an install stamp)'}`,
+      ''
+    ].join('\n')
+  )
+  return out
+}
+
 // `storeMsix` is optional on the identity type but guaranteed present when
 // `store` is true (product-identity.cjs spreads it only in that branch).
 // The `store` flag is typed `boolean` in the identity, so checkJs cannot
@@ -151,7 +175,9 @@ module.exports = {
       ? [
           { from: '../../framework/hunt_lab/desktop/licenses', to: 'licenses/hunt-command' },
           { from: '../../framework/hunt_lab/desktop/console-provenance.json', to: 'licenses/hunt-command/console-provenance.json' },
-          { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' }
+          { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' },
+          { from: '../../LICENSE', to: 'licenses/hunt-command/LICENSE.Hermes-MIT' },
+          { from: huntSourceNotice(), to: 'licenses/hunt-command/SOURCE.txt' }
         ]
       : [])
   ],

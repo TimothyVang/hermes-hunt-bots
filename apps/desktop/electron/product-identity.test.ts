@@ -303,21 +303,31 @@ test('Hunt Command ships under its own publisher; every Hermes variant keeps Nou
   const hunt: ProductIdentity = await identityForVariant('hunt')
   assert.equal(hunt.msixAppIdWithOrg, 'TimothyVang.HuntCommand')
   assert.equal(hunt.publisher, 'TimothyVang')
-  assert.match(hunt.copyright ?? '', /^Copyright © 2026 TimothyVang\. Based on Hermes, Copyright © 2026 Nous Research\.$/)
+  assert.match(hunt.copyright ?? '', /^Copyright © 2026 TimothyVang\. Based on Hermes, Copyright \(c\) 2025 Nous Research \(MIT\)\.$/)
   const huntConfig = load()
   // electron-builder writes the exe CompanyName from the package author and LegalCopyright from `copyright`.
   assert.deepEqual(huntConfig.extraMetadata.author, { name: 'TimothyVang' })
   assert.equal(huntConfig.extraMetadata.desktopName, 'io.github.timothyvang.hunt-command')
   assert.equal(huntConfig.copyright, hunt.copyright)
+  // The app carries the Hermes MIT notice and states where its AGPL source is.
+  const shipped = (huntConfig.extraResources as { from: string; to: string }[]).map(r => r.to)
+  assert.ok(shipped.includes('licenses/hunt-command/LICENSE.Hermes-MIT'))
+  assert.ok(shipped.includes('licenses/hunt-command/SOURCE.txt'))
   assert.equal(huntConfig.msix.identityName, 'TimothyVang.HuntCommand')
   assert.equal(huntConfig.msix.publisher, 'CN=TimothyVang')
   assert.equal(huntConfig.msix.publisherDisplayName, 'TimothyVang')
 
-  process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
-  const commit: ProductIdentity = await identityForVariant('hunt')
-  assert.equal(commit.appId, 'io.github.timothyvang.hunt-command-abcdef1')
-  assert.equal(commit.msixAppIdWithOrg, 'TimothyVang.HuntCommandCommitabcdef1')
-  delete process.env.HERMES_BUILD_COMMIT
+  const before = process.env.HERMES_BUILD_COMMIT
+
+  try {
+    process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
+    const commit: ProductIdentity = await identityForVariant('hunt')
+    assert.equal(commit.appId, 'io.github.timothyvang.hunt-command-abcdef1')
+    assert.equal(commit.msixAppIdWithOrg, 'TimothyVang.HuntCommandCommitabcdef1')
+  } finally {
+    if (before === undefined) {delete process.env.HERMES_BUILD_COMMIT}
+    else {process.env.HERMES_BUILD_COMMIT = before}
+  }
 
   for (const variant of [undefined, 'light', 'bundled', 'store']) {
     const identity: ProductIdentity = await identityForVariant(variant)

@@ -97,7 +97,7 @@ const identity = {
         hunt,
         sourceRepo: 'TimothyVang/hermes-hunt-bots',
         publisher: org.pascal,
-        copyright: `Copyright © 2026 ${org.pascal}. Based on Hermes, Copyright © 2026 Nous Research.`
+        copyright: `Copyright © 2026 ${org.pascal}. Based on Hermes, Copyright (c) 2025 Nous Research (MIT).`
       }
     : {}),
   ...(store
