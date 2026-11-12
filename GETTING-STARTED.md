@@ -44,15 +44,16 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 1. Install Hermes. This repository is a fork of Hermes 0.23.0; build it from source with the upstream [CONTRIBUTING.md](CONTRIBUTING.md), or use an official Hermes install of the same version.
 2. Sign in to a model provider in that home.
-3. Install the six profiles, the hunting-lab plugin, and the desktop pages:
+3. Install the six profiles, the hunting-lab plugin, and the desktop pages, naming the lab's `hermes` executable with `--hermes` so no other `hermes` on PATH runs:
 
    ```powershell
-   ..\.venv-dev\Scripts\python.exe setup_hermes.py --home ..\..\runtime\lab-home install
-   ..\.venv-dev\Scripts\python.exe native_team.py --home ..\..\runtime\lab-home apply
-   ..\.venv-dev\Scripts\python.exe native_team.py --home ..\..\runtime\lab-home check
+   $hermes = '<lab hermes.exe>'
+   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes $hermes --home ..\..\runtime\lab-home install
+   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home apply
+   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home check
    ```
 
-   `check` should report every setting `ready`. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+   `check` prints the Hermes executable it used, then should report every setting `ready`. Without `--hermes`, both helpers use `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
 4. Optional: build the Hunt Command desktop app, which has the Hunting Lab, Hunt Board and Cybersecurity workspace pages built in (copies installed by step 3 are then skipped in favour of the built-in ones). From the repository root, with the Node version in `.nvmrc`:
 
    ```powershell

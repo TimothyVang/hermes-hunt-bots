@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Plan and explicitly initialize/apply reviewed, nonsecret native Hermes policy.
 
-The helper does not read whole existing config files. Ordinary Hermes calls
-retain native startup effects; only the standalone model projection is isolated.
+The helper does not read whole existing config files. Hermes calls retain
+native startup effects.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -232,46 +231,9 @@ def _get_leaf(executable, profile, key, home):
         raise PolicyError(f'Native Hermes returned an unreadable {key} value for {profile}; no changes were made.') from None
 
 
-def _unique_projection_fields(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError('Ambiguous projection response.')
-        result[key] = value
-    return result
-
-
-def _project_model(executable, profile, home):
-    expected = expected_settings(profile)['model.default']
-    result = _run(executable, [
-        '-I', '-B', '-m', 'hermes_cli.config_model_projection',
-        '--root', str(home), '--profile', profile, '--expected-model', expected,
-    ], home)
-    message = f'Could not certify the persisted model for {profile}; no changes were made.'
-    if result.returncode or result.stderr.strip():
-        raise PolicyError(message)
-    try:
-        projection = json.loads(result.stdout, object_pairs_hook=_unique_projection_fields)
-    except (TypeError, ValueError):
-        raise PolicyError(message) from None
-    if (not isinstance(projection, dict)
-            or set(projection) != {'shape', 'expected_model_match'}
-            or projection['shape'] not in ('scalar', 'mapping')
-            or projection['expected_model_match'] is not True):
-        raise PolicyError(message)
-    return expected
-
-
-def _read_current(executable, profile, home, model_projection_python=None):
+def _read_current(executable, profile, home):
     keys = [*expected_settings(profile), 'agent.disabled_toolsets']
-    observed = {}
-    if model_projection_python is not None:
-        # Certify the persisted model before any ordinary CLI startup. A match
-        # prevents apply from migrating a legacy scalar to a mapping.
-        observed['model.default'] = _project_model(model_projection_python, profile, home)
-        keys.remove('model.default')
-    observed.update((key, _get_leaf(executable, profile, key, home)) for key in keys)
-    return observed
+    return {key: _get_leaf(executable, profile, key, home) for key in keys}
 
 
 def _safe_set_value(value):
@@ -279,9 +241,10 @@ def _safe_set_value(value):
 
 
 def _resolve(executable_override, home):
-    executable = shutil.which(executable_override or 'hermes')
-    if not executable:
-        raise PolicyError('Hermes CLI was not found. Install Hermes separately using its official installation guide.')
+    try:
+        executable = lab.hermes_executable(executable_override)
+    except ValueError as exc:
+        raise PolicyError(str(exc)) from None
     try:
         root = lab.resolve_home(home)
     except (OSError, ValueError):
@@ -290,18 +253,18 @@ def _resolve(executable_override, home):
     return executable, root
 
 
-def inspect(hermes_override=None, home=None, model_projection_python=None):
+def inspect(hermes_override=None, home=None):
     executable, root = _resolve(hermes_override, home)
-    lines = ['Reviewed native profile settings (safe fields only):']
+    lines = [f'Hermes executable: {executable}', 'Reviewed native profile settings (safe fields only):']
     for profile in PROFILES:
-        status = validate_observed(profile, _read_current(executable, profile, root, model_projection_python))
+        status = validate_observed(profile, _read_current(executable, profile, root))
         lines.append(profile + ': ' + ', '.join(f'{key}={value}' for key, value in status.items()))
     lines.append('Delegation routes: enforced by the profile_routes enum when the advanced-delegation plugin is enabled.')
     lines.extend('BLOCKER: ' + item for item in POLICY_BLOCKERS)
     return '\n'.join(lines)
 
 
-def apply(hermes_override=None, home=None, model_projection_python=None):
+def apply(hermes_override=None, home=None):
     executable, root = _resolve(hermes_override, home)
 
     # Preflight every safe field before the first write. Existing differing values
@@ -309,7 +272,7 @@ def apply(hermes_override=None, home=None, model_projection_python=None):
     updates = []
     for profile in PROFILES:
         expected = expected_settings(profile)
-        observed = _read_current(executable, profile, root, model_projection_python)
+        observed = _read_current(executable, profile, root)
         status = validate_observed(profile, observed)
         conflicts = [key for key, value in status.items() if value == 'custom_configuration_conflict']
         if conflicts:
@@ -392,10 +355,8 @@ def initialize(profile, home=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Inspect or explicitly configure reviewed nonsecret Hermes team policy fields.')
-    parser.add_argument('--hermes', metavar='PATH', help='Hermes executable override.')
+    parser.add_argument('--hermes', metavar='PATH', help='Hermes executable override (otherwise LAB_HERMES_EXE, else hermes on PATH).')
     parser.add_argument('--home', metavar='PATH', help='Explicit Hermes home to inspect or configure.')
-    parser.add_argument('--model-projection-python', metavar='PATH',
-                        help='Explicit native Python with the reviewed isolated projection installed; certifies persisted model only.')
     commands = parser.add_subparsers(dest='command')
     commands.add_parser('plan', help='print the policy without reading native state (default).')
     commands.add_parser('check', help='read only reviewed safe config leaves and report policy status.')
@@ -405,7 +366,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         command = args.command or 'plan'
-        print(plan_lines() if command == 'plan' else inspect(args.hermes, args.home, args.model_projection_python) if command == 'check' else apply(args.hermes, args.home, args.model_projection_python) if command == 'apply' else initialize(args.profile, args.home))
+        print(plan_lines() if command == 'plan' else inspect(args.hermes, args.home) if command == 'check' else apply(args.hermes, args.home) if command == 'apply' else initialize(args.profile, args.home))
         return 0
     except (PolicyError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

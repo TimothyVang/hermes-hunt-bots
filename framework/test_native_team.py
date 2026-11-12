@@ -247,7 +247,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
                 native_team._get_leaf('hermes', 'framework-researcher', 'model.default', 'home')
 
     def test_unknown_exact_profile_identity_refuses_before_cli(self):
-        with unittest.mock.patch.object(native_team.shutil, 'which', return_value='hermes'):
+        with unittest.mock.patch.object(native_team.lab, 'hermes_executable', return_value='hermes'):
             with unittest.mock.patch.object(native_team.lab, 'resolve_home', return_value='selected-home'):
                 with unittest.mock.patch.object(native_team.lab, 'registered_profile', side_effect=ValueError):
                     with unittest.mock.patch.object(native_team, '_run') as run:
@@ -316,100 +316,53 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertEqual(kwargs['timeout'], 15)
 
 
-    def test_projection_is_explicit_first_and_preserves_matching_model(self):
-        expected = native_team.expected_settings('framework-researcher')
-        for shape in ('scalar', 'mapping'):
-            completed = type('Result', (), {
-                'returncode': 0, 'stderr': '',
-                'stdout': json.dumps({'shape': shape, 'expected_model_match': True}),
-            })()
-            calls = []
-            def run(executable, args, home):
-                calls.append(('projection', executable, args, home))
-                return completed
+    def _fake_cli(self, folder):
+        folder.mkdir()
+        path = folder / ('hermes.exe' if os.name == 'nt' else 'hermes')
+        path.write_bytes(b'')
+        path.chmod(0o755)
+        return path
+
+    def test_lab_hermes_exe_wins_over_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            on_path = self._fake_cli(Path(temp) / 'path-bin')
+            lab_cli = self._fake_cli(Path(temp) / 'lab-bin')
+            used = []
             def leaf(executable, profile, key, home):
-                calls.append(('leaf', key))
-                return expected.get(key, [])
-            with unittest.mock.patch.object(native_team, '_run', side_effect=run):
-                with unittest.mock.patch.object(native_team, '_get_leaf', side_effect=leaf):
-                    observed = native_team._read_current(
-                        'hermes', 'framework-researcher', 'selected-home', 'selected-python')
-            self.assertEqual(observed['model.default'], expected['model.default'])
-            self.assertEqual(calls[0][0:2], ('projection', 'selected-python'))
-            self.assertEqual(calls[0][2][:4], ['-I', '-B', '-m', 'hermes_cli.config_model_projection'])
-            self.assertIn('--root', calls[0][2])
-            self.assertIn('--expected-model', calls[0][2])
-            self.assertNotIn(('leaf', 'model.default'), calls)
+                used.append(executable)
+                return native_team._UNSET
+            with unittest.mock.patch.dict(os.environ, {'PATH': str(on_path.parent), 'LAB_HERMES_EXE': str(lab_cli)}), \
+                    unittest.mock.patch.object(native_team.lab, 'resolve_home', return_value='selected-home'), \
+                    unittest.mock.patch.object(native_team, '_registered_profiles'), \
+                    unittest.mock.patch.object(native_team, '_get_leaf', side_effect=leaf):
+                result = native_team.inspect(home='selected-home')
+            self.assertTrue(used)
+            self.assertEqual({Path(executable).resolve() for executable in used}, {lab_cli.resolve()})
+            first_line = result.splitlines()[0]
+            self.assertTrue(first_line.startswith('Hermes executable: '), first_line)
+            self.assertEqual(Path(first_line.split(': ', 1)[1]).resolve(), lab_cli.resolve())
 
-    def test_projection_rejects_false_ambiguous_and_malformed_schema_before_leaves(self):
-        values = [
-            {'shape': 'scalar', 'expected_model_match': False},
-            {'shape': 'mapping', 'expected_model_match': 1},
-            {'shape': 'mapping', 'expected_model_match': 'true'},
-            {'shape': 'missing', 'expected_model_match': True},
-            {'shape': 'other', 'expected_model_match': True},
-            {'shape': 'scalar', 'expected_model_match': True, 'model': 'never accepted'},
-            {'shape': ['scalar'], 'expected_model_match': True}, {}, [], None,
-        ]
-        for value in values:
-            completed = type('Result', (), {
-                'returncode': 0, 'stderr': '', 'stdout': json.dumps(value),
-            })()
-            with self.subTest(value=value):
-                with unittest.mock.patch.object(native_team, '_run', return_value=completed):
-                    with unittest.mock.patch.object(native_team, '_get_leaf') as leaf:
-                        with self.assertRaises(native_team.PolicyError):
-                            native_team._read_current('hermes', 'framework-researcher', 'home', 'python')
-                        leaf.assert_not_called()
-        for rc, stdout, stderr in ((1, '', 'private failure'), (0, '{bad', ''), (0, '{}', 'warning')):
-            completed = type('Result', (), {'returncode': rc, 'stdout': stdout, 'stderr': stderr})()
-            with unittest.mock.patch.object(native_team, '_run', return_value=completed):
-                with self.assertRaises(native_team.PolicyError) as caught:
-                    native_team._project_model('python', 'framework-researcher', 'home')
-                self.assertNotIn('private failure', str(caught.exception))
+    def test_explicit_hermes_wins_and_missing_lab_hermes_exe_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            on_path = self._fake_cli(Path(temp) / 'path-bin')
+            explicit = self._fake_cli(Path(temp) / 'explicit-bin')
+            missing = str(Path(temp) / 'gone' / 'hermes.exe')
+            with unittest.mock.patch.dict(os.environ, {'PATH': str(on_path.parent), 'LAB_HERMES_EXE': missing}), \
+                    unittest.mock.patch.object(native_team.lab, 'resolve_home', return_value='selected-home'), \
+                    unittest.mock.patch.object(native_team, '_registered_profiles'):
+                executable, _ = native_team._resolve(str(explicit), 'selected-home')
+                self.assertEqual(Path(executable).resolve(), explicit.resolve())
+                with unittest.mock.patch.object(native_team, '_run') as run:
+                    with self.assertRaises(native_team.PolicyError) as caught:
+                        native_team.inspect(home='selected-home')
+                    run.assert_not_called()
+            self.assertIn(f'LAB_HERMES_EXE: {missing}', str(caught.exception))
 
-    def test_projection_rejects_duplicate_response_fields_before_leaves(self):
-        responses = [
-            '{"shape":"scalar","expected_model_match":false,"expected_model_match":true}',
-            '{"shape":"scalar","expected_model_match":true,"expected_model_match":false}',
-            '{"shape":"missing","shape":"scalar","expected_model_match":true}',
-            '{"shape":"scalar","shape":"scalar","expected_model_match":true}',
-        ]
-        for response in responses:
-            completed = type('Result', (), {
-                'returncode': 0, 'stderr': '', 'stdout': response,
-            })()
-            with self.subTest(response=response):
-                with unittest.mock.patch.object(native_team, '_run', return_value=completed):
-                    with unittest.mock.patch.object(native_team, '_get_leaf') as leaf:
-                        with self.assertRaises(native_team.PolicyError):
-                            native_team._read_current('hermes', 'framework-researcher', 'home', 'python')
-                        leaf.assert_not_called()
+    def test_model_projection_option_is_gone(self):
+        with unittest.mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+            native_team.main(['--model-projection-python', 'python', 'check'])
+        self.assertFalse(hasattr(native_team, '_project_model'))
 
-    def test_projection_matching_scalar_is_never_scheduled_for_migration(self):
-        calls = []
-        def run(executable, args, home):
-            calls.append((executable, args))
-            return type('Result', (), {'returncode': 0, 'stderr': '',
-                        'stdout': '{"shape":"scalar","expected_model_match":true}'})()
-        def leaf(executable, profile, key, home):
-            if key == 'agent.disabled_toolsets':
-                return native_team._disabled_toolset_requirements(profile)
-            return native_team.expected_settings(profile)[key]
-        with unittest.mock.patch.object(native_team, '_resolve', return_value=('hermes', 'home')):
-            with unittest.mock.patch.object(native_team, '_run', side_effect=run):
-                with unittest.mock.patch.object(native_team, '_get_leaf', side_effect=leaf):
-                    result = native_team.apply(model_projection_python='selected-python')
-        self.assertIn('none (already matched)', result)
-        self.assertEqual(len(calls), len(native_team.PROFILES))
-        self.assertTrue(all(executable == 'selected-python' for executable, args in calls))
-
-    def test_without_explicit_projection_existing_leaf_behavior_is_unchanged(self):
-        with unittest.mock.patch.object(native_team, '_get_leaf', return_value=None) as leaf:
-            with unittest.mock.patch.object(native_team, '_project_model') as projection:
-                native_team._read_current('hermes', 'framework-researcher', 'home')
-        projection.assert_not_called()
-        self.assertEqual(leaf.call_args_list[0].args[2], 'model.default')
     def test_missing_fields_are_explicit_configuration_not_ready(self):
         observed = native_team.validate_observed('framework-network-analyst', {})
         self.assertEqual(set(observed.values()), {'needs_explicit_configuration'})
