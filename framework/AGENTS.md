@@ -8,7 +8,7 @@ This directory is a self-contained, OS- and provider-agnostic project intended f
 - `roles/`: portable coordinator, researcher, builder, and reviewer instructions. These are not automatically installed Hermes profiles.
 - `examples/`: benign input for the documented workflow. `test_bot.py` and `test_workflows.py`: regression checks.
 - `orchestrate.py`: optional LangGraph progress gates with a separate SQLite checkpointer; observes ledger decisions without executing tasks or approving them. `langchain_adapter.py`: explicit text-only LangChain worker through the existing generic subprocess path. See `optional-runtime.md` and `requirements-orchestration.txt`.
-- `hermes-bots/`: five authored profile distributions, including a librarian identity; these source files contain no live profile data. Their installation and Desktop setup are separate external mutations.
+- `hermes-bots/`: six authored profile distributions (coordinator, researcher, builder, reviewer, librarian and network analyst); these source files contain no live profile data. Their installation and Desktop setup are separate external mutations.
 - Ledger/checkpoint records are local plaintext; `.venv*`, `bot-workspace/`, run artifacts, and other runtime state do not belong in a portable source release.
 
 ## Boundaries

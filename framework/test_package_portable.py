@@ -177,8 +177,7 @@ APPROVED_FILES = frozenset({
     'install_desktop.py', 'test_desktop_workspace.py',
     'desktop/cybersecurity-workspace/plugin.js', 'desktop/test-plugin.mjs',
     'desktop/VIDEO-INVENTORY.md', 'desktop/REVIEW.md', 'desktop/VERIFICATION.md',
-    'desktop/HERMES-LICENSE.txt', 'desktop/runtime-fixes.diff',
-    'desktop/native-role-policy.diff', 'desktop/native-role-policy.json',
+    'desktop/HERMES-LICENSE.txt',
     'hermes-bots/README.md', 'hermes-bots/catalog.json',
     'desktop/BOT-MODE-COMPATIBILITY.md',
     'hermes_temporal/__init__.py', 'hermes_temporal/contracts.py',
@@ -201,6 +200,7 @@ APPROVED_FILES = frozenset({
     'hermes_temporal/fixtures/board/lab-input.json',
     'hermes_temporal/fixtures/board/parent-status.json',
     'hermes_temporal/fixtures/board/child-status.json',
+    'hermes_temporal/fixtures/replay/handoff-rejected-before-retry.json',
     'lab.py',
     'test_hunt_lab_case.py',
     'test_hunt_lab_runtime.py',
@@ -319,8 +319,7 @@ class PortablePackageTests(unittest.TestCase):
                      'hunt-range/benchmark/recipes.json',
                      'hunt-range/benchmark/collector-fields.json',
                      'range-kit/linux_worker.py', 'range-kit/stratus.exe',
-                     'envision_bridge.py', 'envision_queue.py',
-                     'test_envision_bridge.py', 'test_envision_queue.py',
+                     'envision_queue.py', 'test_envision_queue.py',
                      'AGENTS.md', 'CLAUDE.md', 'bot-workspace/data.sqlite'):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)

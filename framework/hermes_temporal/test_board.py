@@ -6,6 +6,7 @@ import copy
 import http.client
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -583,7 +584,7 @@ class BoardServerTests(unittest.TestCase):
         self.assertEqual(len(state["steps"]), 9)
         self.assertTrue(state["temporal"]["reachable"])
         self.assertIsNone(state["live"])
-        self.assertEqual(self.request("GET", "/live/framework-researcher.jpg")[0], 404)
+        self.assertEqual(self.request("GET", f"/live/framework-researcher.jpg?token={self.server.token}")[0], 404)
 
     def test_unknown_paths_404_and_other_methods_405(self) -> None:
         for path in ("/state", "/index.html", "/state.json/x"):
@@ -594,12 +595,59 @@ class BoardServerTests(unittest.TestCase):
             self.assertEqual(headers["Allow"], "GET")
         self.assertEqual(self.request("GET", "/", {"Host": f"rebind.test:{self.port}"})[0], 404)
 
-    def test_cors_header_only_for_opaque_origin(self) -> None:
-        _, headers, _ = self.request("GET", "/state.json", {"Origin": "null"})
+    def page_token(self) -> str:
+        """The token the served page sends, read from the page as its own script does."""
+        body = self.request("GET", "/")[2].decode("utf-8")
+        match = re.search(r'const BOARD_TOKEN = "([A-Za-z0-9_-]+)";', body)
+        self.assertIsNotNone(match, "the served page carries no token")
+        return match.group(1)
+
+    def test_opaque_origin_without_token_gets_no_state(self) -> None:
+        wrong = self.server.token[:-1] + ("A" if self.server.token[-1] != "A" else "B")
+        for path in ("/state.json", "/state.json?token=", f"/state.json?token={wrong}",
+                     f"/state.json?token={self.server.token}x", f"/state.json?t={self.server.token}"):
+            # The desktop's file:// renderer sends a cross-site read with Sec-Fetch-Site and no Origin.
+            for sent in ({"Origin": "null"}, {"Origin": "http://evil.test"},
+                         {"Origin": f"http://127.0.0.1:{self.port}"},
+                         {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}, {"Sec-Fetch-Site": "same-site"}):
+                status, headers, body = self.request("GET", path, sent)
+                self.assertEqual((status, body), (403, b"forbidden\n"), (path, sent))
+                self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertEqual(self.calls, 0)
+
+    def test_page_token_reads_state(self) -> None:
+        token = self.page_token()
+        self.assertEqual(token, self.server.token)
+        self.assertGreaterEqual(len(token), 43)
+        status, headers, body = self.request("GET", f"/state.json?token={token}", {"Origin": "null"})
+        self.assertEqual(status, 200)
         self.assertEqual(headers.get("Access-Control-Allow-Origin"), "null")
-        for origin in ({"Origin": "http://evil.test"}, {}):
-            _, headers, _ = self.request("GET", "/state.json", origin)
+        self.assertEqual(len(json.loads(body)["steps"]), 9)
+        # The token is not a CORS grant for another origin, so its script still cannot read the answer.
+        status, headers, _ = self.request("GET", f"/state.json?token={token}", {"Origin": "http://evil.test"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+        # No Origin from a same-origin read or a local reader such as operator/film/record.py: no token needed.
+        for sent in ({}, {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}, {"Sec-Fetch-Site": "none"}):
+            status, headers, _ = self.request("GET", "/state.json", sent)
+            self.assertEqual(status, 200, sent)
             self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertEqual(self.request("GET", f"/state.json?token={token}&token={token}", {"Origin": "null"})[0], 403)
+
+    def test_each_server_run_draws_a_new_token(self) -> None:
+        restarted = make_server(self.board, 0)
+        thread = threading.Thread(target=restarted.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(restarted.server_close)
+        self.addCleanup(restarted.shutdown)
+        self.assertNotEqual(restarted.token, self.server.token)
+        port = restarted.server_address[1]
+        for token, expected in ((self.server.token, 403), (restarted.token, 200)):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request("GET", f"/state.json?token={token}", headers={"Origin": "null"})
+            self.assertEqual(connection.getresponse().status, expected)
+            connection.close()
 
     def test_polls_at_most_once_per_interval_and_reports_unreachable(self) -> None:
         self.request("GET", "/state.json")
@@ -646,7 +694,10 @@ class LiveBoardTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(5)
 
-    def request(self, path: str, headers: dict | None = None):
+    def request(self, path: str, headers: dict | None = None, token: bool = True):
+        """GET ``path``; ``/live/`` paths carry the server's page token unless ``token`` is false."""
+        if token and path.startswith("/live/"):
+            path += f"?token={self.server.token}"
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
             connection.request("GET", path, headers=headers or {})
@@ -658,7 +709,7 @@ class LiveBoardTests(unittest.TestCase):
     def open_stream(self, profile: str):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         self.addCleanup(connection.close)
-        connection.request("GET", f"/live/{profile}.mjpg")
+        connection.request("GET", f"/live/{profile}.mjpg?token={self.server.token}")
         return connection.getresponse()
 
     def read_part(self, response, boundary: str, first: bool = False) -> tuple[dict, bytes]:
@@ -690,6 +741,17 @@ class LiveBoardTests(unittest.TestCase):
             self.assertEqual(self.request(path)[0], 404, path)
         self.live.add("framework-coordinator", 1.0, b"other")
         self.assertIsNone(self.live.latest("framework-coordinator"))
+
+    def test_live_frames_need_the_page_token_or_a_plain_image_load(self) -> None:
+        self.live.add(TH, 1.0, b"frame")
+        for path in (f"/live/{TH}.jpg", f"/live/{TH}.mjpg"):
+            for headers in ({}, {"Origin": "null"}, {"Sec-Fetch-Dest": "empty", "Origin": "null"},
+                            {"Sec-Fetch-Dest": "image", "Origin": "null"}):
+                self.assertEqual(self.request(path, headers, token=False)[::2], (403, b"forbidden\n"), (path, headers))
+            self.assertEqual(self.request(f"{path}?token=stale", token=False)[0], 403)
+        # An <img> without crossorigin (the desktop's lab_browser card): another origin's script cannot read it.
+        self.assertEqual(self.request(f"/live/{TH}.jpg", {"Sec-Fetch-Dest": "image"}, token=False)[::2],
+                         (200, b"frame"))
 
     def test_latest_jpg_is_404_until_a_frame_then_the_newest_frame(self) -> None:
         self.assertEqual(self.request(f"/live/{TH}.jpg")[0], 404)
