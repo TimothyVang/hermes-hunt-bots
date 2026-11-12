@@ -105,6 +105,11 @@ class DesktopWorkspaceTests(unittest.TestCase):
             self.assertNotIn('Unknown bundle', str(caught.exception))
             self.assertFalse(installed.exists())
             self.assertEqual(marker.read_bytes(), before)
+            result = subprocess.run([sys.executable, str(ROOT / 'install_desktop.py'), 'install', '--home', str(home)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('Missing bundle files refused:', result.stderr)
+            self.assertIn(str(installed), result.stderr)
 
 
 if __name__ == '__main__':

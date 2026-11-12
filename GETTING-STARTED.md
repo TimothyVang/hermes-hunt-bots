@@ -49,7 +49,9 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 3. Install the six bots, their reviewed policy, the hunting-lab plugin and the desktop pages with one command. It needs [Docker Desktop](https://docs.docker.com/desktop/) running and the [Temporal CLI](https://docs.temporal.io/cli) (`temporal`) on PATH, and checks both before it changes anything. Pass the lab's `hermes` executable with `--hermes`, so no other `hermes` on PATH runs. From `framework/`:
 
    ```powershell
-   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes '<lab hermes.exe>' --home ..\..\runtime\lab-home all
+   $hermes = '<absolute path to the lab hermes.exe>'
+   $env:HERMES_HOME = [IO.Path]::GetFullPath("$PWD\..\..\runtime\lab-home")
+   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes $hermes --home $env:HERMES_HOME all
    ```
 
    Answer `y` to each `profile install` prompt. The command checks Hermes, Docker and the Temporal CLI, creates the Hermes home if it does not exist yet, installs each missing profile, writes each new profile's policy file (`native_team.py initialize`), installs and enables the lab plugin and the desktop pages, applies the remaining policy (`native_team.py apply`), checks it (`native_team.py check`) and runs doctor. It ends `setup: complete` only with zero drift, or stops at the first failure with `setup: stopped at <step>: <reason>`. Running it again keeps what is already installed, including edited `SOUL.md` files, which doctor reports without overwriting them. Without `--hermes`, it uses `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
@@ -57,7 +59,7 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
    Later, check that the installed bots still match the repo:
 
    ```powershell
-   ..\.venv-dev\Scripts\python.exe doctor.py --hermes '<lab hermes.exe>' --home ..\..\runtime\lab-home
+   ..\.venv-dev\Scripts\python.exe doctor.py --hermes $hermes --home $env:HERMES_HOME
    ```
 
    It prints one `drift:` line for each installed `SOUL.md`, plugin file or `model.default`/`model.provider` setting that differs from the repo, then `doctor: <n> drift`, and exits non-zero on any drift. It reads files only.

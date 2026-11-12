@@ -164,8 +164,8 @@ def main(argv=None):
         else:
             print('Reviewed source is readable; host SDK and runtime not tested.')
         print('SHA256:', digest)
-    except (OSError, ValueError):
-        print('Desktop installation/check refused; inspect source and destination prerequisites. No overwrite attempted.', file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        print(f'Desktop installation/check refused: {exc}. No overwrite attempted.', file=sys.stderr)
         return 1
     return 0
 

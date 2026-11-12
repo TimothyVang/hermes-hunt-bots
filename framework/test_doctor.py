@@ -1,6 +1,7 @@
 """doctor.py against a home built the way setup installs it, from this repo's own files."""
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -102,6 +103,25 @@ class DoctorTests(unittest.TestCase):
                                                               'plugin.js': b'// an earlier release\n'})
         code, lines, _stderr = self.run_doctor(models())
         self.assertEqual((code, lines), (1, ['drift: desktop-plugins/hunt-lab/plugin.js differs from the repo', 'doctor: 1 drift']))
+
+    def test_missing_marker_coverage_reports_drift_and_setup_refuses(self):
+        bundles = lab.bundles(self.home, lab.registered_profiles(self.home))
+        for destination in (self.home / 'desktop-plugins' / install_desktop.PLUGIN,
+                            self.home / 'profiles' / lab.PROFILE / 'plugins' / 'hunt-lab'):
+            with self.subTest(bundle=destination.name):
+                marker = destination / install_desktop.MARKER
+                saved = marker.read_bytes()
+                metadata = json.loads(saved)
+                metadata['files'].pop(next(iter(metadata['files'])))
+                marker.write_text(json.dumps(metadata), encoding='utf-8')
+                code, lines, stderr = self.run_doctor(models())
+                self.assertEqual((code, stderr), (1, ''))
+                self.assertEqual(lines, [
+                    f'drift: {marker.relative_to(self.home).as_posix()} does not match the installed files, so setup would refuse to update this copy',
+                    'doctor: 1 drift'])
+                with self.assertRaisesRegex(ValueError, 'Unknown bundle files'):
+                    install_desktop.sync_bundle(destination.parent, destination.name, bundles[destination])
+                marker.write_bytes(saved)
 
     def test_a_reader_failure_is_not_reported_as_no_drift(self):
         def failed(argv, **_kwargs):

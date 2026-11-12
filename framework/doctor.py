@@ -116,8 +116,12 @@ def _marker_drift(name, destination, files):
     try:
         marker = json.loads((destination / install_desktop.MARKER).read_text(encoding='utf-8'))
         recorded = marker['files']
+        installed = {path.relative_to(destination).as_posix() for path in destination.rglob('*')
+                     if path.is_file() and path.relative_to(destination).as_posix() != install_desktop.MARKER
+                     and not _bytecode_of_owned_source(path.relative_to(destination), recorded)}
         owned = (set(marker) == {'owner', 'bundle', 'files'} and marker['owner'] == 'bot-framework'
-                 and marker['bundle'] == destination.name and set(recorded) <= set(files)
+                 and marker['bundle'] == destination.name and isinstance(recorded, dict)
+                 and set(recorded) <= set(files) and set(recorded) == installed
                  and all(hashlib.sha256((destination / relative).read_bytes()).hexdigest() == digest
                          for relative, digest in recorded.items()))
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
