@@ -30,15 +30,18 @@ PROFILES = frozenset({
     "framework-network-analyst",
 })
 # A case is synthetic unless its case.json names one of DATA_ORIGINS (HUNT-BOTS.md rule 1): a public
-# research dataset or the operator's unclassified work export. Each maps to the (name, detail) every
+# research dataset, the operator's unclassified work export, or a window of the operator's work Elastic
+# served live by the host-side connected service (ADR 0005). Each maps to the (name, detail) every
 # bot-visible text uses for that origin, "<name> (<detail>)", instead of calling the data synthetic.
 # The guest console mirrors this table (test_lab_server keeps them equal).
 SYNTHETIC = "synthetic"
 PUBLIC_DATASET = "public-dataset"
 WORK_EXPORT = "work-export"
+WORK_CONNECTED = "work-connected"
 DATA_ORIGINS = {
     PUBLIC_DATASET: ("public research dataset", "real lab telemetry, no customer data"),
     WORK_EXPORT: ("work log export", "real telemetry from the operator's environment; unclassified work data"),
+    WORK_CONNECTED: ("work log connection", "live read-only queries of the operator's work Elastic; unclassified work data"),
 }
 
 

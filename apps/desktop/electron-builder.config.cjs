@@ -27,8 +27,41 @@ const {
   windowsExecutableName,
   channel,
   msixAppIdWithOrg,
-  token
+  token,
+  publisher,
+  copyright
 } = require('./product-identity.cjs')
+
+// Hunt Command compiles AGPL-3.0 code into its renderer, so each copy states its terms and
+// where its Corresponding Source is (AGPL-3.0 section 6): this commit of the fork.
+function huntSourceNotice() {
+  const stampPath = path.join(__dirname, 'build/install-stamp.json')
+  const stamp = fs.existsSync(stampPath) ? JSON.parse(fs.readFileSync(stampPath, 'utf8')) : {}
+  // A non-git checkout stamps an all-zero placeholder, which is no commit at all.
+  const commit = stamp.commit && !/^0+$/.test(stamp.commit) ? stamp.commit : null
+  const out = path.join(__dirname, 'build/hunt-SOURCE.txt')
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  fs.writeFileSync(
+    out,
+    [
+      `${displayName} is distributed under the GNU Affero General Public License v3.0 (LICENSE.AGPL-3.0):`,
+      'it compiles the AGPL-3.0 framework/ desktop plugins of hermes-hunt-bots into its renderer.',
+      'The Hermes code it is built from keeps its MIT notice (LICENSE.Hermes-MIT); the other',
+      'components keep theirs (the files beside this one, and THIRD-PARTY-NOTICES.md in the source).',
+      '',
+      'Corresponding Source:',
+      `  https://github.com/TimothyVang/hermes-hunt-bots${commit ? `/tree/${commit}` : ''}`,
+      `  commit ${commit || 'unknown (built without an install stamp)'}`,
+      // A dirty tree is not that commit: say so rather than point at source this copy isn't.
+      ...(stamp.dirty
+        ? ['  This copy was built with uncommitted changes, so that commit is NOT its exact source;',
+           '  it is a local build, not for distribution.']
+        : []),
+      ''
+    ].join('\n')
+  )
+  return out
+}
 
 // `storeMsix` is optional on the identity type but guaranteed present when
 // `store` is true (product-identity.cjs spreads it only in that branch).
@@ -76,6 +109,9 @@ module.exports = {
   appId,
   productName: displayName,
   executableName: displayName,
+  // A variant with its own publisher (Hunt Command) names it in the exe version info
+  // (CompanyName is the package author) instead of Nous Research.
+  ...(copyright ? { copyright } : {}),
   protocols: [
     {
       name: `${displayName} Protocol`,
@@ -107,7 +143,9 @@ module.exports = {
     // shipped stable default, but isolate nonstable (and Hunt Command) userData
     // from first access. A stable-branded channel has no token and keeps stable's userData.
     ...((channelRequest && token) || hunt || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
-    desktopName: appId
+    desktopName: appId,
+    // electron-builder reads CompanyName from author.name; a bare string has none.
+    ...(publisher ? { author: { name: publisher } } : {})
   },
   directories: {
     output: 'release'
@@ -137,18 +175,16 @@ module.exports = {
       from: 'assets/icon.ico',
       to: 'icon.ico'
     },
-    // Hunt Command bundles the framework/ plugins into its renderer, whose minifier
-    // drops their license comments; their notices ship beside the app instead.
+    // Hunt Command compiles the framework/ desktop plugins (AGPL-3.0, with noVNC MPL-2.0
+    // and Lucide ISC inside) into its renderer, whose minified bundle drops their source
+    // comments, so their license texts ship beside the app (THIRD-PARTY-NOTICES.md).
     ...(hunt
       ? [
-          { from: '../../variants/hunt/NOTICE', to: 'licenses/hunt-command/NOTICE' },
-          { from: '../../variants/hunt/licenses', to: 'licenses/hunt-command/licenses' },
+          { from: '../../framework/hunt_lab/desktop/licenses', to: 'licenses/hunt-command' },
+          { from: '../../framework/hunt_lab/desktop/console-provenance.json', to: 'licenses/hunt-command/console-provenance.json' },
           { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' },
-          {
-            from: '../../framework/hunt_lab/desktop',
-            to: 'licenses/hunt-command/hunt-lab',
-            filter: ['console-provenance.json', 'licenses/**']
-          }
+          { from: '../../LICENSE', to: 'licenses/hunt-command/LICENSE.Hermes-MIT' },
+          { from: huntSourceNotice(), to: 'licenses/hunt-command/SOURCE.txt' }
         ]
       : [])
   ],
@@ -220,7 +256,7 @@ module.exports = {
     // paste onto the stock removable-drive icon). It lives in packaging/ with
     // the background so the `files` whitelist keeps it out of the app bundle.
     icon: 'packaging/dmg-volume.icns',
-    title: 'Hermes Agent Installer',
+    title: hunt ? `${displayName} Installer` : 'Hermes Agent Installer',
     // A prebuilt .tiff on purpose, not a PNG plus a @2x sibling: dmg-builder's
     // PNG path runs `tiffutil -cathidpicheck`, which on macOS 26 rewrites both
     // frames to 72 dpi and silently drops the 2x representation. A .tiff is
@@ -264,8 +300,14 @@ module.exports = {
     identityName: store ? mustStoreMsix(storeMsixWhenStore).identityName : msixAppIdWithOrg,
     applicationId: appNamePascal,
     displayName,
-    publisher: store ? mustStoreMsix(storeMsixWhenStore).publisher : OUT_OF_STORE_PUBLISHER,
-    publisherDisplayName: store ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName : 'Nous Research',
+    publisher: store
+      ? mustStoreMsix(storeMsixWhenStore).publisher
+      : publisher
+        ? `CN=${publisher}`
+        : OUT_OF_STORE_PUBLISHER,
+    publisherDisplayName: store
+      ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName
+      : publisher || 'Nous Research',
     // The native quad is the build time (scripts/msix-shared.mjs::nativeQuad),
     // baked into the manifest template, so the builder's own build-number
     // override would stamp a second, conflicting version.
@@ -295,7 +337,7 @@ module.exports = {
   },
   linux: {
     category: 'Development',
-    maintainer: 'Nous Research <support@nousresearch.com>',
+    maintainer: publisher ? `${publisher} <${publisher}@users.noreply.github.com>` : 'Nous Research <support@nousresearch.com>',
     synopsis: light
       ? 'Remote-only desktop client for Hermes Agent.'
       : 'Native desktop shell for Hermes Agent.',

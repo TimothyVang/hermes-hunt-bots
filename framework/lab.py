@@ -23,12 +23,13 @@ LICENSES = (
     'noVNC-LICENSE.txt', 'noVNC-AUTHORS.txt', 'LICENSE.MPL-2.0',
     'LICENSE.BSD-2-Clause', 'LICENSE.BSD-3-Clause', 'LICENSE.OFL-1.1',
     'pako-LICENSE.MIT', 'regenerator-LICENSE.MIT', 'babel-LICENSE.MIT',
+    'lucide-LICENSE.txt',
 )
 DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple(
     'licenses/' + name for name in LICENSES)
 BACKEND_FILES = (
     '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py',
-    'query_adapter.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
+    'query_adapter.py', 'endpoints.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
     'actionability.py', 'plugin.yaml', 'assets.json',
     'guest/compose.yaml', 'guest/arkime.ini', 'guest/bootstrap_guest.sh',
     'guest/ingest.py', 'guest/lab_server.py', 'guest/image-lock.json',

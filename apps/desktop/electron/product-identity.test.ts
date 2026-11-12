@@ -236,7 +236,7 @@ test('hunt is a stable Hunt Command identity with its own userData and no releas
   const hunt: ProductIdentity = await identityForVariant('hunt')
   assert.equal(hunt.hunt, true)
   assert.equal(hunt.displayName, 'Hunt Command')
-  assert.equal(hunt.appId, 'com.nousresearch.hunt-command')
+  assert.equal(hunt.appId, 'io.github.timothyvang.hunt-command')
   assert.equal(hunt.appNamePascal, 'HuntCommand')
   assert.equal(hunt.artifactNamePascal, 'HuntCommand')
   assert.equal(hunt.windowsExecutableName, 'Hunt Command')
@@ -293,33 +293,52 @@ test('hunt is a stable Hunt Command identity with its own userData and no releas
   assert.equal(config.mac.publish, null)
 })
 
-test('only Hunt Command ships the bundled plugins\' license notices, and every source exists', async (): Promise<void> => {
-  const load = async (variant: string | undefined): Promise<{ from: string; to: string }[]> => {
-    await identityForVariant(variant)
+test('Hunt Command ships under its own publisher; every Hermes variant keeps Nous Research', async (): Promise<void> => {
+  const load = (): PackagingConfiguration & { copyright?: string } => {
     delete require.cache[require.resolve('../electron-builder.config.cjs')]
 
-    return (require('../electron-builder.config.cjs') as PackagingConfiguration).extraResources as { from: string; to: string }[]
+    return require('../electron-builder.config.cjs')
   }
 
-  const notices = (await load('hunt')).filter(entry => entry.to.startsWith('licenses/hunt-command'))
-  assert.deepEqual(notices.map(entry => entry.to).sort(), [
-    'licenses/hunt-command/LICENSE.AGPL-3.0',
-    'licenses/hunt-command/NOTICE',
-    'licenses/hunt-command/hunt-lab',
-    'licenses/hunt-command/licenses'
-  ])
+  const hunt: ProductIdentity = await identityForVariant('hunt')
+  assert.equal(hunt.msixAppIdWithOrg, 'TimothyVang.HuntCommand')
+  assert.equal(hunt.publisher, 'TimothyVang')
+  assert.match(hunt.copyright ?? '', /^Copyright © 2026 TimothyVang\. Based on Hermes, Copyright \(c\) 2025 Nous Research \(MIT\)\.$/)
+  const huntConfig = load()
+  // electron-builder writes the exe CompanyName from the package author and LegalCopyright from `copyright`.
+  assert.deepEqual(huntConfig.extraMetadata.author, { name: 'TimothyVang' })
+  assert.equal(huntConfig.extraMetadata.desktopName, 'io.github.timothyvang.hunt-command')
+  assert.equal(huntConfig.copyright, hunt.copyright)
+  // The app carries the Hermes MIT notice and states where its AGPL source is.
+  const shipped = (huntConfig.extraResources as { from: string; to: string }[]).map(r => r.to)
+  assert.ok(shipped.includes('licenses/hunt-command/LICENSE.Hermes-MIT'))
+  assert.ok(shipped.includes('licenses/hunt-command/SOURCE.txt'))
+  assert.equal(huntConfig.msix.identityName, 'TimothyVang.HuntCommand')
+  assert.equal(huntConfig.msix.publisher, 'CN=TimothyVang')
+  assert.equal(huntConfig.msix.publisherDisplayName, 'TimothyVang')
 
-  for (const entry of notices) {
-    assert.ok(fs.existsSync(path.resolve(import.meta.dirname, '..', entry.from)), entry.from)
+  const before = process.env.HERMES_BUILD_COMMIT
+
+  try {
+    process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
+    const commit: ProductIdentity = await identityForVariant('hunt')
+    assert.equal(commit.appId, 'io.github.timothyvang.hunt-command-abcdef1')
+    assert.equal(commit.msixAppIdWithOrg, 'TimothyVang.HuntCommandCommitabcdef1')
+  } finally {
+    if (before === undefined) {delete process.env.HERMES_BUILD_COMMIT}
+    else {process.env.HERMES_BUILD_COMMIT = before}
   }
-
-  // The plugins carry Lucide (ISC) and Feather (MIT) paths, and the Hunting Lab noVNC (MPL-2.0).
-  const root: string = path.resolve(import.meta.dirname, '../../..')
-  assert.match(fs.readFileSync(path.join(root, 'variants/hunt/licenses/lucide-LICENSE.txt'), 'utf8'), /ISC License[\s\S]*Feather/)
-  assert.ok(fs.existsSync(path.join(root, 'framework/hunt_lab/desktop/licenses/LICENSE.MPL-2.0')))
 
   for (const variant of [undefined, 'light', 'bundled', 'store']) {
-    assert.doesNotMatch(JSON.stringify(await load(variant)), /hunt-command/, String(variant))
+    const identity: ProductIdentity = await identityForVariant(variant)
+    assert.match(identity.appId, /^com\.nousresearch\./)
+    assert.match(identity.msixAppIdWithOrg, /^NousResearch\./)
+    assert.equal(identity.publisher, undefined)
+    assert.equal(identity.copyright, undefined)
+    const config = load()
+    assert.equal('copyright' in config, false)
+    assert.equal('author' in config.extraMetadata, false)
+    assert.match(String(config.msix.publisherDisplayName), /^Nous Research/)
   }
 })
 

@@ -178,12 +178,14 @@ hunt_lab/actionability.py
 hunt_lab/assets.json
 hunt_lab/browser_policy.py
 hunt_lab/case.py
+hunt_lab/connected.py
 hunt_lab/desktop/console-provenance.json
 hunt_lab/desktop/licenses/babel-LICENSE.MIT
 hunt_lab/desktop/licenses/LICENSE.BSD-2-Clause
 hunt_lab/desktop/licenses/LICENSE.BSD-3-Clause
 hunt_lab/desktop/licenses/LICENSE.MPL-2.0
 hunt_lab/desktop/licenses/LICENSE.OFL-1.1
+hunt_lab/desktop/licenses/lucide-LICENSE.txt
 hunt_lab/desktop/licenses/noVNC-AUTHORS.txt
 hunt_lab/desktop/licenses/noVNC-LICENSE.txt
 hunt_lab/desktop/licenses/pako-LICENSE.MIT
@@ -194,6 +196,7 @@ hunt_lab/desktop_src/build_console.py
 hunt_lab/desktop_src/console-frame.js
 hunt_lab/desktop_src/console-frontend.js
 hunt_lab/desktop_src/plugin.entry.js
+hunt_lab/endpoints.py
 hunt_lab/fixtures/dns-lab-001/case.json
 hunt_lab/fixtures/dns-lab-001/events.jsonl
 hunt_lab/fixtures/dns-lab-001/traffic.pcap
@@ -217,6 +220,7 @@ hunt_lab/query_adapter.py
 hunt_lab/runtime.py
 hunt_lab/scenario.py
 hunt_lab/screencast.py
+hunt_lab/test_connected.py
 hunt_lab/test_import_dedale.py
 hunt_lab/test_import_elastic.py
 hunt_lab/test_scenario.py

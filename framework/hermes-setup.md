@@ -92,7 +92,7 @@ The earlier 42-leaf check verified approved nonsecret **output only**; it did no
 The reviewed native-policy patch adds a separate startup-isolated module. Use an explicitly selected native Python with that patched package and its YAML parser already installed (no automatic interpreter discovery, installation, bootstrap, or recovery):
 
 ```text
-<reviewed-native-python> -I -B -m hermes_cli.config_model_projection --root <absolute-approved-native-root> --profile framework-researcher --expected-model claude-sonnet-5
+<reviewed-native-python> -I -B -m hermes_cli.config_model_projection --root <absolute-approved-native-root> --profile framework-researcher --expected-model claude-sonnet-5-5
 ```
 
 Its entire success response is `{"shape":"scalar","expected_model_match":true}` (shape is exactly `missing`, `scalar`, `mapping`, or `other`; the second field is a JSON boolean). Only exact persisted string equality, either `model: MODEL` or `model: {default: MODEL}`, matches. Mapping `name`/`model` aliases and nested defaults do not certify a match; YAML anchors use the native safe parser's normal semantics. Missing files/keys, mismatches and unsupported values return false. Unreadable/malformed YAML, non-mapping roots (including empty/null documents), duplicate keys, invalid arguments, missing profile directories, tombstones, and symlink/reparse paths fail with a fixed nonrevealing error. Root and profile are explicit, without sticky-profile selection or path-variable expansion. It does not merge defaults/managed overlays, expand environment values, resolve providers/auth, mutate/migrate config, or expose raw model/provider values or parse-error contents. The projection is about persisted configuration only, not effective session routing or readiness.

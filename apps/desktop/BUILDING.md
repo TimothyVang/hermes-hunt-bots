@@ -196,6 +196,12 @@ stock full client (bootstrap payload) with these changes only:
   in-app updater (stamped `external`, like commit builds): the checkout hand-off would
   rebuild stock Hermes. Settings say to update by pulling and rerunning `pack:hunt`,
   and Uninstall says to delete the app folder.
+- Publisher: TimothyVang, not Nous Research. App ID `io.github.timothyvang.hunt-command`
+  (also the Windows AppUserModelID), MSIX identity `TimothyVang.HuntCommand`, exe
+  CompanyName, and a copyright line that keeps the Hermes MIT notice. Hermes variants
+  keep `com.nousresearch.*`; userData stays `<appData>/HuntCommand`.
+- Notices: the compiled framework/ plugins' license texts (AGPL-3.0, noVNC, Lucide)
+  ship in `resources/licenses/hunt-command/` (see `THIRD-PARTY-NOTICES.md`).
 - First-run install: Hunt Command and stock Hermes share one checkout,
   `HERMES_HOME/hermes-agent`, and whichever app installs it first decides its
   source. A fresh install by Hunt Command fetches `install.ps1`/`install.sh` from
@@ -211,11 +217,6 @@ stock full client (bootstrap payload) with these changes only:
   `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
   pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
   screen drops the Hermes wordmark. Any explicit pick wins.
-- Notices: the renderer minifier drops the plugins' license comments, so the build
-  copies `variants/hunt/NOTICE`, the Lucide/Feather text (`variants/hunt/licenses/`),
-  `framework/LICENSE` (AGPL-3.0) and the Hunting Lab's noVNC notices and provenance
-  (`framework/hunt_lab/desktop/`) to `resources/licenses/hunt-command/`. Stock builds
-  ship none of them.
 - Deep links: it registers the stock `hermes://` scheme. The backend and connector
   flows emit `hermes://` links (for example `cron/blueprint_catalog.py`,
   `hermes://connections/done`, `hermes://mcp/install`), so the scheme is shared: with
@@ -227,6 +228,10 @@ From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
 `release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
 also packages installers. Both run `scripts/pack-hunt.mjs`, which copies the variant
 icons over the committed `assets/` and restores them afterwards, even on failure.
+Every build writes `resources/licenses/hunt-command/SOURCE.txt` naming its Corresponding
+Source (this repository at the build commit), and says so when the tree was dirty.
+`dist:hunt` makes copies for others, so it refuses a dirty tree or a `HEAD` that no
+remote branch contains.
 
 ## Commit-only builds
 

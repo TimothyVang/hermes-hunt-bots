@@ -2,8 +2,9 @@
 
 ``collect_tool_input`` exports a tool-driven hunt instead: it reads only the loaded
 case's ``/case`` metadata, and the stages query the lab through their own tools. A case
-whose metadata names a ``data_origin`` (a public research dataset or a work export) is
-exported only when the operator passes that same origin, and is then labelled with it, never synthetic.
+whose metadata names a ``data_origin`` (a public research dataset, a work export, or a work Elastic
+window served by the connected service) is exported only when the operator passes that same origin,
+and is then labelled with it, never synthetic.
 """
 from __future__ import annotations
 
@@ -11,9 +12,11 @@ import hashlib
 import importlib
 import json
 import re
-from urllib import error, parse, request
+from urllib import parse
 
-from .contracts import DATA_ORIGINS, origin_text
+from hunt_lab.endpoints import LabEndpoint, QueryFailure, get, resolve
+
+from .contracts import DATA_ORIGINS, WORK_CONNECTED, origin_text
 from .hunt import supplied_evidence_hunt
 
 CASE_ID = "dns-lab-001"
@@ -31,7 +34,8 @@ _RECORD_FIELDS = {
                 "network.packets", "network.bytes", "network.protocol", "dns.host"},
 }
 _TOOL_CASE_ID = re.compile(r"[a-z0-9-]{3,64}\Z")
-MAX_LAB_RESPONSE = 512 * 1024
+# Exact host.name values a connected case may be limited to (as hunt_lab.connected.MAX_HOSTS).
+_MAX_HOSTS = 50
 _LAB_TIMEOUT_SECONDS = 12
 
 
@@ -50,7 +54,15 @@ def _validate_network_record(row: dict) -> None:
             _reject()
 
 class LabInputError(ValueError):
-    """Fixed, nonrevealing error for an incomplete or unsafe lab export."""
+    """Fixed, nonrevealing error for an incomplete or unsafe lab export.
+
+    ``code`` is the lab's or the resolver's fixed snake_case code when there is one, such as
+    ``case_mismatch`` or ``unknown_citation``.
+    """
+
+    def __init__(self, message: str = "lab input unavailable or incomplete", code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _reject(_message: str = "") -> None:
@@ -250,11 +262,6 @@ def collect_lab_input(state_dir, case_id: str = CASE_ID) -> dict:
     return raw
 
 
-class _NoRedirect(request.HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        return None
-
-
 def loopback_base(url: object) -> str:
     """Return ``http://127.0.0.1:<port>`` from an exact loopback URL, else refuse."""
     try:
@@ -268,43 +275,33 @@ def loopback_base(url: object) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def lab_endpoints(state_dir) -> dict:
-    """Read the analyst VM's loopback lab/Arkime URLs through the read-only runtime status.
+def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
+    """The one loopback lab serving ``case_id``, or the one lab serving any case when it is ``None``.
 
-    Never starts, stops, or creates VM state; ``arkime_url`` is ``None`` when unavailable.
+    That is the analyst VM's, read through the read-only runtime status, or the host-side connected
+    service (``hunt_lab.endpoints``). Never starts, stops, or creates lab state. A refusal names only the
+    resolver's fixed code, such as ``ambiguous_lab`` when both serve the case.
     """
     try:
         runtime = importlib.import_module("hunt_lab.runtime")
-        status = runtime.invoke("status", state_dir=state_dir, profile=PROFILE)
+        return resolve(state_dir, case_id, runtime=runtime)
+    except QueryFailure as exc:
+        raise LabInputError(f"lab input unavailable: {exc}", str(exc)) from None
     except Exception:
         _reject()
-    if not isinstance(status, dict) or status.get("profile") != PROFILE or status.get("state") != "running":
-        _reject()
-    try:
-        arkime = loopback_base(status.get("arkime_url"))
-    except LabInputError:
-        arkime = None
-    return {"lab_url": loopback_base(status.get("lab_url")), "arkime_url": arkime}
 
 
 def lab_get(base: str, path: str, *, profile: str | None = None,
-            timeout: float = _LAB_TIMEOUT_SECONDS) -> dict:
-    """One bounded GET of a JSON object from the loopback lab; no proxies or redirects."""
-    opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
-    headers = {"Accept": "application/json"}
-    if profile:
-        headers["X-Hermes-Profile"] = profile
+            timeout: float = _LAB_TIMEOUT_SECONDS, instance: str | None = None) -> dict:
+    """One bounded GET of a JSON object from the loopback lab (``hunt_lab.endpoints.get``): no proxies or redirects.
+
+    With ``instance`` (a connected service's), every answer must carry it in X-Hunt-Lab-Instance. A
+    refusal keeps only the lab's fixed code in ``LabInputError.code``.
+    """
     try:
-        with opener.open(request.Request(loopback_base(base) + path, headers=headers), timeout=timeout) as response:
-            data = response.read(MAX_LAB_RESPONSE + 1)
-        if len(data) > MAX_LAB_RESPONSE:
-            _reject()
-        value = json.loads(data)
-    except (error.URLError, OSError, ValueError):
-        _reject()
-    if not isinstance(value, dict):
-        _reject()
-    return value
+        return get(loopback_base(base), path, profile, timeout, instance=instance)
+    except QueryFailure as exc:
+        raise LabInputError(code=exc.detail or str(exc)) from None
 
 
 def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
@@ -328,20 +325,34 @@ def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
     )
 
 
-def collect_tool_input(state_dir, *, data_origin: str | None = None) -> dict:
-    """Return a tool-driven hunt for whatever case the analyst VM has loaded.
+def _hosts_ok(case: dict) -> bool:
+    hosts = case.get("hosts")
+    return (isinstance(hosts, list) and 1 <= len(hosts) <= _MAX_HOSTS
+            and all(isinstance(host, str) and 0 < len(host) <= 100 and host.isprintable() and host.strip() == host
+                    for host in hosts)
+            and len(set(hosts)) == len(hosts))
 
-    Reads only ``/case`` through the read-only runtime status; exports no events or sessions.
-    ``data_origin`` records the operator's approval and must equal the case's declared origin:
-    a case that declares one is refused without it, and a synthetic case is refused with one.
+
+def collect_tool_input(state_dir, *, data_origin: str | None = None, case_id: str | None = None) -> dict:
+    """Return a tool-driven hunt for the loaded case, on the analyst VM or a connected service.
+
+    Reads only ``/case`` from the lab ``resolve_lab`` finds for ``case_id`` (default: the one lab
+    serving a case); exports no events or sessions. ``data_origin`` records the operator's approval and
+    must equal the case's declared origin: a case that declares one is refused without it, and a
+    synthetic case is refused with one. A ``work-connected`` case is accepted only from a connected
+    service, which alone serves one, and may name its ``hosts``.
     """
-    case = lab_get(lab_endpoints(state_dir)["lab_url"], "/case")
+    lab = resolve_lab(state_dir, case_id)
+    case = lab.case
     case_id = case.get("case_id")
+    connected = case.get("data_origin") == WORK_CONNECTED
+    extra = {"network_capture", "data_origin", *(("hosts",) if connected and "hosts" in case else ())}
     if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None
-            or set(case) - {"network_capture", "data_origin"} != _CASE_FIELDS or case.get("network_capture", "none") != "none"
+            or set(case) - extra != _CASE_FIELDS or case.get("network_capture", "none") != "none"
             or ("data_origin" in case and case["data_origin"] not in tuple(DATA_ORIGINS))
             or type(case.get("schema_version")) is not int or case.get("schema_version") != 1
-            or not _case_body_ok(case)):
+            or not _case_body_ok(case) or connected != (lab.origin == "connected")
+            or ("hosts" in case and not _hosts_ok(case))):
         _reject()
     declared = case.get("data_origin")
     if declared != data_origin:

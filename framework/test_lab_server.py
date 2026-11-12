@@ -281,10 +281,23 @@ class EndpointTests(ServerCase):
                                  'aggregations': {'values': {'buckets': [
                                      {'key': 1, 'key_as_string': '2026-03-02T00:00:00Z', 'doc_count': 3}]}}}
         status, value = self.request('/es/aggs?field=@timestamp&interval=1h')
-        histogram = self.elastic.calls[1]['body']['aggs']['values']['date_histogram']
-        self.assertEqual(histogram['hard_bounds'], {'min': START_S * 1000, 'max': END_S * 1000 - 1})
+        body = self.elastic.calls[1]['body']
+        histogram = body['aggs']['values']['date_histogram']
+        # Elasticsearch drops every bucket ending after hard_bounds.max: the window's last hour would vanish.
+        self.assertNotIn('hard_bounds', histogram)
+        self.assertEqual(body['query']['bool']['filter'][-1], {'range': {'@timestamp': {
+            'gte': START_S * 1000, 'lt': END_S * 1000, 'format': 'epoch_millis'}}})
         self.assertIn('sample', self.elastic.calls[1]['body']['aggs']['values']['aggs'])
         self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3, 'sample_event_id': None}])
+
+    def test_a_bucket_sample_without_its_source_cites_nothing(self):
+        sample = {'hits': {'hits': [{'_id': 'doc-1'}]}}
+        self.elastic.response = {'hits': {'total': {'value': 4, 'relation': 'eq'}, 'hits': []},
+                                 'aggregations': {'values': {'buckets': [
+                                     {'key': 'ws-01', 'doc_count': 4, 'sample': sample}]}}}
+        status, value = self.request('/es/aggs?field=host.name')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value['buckets'], [{'key': 'ws-01', 'count': 4, 'sample_event_id': None}])
 
     def test_detect_reports_hosts_bounds_and_sample(self):
         response = es_hits([{'@timestamp': '2026-03-02T01:00:00Z', 'event': {'id': 'evt-000003'},
@@ -641,6 +654,11 @@ class EventSourceTests(ServerCase):
                          ['arkime_sessions3-*', 'hunt-lab-events', 'hunt-lab-intel'])
         self.assertEqual(self.elastic.calls, [])
 
+    def test_intel_reads_through_the_source(self):
+        status, value = self.request('/intel?values=x')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(self.source.calls[-1]['index'], 'hunt-lab-intel')
+        self.assertEqual(self.elastic.calls, [])
 
 class FakeTsharkPipe:
     def __init__(self, data, process):

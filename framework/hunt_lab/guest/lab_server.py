@@ -51,6 +51,7 @@ NO_CAPTURE = 'none'
 DATA_ORIGINS = {
     'public-dataset': ('public research dataset', 'real lab telemetry, no customer data'),
     'work-export': ('work log export', "real telemetry from the operator's environment; unclassified work data"),
+    'work-connected': ('work log connection', "live read-only queries of the operator's work Elastic; unclassified work data"),
 }
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
@@ -458,20 +459,25 @@ def es_aggs_endpoint(server, params):
         if math.ceil((epoch(end) - epoch(start)) / 1000 / INTERVALS[interval]) > MAX_HISTOGRAM_BUCKETS:
             raise ValueError('interval too fine for the case window')
         aggregation = {'date_histogram': {'field': '@timestamp', 'fixed_interval': interval, 'min_doc_count': 1,
-                                          'format': "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                                          'hard_bounds': {'min': epoch(start), 'max': epoch(end) - 1}}}
+                                          'format': "yyyy-MM-dd'T'HH:mm:ss'Z'"}}
+        # The window bounds the events, not hard_bounds: Elasticsearch (8.15.3 and the guest's 8.19.23) drops every
+        # bucket that ends after hard_bounds.max, so the window's last interval, or all of a window shorter than one
+        # interval, came back empty.
+        bounds = [{'range': {'@timestamp': {'gte': epoch(start), 'lt': epoch(end), 'format': 'epoch_millis'}}}]
     elif field in AGG_FIELDS:
         if 'interval' in values:
             raise ValueError('interval applies only to @timestamp')
         aggregation = {'terms': {'field': field, 'size': size}}
+        bounds = []
     else:
         raise BackendQueryError('field_not_allowed')
     source = server.source
     # One citable event per bucket, so a per-category sweep of a process needs no second search.
     aggregation['aggs'] = {'sample': {'top_hits': {'size': 1, '_source': ['event.id'], 'sort': source.sort('asc')}}}
+    query = source.event_query(server.case, values.get('q'))
+    query['bool']['filter'] += bounds
     response = source.search(EVENT_INDEX, {
-        'query': source.event_query(server.case, values.get('q')), 'size': 0, 'track_total_hits': True,
-        'timeout': '10s', 'aggs': {'values': aggregation}})
+        'query': query, 'size': 0, 'track_total_hits': True, 'timeout': '10s', 'aggs': {'values': aggregation}})
     result = response['aggregations']['values']
     buckets = [{'key': bucket.get('key_as_string', bucket['key']), 'count': bucket['doc_count'],
                 'sample_event_id': sample_event_id(source, bucket)}
@@ -485,7 +491,10 @@ def es_aggs_endpoint(server, params):
 
 def sample_event_id(source, bucket):
     hits = bucket.get('sample', {}).get('hits', {}).get('hits', [])
-    value = pick(source.document(hits[0]), ['event', 'id']) if hits else MISSING
+    if not hits:
+        return None
+    # A sample returned without _source cites nothing here; a source citing by _id still cites it.
+    value = pick(source.document({'_source': {}, **hits[0]}), ['event', 'id'])
     return None if value is MISSING else value
 
 
