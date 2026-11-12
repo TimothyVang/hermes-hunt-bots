@@ -1,4 +1,4 @@
-"""Bounded, secret-safe protocol helpers for the optional Envision bridge."""
+"""Bounded, secret-safe JSON and HTTP helpers for the benchmark (benchmark_contracts, benchmark_models, benchmark_typesafe)."""
 import ipaddress
 import json
 import math
@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+import benchmark_paths
 from langchain_adapter import AdapterProblem, validate_base_url
 
 

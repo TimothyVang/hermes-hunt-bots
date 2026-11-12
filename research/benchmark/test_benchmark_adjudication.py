@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 from unittest import mock
 
+import benchmark_paths
 import bot
 from benchmark_adjudication import adjudication_template, load_truths, score_experiment
 from benchmark_contracts import AUTO_FREEZE_ACTOR, FREEZE_POLICY

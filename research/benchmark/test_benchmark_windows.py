@@ -8,6 +8,7 @@ from unittest import mock
 
 import benchmark_windows as windows
 from benchmark_contracts import BenchmarkError, canonical_bytes, decode_json, digest_bytes
+from benchmark_paths import SOURCE_TREE
 
 
 def manifest():
@@ -57,7 +58,7 @@ def session_check(process_ids=(), sessions=0):
 
 
 # The executor kit is separately supplied and intentionally not bundled (see benchmarks/README.md).
-KIT_WORKER = Path(__file__).resolve().parent.parent / 'hunt-range' / 'benchmark' / windows.WORKER
+KIT_WORKER = SOURCE_TREE / 'hunt-range' / 'benchmark' / windows.WORKER
 
 class WindowsConfigurationTests(unittest.TestCase):
     def test_only_fixed_actions_are_selected(self):

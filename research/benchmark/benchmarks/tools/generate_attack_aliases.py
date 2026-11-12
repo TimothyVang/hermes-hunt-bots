@@ -26,7 +26,7 @@ Output is canonical JSON (sorted keys, compact UTF-8, no trailing newline), so
 rerunning on the same bundle is byte-identical. After regenerating, update
 `benchmark_attack.DATA_SHA256` to the printed digest.
 
-Usage, from framework/:
+Usage, from research/benchmark/:
   py -3 -B benchmarks/tools/generate_attack_aliases.py --provenance DIR/provenance.json
   py -3 -B benchmarks/tools/generate_attack_aliases.py --provenance FILE --output NEW_FILE
 No network access.

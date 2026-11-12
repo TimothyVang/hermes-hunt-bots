@@ -13,8 +13,9 @@ from unittest import mock
 
 import benchmark_linux as driver
 from benchmark_contracts import BenchmarkError, canonical_bytes
+from benchmark_paths import SOURCE_TREE
 
-WORKER_PATH = Path(__file__).resolve().parents[1] / 'hunt-range' / 'benchmark' / 'linux_worker.py'
+WORKER_PATH = SOURCE_TREE / 'hunt-range' / 'benchmark' / 'linux_worker.py'
 worker = None
 if WORKER_PATH.is_file():
     spec = importlib.util.spec_from_file_location('benchmark_linux_worker_fixture', WORKER_PATH)

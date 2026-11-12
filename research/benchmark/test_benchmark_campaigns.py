@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import benchmark_campaigns as campaigns
 from benchmark_contracts import BenchmarkError, canonical_bytes, campaign_manifest_digest, digest_bytes
+from benchmark_paths import SOURCE_TREE
 from benchmark_store import BenchmarkStore
 
 
@@ -429,7 +430,7 @@ class CampaignTests(unittest.TestCase):
         self.assertFalse(result['live_verified'])
 
     def test_shipped_aws_cost_bound_is_unknown_and_blocks_before_state(self):
-        shipped = Path(__file__).resolve().parents[1] / 'hunt-range' / 'benchmark' / 'recipes.json'
+        shipped = SOURCE_TREE / 'hunt-range' / 'benchmark' / 'recipes.json'
         if not shipped.is_file():
             self.skipTest('separate range kit is intentionally not bundled')
         self.use_aws(limit=1000000, recipes=shipped.read_bytes())

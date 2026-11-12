@@ -38,3 +38,4 @@ docker/entrypoint.sh text eol=lf
 
 # hermes-hunt-bots: framework/ holds hash-pinned fixtures and contracts; store and check out exact bytes.
 /framework/** -text
+/research/benchmark/** -text

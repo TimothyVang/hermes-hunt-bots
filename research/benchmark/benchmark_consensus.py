@@ -701,7 +701,7 @@ def _new_path(path, field):
     target = Path(os.path.abspath(os.fspath(path)))
     if os.path.lexists(target):
         _fail('output_exists', field)
-    if otrf._inside(target.resolve(), otrf.HERE):
+    if otrf._in_source(target.resolve()):
         _fail('output_in_source_tree', field)
     if not target.parent.is_dir():
         _fail('invalid_directory', field)

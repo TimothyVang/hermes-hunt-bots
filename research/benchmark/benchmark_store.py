@@ -15,6 +15,7 @@ import time
 import uuid
 from decimal import Decimal
 
+import benchmark_paths
 from benchmark_contracts import (
     AUTO_ADVANCE_ACTOR, AUTO_FREEZE_ACTOR, AUTO_FREEZE_NOTE, FREEZE_POLICY, BenchmarkError,
     REVIEW_POLICY, ROLE_IDS, STAGE_KEYS, call_cost_bound, canonical_bytes, campaign_manifest_digest,
