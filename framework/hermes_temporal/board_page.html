@@ -123,6 +123,7 @@ ol.dec.loose li{margin-bottom:8px}
 .ri .t{font-size:13px;line-height:18px;color:var(--ink-1)}
 .ri .t .r{font-size:12px;color:var(--ink-3)}
 .ri .s{font-size:12px;line-height:16px;color:var(--ink-3)}
+.ri .s.flg{color:var(--ink-2)}
 .sep{height:var(--hair);background:var(--line-2);margin:8px 16px;flex:none}
 .main{min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .main > .pad-end{flex:none;height:24px}
@@ -183,10 +184,25 @@ ol.dec.loose li{margin-bottom:8px}
 .tlx{display:grid;grid-template-columns:140px minmax(0,1fr) 128px;align-items:center}
 .tlx .track{position:relative;height:32px;background:linear-gradient(var(--line-3),var(--line-3)) 0 50%/100% .5px no-repeat}
 .tlx .ticks{position:relative;height:24px}
-.tlx .ticks span{position:absolute;top:0;transform:translateX(-50%)}
+.tlx .ticks span{position:absolute;top:0;width:40px;text-align:center;white-space:nowrap}
 .dot{position:absolute;top:13px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--ink-2);padding:0}
 .dot.on{width:10px;height:10px;margin-left:-5px;top:11px;background:var(--accent)}
-.list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(0,1fr) 180px;gap:12px}
+.list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(160px,1fr) 180px;gap:12px}
+/* The summary keeps at least 160px: a narrower list drops Category, then Host (both stay in the event's details),
+   then Cited by, rather than letting the columns overlap. */
+#ev-list{container-type:inline-size}
+@container (max-width:791px){
+ .list > .li.evr{grid-template-columns:104px 96px 96px minmax(160px,1fr) 120px}
+ .list > .li.evr > :nth-child(4){display:none}
+}
+@container (max-width:647px){
+ .list > .li.evr{grid-template-columns:104px 96px minmax(160px,1fr) 120px}
+ .list > .li.evr > :nth-child(3){display:none}
+}
+@container (max-width:539px){
+ .list > .li.evr{grid-template-columns:104px 96px minmax(0,1fr)}
+ .list > .li.evr > :nth-child(6){display:none}
+}
 /* toasts */
 #toasts{position:fixed;right:16px;bottom:40px;display:flex;flex-direction:column;gap:8px;z-index:30;pointer-events:none}
 #app[data-v="case"] ~ #toasts,#app[data-v="agent"] ~ #toasts,#app[data-v="evidence"] ~ #toasts{right:336px}
@@ -234,10 +250,12 @@ ol.dec.loose li{margin-bottom:8px}
 #app.ph .wv.sub{grid-template-columns:20px minmax(72px,1fr) minmax(0,auto) 48px}
 #app.ph .wv.sub > :nth-child(4){display:none}
 #app.ph .wv.sub > :nth-child(5){display:none}
+#app.ph .wv.sub > .wv-flag{display:block;grid-row:2;grid-column:2 / -1}
+#app.ph .wv.sub:has(> .wv-flag){row-gap:2px}
 #app.ph .cl{grid-template-columns:minmax(0,1fr);gap:4px}
 #app.ph .evr{grid-template-columns:96px minmax(0,1fr)}
 #app.ph .evr > :nth-child(2),#app.ph .evr > :nth-child(3),#app.ph .evr > :nth-child(4),#app.ph .evr > :nth-child(6){display:none}
-#app.ph .tlx{grid-template-columns:96px minmax(0,1fr) 0}
+#app.ph .tlx{grid-template-columns:96px minmax(0,1fr) 12px}
 #app.ph .tlx > :nth-child(3){display:none}
 #app.ph .ag-head{flex-wrap:wrap}
 #app.ph ~ #toasts{right:12px;left:12px;bottom:84px;align-items:stretch}
@@ -716,19 +734,20 @@ function renderCaseRail(sel){
   hd.style.flex = "none";
   const list = h("div", "rail-scroll", null, {"data-sk":"rail-team"});
   for (const m of idx.team){
-    const ms = (m.steps || []).map((i) => state.steps[i]).filter(Boolean);
+    const ms = (m.steps || []).map((i) => state.steps[i]).filter(Boolean), fs = flagSummary(ms);
     const openStep = (m.open_steps || []).find((x) => GATE.has(x.state)) || (m.open_steps || [])[0];
     let subText;
-    if (openStep){ const os = idx.byId.get(openStep.step_id); subText = openStep.step_id + " \u00b7 " + (os ? kindOf(os) : words(openStep.state)); }
+    if (openStep){ const os = idx.byId.get(openStep.step_id); subText = openStep.step_id + " \u00b7 " + (os ? kindOf(os) : words(openStep.state)) + (fs ? " \u00b7 " + fs.text : ""); }
     else if (ms.length && ms.every((s) => s.state === "pending" || s.state === "not_reached")) subText = words(ms[0].state === "not_reached" ? "not reached" : "pending");
     else {
-      // The dropped count goes before the claims, so the narrow rail cuts the claim count, not the drop.
+      // The dropped and flagged counts go before the claims, so the narrow rail cuts the claim count, not them;
+      // with a flag the line may take two lines.
       const dropped = ms.filter((s) => kindOf(s) === "dropped").length;
-      subText = plural(ms.length, "step") + (dropped ? " \u00b7 " + dropped + " dropped" : "") + " \u00b7 " + plural(m.claims || 0, "claim");
+      subText = plural(ms.length, "step") + (dropped ? " \u00b7 " + dropped + " dropped" : "") + (fs ? " \u00b7 " + fs.text : "") + " \u00b7 " + plural(m.claims || 0, "claim");
     }
     const on = !!sel.step && sel.step.profile === m.profile;
-    const b = add(h("button", "ri" + (on ? " on" : ""), null, {type:"button", title:m.role + " \u00b7 " + m.profile}), h("span", "mg", m.monogram || "?"),
-      add(h("div", "grow"), h("div", "t ell", m.role || m.profile), h("div", "s ell", subText)), glyph(rollKind(ms)));
+    const b = add(h("button", "ri" + (on ? " on" : ""), null, {type:"button", title:m.role + " \u00b7 " + m.profile + (fs ? "\n" + fs.title : "")}), h("span", "mg", m.monogram || "?"),
+      add(h("div", "grow"), h("div", "t ell", m.role || m.profile), h("div", "s " + (fs ? "clamp2" : "ell"), subText)), glyph(rollKind(ms)));
     b.addEventListener("click", () => {
       const pick = (openStep && idx.byId.get(openStep.step_id)) || ms.slice().reverse().find((s) => s.state !== "pending" && s.state !== "not_reached") || ms[0];
       if (pick){ selectCaseStep(pick); renderView(); }
@@ -780,20 +799,52 @@ function idList(ids, key, cap){
   if (ids.length > cap) box.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + num(ids.length), () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
   return box;
 }
+// Why a step's citations are not counted, or null when they are.
+function notCountedWhy(f){
+  if (!f || !f.handoff || f.counted !== false) return null;
+  return f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
+    : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
+    : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
+    : "Its citations are not counted.";
+}
+function unknownIdsLead(){ return fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"; }
 // Lines above a step's claims: why its citations are not counted, and cited IDs the board could not find.
 function handoffNotes(s){
   const f = idx.feedBy.get(s.step_id), out = [];
   if (!f || !f.handoff) return out;
-  if (f.counted === false){
-    const why = f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
-      : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
-      : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
-      : "Its citations are not counted.";
-    out.push(h("div", "hnote", why));
-  }
+  const why = notCountedWhy(f);
+  if (why) out.push(h("div", "hnote", why));
   const unk = f.unknown_cited_ids || [];
-  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"), idList(unk, "unk:" + s.step_id, 24)));
+  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, unknownIdsLead()), idList(unk, "unk:" + s.step_id, 24)));
   return out;
+}
+// The same flags in a few words for the rows that list a step, with the full lines as the tooltip.
+function stepFlags(s){
+  const f = idx.feedBy.get(s.step_id), short = [], long = [];
+  if (!f) return null;
+  if (f.handoff){
+    if (f.counted === false && f.state !== "awaiting_review"){ short.push("not counted"); long.push(notCountedWhy(f)); }
+    const unk = f.unknown_cited_ids || [];
+    if (unk.length){
+      short.push(plural(unk.length, "unknown ID"));
+      long.push(unknownIdsLead() + " " + unk.slice(0, 24).join(", ") + (unk.length > 24 ? " and " + num(unk.length - 24) + " more" : "") + ".");
+    }
+  } else if (f.result_status === "completed"){ short.push("handoff not parsed"); long.push(noHandoffText(s)); }
+  // A result that is not completed has no output to parse; a dropped step's cause already names why.
+  else if (f.result_status && !(kindOf(s) === "dropped" && cause(s))){ short.push("result " + words(f.result_status)); long.push(noHandoffText(s)); }
+  return short.length ? {text:short.join(" \u00b7 "), title:long.join("\n")} : null;
+}
+function flagEl(s, cls, tag, style){ const fl = stepFlags(s); return fl ? h(tag || "span", cls, fl.text, {title:fl.title, style:style || null}) : null; }
+// A step's state and flags for the search and go-to palettes.
+function stepMeta(s){
+  const fl = stepFlags(s);
+  return {meta:stateWords(s) + (fl ? " \u00b7 " + fl.text : ""), title:[cause(s), fl && fl.title].filter(Boolean).join("\n") || null};
+}
+// Several steps' flags as one count, for rows that stand for those steps (a collapsed wave, a role).
+function flagSummary(steps){
+  const lines = [];
+  for (const s of steps){ const fl = stepFlags(s); if (fl) lines.push(s.name + ": " + fl.text); }
+  return lines.length ? {text:lines.length + " flagged", title:lines.join("\n")} : null;
 }
 function noHandoffShort(s){
   const f = idx.feedBy.get(s.step_id);
@@ -822,6 +873,9 @@ function gateCard(w){
   if (gated.length > 1) lead += " " + (gated.length - 1) + " more step" + (gated.length > 2 ? "s wait" : " waits") + " in this wave.";
   if (nw) lead += " " + waveRep(nw).name + " in wave " + nw.wave + " waits for the gate decision.";
   card.appendChild(h("p", "wrap", lead, {style:"margin:10px 0 10px;font-size:14px;line-height:20px;color:var(--ink-2)"}));
+  const gf = gated.map((x) => [x, stepFlags(x)]).filter((x) => x[1]);
+  if (gf.length) card.appendChild(h("div", "sm sec wrap", gf.map(([x, fl]) => (gated.length > 1 ? x.name + ": " : "") + fl.text).join(" \u00b7 "),
+    {style:"margin:-4px 0 10px", title:gf.map(([, fl]) => fl.title).join("\n")}));
   if (decisions.length){
     card.appendChild(h("div", "sm mut", s.name + " also requested " + plural(decisions.length, "decision") + " in its handoff:", {style:"margin:0 0 6px"}));
     const ol = h("ol"); decisions.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 3, "gd:" + s.step_id + ":" + i)))); card.appendChild(ol);
@@ -843,8 +897,13 @@ function waveRowEl(r, on){
         steps.filter((s) => kindOf(s) === "dropped" && cause(s)).map((s) => s.name + ": " + cause(s))).join("\n")}),
       (terminal ? steps.filter((s) => s.state === "done").length + " done" : plural(steps.length, "step")) + " \u00b7 ", glyph("dropped"), dropped + " dropped")
     : h("span", "sm mut", plural(steps.length, "step"));
+  // A one-step wave never expands, so it carries its step's flag; a collapsed wave counts its flagged steps.
+  // The flag follows the monograms and names; when they do not all fit on one line the flag moves to a second line
+  // rather than being cut, and the names shrink (all of them in the tooltip) only if they alone are too long.
+  const fl = steps.length === 1 ? stepFlags(steps[0]) : r.multi && !r.expanded ? flagSummary(steps) : null;
+  const who = add(h("span", "row", null, {style:"gap:8px"}), mgs, h("span", "ell sec", names, {title:names}));
   const wv = add(h("div", "wv"), glyph(rollKind(steps)), h("span", "b5", "Wave " + w.wave),
-    add(h("span", "row", null, {style:"gap:8px"}), mgs, h("span", "ell sec", names, {title:names})),
+    fl ? add(h("span", "row", null, {style:"gap:2px 8px;flex-wrap:wrap"}), who, h("span", "sm sec ell", "\u00b7 " + fl.text, {title:fl.title, style:"flex:none;max-width:100%"})) : who,
     stepsCell,
     h("span", "sm mut num", gated || cc === null || steps.every((s) => s.state !== "done") ? "" : plural(cc, "claim")),
     waveTimeEl(w));
@@ -858,7 +917,7 @@ function stepRowEl(r, on){
   const why = kindOf(s) === "dropped" ? cause(s) : "";
   const st = stEl(kindOf(s), stateWords(s));
   if (why){ st.appendChild(h("span", "cause", ": " + why)); st.title = stateWords(s) + ": " + why; }
-  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, h("span"),
+  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, flagEl(s, "sm sec ell wv-flag") || h("span"),
     h("span", "sm mut num", s.state === "done" && typeof s.claims === "number" ? plural(s.claims, "claim") : ""), timeEl(s, "sm sec num"));
   const li = add(h("div", "li btn subrow" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1"}), wv);
   li.addEventListener("click", () => { if (ui.caseKey === r.key) openAgent(s); else { ui.caseKey = r.key; renderView(); } });
@@ -907,7 +966,9 @@ function renderCaseMain(sel){
   const aside = open ? ["wave " + open.wave].concat(c.blocked ? [c.blocked + " blocked"] : [], c.working ? [c.working + " working"] : [], c.dropped ? [c.dropped + " dropped"] : []).join(" \u00b7 ")
     : [plural(idx.waveList.length, "wave"), plural(steps.length, "step"), plural(idx.claims.length, "claim"), plural(idx.verdicts, "verdict")].join(" \u00b7 ");
   add(wsec, add(h("div", "sec-h"), "Waves", h("span", "aside", aside)));
-  const list = h("div", "box list" + (idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) ? " wv-wide" : ""), null, {id:"case-list"});
+  // The wide fourth column fits a wave's drop count and a step's flags.
+  const wide = idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) || steps.some(stepFlags);
+  const list = h("div", "box list" + (wide ? " wv-wide" : ""), null, {id:"case-list"});
   for (const r of sel.rows) list.appendChild(r.sub ? stepRowEl(r, r.key === ui.caseKey) : waveRowEl(r, r.key === ui.caseKey));
   if (!sel.rows.length) list.appendChild(h("div", "empty", "No steps: the input could not be read."));
   wsec.appendChild(list);
@@ -1028,9 +1089,8 @@ function agentList(){ const o = agentOrder(); return {list:ui.filter ? o.list.fi
 function agentSub(s, grouped){
   const k = kindOf(s);
   if (!grouped){
-    const f = idx.feedBy.get(s.step_id);
     if (k === "dropped" && cause(s)) return "wave " + s.wave + " \u00b7 " + s.state + " \u00b7 " + cause(s);
-    return "wave " + s.wave + " \u00b7 " + (f && !f.handoff && f.parse_error ? "handoff not parsed" : typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
+    return "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
   }
   if (k === "working" || k === "done") return add(h("span"), k + " \u00b7 ", timeEl(s));
   if (k === "dropped") return s.state + " \u00b7 " + (cause(s) || s.profile);
@@ -1048,7 +1108,7 @@ function renderAgentRail(selId){
     const sub = agentSub(s, o.grouped);
     const b = add(h("button", "ri sm8" + (on ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(on), "data-step":s.step_id, title:s.name + " \u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s) + (cause(s) ? " \u00b7 " + cause(s) : "")}),
       glyph(kindOf(s)), add(h("div", "grow"), add(h("div", "t ell"), s.name + " ", h("span", "r", "\u00b7 " + (s.monogram || ""))),
-        add(h("div", "s " + (k === "dropped" && cause(s) ? "clamp3" : "ell")), sub)));
+        add(h("div", "s " + (k === "dropped" && cause(s) ? "clamp3" : "ell")), sub), flagEl(s, "s flg ell", "div")));
     b.addEventListener("click", () => {
       if (effView() === "agent" || phone()) openAgent(s);
       else { ui.agentSel = s.step_id; ui.paneFocus = 0; renderView(); }
@@ -1107,7 +1167,9 @@ function agentPane(s, full, focus){
     else body.appendChild(h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:6px 12px"}));
     if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 12px 0"}));
     const ho = handoff(s);
-    body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") : noHandoffText(s), {style:"padding:12px 12px 6px"}));
+    const fl = ho ? stepFlags(s) : null;
+    body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") + (fl ? " \u00b7 " + fl.text : "") : noHandoffText(s),
+      {style:"padding:12px 12px 6px", title:fl ? fl.title : null}));
   }
   pane.appendChild(body);
   return pane;
@@ -1149,7 +1211,8 @@ function paneModel(){
 function renderAgentsMain(){
   const m = $("main"); clear(m);
   const model = paneModel();
-  if (!model.length){ m.appendChild(h("div", "empty", ui.filter ? "No " + ui.filter + " agents." : "No steps: the input could not be read.")); return; }
+  // The rail already says why the list is empty (and on a phone only the rail shows); say it once.
+  if (!model.length) return;
   if (ui.paneFocus >= model.length) ui.paneFocus = 0;
   const grid = h("div", "panes");
   const live = model.find((p) => p.type === "live"), line = !!live && !liveOwner(live.profile) && !browserOf(live.profile);
@@ -1279,11 +1342,6 @@ function renderEvidenceMain(sel, list){
   const box = h("div", "box", null, {style:"padding:8px 0"});
   const t0 = tl.start_ms, t1 = tl.end_ms;
   const ticks = h("div", "ticks");
-  if (t0 !== null && t0 !== undefined && t1 > t0){
-    const span = t1 - t0, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
-    const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9)) || steps[steps.length - 1];
-    for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t1; x += stepMs) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16), {style:"left:" + ((x - t0) / span * 100) + "%"}));
-  }
   box.appendChild(add(h("div", "tlx", null, {style:"height:24px;align-items:start"}), h("span", "th", "Host", {style:"padding-left:12px"}), ticks, h("span")));
   const byHost = new Map();
   for (const e of idx.events){ const k = e.host || "(no host)"; if (!byHost.has(k)) byHost.set(k, []); byHost.get(k).push(e); }
@@ -1329,6 +1387,20 @@ function renderEvidenceMain(sel, list){
   es.appendChild(lb);
   m.appendChild(es);
   m.appendChild(h("div", "pad-end"));
+  // Ticks go in once the page is laid out (a resize re-renders), so their step can follow the track's width.
+  if (t0 !== null && t0 !== undefined && t1 > t0) fillTicks(ticks, t0, t1);
+}
+// Labels sit in 40px boxes (the text is about 32px), centre on their time and stay inside the track, which moves an end
+// label inward by up to 20px. The step is the finest whose clamped boxes are at least 40px apart, so no two labels touch.
+// Without a layout (width 0) only the count limit applies.
+function fillTicks(ticks, t0, t1){
+  const span = t1 - t0, width = ticks.clientWidth, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
+  const times = (step) => { const out = []; for (let x = Math.ceil(t0 / step) * step; x <= t1; x += step) out.push(x); return out; };
+  const left = (x) => Math.min(Math.max(0, (x - t0) / span * width - 20), width - 40);
+  const fits = (step) => times(step).every((x, i, a) => !i || left(x) - left(a[i - 1]) >= 40);
+  const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9) && (!width || fits(x))) || steps[steps.length - 1];
+  for (const x of times(stepMs)) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16),
+    {style:"left:clamp(0px, calc(" + ((x - t0) / span * 100) + "% - 20px), calc(100% - 40px))"}));
 }
 function renderEvidenceDetails(e){
   const d = $("details"); clear(d);
@@ -1382,6 +1454,7 @@ function renderInbox(){
       h("div", "b6 ell", s.name + " \u00b7 wave " + w.wave, {style:"margin-top:10px;font-size:15px;line-height:22px"}),
       h("p", "wrap", (s.state === "awaiting_review" ? "The handoff waits for review." : "Waits for approval to start.") + (nw ? " " + waveRep(nw).name + " in wave " + nw.wave + " waits for the gate decision." : "") + (dec ? " " + plural(dec, "requested decision") + " in its handoff." : ""),
         {style:"margin:4px 0 0;font-size:14px;line-height:20px;color:var(--ink-2)"}),
+      flagEl(s, "sm sec wrap", "div", "margin-top:6px"),
       h("div", "sm mut", "Decide in Hermes \u2192 Human gates", {style:"margin-top:10px"})));
     card.addEventListener("click", () => openAgent(s));
     m.appendChild(card);
@@ -1393,7 +1466,7 @@ function renderInbox(){
     for (const s of list){
       const text = sub(s), wrap = kindOf(s) === "dropped" && cause(s);
       const b = add(h("button", "li", null, {type:"button", style:"padding:10px 16px;gap:12px"}), glyph(kindOf(s)),
-        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut " + (wrap ? "clamp3" : "ell"), text, {title:text})), timeEl(s, "sm mut"));
+        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut " + (wrap ? "clamp3" : "ell"), text, {title:text}), flagEl(s, "sm sec ell", "div")), timeEl(s, "sm mut"));
       b.addEventListener("click", () => openAgent(s));
       l.appendChild(b);
     }
@@ -1402,7 +1475,7 @@ function renderInbox(){
   const lastTool = (s) => { const c = stepCalls(s).calls; return c.length ? c[c.length - 1].tool : null; };
   group("Working", steps.filter((s) => s.state === "working"), (s) => roleOf(s) + (lastTool(s) ? " \u00b7 " + lastTool(s) : ""), false);
   group("Done", steps.filter((s) => s.state === "done").sort((a, b) => ((b.timing || {}).ended_ms || 0) - ((a.timing || {}).ended_ms || 0) || b.index - a.index),
-    (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"), true);
+    (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims"), true);
   group("Waiting", steps.filter((s) => kindOf(s) === "idle"), (s) => "wave " + s.wave + " \u00b7 " + stateWords(s).replace(/^idle \u00b7 /, ""), true);
   group("Dropped", steps.filter((s) => kindOf(s) === "dropped"), (s) => "wave " + s.wave + " \u00b7 " + s.state + (cause(s) ? " \u00b7 " + cause(s) : ""), true);
   m.appendChild(h("div", "pad-end"));
@@ -1579,10 +1652,10 @@ function paletteItems(q){
       const kids = w.steps.filter((s) => hit(s.name + " " + s.step_id + " " + roleOf(s) + " wave " + w.wave));
       if (!kids.length) continue;
       items.push({group:"Waves", label:"Wave " + w.wave, glyph:rollKind(w.steps), meta:roll, act:() => { selectCaseStep(waveRep(w)); go({view:"case"}); }});
-      for (const s of kids) items.push({group:"Waves", label:s.name, sub:roleOf(s), glyph:kindOf(s), meta:stateWords(s), title:cause(s) || null, ind:true, act:() => openAgent(s)});
+      for (const s of kids) items.push(Object.assign({group:"Waves", label:s.name, sub:roleOf(s), glyph:kindOf(s), ind:true, act:() => openAgent(s)}, stepMeta(s)));
     }
   } else {
-    for (const s of state.steps || []) if (hit([s.name, s.step_id, roleOf(s), s.profile, stateWords(s)].join(" "))) items.push({group:"Agents", label:s.name, sub:roleOf(s), glyph:kindOf(s), meta:stateWords(s), title:cause(s) || null, act:() => openAgent(s)});
+    for (const s of state.steps || []) if (hit([s.name, s.step_id, roleOf(s), s.profile, stateWords(s)].join(" "))) items.push(Object.assign({group:"Agents", label:s.name, sub:roleOf(s), glyph:kindOf(s), act:() => openAgent(s)}, stepMeta(s)));
     if (ql) for (const x of idx.claims){
       const c = x.c;
       if (hit([c.claim_id, c.kind, c.statement, (c.cited_events || []).join(" ")].join(" "))) items.push({group:"Claims", label:c.claim_id || "(no id)", mono:true, sub:c.statement || "", meta:c.kind || "",
@@ -1657,7 +1730,7 @@ function focusedAgent(){
 function toast(s){
   const box = $("toasts");
   const t = add(h("button", "toast enter", null, {type:"button", title:"Open " + s.name}), glyph("done"),
-    add(h("div", "grow"), h("div", "b5 ell", s.name + " done"), h("div", "sm mut ell", "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"))));
+    add(h("div", "grow"), h("div", "b5 ell", s.name + " done"), h("div", "sm mut ell", "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims")), flagEl(s, "sm sec ell", "div")));
   t.addEventListener("click", () => { t.remove(); openAgent(s); });
   box.appendChild(t);
   while (box.children.length > 3) box.firstChild.remove();

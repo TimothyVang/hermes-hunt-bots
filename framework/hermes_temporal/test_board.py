@@ -277,6 +277,42 @@ class BoardDerivationTests(unittest.TestCase):
             handoff, error = parse_handoff(output)
             self.assertTrue(handoff is None or isinstance(handoff["claims"], list), error)
 
+    def test_rows_name_an_unparsed_or_incomplete_result_in_any_state(self) -> None:
+        review = _mid_run(self.child, 3, "awaiting_review", "hypotheses")
+        review["results"][2] = dict(review["results"][2], output="Notes first.\n{\"claims\": [")
+        stopped = _mid_run(self.child, 5, "handoff_validation_rejected", "intel", "COMPLETED")
+        stopped["results"][4] = dict(stopped["results"][4], output="not a handoff")
+        unknown = _mid_run(self.child, 3, "needs_reconciliation", "hypotheses")
+        unknown["results"][2] = dict(unknown["results"][2], status="unknown", output="", reason_code="execution_error")
+        for child, step_id, state_name, flag, title in (
+                (review, "hypotheses", "awaiting_review", "handoff not parsed", "Handoff not parsed: "),
+                (stopped, "intel", "stopped", "handoff not parsed", "Handoff not parsed: "),
+                (unknown, "hypotheses", "awaiting_review", "result unknown", "Result unknown (execution_error).")):
+            state = build_state(self.raw, self.parent, child)
+            self.assertEqual(next(step["state"] for step in state["steps"] if step["step_id"] == step_id), state_name)
+            rail = _render_page(state, "agents")["rail"]
+            self.assertEqual(rail["text"].count(flag), 1, (step_id, rail["text"]))
+            self.assertTrue(any(line.startswith(title) for line in rail["titles"]), (step_id, rail["titles"]))
+
+    def test_serial_wave_rows_gate_card_and_needs_you_card_carry_the_steps_flag(self) -> None:
+        child = _mid_run(self.child, 3, "awaiting_review", "hypotheses")
+        child["results"][2] = dict(child["results"][2], output="Notes first.\n{\"claims\": [")
+        child["results"][1] = dict(child["results"][1], output="[1, 2]")
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual([step["wave"] for step in state["steps"][:3]], [1, 2, 3])
+        case = _render_page(state, "case")["main"]
+        # Each serial wave is one step whose row never expands, so the wave row itself names the flag.
+        for name in ("Evidence", "Hypotheses"):
+            self.assertIn(name + "\u00b7 handoff not parsed", case["text"])
+        self.assertNotIn("Scope\u00b7", case["text"])
+        self.assertTrue(any(title.startswith("Handoff not parsed: ") for title in case["titles"]), case["titles"])
+        # The gate card above the waves names the waiting step's flag too.
+        self.assertIn("waits for human review.", case["text"])
+        self.assertEqual(case["text"].count("handoff not parsed"), 3, case["text"])
+        # On a phone the Needs you card names it between its text and "Decide in Hermes".
+        inbox = _render_page(state, "", phone=True)["main"]
+        self.assertIn("handoff not parsedDecide in Hermes", inbox["text"])
+
     def test_fenced_output_with_leading_prose_parses(self) -> None:
         body = self.child["results"][0]["output"]
         handoff, error = parse_handoff("I checked the case.\n```json\n" + body + "\n```")
@@ -291,6 +327,13 @@ class BoardDerivationTests(unittest.TestCase):
         broken = build_state({"scope": "x"}, None, None)
         self.assertTrue(broken["input_errors"])
         self.assertEqual(broken["steps"], [])
+
+    def test_unreadable_input_says_no_steps_once_in_agents(self) -> None:
+        broken = build_state({"scope": "x"}, None, None)
+        for phone in (False, True):
+            page = _render_page(broken, "agents", phone=phone)
+            shown = page["rail"]["text"] + page["main"]["text"]
+            self.assertEqual(shown.count("No steps: the input could not be read."), 1, shown)
 
     def test_serial_round_keeps_its_shape_and_gains_the_wave_keys_with_serial_defaults(self) -> None:
         child = _mid_run(self.child, 5, "awaiting_review", "intel")
@@ -1099,6 +1142,42 @@ class ParallelBoardTests(unittest.TestCase):
         rail = _render_page(state, "agents")["rail"]
         self.assertIn("wave 1 \u00b7 dropped \u00b7 native nonzero: " + cause, rail["text"])
         self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero", rail["text"])
+
+    def test_the_page_flags_uncounted_unknown_and_unparsed_handoffs_where_it_lists_the_step(self) -> None:
+        child = _wave_child({"scope": "done", "evidence": "done", "hypotheses": ("dropped", "timeout"),
+                             "network": "done", "intel": "working"},
+                            [self.result(0), self.result(1), self.result(2),
+                             self.result(3, output="Notes first.\n{\"claims\": [")])
+        state = build_state(self.raw, self.parent, child)
+        feed = {item["step_id"]: item for item in state["feed"]}
+        self.assertEqual((feed["hypotheses"]["counted"], feed["hypotheses"]["handoff"]["step_id"]), (False, "hypotheses"))
+        self.assertIsNone(feed["network"]["handoff"])
+        feed["evidence"]["unknown_cited_ids"] = ["evt-9991", "evt-9992"]
+        unknown = "Cites IDs not in the supplied events: evt-9991, evt-9992."
+        dropped = "Step dropped (timeout); the hunt continued without it and its citations are not counted."
+        for view, phone, region in (("agents", False, "rail"), ("", True, "main"), ("case", False, "main")):
+            shown = _render_page(state, view, phone=phone)[region]
+            for flag in ("not counted", "2 unknown IDs", "handoff not parsed"):
+                self.assertIn(flag, shown["text"], (view, region))
+            for title in (unknown, dropped):
+                self.assertIn(title, shown["titles"], (view, region))
+        # Only the dropped step's handoff is flagged as not counted; counted handoffs carry no flag.
+        self.assertEqual(_render_page(state, "agents")["rail"]["text"].count("not counted"), 1)
+
+    def test_a_collapsed_wave_and_its_role_count_their_flagged_steps(self) -> None:
+        child = _wave_child(dict.fromkeys(STEP_IDS[:5], "done"),
+                            [self.result(0), self.result(1), self.result(2),
+                             self.result(3, output="Notes first.\n{\"claims\": ["), self.result(4)],
+                            stage="executing", step_id="wave-3")
+        state = build_state(self.raw, self.parent, child)
+        next(item for item in state["feed"] if item["step_id"] == "evidence")["unknown_cited_ids"] = ["evt-9991", "evt-9992"]
+        page = _render_page(state, "case")
+        # Wave 2 is finished and not selected, so it stays collapsed and its row counts the flags of the steps it hides.
+        self.assertNotIn("Networkdone", page["main"]["text"])
+        self.assertIn("\u00b7 2 flagged", page["main"]["text"])
+        self.assertIn("Evidence: 2 unknown IDs\nNetwork: handoff not parsed", page["main"]["titles"])
+        # The Team rail's Threat Hunter row (Evidence and Hypotheses) counts Evidence's flag.
+        self.assertIn("2 steps \u00b7 1 flagged \u00b7 ", page["rail"]["text"])
 
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],
