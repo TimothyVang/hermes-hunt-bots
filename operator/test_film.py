@@ -241,6 +241,11 @@ for _k in range(8):
     PAR_SAMPLES += [(T0 + 62 * _k + 2, wave_steps(_k + 1, set(range(1, _k + 1)))),
                     (T0 + 62 * _k + 62, wave_steps(None, set(range(1, _k + 2))))]
 
+# The same round halted in its follow-up wave: the board marks the wave's open steps stopped and later waves
+# not reached.
+HALTED = [s | ({'state': 'stopped', 'reason': 'workflow_halted'} if s['wave'] == 4 else
+               {'state': 'not_reached'} if s['wave'] > 4 else {}) for s in wave_steps(None, {1, 2, 3})]
+
 
 class ParallelFilmTest(unittest.TestCase):
     def test_a_dropped_step_ends_with_its_reason(self):
@@ -259,26 +264,41 @@ class ParallelFilmTest(unittest.TestCase):
         self.assertEqual(follow['step_ids'], [f'follow-{n}' for n in range(1, 7)])
         self.assertEqual(follow['lines'][:3], ['Wave 4 of 8 · 6 steps',
                                                'Follow-1, Follow-2, Follow-3, Follow-4, Follow-5, Follow-6', 'Threat Hunter'])
-        self.assertEqual(follow['lines'][4:], ['1 min 00 s', 'Follow-2 dropped (retry exhausted)'])
+        self.assertEqual(follow['lines'][4:], ['1 min 00 s', 'Dropped (retry exhausted): Follow-2'])
         self.assertEqual(chapters[1]['lines'][:2], ['Wave 2 of 8 · Evidence, Hypotheses, Network, Intel',
                                                     'Threat Hunter · Network Analyst · Threat Intelligence Analyst'])
         self.assertFalse(any('not finished' in line for c in chapters for line in c['lines']))
 
     def test_card_lines_stay_inside_the_frame_for_the_widest_wave(self):
-        wide = [cutter.Stage(n, f'follow-{n}', 'Threat Hunter', 4, T0, T0 + 60, True, 'dropped',
-                             'no_surviving_dependency') for n in range(1, 13)]
-        lines = cutter.chapter_lines(cutter.Chapter(0, 4, tuple(wide), 8))
-        self.assertLessEqual(len(lines[0]), cutter.TITLE_CHARS)
-        self.assertTrue(all(len(line) <= cutter.CARD_CHARS for line in lines[1:]))
+        def card(reasons):
+            wide = [cutter.Stage(n, f'follow-{n}', 'Threat Hunter', 4, T0, T0 + 60, True, 'stopped' if n % 2 else 'dropped',
+                                 reasons(n)) for n in range(1, 13)]
+            return cutter.chapter_lines(cutter.Chapter(0, 4, tuple(wide), 8))
+
+        for lines in (card(lambda n: 'no_surviving_dependency'), card(lambda n: f'reason_{n}')):
+            self.assertLessEqual(len(lines[0]), cutter.TITLE_CHARS)
+            self.assertTrue(all(len(line) <= cutter.CARD_CHARS for line in lines[1:]))
+            # Renderer.card spaces lines 68 px around the middle: the first and last must stay inside 1080 px.
+            self.assertLessEqual(len(lines), cutter.CARD_LINES)
+            self.assertGreaterEqual(540 - (len(lines) - 1) * 34, 52)
+        shared = card(lambda n: 'no_surviving_dependency')
+        flagged = shared[[k for k, line in enumerate(shared) if line.startswith('Stopped (')][0]:]
+        self.assertEqual([line.split(':')[0] for line in flagged if ': Follow-' in line],
+                         ['Stopped (no surviving dependency)', 'Dropped (no surviving dependency)'])
+        self.assertEqual(sum(line.count('Follow-') for line in flagged), 12)
+        self.assertTrue(card(lambda n: f'reason_{n}')[-1].endswith('more lines in edit.json'))
         outro = cutter.steps_lines([{'index': n, 'step_id': f'follow-{n}', 'state': 'dropped', 'wave': 4,
                                      'reason': 'no_surviving_dependency'} for n in range(12)])
         self.assertTrue(all(len(line) <= cutter.CARD_CHARS for line in outro))
-        self.assertEqual(sum(line.count('(no surviving dependency)') for line in outro), 12)
+        self.assertEqual(sum(line.count('follow-') for line in outro), 12)
 
     def test_the_outro_counts_the_real_steps(self):
         self.assertEqual(cutter.steps_lines(PAR_SAMPLES[-1][1]),
-                         ['15 of 16 steps done in 8 waves · 1 dropped:', 'follow-2 (retry exhausted)'])
+                         ['15 of 16 steps done in 8 waves · 1 dropped', 'Dropped (retry exhausted): follow-2'])
         self.assertEqual(cutter.steps_lines(steps(*['done'] * 9)), ['9 of 9 steps done'])
+        self.assertEqual(cutter.steps_lines(HALTED),
+                         ['6 of 16 steps done in 8 waves · 6 stopped · 4 not reached',
+                          'Stopped (workflow halted): follow-1, follow-2, follow-3, follow-4, follow-5, follow-6'])
 
     def test_the_recorder_keeps_wave_and_reason(self):
         kept = record.steps_of({'steps': PAR_SAMPLES[-1][1]})[7]
@@ -292,8 +312,8 @@ JS = shutil.which('bun') or shutil.which('node')
 class ToolcamProgressTest(unittest.TestCase):
     def progress(self, steps):
         url = (Path(__file__).parent / 'toolcam' / 'progress.mjs').resolve().as_uri()
-        code = (f'import {{ pipeline, endSummary }} from {json.dumps(url)};'
-                f'const s = {json.dumps(steps)}; console.log(JSON.stringify([pipeline(s), endSummary(s)]));')
+        code = (f'import {{ pipeline, endCard }} from {json.dumps(url)};'
+                f'const s = {json.dumps(steps)}; console.log(JSON.stringify([pipeline(s), endCard(s)]));')
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / 'p.mjs'
             script.write_text(code, encoding='utf-8')
@@ -307,11 +327,19 @@ class ToolcamProgressTest(unittest.TestCase):
         self.assertEqual(line, 'Wave 4/8 · follow-3 awaiting_review, follow-4 working, follow-5 working, follow-6 working'
                                ' · 7/16 steps done · follow-2 dropped: retry exhausted')
 
+    def test_a_wide_wave_is_counted_by_state(self):
+        line, _ = self.progress(wave_steps(4, {1, 2, 3}, {'follow-1': 'awaiting_review'}))
+        self.assertEqual(line, 'Wave 4/8 · 6 steps: 1 awaiting_review, 5 working · 6/16 steps done')
+
     def test_the_end_card_counts_the_real_steps(self):
-        self.assertEqual(self.progress(PAR_SAMPLES[-1][1]),
-                         ['15/16 steps done · follow-2 dropped: retry exhausted',
-                          '15/16 steps done · follow-2 dropped: retry exhausted. Final report written by the Incident '
-                          'Response Lead.'])
+        self.assertEqual(self.progress(PAR_SAMPLES[-1][1])[1],
+                         {'title': 'Hunt complete', 'sub': '15/16 steps done · follow-2 dropped: retry exhausted. Final '
+                                                           'report written by the Incident Response Lead.'})
+
+    def test_a_halted_round_ends_early_and_names_what_it_never_reached(self):
+        self.assertEqual(self.progress(HALTED)[1],
+                         {'title': 'Hunt ended early', 'sub': '6/16 steps done · 6 steps stopped: workflow halted · '
+                                                              'not reached: waves 5–8 (4 steps).'})
 
     def test_a_serial_round_shows_its_one_open_step(self):
         self.assertEqual(self.progress(steps('done', 'working'))[0], 'Step 2/9 · Role 1 working')

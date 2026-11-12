@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { pipeline as progress, endSummary } from "./progress.mjs";
+import { pipeline as progress, endCard } from "./progress.mjs";
 
 const args = process.argv.slice(2);
 if (args.length !== 7 || args.includes("--help")) {
@@ -156,6 +156,7 @@ while (true) {
   if (finishedAt && Date.now() - finishedAt > 3000) break;
   await sleep(400);
 }
-await card("Hunt complete", esc(endSummary(steps)));
-log({ kind: "card", title: "complete" }); await sleep(6000);
+const closing = endCard(steps);
+await card(closing.title, esc(closing.sub));
+log({ kind: "card", title: closing.title }); await sleep(6000);
 running = false; await sleep(800); edge.kill(); log({ kind: "end", frames: frame }); process.exit(0);

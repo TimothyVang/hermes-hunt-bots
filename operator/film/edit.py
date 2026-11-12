@@ -34,8 +34,8 @@ BAR = 64
 BACKGROUND = '0x0b1220'
 SIZE = (1920, 1080)
 # Widest card lines, in characters, that fit 1920 px: Segoe UI Bold measured ~25 px a character at the
-# title's 52 px and ~16 at the other lines' 34 px.
-TITLE_CHARS, CARD_CHARS = 60, 90
+# title's 52 px and ~16 at the other lines' 34 px. Lines sit 68 px apart around the middle, so 14 fit 1080 px.
+TITLE_CHARS, CARD_CHARS, CARD_LINES = 60, 90, 14
 WAITING = {'pending', 'not_reached'}
 ENDED = {'done', 'stopped', 'dropped'}
 # A blank page (about:blank, a page mid-load) encodes to ~7 KB at 1280x960; lab pages with content were 86 KB+.
@@ -211,16 +211,35 @@ def _wrap(parts, sep, width=CARD_CHARS):
     return lines
 
 
+def _flagged(items):
+    """Lines for dropped and stopped steps, grouped by state and reason with the names wrapped:
+    "Dropped (retry exhausted): Follow-2, Follow-5". items is [(name, state, reason)]."""
+    groups = {}
+    for name, state, reason in items:
+        if state in ('dropped', 'stopped'):
+            groups.setdefault((state, reason.replace('_', ' ') or 'no reason given'), []).append(name)
+    lines = []
+    for (state, reason), names in groups.items():
+        lines += _wrap([f'{state.capitalize()} ({reason}): {names[0]}', *names[1:]], ', ')
+    return lines
+
+
+def _fit(lines):
+    """At most CARD_LINES lines, so a card stays inside 1080 px; the cut lines are counted on the last."""
+    if len(lines) <= CARD_LINES:
+        return lines
+    return lines[:CARD_LINES - 1] + [f'… {len(lines) - CARD_LINES + 1} more lines in edit.json']
+
+
 def steps_lines(steps):
-    """The end card's count of the round's last board state: steps done, waves, and each dropped step's reason."""
-    done = sum(1 for s in steps if s.get('state') == 'done')
-    dropped = [s for s in steps if s.get('state') == 'dropped']
+    """The end card's count of the round's last board state: steps done, waves, and each dropped or stopped
+    step's reason."""
+    states = [s.get('state') for s in steps]
     waves = len({_wave(s) for s in steps})
-    line = f'{done} of {len(steps)} steps done' + (f' in {waves} waves' if waves != len(steps) else '')
-    if not dropped:
-        return [line]
-    return [line + f' · {len(dropped)} dropped:'] + _wrap(
-        [f'{s.get("step_id")} ({str(s.get("reason") or "no reason given").replace("_", " ")})' for s in dropped], ', ')
+    line = f'{states.count("done")} of {len(steps)} steps done' + (f' in {waves} waves' if waves != len(steps) else '')
+    line += ''.join(f' · {states.count(k)} {k.replace("_", " ")}' for k in ('dropped', 'stopped', 'not_reached')
+                    if states.count(k))
+    return [line] + _flagged([(str(s.get('step_id')), s.get('state'), str(s.get('reason') or '')) for s in steps])
 
 
 def _clock(t):
@@ -242,9 +261,8 @@ def chapter_lines(chapter):
                                                        *_wrap(names, ', ')]
     lines += _wrap(list(dict.fromkeys(s.role for s in stages)), ' · ')
     lines += [f'{_clock(begin)} – {_clock(end)}' + (' (round end, wave not finished)' if open_ else ''), _span(end - begin)]
-    lines += [f'{s.step_id.capitalize()} {s.state} ({s.reason.replace("_", " ") or "no reason given"})'
-              for s in stages if s.state in ('dropped', 'stopped')]
-    return lines
+    lines += _flagged([(s.step_id.capitalize(), s.state, s.reason) for s in stages])
+    return _fit(lines)
 
 
 def _caption_spans(times_texts, hold, duration):
@@ -357,7 +375,7 @@ def card_lines(result, cov, knobs, case_id, steps=()):
              f'{result.get("minutes", 0)} min · {result.get("tool_calls", 0)} API tool calls · {typed} searches typed on screen',
              'Driving coverage ' + f'{cov["coverage"]:.0%}: ' + ', '.join(f'{o["role"]} {o["coverage"]:.0%}' for o in owners.values())]
     if steps:
-        outro += steps_lines(steps)
+        outro = _fit(outro + steps_lines(steps))
     return intro, outro
 
 
