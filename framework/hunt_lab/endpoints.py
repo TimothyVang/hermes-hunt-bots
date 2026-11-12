@@ -9,8 +9,8 @@ creates anything. Every failure is a fixed snake_case code; a guest's own code i
 Each lab service answers only a caller that sends its instance secret in X-Hunt-Lab-Secret, and names its
 instance in X-Hunt-Lab-Instance on every answer. The secret sits in a state file only the owning user can
 read (`owner_only`): the connected service's state.json, or for the VM the `<seed>.secret.json` written
-beside the seed ISO that deployment.json boots. The resolver reads it and `get` sends it; it is never
-returned, logged or shown.
+beside the seed ISO that deployment.json boots. The resolver reads it and `get` sends it; it never reaches a
+bot's tool result. The operator's `hunt-lab` status, start and stop replies show it in `lab_console_url`.
 """
 from __future__ import annotations
 

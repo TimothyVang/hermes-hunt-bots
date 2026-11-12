@@ -555,7 +555,8 @@ def reseed(args: argparse.Namespace) -> dict:
 
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
-        description="Prepare standalone 32 GiB QEMU media and a credential-free NoCloud setup ISO; never boots a VM.",
+        description="Prepare standalone 32 GiB QEMU media and a NoCloud setup ISO carrying only the lab's own "
+                    "per-seed caller secret (no account or provider credential); never boots a VM.",
         epilog=(
             "Requires pycdlib and public qemu-system-x86_64/qemu-img binaries. Existing artifacts are refused. "
             "Use `prepare_guest.py reseed --help` to build a new case seed for prepared media."
