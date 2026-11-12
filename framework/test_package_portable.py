@@ -22,6 +22,7 @@ APPROVED_FILES = frozenset({
     'bot.py', 'workflows.py', 'orchestrate.py', 'langchain_adapter.py',
     'native_team.py', 'doctor.py', 'test_doctor.py',
     'requirements-orchestration.txt', 'setup_hermes.py', 'package_portable.py',
+    'requirements-hunt.txt', 'requirements-hunt.lock',
     'test_bot.py', 'test_workflows.py', 'test_orchestration.py',
     'test_langchain_adapter.py', 'test_setup_hermes.py', 'test_package_portable.py',
     'test_native_team.py', 'imager_import.py', 'test_imager_import.py',
