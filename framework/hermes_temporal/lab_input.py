@@ -11,9 +11,9 @@ import hashlib
 import importlib
 import json
 import re
-from urllib import error, parse, request
+from urllib import parse
 
-from hunt_lab.endpoints import INSTANCE_HEADER, LabEndpoint, QueryFailure, resolve
+from hunt_lab.endpoints import LabEndpoint, QueryFailure, get, resolve
 
 from .contracts import DATA_ORIGINS, origin_text
 from .hunt import supplied_evidence_hunt
@@ -33,7 +33,6 @@ _RECORD_FIELDS = {
                 "network.packets", "network.bytes", "network.protocol", "dns.host"},
 }
 _TOOL_CASE_ID = re.compile(r"[a-z0-9-]{3,64}\Z")
-MAX_LAB_RESPONSE = 512 * 1024
 _LAB_TIMEOUT_SECONDS = 12
 
 
@@ -52,7 +51,15 @@ def _validate_network_record(row: dict) -> None:
             _reject()
 
 class LabInputError(ValueError):
-    """Fixed, nonrevealing error for an incomplete or unsafe lab export."""
+    """Fixed, nonrevealing error for an incomplete or unsafe lab export.
+
+    ``code`` is the lab's or the resolver's fixed snake_case code when there is one, such as
+    ``case_mismatch`` or ``unknown_citation``.
+    """
+
+    def __init__(self, message: str = "lab input unavailable or incomplete", code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _reject(_message: str = "") -> None:
@@ -252,11 +259,6 @@ def collect_lab_input(state_dir, case_id: str = CASE_ID) -> dict:
     return raw
 
 
-class _NoRedirect(request.HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        return None
-
-
 def loopback_base(url: object) -> str:
     """Return ``http://127.0.0.1:<port>`` from an exact loopback URL, else refuse."""
     try:
@@ -281,34 +283,22 @@ def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
         runtime = importlib.import_module("hunt_lab.runtime")
         return resolve(state_dir, case_id, runtime=runtime)
     except QueryFailure as exc:
-        raise LabInputError(f"lab input unavailable: {exc}") from None
+        raise LabInputError(f"lab input unavailable: {exc}", str(exc)) from None
     except Exception:
         _reject()
 
 
 def lab_get(base: str, path: str, *, profile: str | None = None,
             timeout: float = _LAB_TIMEOUT_SECONDS, instance: str | None = None) -> dict:
-    """One bounded GET of a JSON object from the loopback lab; no proxies or redirects.
+    """One bounded GET of a JSON object from the loopback lab (``hunt_lab.endpoints.get``): no proxies or redirects.
 
-    With ``instance`` (a connected service's), the answer must carry it in X-Hunt-Lab-Instance.
+    With ``instance`` (a connected service's), every answer must carry it in X-Hunt-Lab-Instance. A
+    refusal keeps only the lab's fixed code in ``LabInputError.code``.
     """
-    opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
-    headers = {"Accept": "application/json"}
-    if profile:
-        headers["X-Hermes-Profile"] = profile
     try:
-        with opener.open(request.Request(loopback_base(base) + path, headers=headers), timeout=timeout) as response:
-            if instance is not None and response.headers.get(INSTANCE_HEADER) != instance:
-                _reject()
-            data = response.read(MAX_LAB_RESPONSE + 1)
-        if len(data) > MAX_LAB_RESPONSE:
-            _reject()
-        value = json.loads(data)
-    except (error.URLError, OSError, ValueError):
-        _reject()
-    if not isinstance(value, dict):
-        _reject()
-    return value
+        return get(loopback_base(base), path, profile, timeout, instance=instance)
+    except QueryFailure as exc:
+        raise LabInputError(code=exc.detail or str(exc)) from None
 
 
 def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:

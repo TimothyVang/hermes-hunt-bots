@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import threading
@@ -91,11 +92,11 @@ class GuestStub:
 
 class Runtime:
     def __init__(self, lab_url, state='running'):
-        self.lab_url, self.state, self.calls = lab_url, state, []
+        self.lab_url, self.state, self.calls, self.status_extra = lab_url, state, [], {}
 
     def invoke(self, action, *, state_dir, profile):
         self.calls.append((action, state_dir, profile))
-        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url}
+        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url, **self.status_extra}
 
 
 class ToolCallTests(unittest.TestCase):
@@ -396,8 +397,8 @@ class ResolverTests(unittest.TestCase):
             with self.subTest(instance=instance):
                 self.connected.instance = instance
                 self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
-        self.connected.instance = INSTANCE
-        # The instance is checked on the tool's own answer too, so a restart between the two requests is refused.
+
+    def test_a_tool_answer_from_another_instance_is_refused_after_case_resolved(self):
         self.connected.overrides['/es/search'] = (200, {'case_id': 'work-conn-001'}, {'X-Hunt-Lab-Instance': 'c' * 32})
         self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
         self.connected.overrides['/es/search'] = (400, {'error': 'unknown_citation'}, {'X-Hunt-Lab-Instance': 'c' * 32})
@@ -405,6 +406,32 @@ class ResolverTests(unittest.TestCase):
         self.connected.overrides['/es/search'] = (400, {'error': 'unknown_citation'}, {})
         self.assertEqual(self.call('elastic_search', {}), {'ok': False, 'profile': 'framework-researcher',
                                                            'error': 'lab_http_400', 'detail': 'unknown_citation'})
+
+    def test_a_port_that_does_not_speak_http_or_json_fails_only_its_own_lab(self):
+        raw = socket.socket()
+        raw.bind(('127.0.0.1', 0))
+        raw.listen(4)
+        self.addCleanup(raw.close)
+
+        def garble():
+            while True:
+                try:
+                    peer, _ = raw.accept()
+                except OSError:
+                    return
+                with peer:
+                    peer.recv(4096)
+                    peer.sendall(b'NOT HTTP\r\n\r\n')
+
+        threading.Thread(target=garble, daemon=True).start()
+        self.serve(port=raw.getsockname()[1])
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
+        self.serve()
+        self.vm.overrides['/case'] = (200, b'<html>not json</html>', {})
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_invalid_response')
 
     def test_a_bot_holding_the_work_key_variable_is_refused_a_connected_case_only(self):
         os.environ['HUNT_ELASTIC_API_KEY'] = 'not-a-real-key'
@@ -430,9 +457,10 @@ class ResolverTests(unittest.TestCase):
                 self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'connected_state_invalid')
         state.write_text('{not json', encoding='utf-8')
         self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'connected_state_invalid')
-        # A service that died without removing its state: the VM still serves its own case; nothing serves this one.
-        self.serve()
+
+    def test_a_crashed_service_s_state_file_leaves_the_vm_its_own_case(self):
         self.connected.close()
+        self.runtime.state = 'running'
         self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
         self.assertEqual(self.call('elastic_search', {})['error'], 'lab_unreachable')
 
@@ -442,6 +470,16 @@ class ResolverTests(unittest.TestCase):
                                       state_dir=self.state_dir, profile='framework-researcher',
                                       browser_root=self.analyst / 'browser')
         self.assertEqual(result, {'ok': False, 'profile': 'framework-researcher', 'error': 'no_lab_browser'})
+        session.assert_not_called()
+
+    def test_lab_browser_still_refuses_a_vm_status_with_a_foreign_kibana_url(self):
+        self.runtime.state = 'running'
+        self.runtime.status_extra = {'arkime_url': self.vm.url, 'kibana_url': 'http://192.0.2.10:5601'}
+        with patch.object(lab_browser, '_session') as session:
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=self.runtime,
+                                      state_dir=self.state_dir, profile='framework-researcher',
+                                      browser_root=self.analyst / 'browser')
+        self.assertEqual(result['error'], 'invalid_owned_endpoint')
         session.assert_not_called()
 
 

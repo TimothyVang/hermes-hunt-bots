@@ -116,8 +116,6 @@ class FakeElastic:
 class Runtime:
     """The analyst VM is stopped, so the bot tools can reach the connected service only through its state file."""
 
-    lab_url = None  # the connected service's, for this file's direct requests
-
     @classmethod
     def invoke(cls, action, **_):
         return {'profile': query_adapter.LAB_OWNER, 'state': 'stopped'}
@@ -149,7 +147,7 @@ class ConnectedCase(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(connected.stop, server, source, state)
         self.addCleanup(server.shutdown)
-        Runtime.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
+        self.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
         return server, source, state, environ
 
     def tool(self, tool_name, **arguments):
@@ -159,7 +157,7 @@ class ConnectedCase(unittest.TestCase):
     def get(self, path):
         opener = request.build_opener(request.ProxyHandler({}))
         try:
-            with opener.open(Runtime.lab_url + path, timeout=10) as response:
+            with opener.open(self.lab_url + path, timeout=10) as response:
                 return response.status, dict(response.headers), json.loads(response.read())
         except request.HTTPError as failure:
             with failure:

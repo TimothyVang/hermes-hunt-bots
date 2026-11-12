@@ -520,6 +520,16 @@ def check(config_path, case_path, *, environ=None, transport=None):
                                               if field != 'event.id' and field not in source.fields)}
 
 
+def _while_unread(change):
+    """Replace or remove state.json; on Windows a bot tool reading it (hunt_lab.endpoints) blocks both for a moment."""
+    for _ in range(40):
+        try:
+            return change()
+        except PermissionError:
+            time.sleep(0.05)
+    return change()
+
+
 def start(config_path, case_path, state_dir, *, environ=None, transport=None):
     """Open the source and bind the service on a free loopback port; returns (server, source, state path)."""
     folder = profile_home(state_dir) / CONNECTED_STATE
@@ -540,7 +550,7 @@ def start(config_path, case_path, state_dir, *, environ=None, transport=None):
         temporary.write_text(json.dumps({'version': STATE_VERSION, 'pid': os.getpid(), 'port': server.server_address[1],
                                          'case_id': case['case_id'], 'instance': server.instance_id,
                                          'api_key_env': config['api_key_env']}, sort_keys=True), encoding='utf-8')
-        os.replace(temporary, state)
+        _while_unread(lambda: os.replace(temporary, state))
     except BaseException:
         if server is not None:
             server.server_close()
@@ -557,7 +567,7 @@ def stop(server, source, state):
     source.close()
     try:
         if json.loads(state.read_text(encoding='utf-8')).get('instance') == server.instance_id:
-            state.unlink()
+            _while_unread(state.unlink)
     except (FileNotFoundError, ValueError):
         pass
 

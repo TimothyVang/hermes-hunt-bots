@@ -9,6 +9,7 @@ creates anything. Every failure is a fixed snake_case code; a guest's own code i
 from __future__ import annotations
 
 from dataclasses import dataclass
+import http.client
 import json
 from pathlib import Path
 import re
@@ -44,7 +45,10 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 @dataclass(frozen=True)
 class LabEndpoint:
-    """A lab service that answered `/case`: the VM's (`origin='vm'`) or the connected one (`'connected'`)."""
+    """A lab service that answered `/case`: the VM's (`origin='vm'`) or the connected one (`'connected'`).
+
+    `arkime_url` and `kibana_url` are the VM status's own values, unvalidated; each user checks them.
+    """
 
     lab_url: str
     origin: str
@@ -70,13 +74,6 @@ def endpoint(value):
             or url.username or url.password or url.query or url.fragment or url.path not in ('', '/')):
         raise QueryFailure('invalid_owned_endpoint')
     return value.rstrip('/')
-
-
-def _optional_endpoint(value):
-    try:
-        return endpoint(value) if value else None
-    except QueryFailure:
-        return None
 
 
 def _guest_error(exc):
@@ -115,8 +112,13 @@ def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None):
         if instance is not None and exc.headers.get(INSTANCE_HEADER) != instance:
             raise QueryFailure('lab_instance_mismatch') from None
         raise QueryFailure('lab_http_' + str(exc.code), _guest_error(exc)) from None
+    except http.client.HTTPException:
+        # Something that does not speak HTTP holds the port.
+        raise QueryFailure('lab_unreachable' if instance is None else 'lab_instance_mismatch') from None
     except (error.URLError, TimeoutError, OSError):
         raise QueryFailure('lab_unreachable') from None
+    except ValueError:
+        raise QueryFailure('lab_invalid_response') from None
 
 
 def connected_state(state_dir):
@@ -130,7 +132,6 @@ def connected_state(state_dir):
     except OSError:
         raise QueryFailure('connected_state_invalid') from None
     if not data:
-        # `serve` reserves the file empty before it checks the key and opens its snapshot.
         return None
     try:
         state = json.loads(data) if len(data) <= MAX_STATE else None
@@ -150,9 +151,8 @@ def _vm(runtime, state_dir, profile):
     if status.get('profile') != LAB_OWNER or status.get('state') != 'running':
         return None
     base = endpoint(status.get('lab_url'))
-    return LabEndpoint(base, 'vm', get(base, '/case', profile),
-                       arkime_url=_optional_endpoint(status.get('arkime_url')),
-                       kibana_url=_optional_endpoint(status.get('kibana_url')))
+    return LabEndpoint(base, 'vm', get(base, '/case', profile), arkime_url=status.get('arkime_url'),
+                       kibana_url=status.get('kibana_url'))
 
 
 def _connected(state, profile):
@@ -174,18 +174,18 @@ def resolve(state_dir, case_id=None, *, runtime, profile=None, environ=None):
     if state_dir is None:
         raise QueryFailure('lab_state_unavailable')
     state = connected_state(state_dir)
-    found, failures = [], []
-    for name in ('vm', 'connected'):
+    failures = []
+
+    def answered(find):
         try:
-            if name == 'vm':
-                lab = _vm(runtime, state_dir, profile)
-            else:
-                lab = _connected(state, profile) if state is not None else None
+            return find()
         except QueryFailure as exc:
             failures.append(exc)
-            continue
-        if lab is not None:
-            found.append(lab)
+            return None
+
+    vm = answered(lambda: _vm(runtime, state_dir, profile))
+    connected = answered(lambda: _connected(state, profile)) if state is not None else None
+    found = [lab for lab in (vm, connected) if lab is not None]
     matches = [lab for lab in found if case_id is None or lab.case.get('case_id') == case_id]
     if len(matches) > 1:
         raise QueryFailure('ambiguous_lab')
