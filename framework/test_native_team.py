@@ -136,7 +136,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
             return type('Result', (), {'returncode': 0, 'stderr': '', 'stdout': ''})()
         with unittest.mock.patch.object(native_team, '_resolve', return_value=('hermes', 'home')):
             with unittest.mock.patch.object(native_team, '_read_current',
-                                            side_effect=lambda e, profile, h, m=None: previous(profile)):
+                                            side_effect=lambda e, profile, h: previous(profile)):
                 with unittest.mock.patch.object(native_team, '_run', side_effect=run):
                     native_team.apply()
         written = {(args[1], args[4]): args[5] for args in writes}

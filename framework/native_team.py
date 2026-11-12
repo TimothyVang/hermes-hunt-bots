@@ -298,7 +298,7 @@ def apply(hermes_override=None, home=None):
         changed.append((profile, key))
     summary = ', '.join(f'{profile}:{key}' for profile, key in changed) or 'none (already matched)'
     return ('Applied only reviewed model, fallback, turn/output-control, allowlisted tool-name, delegation-route, and direct-surface toolset fields: ' + summary + '.\n'
-            'Persisted values do not establish that native Hermes enforces these fields. This helper does not install or activate the required source patch or plugin and cannot establish runtime capability/readiness.\n' +
+            'Persisted values do not establish that native Hermes enforces these fields. This helper does not install or activate the advanced-delegation plugin and cannot establish runtime capability/readiness.\n' +
             '\n'.join('BLOCKER: ' + item for item in POLICY_BLOCKERS))
 
 
