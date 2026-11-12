@@ -86,6 +86,12 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 setTimeout(() => {
   const titles = (n) => [n.attrs && n.attrs.title].concat(...(n.children || []).map(titles)).filter(Boolean);
+  // poll() catches a render error and only shows "Board unreachable"; surface it as a failure.
+  const health = ids.get("health");
+  if (health && health.textContent.includes("Board unreachable")){
+    process.stderr.write("page render failed: " + titles(health).join("; ") + "\n");
+    process.exit(1);
+  }
   const out = {};
   for (const [id, node] of ids) out[id] = {text: node.textContent, titles: titles(node)};
   process.stdout.write(JSON.stringify(out));
@@ -1033,6 +1039,18 @@ class ParallelBoardTests(unittest.TestCase):
         self.assertTrue(any(title.endswith("native nonzero: " + cause) for title in rail["titles"]), rail["titles"])
         inbox = _render_page(state, "", phone=True)["main"]
         self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero: " + cause, inbox["text"])
+        case = _render_page(state, "case")["main"]
+        self.assertIn("dropped: native nonzero: " + cause, case["text"])
+        self.assertIn("dropped: native nonzero: " + cause, case["titles"])
+
+    def test_an_all_dropped_round_names_each_steps_cause_in_the_agents_rail(self) -> None:
+        cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
+        child = _wave_child({step_id: ("dropped", "native_nonzero") for step_id in STEP_IDS}, [])
+        state = build_state(self.raw, self.parent, child)
+        state["steps"][0]["result"] = {"status": "unknown", "reason_code": "native_nonzero", "diagnostic": cause}
+        rail = _render_page(state, "agents")["rail"]
+        self.assertIn("wave 1 \u00b7 dropped \u00b7 native nonzero: " + cause, rail["text"])
+        self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero", rail["text"])
 
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],
