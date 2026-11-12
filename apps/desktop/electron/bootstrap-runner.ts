@@ -96,8 +96,13 @@ function resolveCheckoutHead(
   }
 }
 
-// A GitHub https, ssh or scp-style remote URL with an optional .git suffix.
-const GITHUB_REMOTE_RE = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i
+// A GitHub https, ssh or scp-style remote URL with an optional .git suffix: also
+// www.github.com, an explicit port (ssh://git@github.com:22/…) and GitHub's ssh-over-443
+// host (ssh.github.com). The host must end at a port or path, so github.com.example.net never matches.
+// Userinfo takes no `#`, `?` or `\` (git reads `https://evil.com#@github.com/…` as host evil.com),
+// and an scp-style user no `:` either (`evil.com:x@github.com:…` is host evil.com).
+const GITHUB_REMOTE_RE =
+  /^(?:https?:\/\/(?:[^@/?#\\\s]+@)?(?:www\.)?github\.com(?::\d+)?\/|ssh:\/\/(?:[^@/?#\\\s]+@)?(?:ssh\.)?github\.com(?::\d+)?\/|(?:[^@/:?#\\\s]+@)?(?:ssh\.)?github\.com:)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i
 
 /**
  * Whether the installer gets the stamp's branch. Fresh installs and stock
@@ -106,17 +111,21 @@ const GITHUB_REMOTE_RE = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?
  * is that repo (one it cloned). Any other origin (upstream, the checkout stock
  * Hermes shares) or an unreadable one gets no branch: install.ps1/install.sh
  * then keep its channel logic instead of moving it to the fork's `main`.
+ * A user-set HERMES_REPO_URL decides instead of the current origin: the
+ * installer repoints origin at it before it checks out anything.
  */
 function installerGetsStampBranch({
   freshInstall,
   activeRoot,
   identity = PRODUCT_IDENTITY,
+  env = process.env,
   execGit,
   gitBinary
 }: {
   freshInstall: boolean
   activeRoot: string | null | undefined
   identity?: Pick<ProductIdentity, 'sourceRepo'>
+  env?: NodeJS.ProcessEnv
   execGit?: ExecGitFn
   gitBinary?: string
 }): boolean {
@@ -125,9 +134,12 @@ function installerGetsStampBranch({
   }
 
   try {
-    const origin = activeRoot ? checkoutGit({ execGit, gitBinary })(['config', '--get', 'remote.origin.url'], activeRoot) : ''
+    // The installers test the variable for non-empty, so an empty one keeps the checkout's origin.
+    const origin =
+      env.HERMES_REPO_URL ||
+      (activeRoot ? checkoutGit({ execGit, gitBinary })(['config', '--get', 'remote.origin.url'], activeRoot) : '')
 
-    return GITHUB_REMOTE_RE.exec(origin)?.[1].toLowerCase() === identity.sourceRepo.toLowerCase()
+    return GITHUB_REMOTE_RE.exec(origin.trim())?.[1].toLowerCase() === identity.sourceRepo.toLowerCase()
   } catch {
     return false
   }

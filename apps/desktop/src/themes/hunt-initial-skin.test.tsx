@@ -50,7 +50,11 @@ async function launch(variant: '' | 'hunt', { pluginTheme = true, localSkin = st
     value: localSkin ? { localSkin: { profile: 'default', skin: localSkin } } : {}
   })
   vi.resetModules()
-  vi.doMock('@/variant', () => ({ DESKTOP_VARIANT: variant, IS_HUNT_VARIANT: variant === 'hunt' }))
+  vi.doMock('@/variant', () => ({
+    DESKTOP_VARIANT: variant,
+    IS_HUNT_VARIANT: variant === 'hunt',
+    PRODUCT_NAME: variant === 'hunt' ? 'Hunt Command' : 'Hermes'
+  }))
 
   const root = window.document.documentElement
   root.removeAttribute('data-hermes-theme')
@@ -158,5 +162,33 @@ describe('the Hunt Command build opens a fresh profile on its plugin theme', () 
   it('stock Hermes keeps following the OS for a profile with no mode pick', async () => {
     const api = await launch('')
     expect(api.theme?.mode).toBe('system')
+  })
+
+  const listed = ({ theme }: { theme: { availableThemes: { name: string }[] } | null }) =>
+    theme?.availableThemes.map(({ name }) => name) ?? []
+
+  it('hunt: the picker offers no Nous or Classic Hermes skin', async () => {
+    const names = listed(await launch('hunt'))
+    expect(names).toContain('hunt-command')
+    expect(names).toContain('midnight')
+    expect(names).not.toContain('nous')
+    expect(names).not.toContain('nous-alt')
+    expect(names).not.toContain('classic')
+  })
+
+  it('hunt: a stored pick of a hidden skin still paints and stays listed while active', async () => {
+    let api = await launch('hunt')
+    act(() => api.theme?.setTheme('classic'))
+
+    api = await launch('hunt')
+    expect(api.theme?.themeName).toBe('classic')
+    expect(api.painted).toEqual(['classic'])
+    expect(listed(api)).toContain('classic')
+    expect(listed(api)).not.toContain('nous')
+  })
+
+  it('stock Hermes lists every built-in skin', async () => {
+    const names = listed(await launch(''))
+    expect(names).toEqual(expect.arrayContaining(['nous', 'nous-alt', 'classic']))
   })
 })

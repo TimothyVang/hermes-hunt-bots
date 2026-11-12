@@ -308,6 +308,11 @@ test('Hunt Command ships under its own publisher; every Hermes variant keeps Nou
   // electron-builder writes the exe CompanyName from the package author and LegalCopyright from `copyright`.
   assert.deepEqual(huntConfig.extraMetadata.author, { name: 'TimothyVang' })
   assert.equal(huntConfig.extraMetadata.desktopName, 'io.github.timothyvang.hunt-command')
+  // The packaged package.json points at the fork, not NousResearch/hermes-agent.
+  assert.deepEqual(huntConfig.extraMetadata.repository, {
+    type: 'git',
+    url: 'git+https://github.com/TimothyVang/hermes-hunt-bots.git'
+  })
   assert.equal(huntConfig.copyright, hunt.copyright)
   // The app carries the Hermes MIT notice and states where its AGPL source is.
   const shipped = (huntConfig.extraResources as { from: string; to: string }[]).map(r => r.to)
@@ -338,6 +343,7 @@ test('Hunt Command ships under its own publisher; every Hermes variant keeps Nou
     const config = load()
     assert.equal('copyright' in config, false)
     assert.equal('author' in config.extraMetadata, false)
+    assert.equal('repository' in config.extraMetadata, false)
     assert.match(String(config.msix.publisherDisplayName), /^Nous Research/)
   }
 })

@@ -1,6 +1,8 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { IS_HUNT_VARIANT } from '@/variant'
+
 import { recordOnboarding, setDesktopMetricsGate } from './desktop-metrics'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
@@ -78,9 +80,13 @@ export const $sharedMetricsConsent = atom<SharedMetricsConsent | null>(null)
 /** The "What is collected" details dialog, opened only by the user from the strip. */
 export const $sharedMetricsDetailsOpen = atom(false)
 
-/** The first-run offer is still unanswered for the focused profile. */
+/**
+ * The first-run offer is still unanswered for the focused profile. Hunt Command never
+ * offers: unanswered stays off (the backend collects and sends nothing), and a user who
+ * wants to share Hermes usage stats with Nous turns it on in Settings › Safety › Privacy.
+ */
 export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null): boolean {
-  return consent?.decided === false
+  return !IS_HUNT_VARIANT && consent?.decided === false
 }
 
 /** Record a first-run answer; the strip and the dialog retire as soon as the backend reports it decided. */
