@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import contextlib
 import importlib.util
+import io
 
 import json
 import re
@@ -367,6 +369,29 @@ class LabInputTests(unittest.TestCase):
         self.assertEqual(args.case_id, "work-conn-001")
 
     @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
+    def test_lab_input_cli_shows_the_refusal(self):
+        from . import cli
+
+        refusal = lab_input.LabInputError("the loaded case is a work log connection (live read-only queries of the "
+                                          "operator's work Elastic; unclassified work data); export it only with the "
+                                          "operator's approval (--data-origin work-connected)")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "tool.json"
+            for argv, raised in ((["--tool-driven"], refusal),
+                                 (["--data-origin", "work-export"], None)):
+                stderr = io.StringIO()
+                with self.subTest(argv=argv), patch.object(lab_input, "collect_tool_input", side_effect=raised), \
+                        contextlib.redirect_stderr(stderr):
+                    code = cli.main(["lab-input", "--state-dir", "state", "--output", str(output), *argv])
+                expected = str(raised) if raised else "--data-origin applies only to --tool-driven"
+                self.assertEqual((code, stderr.getvalue()), (2, f"error: {expected}\n"))
+                self.assertFalse(output.exists())
+            with patch.object(lab_input, "collect_tool_input", side_effect=RuntimeError("deployment detail")), \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                code = cli.main(["lab-input", "--state-dir", "state", "--output", str(output), "--tool-driven"])
+            self.assertEqual((code, stderr.getvalue()), (2, "error: operation failed (RuntimeError)\n"))
+
+    @unittest.skipUnless(importlib.util.find_spec("temporalio") is not None, "Temporal SDK is optional")
     def test_new_input_json_rejects_duplicate_and_nonfinite_values(self):
         from .cli import _strict_json
 
@@ -554,6 +579,26 @@ class ToolDrivenInputTests(unittest.TestCase):
         for step in request.steps:
             self.assertIn(CONNECTED_TEXT, step.prompt)
             self.assertNotIn("synthetic", step.prompt.lower())
+
+    def test_a_connected_case_is_told_it_is_real_work_data(self):
+        _lab, state_dir = self.connected(CONNECTED_CASE)
+        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        self.assertTrue(raw["scope"].startswith(
+            "Work log connection work-conn-001 (live read-only queries of the operator's work Elastic; "
+            "unclassified work data) only; "))
+        self.assertTrue(raw["evidence"][0]["content"].startswith("Untrusted " + CONNECTED_TEXT + " lab case metadata"))
+        bot_visible = {key: value for key, value in raw.items() if key != "synthetic_only"}
+        self.assertNotIn("synthetic", json.dumps(bot_visible).lower())
+        self.assertNotIn("public research dataset", json.dumps(bot_visible).lower())
+        for request in (supplied_evidence_hunt(raw), supplied_evidence_hunt(dict(raw, parallel=True, follow_ups=2))):
+            self.assertEqual((request.synthetic_only, request.data_origin), (False, "work-connected"))
+            for step in request.steps:
+                with self.subTest(step=step.step_id):
+                    self.assertNotIn("synthetic", step.prompt.lower())
+                    self.assertIn("Work log connection tool-driven hunt: the loaded lab case is a " + CONNECTED_TEXT,
+                                  step.prompt)
 
     def test_a_vm_case_claiming_the_connected_origin_or_bad_hosts_is_refused(self):
         vm = FakeLab(case=CONNECTED_CASE)

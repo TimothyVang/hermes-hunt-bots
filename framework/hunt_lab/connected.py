@@ -20,8 +20,10 @@ The key is read once from the environment variable and removed from this process
 never written, logged or returned, and errors carry only an HTTP status and Elasticsearch error type. TLS
 and redirects are handled as in hunt_lab.import_elastic (verified HTTPS, --ca-file alone when given, no
 redirects). Before serving, the service refuses a key that holds any write, delete or manage privilege it
-asks _has_privileges about (WRITE_INDEX_PRIVILEGES on the pattern and on every index, alias and data stream
-it resolves to; WRITE_CLUSTER_PRIVILEGES), a key whose text sits in a Hermes profile's .env or config.yaml, a
+asks _has_privileges about (WRITE_INDEX_PRIVILEGES and WRITE_INDEX_ACTIONS on the pattern and on every index,
+alias, data stream and backing index it resolves to; WRITE_CLUSTER_PRIVILEGES and WRITE_CLUSTER_ACTIONS; the
+NEWER_* names the cluster knows), a key whose text sits in a Hermes profile's .env or config.yaml (or
+such a file it cannot read in full), a case whose texts name the cluster host or an index pattern member, a
 cluster older than 7.12, and a case window ending less than 15 minutes ago (ingest could still change it).
 
 Every query is scoped to the case window on @timestamp and, when listed, its hosts; the index pattern and
@@ -38,6 +40,7 @@ X-Hunt-Lab-Instance.
 import argparse
 import base64
 import copy
+import fnmatch
 import hashlib
 import http.client
 import importlib.util
@@ -71,7 +74,7 @@ PROFILE = 'framework-network-analyst'
 KEEP_ALIVE = '30m'
 SETTLE_SECONDS = 15 * 60
 MAX_HOSTS = 50
-MAX_PROFILE_FILE = 4 * 1024 * 1024
+PROFILE_CHUNK = 1024 * 1024
 # A pattern on another cluster (remote:index) is outside what _has_privileges checks here.
 INDEX_PATTERN = re.compile(r'[A-Za-z0-9*][A-Za-z0-9._*,+-]{0,254}\Z')
 CONFIG_KEYS = frozenset({'url', 'index', 'ca_file', 'api_key_env'})
@@ -88,15 +91,61 @@ WRITE_CLUSTER_PRIVILEGES = ('all', 'manage', 'manage_security', 'manage_api_key'
                             'manage_slm', 'create_snapshot', 'manage_enrich', 'manage_token', 'manage_saml',
                             'manage_oidc', 'grant_api_key', 'delegate_pki', 'manage_autoscaling',
                             'manage_logstash_pipelines', 'cancel_task')
-CITED = r'(?:"evt-(?:\d+)"|\bevt-(?:\d+)\b)'
+# A role can grant single actions instead of a named privilege; _has_privileges answers action names on any
+# version, so the write and admin actions are asked about one by one too.
+WRITE_INDEX_ACTIONS = (
+    'indices:data/write/index', 'indices:data/write/bulk', 'indices:data/write/bulk[s]', 'indices:data/write/delete',
+    'indices:data/write/update', 'indices:data/write/delete/byquery', 'indices:data/write/update/byquery',
+    'indices:admin/create', 'indices:admin/auto_create', 'indices:admin/delete', 'indices:admin/mapping/put',
+    'indices:admin/mapping/auto_put', 'indices:admin/settings/update', 'indices:admin/close', 'indices:admin/open',
+    'indices:admin/aliases', 'indices:admin/rollover', 'indices:admin/resize', 'indices:admin/forcemerge',
+    'indices:admin/refresh', 'indices:admin/flush', 'indices:admin/block/add', 'indices:admin/cache/clear',
+    'indices:admin/reload_analyzers', 'indices:admin/ilm/remove_policy', 'indices:admin/ilm/retry',
+    'indices:admin/data_stream/create', 'indices:admin/data_stream/delete', 'indices:admin/data_stream/migrate',
+    'indices:admin/data_stream/modify', 'indices:admin/data_stream/promote',
+    'indices:admin/data_stream/lifecycle/put', 'indices:admin/data_stream/lifecycle/delete',
+    'indices:admin/data_stream/options/put', 'indices:admin/data_stream/options/delete',
+    'indices:admin/xpack/ccr/put_follow', 'indices:admin/xpack/ccr/unfollow', 'indices:admin/xpack/downsample')
+WRITE_CLUSTER_ACTIONS = (
+    'cluster:admin/settings/update', 'cluster:admin/reroute', 'cluster:admin/tasks/cancel',
+    'cluster:admin/ingest/pipeline/put', 'cluster:admin/ingest/pipeline/delete', 'cluster:admin/script/put',
+    'cluster:admin/script/delete', 'cluster:admin/component_template/put', 'cluster:admin/component_template/delete',
+    'cluster:admin/repository/put', 'cluster:admin/repository/delete', 'cluster:admin/snapshot/create',
+    'cluster:admin/snapshot/delete', 'cluster:admin/snapshot/restore', 'cluster:admin/ilm/put',
+    'cluster:admin/ilm/delete', 'cluster:admin/slm/put', 'cluster:admin/slm/delete', 'cluster:admin/transform/put',
+    'cluster:admin/transform/delete', 'cluster:admin/xpack/enrich/put', 'cluster:admin/xpack/enrich/execute',
+    'cluster:admin/xpack/enrich/delete', 'cluster:admin/xpack/watcher/watch/put', 'cluster:admin/xpack/ml/job/put',
+    'cluster:admin/logstash/pipeline/put', 'cluster:admin/synonyms/put', 'cluster:admin/synonyms/delete',
+    'cluster:admin/synonym_rules/put', 'cluster:admin/synonym_rules/delete', 'cluster:admin/xpack/query_rules/put',
+    'cluster:admin/xpack/inference/put', 'cluster:admin/xpack/connector/put',
+    'cluster:admin/xpack/application/search_application/put', 'cluster:admin/data_stream/global_retention/put',
+    'cluster:admin/xpack/security/api_key/create', 'cluster:admin/xpack/security/api_key/invalidate',
+    'cluster:admin/xpack/security/user/put', 'cluster:admin/xpack/security/role/put',
+    'cluster:admin/xpack/security/role_mapping/put', 'cluster:admin/xpack/security/service_account/token/create',
+    'cluster:admin/xpack/license/put', 'cluster:admin/features/reset', 'cluster:admin/nodes/reload_secure_settings')
+# Privilege names added after 7.12. A cluster that does not know one refuses it alone (HTTP 400), and then no
+# key can hold it there, so each is asked about by itself.
+NEWER_INDEX_PRIVILEGES = ('manage_data_stream_lifecycle', 'manage_failure_store', 'cross_cluster_replication_internal')
+NEWER_CLUSTER_PRIVILEGES = ('manage_service_account', 'manage_user_profile', 'manage_search_application',
+                            'manage_behavioral_analytics', 'post_behavioral_analytics_event', 'manage_search_synonyms',
+                            'manage_search_query_rules', 'manage_connector', 'write_connector_secrets',
+                            'manage_inference', 'manage_data_stream_global_retention', 'write_fleet_secrets',
+                            'manage_esql')
+# A bare evt-N starts a term (optionally after a NOT -), so srv-evt-01 is not a citation.
+BARE = r'(?<![\w.])(?<![\w.]-)evt-\d+(?![\w.*?-])'
+CITED = r'(?:"evt-(?:\d+)"|' + BARE + ')'
 # One pass, so _id values already put in by a rewrite are never scanned again.
 CITATION = re.compile(r'\bevent\.id\s*:\s*\((?P<group>[^()]*)\)'
-                      r'|(?:\bevent\.id\s*:\s*)?(?:"(?P<quoted>evt-\d+)"|\b(?P<bare>evt-\d+)\b)')
+                      r'|(?:\bevent\.id\s*:\s*)?(?:"(?P<quoted>evt-\d+)"|(?P<bare>' + BARE + '))')
 CITATION_GROUP_BODY = re.compile(r'\s*' + CITED + r'(?:\s+OR\s+' + CITED + r')*\s*\Z')
 CITATION_FORM = re.compile(r'evt-\d{16}\Z')
 # An escaped character is hidden like a phrase, so \" is never taken for a phrase's quote.
 QUOTED = re.compile(r'\\.|"(?:\\.|[^"\\])*"')
 HIDDEN = re.compile('\x00(\\d+)\x00')
+# A field name before its colon, wildcards included (Lucene reads event.\* as a field pattern).
+FIELD = re.compile(r'([A-Za-z0-9_.*?@+!-]+)\s*:')
+# Shard failure types that refuse the query itself.
+QUERY_ERRORS = frozenset({'query_shard_exception', 'parse_exception'})
 
 
 class ConnectError(ValueError):
@@ -182,19 +231,39 @@ def profile_home(state_dir):
 
 
 def key_in_bot_profiles(home, key):
-    """Whether the key's text sits in the Hermes home's or any profile's .env or config.yaml, where a bot loads it."""
+    """Whether the key's text sits in the Hermes home's or any profile's .env or config.yaml, where a bot loads it.
+
+    Every file is read in full; one that exists but cannot be read is refused, as it could hold the key."""
     hermes = home.parent.parent
     candidates = [hermes / '.env', hermes / 'config.yaml',
                   *sorted(hermes.glob('profiles/*/.env')), *sorted(hermes.glob('profiles/*/config.yaml'))]
     needle = key.encode('ascii')
+    overlap = len(needle) - 1
     for path in candidates:
         try:
             with open(path, 'rb') as handle:
-                if needle in handle.read(MAX_PROFILE_FILE):
-                    return True
-        except OSError:
+                tail = b''
+                while chunk := handle.read(PROFILE_CHUNK):
+                    window = tail + chunk
+                    if needle in window:
+                        return True
+                    tail = window[-overlap:] if overlap else b''
+        except FileNotFoundError:
             continue
+        except OSError:
+            raise ConnectError(f'profile_unreadable: {path} cannot be read to check that it does not hold the API key; '
+                               'make it readable to this terminal or remove it') from None
     return False
+
+
+def names_cluster(case, config):
+    """Whether an operator-written case text names the cluster host or a member of the index pattern as a whole word."""
+    texts = ' '.join([case['case_id'], case['question'], *case.get('hosts', ()),
+                      *(text for source in case['sources'] for text in source.values())]).lower()
+    # A leading - excludes an index (logs-*,-logs-secret); the excluded name is still the cluster's.
+    names = (parse.urlsplit(config['url']).hostname, *(member.lstrip('-') for member in config['index'].split(',')))
+    return any(re.search(r'(?<![a-z0-9-])' + re.escape(name.lower()) + r'(?![a-z0-9-])', texts)
+               for name in names if name)
 
 
 def citation(doc_id):
@@ -202,17 +271,32 @@ def citation(doc_id):
 
 
 def refuse_regex(text):
-    """Lucene /regex/ terms can be costly on a shared production cluster; quoted and escaped slashes are text."""
-    quoted = escaped = False
+    """Lucene /regex/ terms can be costly on a shared production cluster; quoted and escaped slashes are text.
+
+    Inside a range ([a TO b], {a TO b}) Lucene does not read a " as a phrase quote, so there a " is refused
+    (invalid_query) and a / is a regex; an unclosed phrase is refused too, as it would hide what follows."""
+    quoted = escaped = ranged = False
     for character in text:
         if escaped:
             escaped = False
         elif character == '\\':
             escaped = True
+        elif quoted:
+            quoted = character != '"'
+        elif ranged:
+            if character == '/':
+                raise lab_server.BackendQueryError('regex_not_supported')
+            if character == '"':
+                raise lab_server.BackendQueryError('invalid_query')
+            ranged = character not in ']}'
+        elif character in '[{':
+            ranged = True
         elif character == '"':
-            quoted = not quoted
-        elif character == '/' and not quoted:
+            quoted = True
+        elif character == '/':
             raise lab_server.BackendQueryError('regex_not_supported')
+    if quoted:
+        raise lab_server.BackendQueryError('invalid_query')
 
 
 def _terms_fields(aggs):
@@ -229,6 +313,13 @@ def _snapshot_lost(status, value):
     failures = value.get('_shards', {}).get('failures', []) if status == 200 and isinstance(value, dict) else []
     return any(isinstance(failure, dict) and isinstance(failure.get('reason'), dict)
                and failure['reason'].get('type') == 'search_context_missing_exception' for failure in failures)
+
+
+def _query_refused(value):
+    """Every failed shard refused the query itself (a syntax or field error), not the cluster."""
+    failures = value.get('_shards', {}).get('failures', [])
+    return bool(failures) and all(isinstance(failure, dict) and isinstance(failure.get('reason'), dict)
+                                  and failure['reason'].get('type') in QUERY_ERRORS for failure in failures)
 
 
 class WorkElastic:
@@ -276,13 +367,16 @@ class WorkElastic:
         except ValueError:
             return status, None
 
-    def require(self, method, path, body, action):
+    def require(self, method, path, body, action, *, unknown_name_ok=False):
+        """The JSON object answered; with unknown_name_ok, None for HTTP 400 illegal_argument_exception."""
         try:
             status, value = self.call(method, path, body)
         except RuntimeError:
             raise ConnectError(f'{action}: cannot reach Elasticsearch at {self.cluster}') from None
         if not 200 <= status < 300 or not isinstance(value, dict):
             kind = value.get('error', {}).get('type') if isinstance(value, dict) and isinstance(value.get('error'), dict) else None
+            if unknown_name_ok and status == 400 and kind == 'illegal_argument_exception':
+                return None
             detail = f' ({kind})' if isinstance(kind, str) and ERROR_TYPE.match(kind) else ''
             raise ConnectError(f'{action}: Elasticsearch returned HTTP {status}{detail}')
         return value
@@ -295,18 +389,22 @@ class WorkElastic:
         except ValueError as failure:
             raise ConnectError(str(failure)) from None
         resolved = self.require('GET', '/_resolve/index/' + self._index_path(), None, 'resolve the index pattern')
-        names = [self.index, *sorted({item['name'] for kind in ('indices', 'aliases', 'data_streams')
+        names = [self.index, *sorted({name for kind in ('indices', 'aliases', 'data_streams')
                                       for item in resolved.get(kind, []) if isinstance(item, dict)
-                                      and isinstance(item.get('name'), str)})]
+                                      for name in (item.get('name'), *(item.get('backing_indices')
+                                                                       if isinstance(item.get('backing_indices'), list) else ()))
+                                      if isinstance(name, str)})]
+        cluster_asked = [*WRITE_CLUSTER_PRIVILEGES, *WRITE_CLUSTER_ACTIONS, *self._known('cluster', NEWER_CLUSTER_PRIVILEGES)]
+        index_asked = [*WRITE_INDEX_PRIVILEGES, *WRITE_INDEX_ACTIONS, *self._known('index', NEWER_INDEX_PRIVILEGES)]
         granted = self.require('POST', '/_security/user/_has_privileges', {
-            'cluster': list(WRITE_CLUSTER_PRIVILEGES),
-            'index': [{'names': names, 'privileges': ['read', *WRITE_INDEX_PRIVILEGES]}]}, 'check key privileges')
+            'cluster': cluster_asked,
+            'index': [{'names': names, 'privileges': ['read', *index_asked]}]}, 'check key privileges')
         indices, cluster = granted.get('index', {}), granted.get('cluster', {})
         # Fail closed: every asked name must come back, and false.
         if (not isinstance(indices.get(self.index), dict) or indices[self.index].get('read') is not True
                 or any(not isinstance(indices.get(name), dict) or indices[name].get(privilege) is not False
-                       for name in names for privilege in WRITE_INDEX_PRIVILEGES)
-                or any(cluster.get(privilege) is not False for privilege in WRITE_CLUSTER_PRIVILEGES)):
+                       for name in names for privilege in index_asked)
+                or any(cluster.get(privilege) is not False for privilege in cluster_asked)):
             raise ConnectError(f'key_not_read_only: the key must read {self.index} and hold no write, delete or manage privilege')
         caps = self.require('GET', '/' + self._index_path() + '/_field_caps?fields=*&include_unmapped=false', None,
                             'read field capabilities')
@@ -315,6 +413,13 @@ class WorkElastic:
         self.aggregatable = frozenset(name for name, types in fields.items()
                                       if any(isinstance(kind, dict) and kind.get('aggregatable') for kind in types.values()))
         self.pit = self._open_pit()
+
+    def _known(self, kind, privileges):
+        """The privilege names this cluster knows; it answers HTTP 400 illegal_argument_exception to an unknown one."""
+        return [privilege for privilege in privileges if self.require(
+            'POST', '/_security/user/_has_privileges',
+            {'cluster': [privilege]} if kind == 'cluster' else {'index': [{'names': [self.index], 'privileges': [privilege]}]},
+            'check key privileges', unknown_name_ok=True) is not None]
 
     def _index_path(self):
         return parse.quote(self.index, safe='*,+')
@@ -353,7 +458,10 @@ class WorkElastic:
         for attempt in (1, 2):
             with self.lock:
                 pit, generation = self.pit, self.generation
-            status, value = self.call('POST', '/_search', dict(body, pit={'id': pit, 'keep_alive': KEEP_ALIVE}))
+            # Without partial results a query error on one shard fails the search (HTTP 400) instead of coming
+            # back as HTTP 200 with failed shards when the other shards were skipped outside the window.
+            status, value = self.call('POST', '/_search?allow_partial_search_results=false',
+                                      dict(body, pit={'id': pit, 'keep_alive': KEEP_ALIVE}))
             # A new point in time is a new snapshot, so open pages end.
             if not _snapshot_lost(status, value) or attempt == 2:
                 break
@@ -365,6 +473,8 @@ class WorkElastic:
         if not 200 <= status < 300 or not isinstance(value, dict):
             raise RuntimeError('backend_not_ready')
         if value.get('timed_out') or value.get('_shards', {}).get('failed', 0):
+            if _query_refused(value):
+                raise lab_server.BackendQueryError('invalid_query')
             raise RuntimeError('Partial Elasticsearch response')
         with self.lock:
             if self.generation == generation and isinstance(value.get('pit_id'), str):
@@ -413,7 +523,11 @@ class WorkElastic:
             return f'\x00{len(phrases) - 1}\x00'
 
         text = CITATION.sub(rewrite, QUOTED.sub(hide, text))
-        if re.search(r'\bevent\.id\b', text):
+        # Lucene reads escaped characters as themselves (event\.id is event.id); phrases stay hidden as text.
+        bare = HIDDEN.sub(lambda match: phrases[int(match.group(1))][1:] if phrases[int(match.group(1))][0] == '\\'
+                          else ' ', text)
+        if (re.search(r'\bevent\.id\b', bare)
+                or any(fnmatch.fnmatchcase('event.id', name.lstrip('+!-')) for name in FIELD.findall(bare))):
             raise lab_server.BackendQueryError('invalid_query')
         return HIDDEN.sub(lambda match: phrases[int(match.group(1))], text)
 
@@ -499,8 +613,7 @@ def _open(config_path, case_path, environ, transport, home=None):
     """The validated case and an opened WorkElastic; the key leaves the environment before anything else runs."""
     config = load_config(config_path)
     case = load_case(case_path)
-    served = json.dumps(case).lower()
-    if any(name.lower() in served for name in (parse.urlsplit(config['url']).hostname, config['index'])):
+    if names_cluster(case, config):
         raise ConnectError('the case file names the cluster host or the index pattern; /case is what the bots see')
     try:
         key = read_api_key(environ, config['api_key_env'])

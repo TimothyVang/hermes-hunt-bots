@@ -286,6 +286,15 @@ class EndpointTests(ServerCase):
         self.assertIn('sample', self.elastic.calls[1]['body']['aggs']['values']['aggs'])
         self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3, 'sample_event_id': None}])
 
+    def test_a_bucket_sample_without_its_source_cites_nothing(self):
+        sample = {'hits': {'hits': [{'_id': 'doc-1'}]}}
+        self.elastic.response = {'hits': {'total': {'value': 4, 'relation': 'eq'}, 'hits': []},
+                                 'aggregations': {'values': {'buckets': [
+                                     {'key': 'ws-01', 'doc_count': 4, 'sample': sample}]}}}
+        status, value = self.request('/es/aggs?field=host.name')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value['buckets'], [{'key': 'ws-01', 'count': 4, 'sample_event_id': None}])
+
     def test_detect_reports_hosts_bounds_and_sample(self):
         response = es_hits([{'@timestamp': '2026-03-02T01:00:00Z', 'event': {'id': 'evt-000003'},
                              'host': {'name': 'ws-01'}}], total=4)
@@ -639,6 +648,12 @@ class EventSourceTests(ServerCase):
         self.assertEqual((status, value['event_count'], value['network_session_count'], value['intel_count']), (200, 2, 2, 2))
         self.assertEqual(sorted({call['index'] for call in self.source.calls}),
                          ['arkime_sessions3-*', 'hunt-lab-events', 'hunt-lab-intel'])
+        self.assertEqual(self.elastic.calls, [])
+
+    def test_intel_reads_through_the_source(self):
+        status, value = self.request('/intel?values=x')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(self.source.calls[-1]['index'], 'hunt-lab-intel')
         self.assertEqual(self.elastic.calls, [])
 
 

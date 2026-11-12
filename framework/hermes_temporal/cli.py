@@ -51,15 +51,23 @@ def _practice_deadline_seconds(request) -> int:
     return request.rounds * per_round
 
 
+class _Refusal(ValueError):
+    """A refusal whose message names only fixed rules and labels, so the CLI shows it in full."""
+
+
 async def _lab_input(args: argparse.Namespace) -> None:
-    from .lab_input import collect_lab_input, collect_tool_input
+    from .lab_input import LabInputError, collect_lab_input, collect_tool_input
 
     if args.data_origin is not None and not args.tool_driven:
-        raise ValueError("--data-origin applies only to --tool-driven")
+        raise _Refusal("--data-origin applies only to --tool-driven")
     if args.case_id is not None and not args.tool_driven:
-        raise ValueError("--case-id applies only to --tool-driven")
-    raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin, case_id=args.case_id) if args.tool_driven
-           else collect_lab_input(args.state_dir))
+        raise _Refusal("--case-id applies only to --tool-driven")
+    try:
+        raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin, case_id=args.case_id)
+               if args.tool_driven else collect_lab_input(args.state_dir))
+    except LabInputError as exc:
+        # Its messages are fixed texts, the case's validated origin and the lab's fixed codes.
+        raise _Refusal(str(exc)) from None
     text = json.dumps(raw, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
     with Path(args.output).open("x", encoding="utf-8", newline="\n") as output:
         output.write(text)
@@ -249,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         asyncio.run(args.handler(args))
+    except _Refusal as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:
         # Avoid emitting SDK/server exception text, which may contain deployment details.
         print(f"error: operation failed ({type(exc).__name__})", file=sys.stderr)

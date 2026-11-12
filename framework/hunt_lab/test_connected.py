@@ -26,6 +26,7 @@ INDEX = 'logs-windows*'
 START, END = '2026-11-01T10:00:00Z', '2026-11-01T11:00:00Z'
 CASE_ID = 'work-conn-001'
 DATA_STREAM = 'logs-windows.sysmon_operational-default'
+BACKING = '.ds-logs-windows.sysmon_operational-default-2026.11.01-000001'
 
 
 class FakeElastic:
@@ -36,6 +37,8 @@ class FakeElastic:
         self.index_grants = {}
         self.cluster_grants = {}
         self.omit_cluster = False
+        # Privilege names this cluster does not know (a cluster older than the name).
+        self.unknown = set()
         self.docs = [{'_index': '.ds-logs-windows-000001', '_id': f'AbC{n}x_-', 'sort': [1761991200000000000 + n, n],
                       '_source': {'@timestamp': f'2026-11-01T10:0{n}:00Z', 'host': {'name': 'ws-01'},
                                   'event': {'id': 'source-id', 'code': '1'}, 'process': {'name': 'cmd.exe'}}}
@@ -49,12 +52,16 @@ class FakeElastic:
         self.headers = []
 
     def privileges(self, value):
+        asked = {*value.get('cluster', ()), *(name for entry in value.get('index', ()) for name in entry['privileges'])}
+        if asked & self.unknown:
+            return 400, {'error': {'type': 'illegal_argument_exception'}}
         index = {name: {privilege: self.index_grants.get(name, {}).get(privilege, privilege == 'read')
                         for privilege in entry['privileges']}
-                 for entry in value['index'] for name in entry['names']}
+                 for entry in value.get('index', ()) for name in entry['names']}
         if self.omit_cluster:
-            return {'index': index}
-        return {'index': index, 'cluster': {name: self.cluster_grants.get(name, False) for name in value['cluster']}}
+            return 200, {'index': index}
+        return 200, {'index': index, 'cluster': {name: self.cluster_grants.get(name, False)
+                                                 for name in value.get('cluster', ())}}
 
     def __call__(self, method, url, headers, body):
         self.headers.append(headers)
@@ -64,9 +71,11 @@ class FakeElastic:
         if path == '/':
             return 200, json.dumps({'version': {'number': self.version}}).encode()
         if path == '/_resolve/index/' + INDEX:
-            return 200, json.dumps({'indices': [], 'aliases': [], 'data_streams': [{'name': DATA_STREAM}]}).encode()
+            return 200, json.dumps({'indices': [], 'aliases': [], 'data_streams': [
+                {'name': DATA_STREAM, 'backing_indices': [BACKING]}]}).encode()
         if path == '/_security/user/_has_privileges':
-            return 200, json.dumps(self.privileges(value)).encode()
+            status, granted = self.privileges(value)
+            return status, json.dumps(granted).encode()
         if path.endswith('/_field_caps?fields=*&include_unmapped=false'):
             return 200, json.dumps({'fields': {
                 'host.name': {'keyword': {'aggregatable': True}}, 'process.name': {'keyword': {'aggregatable': True}},
@@ -79,7 +88,7 @@ class FakeElastic:
         if path == '/_pit':
             self.pits.discard(value['id'])
             return 200, b'{"succeeded":true}'
-        if path == '/_search':
+        if path == '/_search?allow_partial_search_results=false':
             return self.search(value)
         return 404, b'{}'
 
@@ -110,7 +119,7 @@ class FakeElastic:
                                                  'first': {'value': None}, 'last': {'value': None}}}).encode()
 
     def searches(self):
-        return [value for method, path, value in self.requests if path == '/_search']
+        return [value for method, path, value in self.requests if path.startswith('/_search')]
 
 
 class Runtime:
@@ -193,14 +202,33 @@ class RefusalTests(ConnectedCase):
                                ('cluster_grants', {'manage_security': True}),
                                ('cluster_grants', {'manage_slm': True}),
                                ('cluster_grants', {'cancel_task': True}),
-                               ('omit_cluster', True)):
+                               ('omit_cluster', True),
+                               # Partial and post-7.12 grants (U2 review, each live on 8.19.23 before the fix).
+                               ('index_grants', {INDEX: {'indices:admin/delete': True}}),
+                               ('index_grants', {INDEX: {'manage_data_stream_lifecycle': True}}),
+                               ('index_grants', {BACKING: {'delete': True}}),
+                               ('cluster_grants', {'manage_search_synonyms': True}),
+                               ('cluster_grants', {'cluster:admin/ingest/pipeline/put': True})):
             with self.subTest(setting=setting, value=value):
                 self.elastic = FakeElastic()
                 setattr(self.elastic, setting, value)
                 self.assertIn('key_not_read_only', self.refused(check=True))
                 self.assertFalse(any(path.endswith('/_pit?keep_alive=30m') for _, path, _ in self.elastic.requests))
-        asked = next(value for _, path, value in self.elastic.requests if path.endswith('_has_privileges'))
-        self.assertEqual(asked['index'][0]['names'], [INDEX, DATA_STREAM])
+        [asked] = [value for _, path, value in self.elastic.requests
+                   if path.endswith('_has_privileges') and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+        self.assertEqual(asked['index'][0]['names'], [INDEX, BACKING, DATA_STREAM])
+
+    def test_privilege_names_a_cluster_does_not_know_are_left_out_of_the_check(self):
+        self.elastic.unknown = {'manage_data_stream_lifecycle', 'manage_search_synonyms'}
+        self.assertEqual(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                         transport=self.elastic)['read_only'], True)
+        [asked] = [value for _, path, value in self.elastic.requests
+                   if path.endswith('_has_privileges') and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+        self.assertNotIn('manage_search_synonyms', asked['cluster'])
+        self.assertNotIn('manage_data_stream_lifecycle', asked['index'][0]['privileges'])
+        self.assertIn('manage_search_application', asked['cluster'])
+        self.assertIn('cluster:admin/ingest/pipeline/put', asked['cluster'])
+        self.assertIn('indices:admin/delete', asked['index'][0]['privileges'])
 
     def test_a_cluster_older_than_7_12_is_refused(self):
         self.elastic.version = '7.11.2'
@@ -214,6 +242,56 @@ class RefusalTests(ConnectedCase):
                 self.assertIn('key_in_bot_profile', self.refused())
                 self.assertEqual(self.elastic.requests, [])
                 path.unlink()
+
+    def test_a_key_anywhere_in_a_large_profile_file_is_found(self):
+        path = self.root / 'hermes' / 'profiles' / 'framework-researcher' / '.env'
+        for offset in (4 * 1024 * 1024 + 1, 1024 * 1024 - 7):
+            with self.subTest(offset=offset):
+                path.write_bytes(b'#' * offset + KEY.encode('ascii') + b'\n')
+                self.assertIn('key_in_bot_profile', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+
+    def test_a_profile_file_that_cannot_be_read_refuses_the_start(self):
+        for place in ('profiles/framework-researcher/.env', 'config.yaml'):
+            with self.subTest(place=place):
+                path = self.root / 'hermes' / place
+                path.mkdir()
+                self.assertIn('profile_unreadable', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+                path.rmdir()
+
+    def test_only_whole_cluster_names_in_the_operator_texts_are_refused(self):
+        case = dict(self.case, question='Which processes ran on ws-01, and what networking did they do?',
+                    sources=[{'artifact': 'work Elasticsearch', 'coverage': 'Sysmon eventlogs with process metadata'}])
+        self.case_path = self.write('case.json', case)
+        for config in ({'url': 'https://es:9243', 'index': 'logs'}, {'url': 'https://data:9243', 'index': 'network'},
+                       {'url': 'https://elastic:9243', 'index': 'logs-endpoint-*,logs-windows-*'}):
+            with self.subTest(config=config):
+                self.config = self.write('connect.json', config)
+                reached = []
+
+                def unavailable(method, url, headers, body):
+                    reached.append(url)
+                    return 503, b'{}'
+
+                with self.assertRaises(Exception) as caught:
+                    connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                    transport=unavailable)
+                self.assertNotIn('cluster host', str(caught.exception))
+                self.assertTrue(reached)
+        for config, change in (
+                ({'url': 'https://es:9243', 'index': 'logs'}, dict(question='What is in the logs of ws-01?')),
+                ({'url': 'https://es:9243', 'index': 'logs'}, dict(hosts=['ws-01', 'ES'])),
+                ({'url': URL, 'index': 'logs-endpoint-*,logs-windows-*'}, dict(question='What is in logs-windows-* today?')),
+                ({'url': URL, 'index': 'logs-*,-logs-secret'}, dict(sources=[{'artifact': 'x', 'coverage': 'not logs-secret'}])),
+                ({'url': 'https://élastic.example.test:9243', 'index': INDEX},
+                 dict(sources=[{'artifact': 'x', 'coverage': 'events on Élastic.example.test'}])),
+                ({'url': URL, 'index': 'work-logs'}, dict(case_id='work-logs'))):
+            with self.subTest(config=config, change=change):
+                self.config = self.write('connect.json', config)
+                self.case_path = self.write('case.json', {**case, **change})
+                self.assertIn('cluster host', self.refused())
+                self.assertEqual(self.elastic.requests, [])
 
     def test_cases_and_configs_outside_the_connected_contract_are_refused(self):
         recent = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 60))
@@ -382,6 +460,39 @@ class ServiceTests(ConnectedCase):
                 else:
                     options = self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']
                     self.assertEqual((result['ok'], options['query']), (True, expected))
+
+    def test_ranges_unclosed_phrases_and_escapes_hide_no_regex_or_event_id_field(self):
+        self.start()
+        searches = len(self.elastic.searches())
+        for q, code in (('host.name:[" TO z] AND host.name:/ws-0[2]/', 'invalid_query'),
+                        ('host.name:[a" TO z] AND host.name:/ws-0[2]/ AND process.name:[a" TO z]', 'invalid_query'),
+                        ('host.name:{a TO /z/}', 'regex_not_supported'),
+                        ('host.name:"ws-01 AND host.name:/ws-0[2]/', 'invalid_query'),
+                        (r'event\.id:source-id', 'invalid_query'), (r'ev\ent.id:source-id', 'invalid_query'),
+                        (r'event.\*:source-id', 'invalid_query'), (r'-event\.i?:source-id', 'invalid_query'),
+                        (r'\*:source-id', 'invalid_query')):
+            with self.subTest(q=q):
+                self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
+        self.assertEqual(len(self.elastic.searches()), searches)
+        cited = self.tool('elastic_search', size=1)['result']['hits'][0]['event.id']
+        for q, sent in (('host.name:[a TO z] AND message:"[a TO /b/]"', None), ('srv-evt-0000000000000001', None),
+                        ('host.name:srv-evt-01 OR evt-01-x', None), (r'message:event\.ids', None),
+                        (f'process.name:cmd.exe -{cited}', 'process.name:cmd.exe -(_id:"AbC0x_-")')):
+            with self.subTest(q=q):
+                self.assertTrue(self.tool('elastic_search', q=q)['ok'])
+                self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
+                                 sent or q)
+
+    def test_a_query_error_on_some_shards_is_invalid_query(self):
+        self.start()
+        self.tool('elastic_search', size=1)
+        self.assertEqual(self.elastic.requests[-1][1], '/_search?allow_partial_search_results=false')
+        self.elastic.fail_search = (200, json.dumps({'_shards': {'total': 3, 'skipped': 2, 'failed': 1, 'failures': [
+            {'reason': {'type': 'query_shard_exception'}}]}, 'hits': {'hits': []}}).encode())
+        self.assertEqual(self.tool('elastic_search', q='host.name:(')['detail'], 'invalid_query')
+        self.elastic.fail_search = (200, json.dumps({'_shards': {'failed': 1, 'failures': [
+            {'reason': {'type': 'circuit_breaking_exception'}}]}, 'hits': {'hits': []}}).encode())
+        self.assertEqual(self.tool('elastic_search', q='a')['detail'], 'backend_not_ready')
 
     def test_a_changed_point_in_time_id_is_used_next(self):
         self.start()

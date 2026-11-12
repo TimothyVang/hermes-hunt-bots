@@ -146,7 +146,8 @@ def connected_state(state_dir):
         state = json.loads(data) if len(data) <= MAX_STATE else None
     except ValueError:
         state = None
-    if (not isinstance(state, dict) or set(state) != STATE_KEYS or state['version'] != STATE_VERSION
+    if (not isinstance(state, dict) or set(state) != STATE_KEYS or type(state['version']) is not int
+            or state['version'] != STATE_VERSION
             or type(state['port']) is not int or not 0 < state['port'] < 65536 or type(state['pid']) is not int
             or not isinstance(state['case_id'], str) or not CASE_ID.fullmatch(state['case_id'])
             or not isinstance(state['instance'], str) or not INSTANCE.fullmatch(state['instance'])
@@ -173,7 +174,8 @@ def _connected(state, profile):
 def resolve(state_dir, case_id=None, *, runtime, profile=None, environ=None):
     """The one lab serving `case_id` (or, without one, the one lab serving any case), else a fixed code.
 
-    - owned_vm_not_running: neither the VM nor a connected service is up.
+    - owned_vm_not_running: neither the VM nor a connected service is up; a connected service whose state.json
+      names another case is not asked, so it counts as not up.
     - case_mismatch: a lab answered, but none for `case_id`.
     - ambiguous_lab: the VM and the connected service both serve it.
     - key_in_bot_environment: with `environ` (a bot's own process environment), a connected case is refused
@@ -193,7 +195,9 @@ def resolve(state_dir, case_id=None, *, runtime, profile=None, environ=None):
             return None
 
     vm = answered(lambda: _vm(runtime, state_dir, profile))
-    connected = answered(lambda: _connected(state, profile)) if state is not None else None
+    # A service serving another case is not asked: a stale state file would cost every VM tool call a timeout.
+    probe = state is not None and (case_id is None or state['case_id'] == case_id)
+    connected = answered(lambda: _connected(state, profile)) if probe else None
     found = [lab for lab in (vm, connected) if lab is not None]
     matches = [lab for lab in found if case_id is None or lab.case.get('case_id') == case_id]
     if len(matches) > 1:

@@ -45,9 +45,10 @@ OPTIONAL_EVIDENCE_FILES = ("intel.jsonl",)
 CAPTURE_FILE = "traffic.pcap"
 NO_CAPTURE = "none"
 # case.json "data_origin" marks an approved real-data case (HUNT-BOTS.md rule 1): a public research
-# dataset or the operator's unclassified work export; absent means synthetic. No other value is accepted.
-# Equal to hermes_temporal.contracts.DATA_ORIGINS (test_hunt_lab_managed keeps them equal). A work-connected
-# case is never seeded: only the host-side connected service serves it (ADR 0005).
+# dataset, the operator's unclassified work export, or a window of the operator's work Elastic served live
+# (work-connected); absent means synthetic. No other value is accepted. Equal to
+# hermes_temporal.contracts.DATA_ORIGINS (test_hunt_lab_managed keeps them equal). A work-connected case is
+# never seeded: only the host-side connected service serves it (ADR 0005).
 DATA_ORIGINS = ("public-dataset", "work-export", "work-connected")
 CONNECTED_ORIGIN = "work-connected"
 INSTANCE_ID = "hermes-framework-network-analyst-native-v1"

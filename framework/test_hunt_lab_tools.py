@@ -450,7 +450,8 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(self.call('elastic_search', {})['error'], 'owned_vm_not_running')
         self.runtime.state = 'running'
         self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
-        for bad in ({'version': 2}, {'port': 0}, {'port': '80'}, {'instance': 'A' * 32}, {'case_id': 'Work'},
+        for bad in ({'version': 2}, {'version': True}, {'version': 1.0}, {'port': 0}, {'port': '80'},
+                    {'instance': 'A' * 32}, {'case_id': 'Work'},
                     {'api_key_env': 'A B'}, {'extra': 1}):
             with self.subTest(state=bad):
                 self.serve(**bad)
@@ -463,6 +464,15 @@ class ResolverTests(unittest.TestCase):
         self.runtime.state = 'running'
         self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
         self.assertEqual(self.call('elastic_search', {})['error'], 'lab_unreachable')
+
+    def test_a_vm_case_never_probes_a_connected_service_serving_another_case(self):
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual(self.connected.requests, [])
+        self.runtime.state = 'stopped'
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'owned_vm_not_running')
+        self.assertEqual(self.connected.requests, [])
+        self.assertTrue(self.call('elastic_search', {})['ok'])
 
     def test_lab_browser_refuses_a_connected_case_before_launching_a_browser(self):
         with patch.object(lab_browser, '_session') as session:
