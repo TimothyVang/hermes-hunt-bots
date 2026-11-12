@@ -23,6 +23,7 @@ LICENSES = (
     'noVNC-LICENSE.txt', 'noVNC-AUTHORS.txt', 'LICENSE.MPL-2.0',
     'LICENSE.BSD-2-Clause', 'LICENSE.BSD-3-Clause', 'LICENSE.OFL-1.1',
     'pako-LICENSE.MIT', 'regenerator-LICENSE.MIT', 'babel-LICENSE.MIT',
+    'lucide-LICENSE.txt',
 )
 DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple(
     'licenses/' + name for name in LICENSES)

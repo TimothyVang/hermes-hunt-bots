@@ -281,8 +281,12 @@ class EndpointTests(ServerCase):
                                  'aggregations': {'values': {'buckets': [
                                      {'key': 1, 'key_as_string': '2026-03-02T00:00:00Z', 'doc_count': 3}]}}}
         status, value = self.request('/es/aggs?field=@timestamp&interval=1h')
-        histogram = self.elastic.calls[1]['body']['aggs']['values']['date_histogram']
-        self.assertEqual(histogram['hard_bounds'], {'min': START_S * 1000, 'max': END_S * 1000 - 1})
+        body = self.elastic.calls[1]['body']
+        histogram = body['aggs']['values']['date_histogram']
+        # Elasticsearch drops every bucket ending after hard_bounds.max: the window's last hour would vanish.
+        self.assertNotIn('hard_bounds', histogram)
+        self.assertEqual(body['query']['bool']['filter'][-1], {'range': {'@timestamp': {
+            'gte': START_S * 1000, 'lt': END_S * 1000, 'format': 'epoch_millis'}}})
         self.assertIn('sample', self.elastic.calls[1]['body']['aggs']['values']['aggs'])
         self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3, 'sample_event_id': None}])
 
@@ -655,7 +659,6 @@ class EventSourceTests(ServerCase):
         self.assertEqual(status, 200, value)
         self.assertEqual(self.source.calls[-1]['index'], 'hunt-lab-intel')
         self.assertEqual(self.elastic.calls, [])
-
 
 class FakeTsharkPipe:
     def __init__(self, data, process):

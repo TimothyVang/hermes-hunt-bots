@@ -172,15 +172,26 @@ async def _status(args: argparse.Namespace) -> None:
     print(json.dumps(observed, default=lambda value: value.__dict__, ensure_ascii=False, sort_keys=True))
 
 
-async def _decision(args: argparse.Namespace) -> None:
-    if args.phase == "reconcile" and not args.evidence_note.strip():
-        raise ValueError("reconciliation requires a nonempty --evidence-note")
+_DECIDER_REFUSAL = ("--decided-by needs a name of 1 to 200 printable characters; --via and --slack-user need "
+                    "--decided-by; --via slack needs a --slack-user Slack user ID (U or W, then 2 to 20 capital "
+                    "letters or digits), and no other channel takes one")
+
+
+def _decider(args: argparse.Namespace) -> tuple[str | None, str]:
+    """(normalized name, channel) of a decision's identity; the name is None when the identity is refused."""
     decided_by = " ".join((args.decided_by or "").split())
     via = args.via or ("cli" if decided_by else "")
     if (args.decided_by is not None and not decided_by) or not valid_decider(decided_by, via, args.slack_user):
-        raise ValueError("--decided-by needs a name of 1 to 200 printable characters; --via and --slack-user need "
-                         "--decided-by; --via slack needs a --slack-user Slack user ID (U or W, then 2 to 20 capital "
-                         "letters or digits), and no other channel takes one")
+        return None, via
+    return decided_by, via
+
+
+async def _decision(args: argparse.Namespace) -> None:
+    if args.phase == "reconcile" and not args.evidence_note.strip():
+        raise ValueError("reconciliation requires a nonempty --evidence-note")
+    decided_by, via = _decider(args)
+    if decided_by is None:
+        raise ValueError(_DECIDER_REFUSAL)
     item = WorkflowDecision(args.step_id, args.phase, args.choice, args.decision_id, args.evidence_note,
                             decided_by, via, args.slack_user)
     client = await _connect(args)
@@ -255,6 +266,9 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.handler is _decision and _decider(args)[0] is None:
+        # The refusal names only fixed rules, so it is shown in full, before any connection.
+        parser.error(_DECIDER_REFUSAL)
     try:
         asyncio.run(args.handler(args))
     except _Refusal as exc:

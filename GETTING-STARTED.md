@@ -53,6 +53,14 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
    ```
 
    `check` should report every setting `ready`. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+4. Optional: build the Hunt Command desktop app, which has the Hunting Lab, Hunt Board and Cybersecurity workspace pages built in (copies installed by step 3 are then skipped in favour of the built-in ones). From the repository root, with the Node version in `.nvmrc`:
+
+   ```powershell
+   npm ci
+   npm run pack:hunt --workspace apps/desktop
+   ```
+
+   That writes an unpacked, unsigned app to `apps\desktop\release\win-unpacked\Hunt Command.exe`. It keeps its own app settings and single-instance lock, so it runs beside an installed Hermes desktop app without replacing it, and it never updates itself: pull and rerun `pack:hunt` for a new version. When its Hermes home has no Hermes checkout yet, its first-run install clones this fork instead of upstream Hermes. Both apps answer `hermes://` links and the one launched last wins; set `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1` when starting Hunt Command to keep Hermes as the handler. It uses the same Hermes home as Hermes unless told otherwise, so start it on the lab home: `$env:HERMES_HOME = '<full path to runtime\lab-home>'; & '.\apps\desktop\release\win-unpacked\Hunt Command.exe'`. Details: [apps/desktop/BUILDING.md](apps/desktop/BUILDING.md#hunt-command-variant).
 
 ## 4. Build the hunting lab VM
 
