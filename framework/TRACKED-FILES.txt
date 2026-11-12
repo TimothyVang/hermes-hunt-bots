@@ -4,10 +4,7 @@ CLAUDE.md
 desktop/BOT-MODE-COMPATIBILITY.md
 desktop/cybersecurity-workspace/plugin.js
 desktop/HERMES-LICENSE.txt
-desktop/native-role-policy.diff
-desktop/native-role-policy.json
 desktop/REVIEW.md
-desktop/runtime-fixes.diff
 desktop/test-plugin.mjs
 desktop/VERIFICATION.md
 desktop/VIDEO-INVENTORY.md
