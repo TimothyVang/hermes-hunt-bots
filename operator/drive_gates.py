@@ -24,13 +24,19 @@ workflow retries) and one review approval, after saving the output of every step
 review under that step's own ID. An optional step the workflow dropped is logged and the run
 goes on.
 
+Decider identity: every decision the driver sends carries --via automated and the operator's or delegating
+person's name, which the workflow records with the gate and returns in `status` (field `decisions`).
+
 Decision log (ADR 0004): every decision the driver sends is appended to <decision-dir>/decisions.jsonl
 with who decided (automated, or delegated: <name>) and through which channel. In two-decision mode the
 driver also writes pending/<child>__<gate>__<digest>__review.json (digest: 16 hex of SHA-256 over the exact
 child and gate, so IDs that sanitize alike never share a record), with a one-time nonce, while it waits at one of
 the operator's two gates; operator/slack_gates.py turns that record into a Slack card. When the gate moves
-on, the driver deletes the record and, unless the bridge logged the decision, appends a line that says the
-operator decided outside the driver.
+on, the driver deletes the record and reads who decided from the workflow's record of that gate: unless the
+log already holds that decision, it appends that record as a line with channel workflow_record and decided_by
+'stated: <name>', since the workflow does not authenticate the sender. A workflow that records no deciders
+(see the patch note in framework/hermes_temporal/README.md) falls back to the earlier rule: unless the bridge
+logged the decision, the line says the operator decided outside the driver.
 
 Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<person>" --reason "<text>"
        python operator/drive_gates.py <practice_workflow_id> --two-decisions --operator "<name>" [--card-summary]
@@ -54,6 +60,7 @@ from lab_paths import DEFAULT_LANE, FRAMEWORK, GATE_RUNS, PRACTICE
 LOG = GATE_RUNS / 'driver.log'
 DECISION_DIR = PRACTICE / 'operator-decisions'
 NOTE_LIMIT_BYTES = 4096  # the workflow silently ignores a decision whose note is larger
+NAME_LIMIT = 200  # hermes_temporal.contracts.MAX_DECIDER_CHARS; the decision CLI refuses a longer name
 RPC_BACKOFF_SECONDS = 10
 RETRY_NOTE = ('Retry approval: the workflow re-offered this step once because handoff validation rejected '
               'its previous output. ')
@@ -67,6 +74,7 @@ SUMMARY_CLAIMS = 3
 # A bridge that claimed a record may still be sending its decision when the gate moves on; its CLI call
 # gives up after 120 seconds.
 BRIDGE_GRACE_SECONDS = 130
+OUTSIDE_DRIVER = 'operator (outside driver)'
 shell_join = subprocess.list2cmdline if os.name == 'nt' else shlex.join
 
 
@@ -256,7 +264,8 @@ def decide(args, child, step, phase, retry=0):
     suffix, prefix = (f':retry{retry}', RETRY_NOTE) if retry else ('', '')
     note, decision_id = prefix + args.note, f'{child}:{step}:{phase}{suffix}'
     cli('decision', child, '--step-id', step, '--phase', phase, '--choice', 'approve',
-        '--decision-id', decision_id, '--evidence-note', note)
+        '--decision-id', decision_id, '--evidence-note', note,
+        '--decided-by', args.operator or args.delegated_by, '--via', 'automated')
     kind = 'automated' if args.operator else 'delegated'
     append_decision(args.decision_dir, workflow=args.workflow_id, child=child, gate=step, phase=phase, choice='approve',
                     decided_by='automated' if args.operator else f'delegated: {args.delegated_by}',
@@ -283,7 +292,7 @@ def wait_for_operator(args, child, step, which, out, reviews):
     for choice in ('approve', 'deny'):
         print('  ' + shell_join([*DEFAULT_LANE.temporal_cli(), 'decision', child, '--step-id', step, '--phase',
                                  'review', '--choice', choice, '--decision-id', f'{child}:{step}:review',
-                                 '--evidence-note', '<what you checked>']), flush=True)
+                                 '--decided-by', args.operator, '--evidence-note', '<what you checked>']), flush=True)
     summary = None
     if args.card_summary:
         texts = [result['output'] for step_id, result in reviews if which == 'report' or step_id == SCOPE_STEP]
@@ -313,9 +322,18 @@ def observed_choice(gate, state):
     return 'approve' if stage in ('completed', 'executing', 'awaiting_execution_approval') else None
 
 
+def recorded_decision(gate, state):
+    """The workflow's own record of the review decision this gate took, or None (older workflows record none)."""
+    for item in reversed((state or {}).get('decisions') or []):
+        if item.get('gate') == gate['gate'] and item.get('phase') == 'review':
+            return item
+    return None
+
+
 def close_pending(args, gate, state):
     """The operator's gate moved on: drop its pending record and make sure the decision log names who decided."""
-    choice = observed_choice(gate, state)
+    recorded = recorded_decision(gate, state)
+    choice = recorded['decision'] if recorded else observed_choice(gate, state)
     pending, claimed = (Path(args.decision_dir) / folder / gate['name'] for folder in ('pending', 'claimed'))
     retry_busy(lambda: pending.unlink(missing_ok=True))
     prefix = f'{gate["child"]}:{gate["gate"]}:review:'
@@ -331,6 +349,20 @@ def close_pending(args, gate, state):
         time.sleep(1)
         sent = bridge_lines()
     where = f'{gate["kind"]} review of {gate["child"]} {gate["gate"]}'
+    if recorded and not any(line.get('decision_id') == recorded.get('decision_id') for line in sent):
+        # The workflow took a decision the log lacks: sent outside the bridge, or one that beat the bridge's signal.
+        # Its identity is what the sender stated, so the line is labelled as such, never as a bridge-checked one.
+        name, via = recorded.get('decided_by'), recorded.get('via') or 'unknown'
+        who = f'stated: {name}' if name else OUTSIDE_DRIVER
+        retry_busy(lambda: claimed.unlink(missing_ok=True))
+        append_decision(args.decision_dir, workflow=args.workflow_id, child=gate['child'], gate=gate['gate'],
+                        phase='review', choice=choice, decided_by=who, channel='workflow_record', via=via,
+                        **({'slack_user': recorded['slack_user']} if recorded.get('slack_user') else {}),
+                        decision_id=recorded.get('decision_id'), note_sha256=None)
+        log(f'{where} decided by {who} via {via}: {choice}, as the workflow records it'
+            + (f'; the workflow ignored the logged {sent[-1].get("choice")} by {sent[-1].get("decided_by")}'
+               if sent else ''))
+        return
     if sent:
         last = sent[-1]
         differs = choice is not None and choice != last.get('choice')
@@ -342,7 +374,7 @@ def close_pending(args, gate, state):
         log(f'{where} closed without an observed decision (stage {state.get("stage") if state else "unknown"})')
         return
     append_decision(args.decision_dir, workflow=args.workflow_id, child=gate['child'], gate=gate['gate'],
-                    phase='review', choice=choice, decided_by='operator (outside driver)', channel='unknown',
+                    phase='review', choice=choice, decided_by=OUTSIDE_DRIVER, channel='unknown',
                     decision_id=None, note_sha256=None)
     log(f'{where} decided outside the driver: {choice}')
 
@@ -384,6 +416,10 @@ def parse_args(argv=None):
         shorten = '--reason'
     if len((RETRY_NOTE + args.note).encode('utf-8')) > NOTE_LIMIT_BYTES:
         ap.error(f'the approval note must fit in {NOTE_LIMIT_BYTES} bytes; shorten {shorten}')
+    name = args.operator or args.delegated_by
+    if len(name) > NAME_LIMIT or not name.isprintable():
+        ap.error(f'{"--operator" if args.operator else "--delegated-by"} must be at most {NAME_LIMIT} printable '
+                 'characters: the workflow records it as the decider of every automated approval')
     return args
 
 
