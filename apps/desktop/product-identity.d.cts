@@ -9,6 +9,11 @@ interface ProductIdentity {
   /** GitHub `owner/repo` the first-launch installer is fetched and cloned from.
    *  Present only on the Hunt Command build; absent means NousResearch/hermes-agent. */
   readonly sourceRepo?: string
+  /** Publisher name for app metadata, copyright and MSIX (e.g. "TimothyVang").
+   *  Present only on the Hunt Command build; absent means Nous Research. */
+  readonly publisher?: string
+  /** Copyright line for the exe and About panel. Present only with `publisher`. */
+  readonly copyright?: string
   /** Display name. e.g. "Hermes Light" */
   displayName: string
   /** OS-level app identity. e.g. "com.nousresearch.hermes-light" */
