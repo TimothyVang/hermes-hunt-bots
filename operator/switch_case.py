@@ -101,3 +101,7 @@ def main():
             raise SystemExit(f"stop failed: {st.get('reason')}")
         say(f"stopped case={st.get('case_id')} ({st.get('reason')})")
     wait_ready(start(*options))
+
+
+if __name__ == '__main__':
+    main()

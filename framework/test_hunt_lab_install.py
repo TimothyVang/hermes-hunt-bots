@@ -231,6 +231,21 @@ class LabInstallTests(unittest.TestCase):
             install_desktop.sync_bundle(parent, 'hunt-lab', {'a': b'new a', 'b': b'new b'})
         self.assertEqual((destination / 'a').read_bytes(), b'old a')
 
+    def test_upgrade_removes_unmodified_files_the_new_bundle_no_longer_has(self):
+        parent = self.home / 'plugins'
+        destination = install_desktop.sync_bundle(parent, 'hunt-lab', {
+            'a.py': b'kept', 'gone.py': b'old', 'guest/gone.sh': b'old sh'})
+        (destination / '__pycache__').mkdir()
+        (destination / '__pycache__' / 'gone.cpython-313.pyc').write_bytes(b'cache')
+        install_desktop.sync_bundle(parent, 'hunt-lab', {'a.py': b'kept'})
+        self.assertEqual(sorted(path.relative_to(destination).as_posix() for path in destination.rglob('*')),
+                         [install_desktop.MARKER, 'a.py'])
+        install_desktop.sync_bundle(parent, 'hunt-lab', {'a.py': b'kept', 'b.py': b'new'})
+        (destination / 'b.py').write_bytes(b'user edit')
+        with self.assertRaises(ValueError):
+            install_desktop.sync_bundle(parent, 'hunt-lab', {'a.py': b'kept'})
+        self.assertEqual((destination / 'b.py').read_bytes(), b'user edit')
+
     def test_forged_marker_cannot_name_paths_outside_bundle(self):
         destination = self.home / 'plugins/hunt-lab'
         destination.mkdir(parents=True)

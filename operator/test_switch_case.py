@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,13 @@ class SwitchTest(unittest.TestCase):
                                     hunt_lab + ['start', '--evidence-dir', str(evidence.resolve()),
                                                 '--wait', str(switch_case.START_WAIT)]])
         resolve.assert_called_with(switch_case.DEFAULT_LANE.state_dir, 'lab-med-001', profile='hunt-board')
+
+    def test_the_script_runs_main_when_executed(self):
+        # work_hunt runs switch_case.py as a child process; without the entry point it exits 0 having done nothing.
+        child = subprocess.run([sys.executable, '-B', str(Path(switch_case.__file__)), '--help'],
+                               capture_output=True, text=True, timeout=60)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertIn('evidence_dir', child.stdout)
 
 
 if __name__ == '__main__':
