@@ -97,6 +97,7 @@ desktop/REVIEW.md
 desktop/test-plugin.mjs
 desktop/VERIFICATION.md
 desktop/VIDEO-INVENTORY.md
+doctor.py
 envision_protocol.py
 examples/meeting-notes.txt
 examples/synthetic-hunt-events.json
@@ -269,6 +270,7 @@ test_benchmark_typesafe.py
 test_benchmark_windows.py
 test_bot.py
 test_desktop_workspace.py
+test_doctor.py
 test_envision_protocol.py
 test_hunt_lab_case.py
 test_hunt_lab_install.py

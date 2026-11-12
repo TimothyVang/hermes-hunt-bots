@@ -44,21 +44,21 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 1. Install Hermes. This repository is a fork of Hermes 0.23.0; build it from source with the upstream [CONTRIBUTING.md](CONTRIBUTING.md), or use an official Hermes install of the same version.
 2. Sign in to a model provider in that home.
-3. Register the six profiles and give each its reviewed policy, then install the hunting-lab plugin and the desktop pages. Name the lab's `hermes` executable once in `$hermes`; every command uses it, so no other `hermes` on PATH runs. Each profile gets its policy file (`initialize`) before `setup_hermes.py install` enables plugins, because that writes Hermes' default settings, which `apply` keeps as custom conflicts:
+3. Install the six bots, their reviewed policy, the hunting-lab plugin and the desktop pages with one command. It needs [Docker Desktop](https://docs.docker.com/desktop/) running and the [Temporal CLI](https://docs.temporal.io/cli) (`temporal`) on PATH, and checks both before it changes anything. Pass the lab's `hermes` executable with `--hermes`, so no other `hermes` on PATH runs. From `framework/`:
 
    ```powershell
-   $hermes = '<lab hermes.exe>'
-   $env:HERMES_HOME = [IO.Path]::GetFullPath("$PWD\..\..\runtime\lab-home")
-   foreach ($bot in 'framework-coordinator', 'framework-researcher', 'framework-builder', 'framework-reviewer', 'framework-librarian', 'framework-network-analyst') {
-     & $hermes profile install ".\hermes-bots\$bot"
-     ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home initialize $bot
-   }
-   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes $hermes --home ..\..\runtime\lab-home install
-   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home apply
-   ..\.venv-dev\Scripts\python.exe native_team.py --hermes $hermes --home ..\..\runtime\lab-home check
+   ..\.venv-dev\Scripts\python.exe setup_hermes.py --hermes '<lab hermes.exe>' --home ..\..\runtime\lab-home all
    ```
 
-   Answer `y` to each `profile install` prompt. `check` prints the Hermes executable it used, then should report every setting `ready`. Without `--hermes`, the helpers use `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+   Answer `y` to each `profile install` prompt. The command checks Hermes, Docker and the Temporal CLI, installs each missing profile, writes each new profile's policy file (`native_team.py initialize`), installs and enables the lab plugin and the desktop pages, applies the remaining policy (`native_team.py apply`) and checks it (`native_team.py check`). It ends `setup: complete`, or stops at the first failure with `setup: stopped at <step>: <reason>`. Running it again keeps what is already installed. Without `--hermes`, it uses `LAB_HERMES_EXE`, then `hermes` on PATH. Details: [framework/hermes-setup.md](framework/hermes-setup.md).
+
+   Later, check that the installed bots still match the repo:
+
+   ```powershell
+   ..\.venv-dev\Scripts\python.exe doctor.py --hermes '<lab hermes.exe>' --home ..\..\runtime\lab-home
+   ```
+
+   It prints one `drift:` line for each installed `SOUL.md`, plugin file or `model.default`/`model.provider` setting that differs from the repo, then `doctor: <n> drift`, and exits non-zero on any drift. It reads files only.
 4. Optional: build the Hunt Command desktop app, which has the Hunting Lab, Hunt Board and Cybersecurity workspace pages built in (copies installed by step 3 are then skipped in favour of the built-in ones). From the repository root, with the Node version in `.nvmrc`:
 
    ```powershell

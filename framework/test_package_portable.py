@@ -20,7 +20,7 @@ APPROVED_FILES = frozenset({
     '.gitignore', 'README.md', 'hermes-setup.md', 'optional-runtime.md',
     'LICENSE',
     'bot.py', 'workflows.py', 'orchestrate.py', 'langchain_adapter.py',
-    'native_team.py',
+    'native_team.py', 'doctor.py', 'test_doctor.py',
     'requirements-orchestration.txt', 'setup_hermes.py', 'package_portable.py',
     'test_bot.py', 'test_workflows.py', 'test_orchestration.py',
     'test_langchain_adapter.py', 'test_setup_hermes.py', 'test_package_portable.py',
