@@ -188,7 +188,9 @@ def _install_profiles(chosen, executable, root, process_factory):
             continue
         print(f'Installing {entry["name"]} from {directory} through native confirmation (no overwrite requested).')
         try:
-            # Hermes shares this terminal, so its preview and confirmation prompt reach the operator unchanged.
+            # Hermes shares this terminal, so its preview and confirmation prompt reach the operator unchanged;
+            # flush first so this helper's own lines stay in order when the output is saved to a file.
+            sys.stdout.flush()
             returncode = process_factory([executable, 'profile', 'install', str(directory)],
                                          env=dict(os.environ, HERMES_HOME=str(root))).wait()
         except OSError as exc:
@@ -318,7 +320,7 @@ def setup_all(hermes_override=None, home=None, kit_root=HERE, process_factory=su
         for profile in native_team.PROFILES:
             config = lab.registered_profile(state['root'], profile) / 'config.yaml'
             if config.exists() or config.is_symlink():
-                print(f'Keeping the existing config.yaml of {profile}; apply reconciles it next.')
+                print(f'Keeping the existing config.yaml of {profile}; apply fills in missing settings next and stops on any custom value.')
                 continue
             native_team.initialize(profile, state['root'])
             print(f'Wrote the reviewed policy to {profile}/config.yaml.')
@@ -338,10 +340,10 @@ def setup_all(hermes_override=None, home=None, kit_root=HERE, process_factory=su
     for name, step in (('prerequisites', prerequisites), ('profiles', profiles), ('policy files', policy_files),
                        ('lab plugin and desktop pages', lab_components), ('team policy', team_policy),
                        ('check', policy_check)):
-        print(f'setup: {name}')
+        print(f'setup: {name}', flush=True)
         try:
             step()
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f'setup: stopped at {name}: {exc}', file=sys.stderr)
             return 1
     print('setup: complete')

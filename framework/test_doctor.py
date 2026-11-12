@@ -76,19 +76,32 @@ class DoctorTests(unittest.TestCase):
             'doctor: 3 drift'])
 
     def test_plugin_copy_changes_and_missing_profiles_are_reported(self):
+        marker = install_desktop.MARKER
         backend = self.home / 'profiles' / 'framework-builder' / 'plugins' / 'hunt-lab'
         (backend / 'query_adapter.py').write_bytes(b'ALLOW_EVERYTHING = True\n')
         (backend / 'extra.py').write_bytes(b'')
+        (backend / '__pycache__').mkdir()
+        (backend / '__pycache__' / 'notes.txt').write_bytes(b'')
         (self.home / 'desktop-plugins' / install_desktop.PLUGIN / 'plugin.js').unlink()
         shutil.rmtree(self.home / 'profiles' / 'framework-coordinator')
         code, lines, _stderr = self.run_doctor(models())
         self.assertEqual(code, 1)
         self.assertEqual(sorted(lines), sorted([
             'drift: profiles/framework-coordinator is not installed',
+            'drift: profiles/framework-builder/plugins/hunt-lab/__pycache__/notes.txt is not in the repo',
             'drift: profiles/framework-builder/plugins/hunt-lab/extra.py is not in the repo',
             'drift: profiles/framework-builder/plugins/hunt-lab/query_adapter.py differs from the repo',
+            f'drift: profiles/framework-builder/plugins/hunt-lab/{marker} does not match the installed files, so setup would refuse to update this copy',
             f'drift: desktop-plugins/{install_desktop.PLUGIN}/plugin.js is missing',
-            'doctor: 4 drift']))
+            f'drift: desktop-plugins/{install_desktop.PLUGIN}/{marker} does not match the installed files, so setup would refuse to update this copy',
+            'doctor: 7 drift']))
+
+    def test_an_older_install_that_setup_can_update_names_only_the_changed_files(self):
+        page = self.home / 'desktop-plugins' / 'hunt-lab'
+        install_desktop.sync_bundle(page.parent, 'hunt-lab', {**{name: (page / name).read_bytes() for name in lab.DESKTOP_FILES},
+                                                              'plugin.js': b'// an earlier release\n'})
+        code, lines, _stderr = self.run_doctor(models())
+        self.assertEqual((code, lines), (1, ['drift: desktop-plugins/hunt-lab/plugin.js differs from the repo', 'doctor: 1 drift']))
 
     def test_a_reader_failure_is_not_reported_as_no_drift(self):
         def failed(argv, **_kwargs):

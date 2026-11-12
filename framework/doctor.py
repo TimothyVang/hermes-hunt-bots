@@ -13,8 +13,10 @@ has PyYAML; it prints only those two settings, never the rest of the file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -80,6 +82,13 @@ def _relative(root, path):
     return Path(path).relative_to(root).as_posix()
 
 
+def _bytecode_of_owned_source(relative, files):
+    """The cache Python writes beside an installed source, which setup leaves alone (install_desktop.sync_bundle)."""
+    match = re.fullmatch(r'(.+)\.cpython-[0-9]+(?:\.opt-[012])?\.pyc', relative.name)
+    return (match is not None and relative.parent.name == '__pycache__'
+            and (relative.parent.parent / (match.group(1) + '.py')).as_posix() in files)
+
+
 def _copy_drift(root, destination, files):
     name = _relative(root, destination)
     if not destination.is_dir():
@@ -93,10 +102,27 @@ def _copy_drift(root, destination, files):
             drift.append(f'{name}/{relative} differs from the repo')
     for path in sorted(destination.rglob('*')):
         relative = path.relative_to(destination)
-        if (path.is_file() and relative.as_posix() not in files and relative.name != install_desktop.MARKER
-                and '__pycache__' not in relative.parts):
+        if (path.is_file() and relative.as_posix() not in files and relative.as_posix() != install_desktop.MARKER
+                and not _bytecode_of_owned_source(relative, files)):
             drift.append(f'{name}/{relative.as_posix()} is not in the repo')
+    drift.extend(_marker_drift(name, destination, files))
     return drift
+
+
+def _marker_drift(name, destination, files):
+    """Setup updates a copy only when its ownership marker names repo files with the hashes of the installed bytes."""
+    try:
+        marker = json.loads((destination / install_desktop.MARKER).read_text(encoding='utf-8'))
+        recorded = marker['files']
+        owned = (set(marker) == {'owner', 'bundle', 'files'} and marker['owner'] == 'bot-framework'
+                 and marker['bundle'] == destination.name and set(recorded) <= set(files)
+                 and all(hashlib.sha256((destination / relative).read_bytes()).hexdigest() == digest
+                         for relative, digest in recorded.items()))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        owned = False
+    if owned:
+        return []
+    return [f'{name}/{install_desktop.MARKER} does not match the installed files, so setup would refuse to update this copy']
 
 
 def _model_drift(profile, observed):
