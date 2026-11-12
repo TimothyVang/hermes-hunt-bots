@@ -7,8 +7,8 @@ Compares each authored profile's installed SOUL.md, every plugin copy setup inst
 profile, the Hunting Lab page and the workspace companion) and each profile's config.yaml model.default and
 model.provider with the repo. Prints one line per drift, then `doctor: <n> drift`; exits 1 on any drift and 2 when
 it cannot check. It reads files only and changes nothing. Hermes writes config.yaml as YAML, so the model settings
-are read by the Python beside the Hermes executable (--hermes, else LAB_HERMES_EXE, else `hermes` on PATH), which
-has PyYAML; it prints only those two settings, never the rest of the file.
+are read by the Python beside the Hermes executable (--hermes, else LAB_HERMES_EXE, else `hermes` on PATH) with
+Hermes' own loader (hermes_yaml); it prints only those two settings, never the rest of the file.
 """
 from __future__ import annotations
 
@@ -26,19 +26,21 @@ import native_team
 import setup_hermes
 
 HERE = Path(__file__).resolve().parent
-# Runs in Hermes' own interpreter. Prints {path: {state, default, provider}}, the two model strings only.
+# Runs in Hermes' own interpreter with Hermes' own YAML loader. Prints {path: {state, default, provider}}, the two
+# model strings only.
 MODEL_READER = '\n'.join((
     'import json, sys',
-    'import yaml',
+    'import hermes_yaml',
+    'from ruamel.yaml.error import YAMLError',
     'result = {}',
     'for path in sys.argv[1:]:',
     '    try:',
     "        with open(path, encoding='utf-8-sig') as handle:",
-    '            data = yaml.safe_load(handle)',
+    '            data = hermes_yaml.safe_load(handle)',
     '    except FileNotFoundError:',
     "        result[path] = {'state': 'missing'}",
     '        continue',
-    '    except (OSError, UnicodeDecodeError, yaml.YAMLError):',
+    '    except (OSError, UnicodeDecodeError, YAMLError):',
     "        result[path] = {'state': 'unreadable'}",
     '        continue',
     "    model = data.get('model') if isinstance(data, dict) else None",
@@ -74,7 +76,7 @@ def hermes_model_reader(hermes=None, runner=subprocess.run):
                 raise ValueError
             return json.loads(result.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
-            raise DoctorError(f'{python} could not read the profiles\' config.yaml (it needs PyYAML, which Hermes installs)') from None
+            raise DoctorError(f'{python} could not read the profiles\' config.yaml with Hermes\' YAML loader (hermes_yaml)') from None
     return read_models
 
 

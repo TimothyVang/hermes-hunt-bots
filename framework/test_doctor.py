@@ -105,7 +105,7 @@ class DoctorTests(unittest.TestCase):
 
     def test_a_reader_failure_is_not_reported_as_no_drift(self):
         def failed(argv, **_kwargs):
-            return subprocess.CompletedProcess(argv, 1, '', 'ModuleNotFoundError: No module named yaml')
+            return subprocess.CompletedProcess(argv, 1, '', "ModuleNotFoundError: No module named 'hermes_yaml'")
         hermes_dir = self.home / 'hermes-bin'
         hermes_dir.mkdir()
         (hermes_dir / ('hermes.exe' if sys.platform == 'win32' else 'hermes')).write_bytes(b'')
@@ -115,7 +115,7 @@ class DoctorTests(unittest.TestCase):
         code, lines, stderr = self.run_doctor(reader)
         self.assertEqual((code, lines), (2, []))
         self.assertIn('doctor: cannot check: ', stderr)
-        self.assertIn('PyYAML', stderr)
+        self.assertIn('hermes_yaml', stderr)
 
 
 if __name__ == '__main__':
