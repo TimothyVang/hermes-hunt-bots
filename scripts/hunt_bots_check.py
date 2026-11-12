@@ -92,7 +92,8 @@ def main(argv=None):
     results = [f'policy: {count} tracked files, {len(problems)} problem(s)']
     failed = bool(problems)
     if not args.policy:
-        failed |= run_tests(args.python, args.log, results)
+        python = os.path.abspath(args.python) if os.path.dirname(args.python) else args.python
+        failed |= run_tests(python, args.log, results)
     print('hunt-bots-check: ' + '; '.join(results) + ('  -> FAIL' if failed else '  -> PASS'))
     return 1 if failed else 0
 

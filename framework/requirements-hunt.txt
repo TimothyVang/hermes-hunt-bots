@@ -1,7 +1,9 @@
-# Every package the hunt bots, the operator tools and the gate's test suites import. Install from the
-# hash lock, not this file: python -m pip install --require-hashes -r framework/requirements-hunt.lock
-# Regenerate the lock from framework/ after changing a pin here:
-#   uv pip compile --universal --python-version 3.10 --generate-hashes requirements-hunt.txt -o requirements-hunt.lock
+# The third-party packages the hunt bots, the operator tools and the gate's tests need (the optional
+# orchestration packages stay in requirements-orchestration.txt). Install from the hash lock, not this
+# file: python -m pip install --require-hashes --only-binary :all: -r framework/requirements-hunt.lock
+# Regenerate the lock from framework/ after changing a pin here (--no-config keeps the upstream Hermes
+# [tool.uv] settings in the root pyproject.toml out of it):
+#   uv pip compile --no-config --universal --python-version 3.10 --generate-hashes requirements-hunt.txt -o requirements-hunt.lock
 -r hermes_temporal/requirements.txt
 pycdlib==1.14.0
 slack-sdk==3.45.0

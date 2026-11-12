@@ -72,6 +72,15 @@ class GateTests(unittest.TestCase):
         self.assertIn('does not run', summary)
         self.assertTrue(summary.endswith('-> FAIL'), summary)
 
+    def test_relative_python_is_resolved_from_the_callers_folder(self):
+        try:
+            relative = os.path.relpath(sys.executable, self.tmp)
+        except ValueError:
+            self.skipTest('the interpreter and the temporary folder are on different drives')
+        self.enterContext(contextlib.chdir(self.tmp))
+        code, summary, _ = self.run_gate(python=relative)
+        self.assertEqual(code, 0, summary)
+
     def test_python_defaults_to_hunt_bots_python(self):
         with mock.patch.dict(os.environ, {'HUNT_BOTS_PYTHON': str(self.tmp / 'chosen-python.exe')}), \
                 mock.patch.object(gate, 'run_tests', return_value=False) as run_tests, \

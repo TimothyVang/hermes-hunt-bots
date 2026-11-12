@@ -13,7 +13,7 @@ mkdir hermes-hunt-bots; cd hermes-hunt-bots; mkdir runtime
 git clone -b hunt-bots https://github.com/TimothyVang/hermes-hunt-bots.git repo
 cd repo
 py -3 -m venv .venv-dev
-.\.venv-dev\Scripts\python.exe -m pip install --require-hashes -r framework\requirements-hunt.lock
+.\.venv-dev\Scripts\python.exe -m pip install --require-hashes --only-binary :all: -r framework\requirements-hunt.lock
 .\.venv-dev\Scripts\python.exe scripts\hunt_bots_check.py
 ```
 
@@ -22,13 +22,13 @@ mkdir -p hermes-hunt-bots/runtime && cd hermes-hunt-bots
 git clone -b hunt-bots https://github.com/TimothyVang/hermes-hunt-bots.git repo
 cd repo
 python3 -m venv .venv-dev
-.venv-dev/bin/python -m pip install --require-hashes -r framework/requirements-hunt.lock
+.venv-dev/bin/python -m pip install --require-hashes --only-binary :all: -r framework/requirements-hunt.lock
 .venv-dev/bin/python scripts/hunt_bots_check.py
 ```
 
-`framework/requirements-hunt.lock` pins every package the bots, the operator tools and the tests import, with hashes, so pip refuses any other file. To change a pin, edit `framework/requirements-hunt.txt` and regenerate the lock with the `uv pip compile` command at the top of that file.
+`framework/requirements-hunt.lock` pins every package the bots, the operator tools and the tests need, with the hash of each published file. pip refuses a download whose hash is not in the lock, and `--only-binary :all:` stops it from falling back to building a source archive. With uv, `uv pip sync --no-build --python .venv-dev framework/requirements-hunt.lock` does the same. To change a pin, edit `framework/requirements-hunt.txt` and regenerate the lock with the `uv pip compile` command at the top of that file.
 
-The last line must end in `-> PASS`. It runs the framework tests and the operator tests in roughly TIMING; a few are skipped because they need the private range kit, the optional orchestration packages, another operating system, or a live lab. A Python without the lock installed fails at once with `missing: temporalio` (or another package) instead of skipping suites. The tests run with the Python given by `--python <python.exe>`, else the `HUNT_BOTS_PYTHON` environment variable, else the Python running the script, so another Python can start the gate as long as it points at this venv. `--log <file>` writes every test's name and output to that file, `--policy` runs only the file-list checks in seconds, and installing [gitleaks](https://github.com/gitleaks/gitleaks) adds the secret scan.
+The last line must end in `-> PASS`. It runs the framework tests and the operator tests in about eight minutes; a few are skipped because they need the private range kit, the optional orchestration packages, another operating system, or a live lab. A Python without the lock installed fails at once with `missing: temporalio` (or another package) instead of skipping suites. The tests run with the Python given by `--python <python.exe>`, else the `HUNT_BOTS_PYTHON` environment variable, else the Python running the script, so another Python can start the gate as long as it points at this venv. `--log <file>` writes every test's name and output to that file, `--policy` runs only the file-list checks in seconds, and installing [gitleaks](https://github.com/gitleaks/gitleaks) adds the secret scan.
 
 ## 2. Generate a synthetic case (no VM, no model)
 
