@@ -235,7 +235,7 @@ def install(selected=None, hermes_override=None, kit_root=HERE, process_factory=
     components = lab.install(root, executable, kit_root)
     print('Confirmed newly installed authored profiles: ' + (', '.join(installed) or 'none; existing profiles preserved'))
     print('Built-in hunting lab backend and Desktop companion installed and enabled: ' + components['profile'])
-    print('The Hunting Lab page ships in the desktop app built from this repository (see GETTING-STARTED.md).')
+    print('The Hunting Lab page ships only in the Hunt Bots desktop app (see GETTING-STARTED.md).')
     print('First explicit Start prepares public runtime assets automatically; no VM was started by setup.')
     print('Profile registration does not establish Desktop rendering or provider/model readiness.')
     return 0

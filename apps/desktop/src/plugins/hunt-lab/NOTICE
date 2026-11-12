@@ -6,10 +6,14 @@ the authored sources in framework/hunt_lab/desktop_src/ and the pinned noVNC
 
 Licenses
 - The authored Hunting Lab code (everything in plugin.js except the
-  CONSOLE_BUNDLE string) is AGPL-3.0, like the rest of framework/; see
-  framework/LICENSE in the source repository,
+  CONSOLE_BUNDLE string and the Lucide icon paths) is AGPL-3.0, like the rest
+  of framework/; see framework/LICENSE in the source repository,
   https://github.com/TimothyVang/hermes-hunt-bots (packaged builds ship it as
   LICENSE.AGPL-3.0 beside this file).
+- The icon path data (the Lucide 0.577.0 block in plugin.js) is ISC,
+  Copyright (c) Lucide Contributors 2026, with portions Copyright (c)
+  2013-2026 Cole Bemis as part of Feather, MIT (licenses/lucide-LICENSE.txt
+  holds both texts).
 - CONSOLE_BUNDLE is the noVNC 1.6.0 core library, MPL-2.0, Copyright (C) 2022
   The noVNC authors (licenses/noVNC-LICENSE.txt, licenses/noVNC-AUTHORS.txt,
   licenses/LICENSE.MPL-2.0). Its core/des.js carries BSD-style terms and its
@@ -18,5 +22,6 @@ Licenses
 - The remaining texts in licenses/ are the other licenses noVNC lists for its
   distribution.
 
-Packaged desktop builds copy this file, console-provenance.json and licenses/
-to resources/licenses/hunt-lab/.
+Only Hunt Bots desktop builds (HERMES_DESKTOP_VARIANT=hunt-bots) include this
+plugin; they copy this file, console-provenance.json and licenses/ to
+resources/licenses/hunt-lab/.

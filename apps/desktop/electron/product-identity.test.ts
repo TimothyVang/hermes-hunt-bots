@@ -227,6 +227,8 @@ test('hunt-bots is its own product: own names and app IDs, own state and lock, n
   const fork: ProductIdentity = await identityForVariant('hunt-bots')
 
   assert.equal(fork.fork, true)
+  // Hermes identities carry no fork key, so their baked JSON is unchanged.
+  assert.equal('fork' in full, false)
   assert.equal(fork.displayName, 'Hunt Bots')
   assert.equal(fork.cliName, full.cliName)
   assert.equal(fork.channel, null)
@@ -248,6 +250,7 @@ test('hunt-bots is its own product: own names and app IDs, own state and lock, n
       fork,
       {}
     )
+
     assert.equal(named, 'Hunt Bots')
     assert.equal(paths.userData, path.join(root, 'HuntBots'))
   } finally {
@@ -260,6 +263,11 @@ test('hunt-bots is its own product: own names and app IDs, own state and lock, n
   assert.equal(config.win.executableName, 'Hunt Bots')
   assert.equal(config.publish, null)
   assert.equal(config.mac.publish, null)
+  // The Hunting Lab notices ship only with the fork, which alone bundles the plugin.
+  assert.match(JSON.stringify(config.extraResources), /licenses\/hunt-lab/)
+  await identityForVariant(undefined)
+  delete require.cache[require.resolve('../electron-builder.config.cjs')]
+  assert.doesNotMatch(JSON.stringify(require('../electron-builder.config.cjs').extraResources), /hunt-lab/)
 })
 
 test('packaging isolates boot metadata and executable names without renaming release artifacts', async (): Promise<void> => {

@@ -80,7 +80,8 @@ if (store && (canary || buildCommit)) {
 const identity = {
   store,
   light,
-  fork,
+  // Only the fork carries the flag, so Hermes identities bake byte-identical.
+  ...(fork ? { fork: /** @type {const} */ (true) } : {}),
   displayName,
   appId: `${org.reverseDomain}.${name.kebab}${kebabSuffix}`,
   // Store, commit and fork builds do not publish a release feed.

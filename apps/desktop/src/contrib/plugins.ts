@@ -13,12 +13,21 @@
  *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
+import forkPlugins from '@/fork-plugins'
+
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
 import { watchRuntimePlugins } from './runtime-loader'
 
-const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true })
+// The hunt-bots fork's Hunting Lab lives beside the bundled plugins but ships only
+// in that variant's build, through the per-build '@/fork-plugins' alias.
+const modules = {
+  ...import.meta.glob<{ default: HermesPlugin }>(['../plugins/*/plugin.{js,ts,tsx}', '!../plugins/hunt-lab/**'], {
+    eager: true
+  }),
+  ...forkPlugins
+}
 
 // One-shot init guard. Contributions themselves register by id (re-registering
 // is idempotent), but the disk-door watcher setup below (watchRuntimePlugins)

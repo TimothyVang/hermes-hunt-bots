@@ -1400,10 +1400,15 @@ const BOOT_FAKE_STEP_MS = (() => {
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 
-// The renderer's index.html <title> would otherwise rename every app window
-// "Hermes" on load, whatever product this build is.
+// A fork product (Hunt Bots) names its own windows: the renderer's index.html
+// <title>, and the HUD's document.title, would rename them "Hermes" on load.
+// Hermes builds keep the historical titles.
+const WINDOW_TITLE: string = PRODUCT_IDENTITY.fork ? APP_NAME : 'Hermes'
+
 function keepProductTitle(win: BrowserWindow): void {
-  win.on('page-title-updated', event => event.preventDefault())
+  if (PRODUCT_IDENTITY.fork) {
+    win.on('page-title-updated', event => event.preventDefault())
+  }
 }
 
 const TITLEBAR_HEIGHT = 34
@@ -12255,7 +12260,7 @@ function spawnSecondaryWindow({
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: APP_NAME,
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12361,7 +12366,7 @@ function spawnBrowserWindow(tabId) {
     height: BROWSER_WINDOW_HEIGHT,
     minWidth: BROWSER_WINDOW_MIN_WIDTH,
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: APP_NAME,
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -12474,7 +12479,7 @@ function createInstanceWindow(
     ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: APP_NAME,
+    title: WINDOW_TITLE,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -13166,6 +13171,8 @@ function spawnHudWindow(sessionId, profile) {
   streamThrottle.register(win)
   hudWindows.add(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  // Hyprland's overlay promotion matches this window by HUD_WINDOW_TITLE.
+  keepProductTitle(win)
 
   // Remember where the user parks and sizes it (debounced — these fire many
   // times mid-drag).
@@ -13560,7 +13567,7 @@ function createWindow() {
     ),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: APP_NAME,
+    title: WINDOW_TITLE,
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit

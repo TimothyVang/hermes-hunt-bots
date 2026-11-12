@@ -281,7 +281,8 @@ class LabInstallTests(unittest.TestCase):
         self.assertIn((sources / 'console-frame.js').read_text(encoding='utf-8')
                       + '\nfunction consoleFrameUrl(wsURL) {\n', shipped)
         self.assertTrue(shipped.endswith((sources / 'plugin.entry.js').read_text(encoding='utf-8')))
-        for name in ('NOTICE', 'console-provenance.json', 'licenses/noVNC-LICENSE.txt', 'licenses/LICENSE.MPL-2.0'):
+        for name in ('NOTICE', 'console-provenance.json', 'licenses/noVNC-LICENSE.txt', 'licenses/LICENSE.MPL-2.0',
+                     'licenses/lucide-LICENSE.txt'):
             self.assertTrue((BUNDLED_PAGE.parent / name).is_file(), name)
 
     def test_unknown_or_deleted_profile_owner_is_refused(self):

@@ -137,17 +137,22 @@ module.exports = {
       from: 'assets/icon.ico',
       to: 'icon.ico'
     },
-    // The bundled Hunting Lab plugin is AGPL-3.0 and embeds noVNC (MPL-2.0); its
-    // notices ship beside the app because the renderer bundle drops source comments.
-    {
-      from: 'src/plugins/hunt-lab',
-      to: 'licenses/hunt-lab',
-      filter: ['NOTICE', 'console-provenance.json', 'licenses/**']
-    },
-    {
-      from: '../../framework/LICENSE',
-      to: 'licenses/hunt-lab/LICENSE.AGPL-3.0'
-    }
+    // Only the fork ships the Hunting Lab plugin (src/fork-plugins.ts). It is
+    // AGPL-3.0 and embeds noVNC (MPL-2.0) and Lucide icons; the notices ship
+    // beside the app because the renderer bundle drops source comments.
+    ...(fork
+      ? [
+          {
+            from: 'src/plugins/hunt-lab',
+            to: 'licenses/hunt-lab',
+            filter: ['NOTICE', 'console-provenance.json', 'licenses/**']
+          },
+          {
+            from: '../../framework/LICENSE',
+            to: 'licenses/hunt-lab/LICENSE.AGPL-3.0'
+          }
+        ]
+      : [])
   ],
   asar: {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']

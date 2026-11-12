@@ -169,8 +169,9 @@ function stampClock(prepared = {}) {
 // the production default vite's build() itself writes into process.env, so a build that started
 // without one still matches the receipt it records afterwards.
 function rendererEnv(env) {
+  // HERMES_DESKTOP_VARIANT picks the renderer's fork plugins (apps/desktop/vite.config.ts).
   return Object.entries({ ...env, NODE_ENV: env.NODE_ENV || 'production' })
-    .filter(([key]) => key === 'NODE_ENV' || key.startsWith('VITE_')).sort()
+    .filter(([key]) => key === 'NODE_ENV' || key === 'HERMES_DESKTOP_VARIANT' || key.startsWith('VITE_')).sort()
 }
 
 export function buildInputs(source, product, prepared = {}, env = process.env) {

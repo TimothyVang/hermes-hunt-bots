@@ -37,6 +37,7 @@ import { fileURLToPath } from 'url'
 import tailwindcss from '@tailwindcss/vite'
 
 import { withCompilerCache } from './scripts/compiler-cache.mjs'
+import { forkPluginsEntry } from './scripts/fork-plugins.mjs'
 
 // The runner loads this as ESM without the default bundler's CJS globals.
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url))
@@ -234,6 +235,7 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
+      '@/fork-plugins': forkPluginsEntry(__dirname, process.env),
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
