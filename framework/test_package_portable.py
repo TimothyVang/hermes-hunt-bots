@@ -248,6 +248,7 @@ APPROVED_FILES = frozenset({
     'hunt_lab/desktop/licenses/LICENSE.MPL-2.0',
     'hunt_lab/desktop/licenses/noVNC-AUTHORS.txt',
     'hunt_lab/desktop/licenses/noVNC-LICENSE.txt',
+    'hunt_lab/desktop/licenses/lucide-LICENSE.txt',
     'hunt_lab/desktop_src/build_console.py',
     'hunt_lab/desktop_src/console-frame.js',
     'hunt_lab/desktop_src/console-frontend.js',

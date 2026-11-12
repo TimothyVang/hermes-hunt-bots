@@ -27,7 +27,9 @@ const {
   windowsExecutableName,
   channel,
   msixAppIdWithOrg,
-  token
+  token,
+  publisher,
+  copyright
 } = require('./product-identity.cjs')
 
 // `storeMsix` is optional on the identity type but guaranteed present when
@@ -76,6 +78,9 @@ module.exports = {
   appId,
   productName: displayName,
   executableName: displayName,
+  // A variant with its own publisher (Hunt Command) names it in the exe version info
+  // (CompanyName is the package author) instead of Nous Research.
+  ...(copyright ? { copyright } : {}),
   protocols: [
     {
       name: `${displayName} Protocol`,
@@ -107,7 +112,9 @@ module.exports = {
     // shipped stable default, but isolate nonstable (and Hunt Command) userData
     // from first access. A stable-branded channel has no token and keeps stable's userData.
     ...((channelRequest && token) || hunt || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
-    desktopName: appId
+    desktopName: appId,
+    // electron-builder reads CompanyName from author.name; a bare string has none.
+    ...(publisher ? { author: { name: publisher } } : {})
   },
   directories: {
     output: 'release'
@@ -136,7 +143,17 @@ module.exports = {
     {
       from: 'assets/icon.ico',
       to: 'icon.ico'
-    }
+    },
+    // Hunt Command compiles the framework/ desktop plugins (AGPL-3.0, with noVNC MPL-2.0
+    // and Lucide ISC inside) into its renderer, whose minified bundle drops their source
+    // comments, so their license texts ship beside the app (THIRD-PARTY-NOTICES.md).
+    ...(hunt
+      ? [
+          { from: '../../framework/hunt_lab/desktop/licenses', to: 'licenses/hunt-command' },
+          { from: '../../framework/hunt_lab/desktop/console-provenance.json', to: 'licenses/hunt-command/console-provenance.json' },
+          { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' }
+        ]
+      : [])
   ],
   asar: {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']
@@ -206,7 +223,7 @@ module.exports = {
     // paste onto the stock removable-drive icon). It lives in packaging/ with
     // the background so the `files` whitelist keeps it out of the app bundle.
     icon: 'packaging/dmg-volume.icns',
-    title: 'Hermes Agent Installer',
+    title: hunt ? `${displayName} Installer` : 'Hermes Agent Installer',
     // A prebuilt .tiff on purpose, not a PNG plus a @2x sibling: dmg-builder's
     // PNG path runs `tiffutil -cathidpicheck`, which on macOS 26 rewrites both
     // frames to 72 dpi and silently drops the 2x representation. A .tiff is
@@ -250,8 +267,14 @@ module.exports = {
     identityName: store ? mustStoreMsix(storeMsixWhenStore).identityName : msixAppIdWithOrg,
     applicationId: appNamePascal,
     displayName,
-    publisher: store ? mustStoreMsix(storeMsixWhenStore).publisher : OUT_OF_STORE_PUBLISHER,
-    publisherDisplayName: store ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName : 'Nous Research',
+    publisher: store
+      ? mustStoreMsix(storeMsixWhenStore).publisher
+      : publisher
+        ? `CN=${publisher}`
+        : OUT_OF_STORE_PUBLISHER,
+    publisherDisplayName: store
+      ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName
+      : publisher || 'Nous Research',
     // The native quad is the build time (scripts/msix-shared.mjs::nativeQuad),
     // baked into the manifest template, so the builder's own build-number
     // override would stamp a second, conflicting version.
@@ -281,7 +304,7 @@ module.exports = {
   },
   linux: {
     category: 'Development',
-    maintainer: 'Nous Research <support@nousresearch.com>',
+    maintainer: publisher ? `${publisher} <${publisher}@users.noreply.github.com>` : 'Nous Research <support@nousresearch.com>',
     synopsis: light
       ? 'Remote-only desktop client for Hermes Agent.'
       : 'Native desktop shell for Hermes Agent.',
