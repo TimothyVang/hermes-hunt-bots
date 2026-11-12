@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import setup_hermes
+from doctor import main as doctor_main
 
 
 NAMES = (
@@ -24,12 +26,37 @@ NAMES = (
 
 
 class FakeProcess:
-    def __init__(self, output='', returncode=0):
-        self.stdout = io.StringIO(output)
+    def __init__(self, returncode=0):
         self.returncode = returncode
 
     def wait(self):
         return self.returncode
+
+
+def native_install(home, *, cancel=(), returncode=0):
+    """Fake `hermes profile install`: writes the profile's distribution.yaml and SOUL.md as Hermes does,
+    printing nothing, unless the profile is in *cancel* (Hermes then exits 0 and writes nothing)."""
+    def factory(argv, **_kwargs):
+        source = Path(argv[3])
+        if source.name not in cancel and returncode == 0:
+            target = Path(home) / 'profiles' / source.name
+            target.mkdir(parents=True)
+            for name in ('distribution.yaml', 'SOUL.md'):
+                shutil.copyfile(source / name, target / name)
+        return FakeProcess(returncode)
+    return Mock(side_effect=factory)
+
+
+def version_probe(answers):
+    """Fake subprocess.run for the Docker and Temporal probes: {program: stdout or None for a failure}."""
+    def runner(argv, **_kwargs):
+        stdout = answers[Path(argv[0]).stem]
+        return subprocess.CompletedProcess(argv, 0 if stdout else 1, stdout or '', '')
+    return runner
+
+
+def on_path(*programs):
+    return lambda name: f'C:/tools/{name}.exe' if name in programs else None
 
 
 def create_kit(root):
@@ -100,10 +127,7 @@ class SetupHermesTests(unittest.TestCase):
         factory.assert_not_called()
 
     def test_native_cancellation_stops_and_reports_prior_confirmed_install(self):
-        factory = Mock(side_effect=[
-            FakeProcess('✓ Installed \'framework-coordinator\' v1.0.0\n'),
-            FakeProcess('Install cancelled.\n'),
-        ])
+        factory = native_install(self.home, cancel={'framework-researcher'})
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             result = setup_hermes.install(
@@ -112,6 +136,18 @@ class SetupHermesTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(factory.call_count, 2)
         self.assertIn('framework-coordinator', stderr.getvalue())
+        self.assertIn('framework-researcher has no installed distribution.yaml', stderr.getvalue())
+
+    def test_installed_files_confirm_a_profile_without_any_console_text(self):
+        # SF9: setup trusted Hermes' printed `✓ Installed '<name>' v<version>` line; it now reads the files Hermes wrote.
+        factory = native_install(self.home)
+        with patch.object(setup_hermes, '_report_lab'), patch('lab.install') as lab_install, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = setup_hermes.install(['framework-coordinator'], sys.executable, self.root, factory, self.home)
+        self.assertEqual(result, 0)
+        self.assertEqual(factory.call_count, 2)
+        lab_install.assert_called_once()
+        self.assertTrue((self.home / 'profiles' / 'framework-network-analyst' / 'distribution.yaml').is_file())
 
     def test_native_refusal_or_unconfirmed_exit_stops_before_later_profiles(self):
         for native_exit in (0, 2):
@@ -182,6 +218,127 @@ class SetupHermesTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('Validated 6 authored Hermes distributions.', result.stdout)
         self.assertIn(setup_hermes.INSTALL_URL, result.stdout)
+
+
+class SetupAllTests(unittest.TestCase):
+    """`setup_hermes.py all`: every setup step in order, stopping at the first failure."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='setup all ')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'kit'
+        self.root.mkdir()
+        create_kit(self.root)
+        # A fresh home does not exist until setup creates it, as on a new machine.
+        self.home = Path(self.temp.name) / 'runtime' / 'lab-home'
+        self.ready = version_probe({'docker': '29.1.3\n', 'temporal': 'temporal version 1.5.1\n'})
+        self.lab_install = patch('lab.install', return_value={'profile': 'framework-network-analyst'})
+        self.doctor = self.enterContext(patch('doctor.main', return_value=0))
+
+    @staticmethod
+    def native(pending=()):
+        """Patch native_team's Hermes-backed apply and check; returns the patcher and its fresh mocks."""
+        mocks = {'apply': Mock(return_value='applied'), 'not_ready': Mock(return_value=list(pending))}
+        return patch.multiple('native_team', **mocks), mocks
+
+    def run_all(self, factory, runner, which=on_path('docker', 'temporal')):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = setup_hermes.setup_all(sys.executable, self.home, self.root, factory, runner, which)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_all_stops_at_first_failure(self):
+        stopped = {
+            'Docker': (version_probe({'docker': None, 'temporal': 'temporal version 1.5.1'}), on_path('docker', 'temporal')),
+            'Temporal CLI': (self.ready, on_path('docker')),
+        }
+        for named, (runner, which) in stopped.items():
+            patcher, native = self.native()
+            with self.subTest(missing=named), patcher, self.lab_install as lab_install:
+                factory = native_install(self.home)
+                code, stdout, stderr = self.run_all(factory, runner, which)
+                self.assertEqual(code, 1)
+                self.assertIn('setup: stopped at prerequisites: ', stderr)
+                self.assertIn(named, stderr.split('setup: stopped at prerequisites: ', 1)[1])
+                self.assertNotIn('setup: profiles', stdout)
+                factory.assert_not_called()
+                lab_install.assert_not_called()
+                native['apply'].assert_not_called()
+                self.assertFalse((self.home.parent).exists(), 'a failed prerequisite must leave no home behind')
+        patcher, native = self.native()
+        with patcher, self.lab_install as lab_install, patch('native_team.initialize') as initialize:
+            factory = native_install(self.home, returncode=2)
+            code, stdout, stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 1)
+        self.assertIn('setup: stopped at profiles: ', stderr)
+        self.assertEqual(factory.call_count, 1)
+        for later in (initialize, lab_install, native['apply'], native['not_ready']):
+            later.assert_not_called()
+        self.assertNotIn('setup: complete', stdout)
+
+    def test_all_writes_policy_files_before_plugins_and_ends_complete(self):
+        def lab_install(root, executable, kit_root):
+            # Enabling plugins writes Hermes defaults into config.yaml; each profile must have its policy first.
+            configs = sorted(path.parent.name for path in Path(root, 'profiles').glob('*/config.yaml'))
+            self.assertEqual(configs, sorted(name for name, _role, _description in NAMES))
+            return {'profile': 'framework-network-analyst'}
+        patcher, native = self.native()
+        with patcher, patch('lab.install', side_effect=lab_install) as installed:
+            factory = native_install(self.home)
+            code, stdout, stderr = self.run_all(factory, self.ready)
+            self.assertEqual((code, stderr), (0, ''))
+            self.assertEqual(factory.call_count, 6)
+            installed.assert_called_once()
+            native['apply'].assert_called_once()
+            native['not_ready'].assert_called_once()
+            self.doctor.assert_called_once_with(
+                ['--home', str(self.home.resolve()), '--hermes', str(Path(sys.executable).resolve())],
+                kit_root=self.root)
+        steps = [line for line in stdout.splitlines() if line.startswith('setup: ')]
+        self.assertEqual(steps, ['setup: prerequisites', 'setup: profiles', 'setup: policy files',
+                                 'setup: lab plugin and desktop pages', 'setup: team policy', 'setup: check',
+                                 'setup: doctor', 'setup: complete'])
+        self.assertIn('Docker: Docker engine 29.1.3', stdout)
+        self.assertIn('Temporal CLI: temporal version 1.5.1', stdout)
+
+        # A second run installs no profile and rewrites no policy file.
+        policy = {path: path.read_bytes() for path in self.home.glob('profiles/*/config.yaml')}
+        with self.native()[0], self.lab_install, patch('native_team.initialize') as initialize:
+            factory = native_install(self.home)
+            code, stdout, _stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 0)
+        factory.assert_not_called()
+        initialize.assert_not_called()
+        self.assertEqual({path: path.read_bytes() for path in self.home.glob('profiles/*/config.yaml')}, policy)
+
+    def test_policy_left_unready_stops_before_complete(self):
+        with self.native(['framework-builder model.default=custom_configuration_conflict'])[0], self.lab_install:
+            code, stdout, stderr = self.run_all(native_install(self.home), self.ready)
+        self.assertEqual(code, 1)
+        self.assertIn('setup: stopped at check: Native team policy is not ready: framework-builder model.default', stderr)
+        self.assertNotIn('setup: complete', stdout)
+
+    def test_all_reports_retained_soul_edits_and_stops_at_doctor(self):
+        import native_team
+        factory = native_install(self.home)
+        with self.native()[0], self.lab_install:
+            code, _stdout, _stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 0)
+        soul = self.home / 'profiles/framework-researcher/SOUL.md'
+        soul.write_text('Kept user identity edit\n', encoding='utf-8')
+        models = {str(path): {'state': 'mapping', 'default': native_team.PROFILES[path.parent.name]['model'],
+                              'provider': native_team.PROVIDER}
+                  for path in self.home.glob('profiles/*/config.yaml')}
+        with patch('lab.bundles', return_value={}), patch('doctor.hermes_model_reader', return_value=lambda _paths: models), \
+                self.native()[0], self.lab_install:
+            self.doctor.side_effect = lambda argv, kit_root: doctor_main(argv, kit_root=kit_root)
+            code, stdout, stderr = self.run_all(factory, self.ready)
+        self.assertEqual(code, 1)
+        self.assertIn('profiles/framework-researcher/SOUL.md', stdout)
+        self.assertIn('doctor: 1 drift', stdout)
+        self.assertIn('setup: stopped at doctor:', stderr)
+        self.assertNotIn('setup: complete', stdout)
+        self.assertEqual(soul.read_text(encoding='utf-8'), 'Kept user identity edit\n')
 
 
 if __name__ == '__main__':

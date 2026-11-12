@@ -90,6 +90,27 @@ class DesktopWorkspaceTests(unittest.TestCase):
                              {'preserved.txt', 'desktop-plugins/cybersecurity-workspace/plugin.js',
                               'desktop-plugins/cybersecurity-workspace/.framework-managed.json'})
 
+    def test_missing_managed_bundle_file_names_the_path_without_repairing_it(self):
+        import install_desktop
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder).resolve()
+            installed = install_desktop.install(home, b'reviewed plugin')
+            marker = installed.parent / install_desktop.MARKER
+            before = marker.read_bytes()
+            installed.unlink()
+            with self.assertRaises(ValueError) as caught:
+                install_desktop.install(home, b'updated plugin')
+            self.assertIn('Missing bundle files', str(caught.exception))
+            self.assertIn(str(installed), str(caught.exception))
+            self.assertNotIn('Unknown bundle', str(caught.exception))
+            self.assertFalse(installed.exists())
+            self.assertEqual(marker.read_bytes(), before)
+            result = subprocess.run([sys.executable, str(ROOT / 'install_desktop.py'), 'install', '--home', str(home)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('Missing bundle files refused:', result.stderr)
+            self.assertIn(str(installed), result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

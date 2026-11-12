@@ -240,28 +240,50 @@ def _safe_set_value(value):
     return value if isinstance(value, str) else json.dumps(value, separators=(',', ':'), ensure_ascii=True)
 
 
-def _resolve(executable_override, home):
+def _executable(executable_override):
     try:
-        executable = lab.hermes_executable(executable_override)
+        return lab.hermes_executable(executable_override)
     except ValueError as exc:
         raise PolicyError(str(exc)) from None
+
+
+def _home(home):
     try:
         root = lab.resolve_home(home)
     except (OSError, ValueError):
         raise PolicyError('The selected Hermes home is not a supported native home.') from None
     _registered_profiles(root)
-    return executable, root
+    return root
+
+
+def _resolve(executable_override, home):
+    executable = _executable(executable_override)
+    return executable, _home(home)
+
+
+def _statuses(executable, root):
+    return {profile: validate_observed(profile, _read_current(executable, profile, root)) for profile in PROFILES}
 
 
 def inspect(hermes_override=None, home=None):
-    executable, root = _resolve(hermes_override, home)
+    executable = _executable(hermes_override)
+    try:
+        statuses = _statuses(executable, _home(home))
+    except PolicyError as exc:
+        raise PolicyError(f'Hermes executable: {executable}\n{exc}') from None
     lines = [f'Hermes executable: {executable}', 'Reviewed native profile settings (safe fields only):']
-    for profile in PROFILES:
-        status = validate_observed(profile, _read_current(executable, profile, root))
+    for profile, status in statuses.items():
         lines.append(profile + ': ' + ', '.join(f'{key}={value}' for key, value in status.items()))
     lines.append('Delegation routes: enforced by the profile_routes enum when the advanced-delegation plugin is enabled.')
     lines.extend('BLOCKER: ' + item for item in POLICY_BLOCKERS)
     return '\n'.join(lines)
+
+
+def not_ready(hermes_override=None, home=None):
+    """`<profile> <key>=<status>` for every reviewed setting `check` would not report ready."""
+    executable, root = _resolve(hermes_override, home)
+    return [f'{profile} {key}={value}' for profile, status in _statuses(executable, root).items()
+            for key, value in status.items() if value != 'ready']
 
 
 def apply(hermes_override=None, home=None):

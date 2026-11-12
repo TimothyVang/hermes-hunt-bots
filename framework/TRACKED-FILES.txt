@@ -8,6 +8,7 @@ desktop/REVIEW.md
 desktop/test-plugin.mjs
 desktop/VERIFICATION.md
 desktop/VIDEO-INVENTORY.md
+doctor.py
 examples/meeting-notes.txt
 examples/synthetic-hunt-events.json
 .gitignore
@@ -137,6 +138,7 @@ roles/reviewer.txt
 setup_hermes.py
 test_bot.py
 test_desktop_workspace.py
+test_doctor.py
 test_hunt_lab_case.py
 test_hunt_lab_install.py
 test_humanize.py

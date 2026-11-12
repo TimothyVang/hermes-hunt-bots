@@ -50,8 +50,8 @@ GATEWAY_RELOAD = '\n'.join((
 ))
 
 
-def resolve_home(home=None):
-    """Resolve one standard root, never search other homes or read private config."""
+def resolve_home(home=None, *, create=False):
+    """Resolve one standard root, never search other homes or read private config; `create` makes a missing one."""
     suffix = os.environ.get('HERMES_DATA_DIR_SUFFIX', '')
     if sys.platform == 'win32':
         base = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local')
@@ -71,7 +71,7 @@ def resolve_home(home=None):
     # root. Refuse a nested alternative rather than stage here and enable there.
     if path != standard and path.is_relative_to(standard):
         raise ValueError('Nested alternative Hermes roots are not supported; use the general native home')
-    return install_desktop.ordinary_directory(path)
+    return install_desktop.ordinary_directory(path, create=create)
 
 
 def registered_profile(home, name, *, required=True):
@@ -227,6 +227,36 @@ def _pid_alive(pid):
         kernel32.CloseHandle(handle)
 
 
+def registered_profiles(root):
+    """The analyst (required) and every other registered authored profile: {name: profile dir}."""
+    profiles = {PROFILE: registered_profile(root, PROFILE)}
+    for name in AUTHORED_PROFILES:
+        if name != PROFILE:
+            profile = registered_profile(root, name, required=False)
+            if profile is not None:
+                profiles[name] = profile
+    return profiles
+
+
+def bundles(root, profiles, kit_root=ROOT):
+    """Every hash-owned copy install writes, {destination folder: {relative path: bytes}}.
+
+    The backend goes to each given profile, the standalone Hunting Lab page and the workspace companion to the
+    general home. A backend desktop/ folder would make Hermes auto-copy a unified package with Desktop opt-in
+    posture, so the page is installed as its own standalone SDK component instead."""
+    files = bundle_source(kit_root)
+    companion_root = Path(kit_root).absolute() / 'desktop' / install_desktop.PLUGIN
+    install_desktop.ordinary_directory(companion_root)
+    companion = companion_root / 'plugin.js'
+    if not stat.S_ISREG(install_desktop.no_alias(companion).st_mode):
+        raise ValueError('Regular companion source required')
+    backend = {name: files[name] for name in BACKEND_FILES}
+    result = {profile / 'plugins' / 'hunt-lab': backend for profile in profiles.values()}
+    result[Path(root) / 'desktop-plugins' / 'hunt-lab'] = {name: files['desktop/' + name] for name in DESKTOP_FILES}
+    result[Path(root) / 'desktop-plugins' / install_desktop.PLUGIN] = {'plugin.js': companion.read_bytes()}
+    return result
+
+
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     """Stage both native halves and the existing companion; never starts the lab.
 
@@ -235,30 +265,14 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     """
     root = resolve_home(home)
     refuse_during_update(root)
-    profiles = {PROFILE: registered_profile(root, PROFILE)}
-    for name in AUTHORED_PROFILES:
-        if name != PROFILE:
-            profile = registered_profile(root, name, required=False)
-            if profile is not None:
-                profiles[name] = profile
+    profiles = registered_profiles(root)
     executable = hermes_executable(hermes)
     python = hermes_python(executable)
-    files = bundle_source(kit_root)
-    companion_root = Path(kit_root).absolute() / 'desktop' / install_desktop.PLUGIN
-    install_desktop.ordinary_directory(companion_root)
-    companion = companion_root / 'plugin.js'
-    if not stat.S_ISREG(install_desktop.no_alias(companion).st_mode):
-        raise ValueError('Regular companion source required')
-    companion_data = companion.read_bytes()
-    # A backend desktop/ folder makes Hermes auto-copy a unified package with
-    # Desktop opt-in posture. Install the explicit standalone SDK component
-    # instead; only its human Start starts the lab.
-    backend_files = {name: files[name] for name in BACKEND_FILES}
-    backends = {name: install_desktop.sync_bundle(profile / 'plugins', 'hunt-lab', backend_files)
-                for name, profile in profiles.items()}
-    desktop = install_desktop.sync_bundle(root / 'desktop-plugins', 'hunt-lab', {
-        name: files['desktop/' + name] for name in DESKTOP_FILES})
-    install_desktop.install(root, companion_data)
+    # Only the human Start in the standalone page authorizes starting the lab.
+    staged = {destination: install_desktop.sync_bundle(destination.parent, destination.name, files)
+              for destination, files in bundles(root, profiles, kit_root).items()}
+    backend = staged[profiles[PROFILE] / 'plugins' / 'hunt-lab']
+    desktop = staged[root / 'desktop-plugins' / 'hunt-lab']
     env = dict(os.environ, HERMES_HOME=str(root))
     for name in profiles:
         result = runner([executable, '-p', name, 'plugins', 'enable', 'hunt-lab'],
@@ -266,7 +280,7 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
         if result.returncode != 0:
             raise ValueError('Native Hermes plugin enable failed; no lab operation was attempted')
     gateway = {name: reload_gateway(profile, python, runner) for name, profile in profiles.items()}
-    return {'profile': PROFILE, 'tool_profiles': list(profiles), 'backend': str(backends[PROFILE]),
+    return {'profile': PROFILE, 'tool_profiles': list(profiles), 'backend': str(backend),
             'desktop': str(desktop), 'gateway': gateway, 'state': 'installed'}
 
 
