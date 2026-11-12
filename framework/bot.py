@@ -224,7 +224,8 @@ def execute(db, workspace, args):
     if args.adapter == 'generic' and not cli_args:
         raise ValueError('generic adapter requires an executable after --')
     if args.adapter == 'hermes':
-        command = [args.executable]
+        from lab import hermes_executable
+        command = [hermes_executable(args.executable)]
         if args.profile:
             command.extend(['--profile', args.profile])
         command.extend(['chat', '--query-file', '-', '--oneshot'])
@@ -350,7 +351,7 @@ def parser():
     s.add_argument('--note', required=True, type=nonempty, help='what was checked and why it is safe to unblock')
     run = sub.add_parser('run', help='explicitly run an external CLI and hand its output to review')
     run.add_argument('--adapter', required=True, choices=('hermes', 'generic'))
-    run.add_argument('--executable', default='hermes', help='Hermes executable (default: hermes)')
+    run.add_argument('--executable', help='Hermes executable (otherwise LAB_HERMES_EXE, else hermes on PATH)')
     run.add_argument('--profile', type=nonempty, help='existing Hermes profile name; requires --allow-profile-config')
     run.add_argument('--allow-profile-config', action='store_true',
                      help='opt in to profile config, SOUL, tools and integrations instead of safe mode')
