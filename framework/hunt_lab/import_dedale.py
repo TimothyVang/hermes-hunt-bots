@@ -21,8 +21,12 @@ winlog.channel, winlog.record_id) and is assigned to exactly one ground-truth
 process with the precedence of label_dedale_winlogbeat/src/main.rs (process.entity_id,
 then process.pid strictly inside the process lifetime, then winlog.process.pid for
 event.module == "powershell"). One attack fact per process; class-2-only events
-are listed as labels_class_2_event_ids. Nothing from the labels reaches
-events.jsonl or case.json.
+are listed as labels_class_2_event_ids. Each fact also lists evidence_sibling_groups:
+per evidence group, the unlabelled events the same rule assigns to that process alone
+that share the group's event.category (or event.code without one), plus Sysmon file
+deletions winlogbeat failed to parse (no process or category fields), matched by their
+winlog.event_data.ProcessGuid as category "file". They count only in the scorer's
+separate with_siblings score. Nothing from the labels reaches events.jsonl or case.json.
 
 Both output directories must not exist yet. Output is byte-identical for the same
 arguments and data. A JSON summary is printed on stdout.
@@ -54,6 +58,8 @@ EPOCH = datetime(1970, 1, 1)
 SECOND = 10 ** 9
 HOUR = 3600 * SECOND
 DEFAULT_MAX_EVENTS = 200000
+SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
+UNPARSED_SYSMON_CATEGORY = {23: "file", 26: "file"}
 
 QUESTION = "What happened in this environment during the window? Determine whether an intrusion occurred and reconstruct its sequence; state the scope and impact (hosts, accounts, data); explain which suspicious-looking activity has benign or alternative explanations; and name the coverage gaps that limit conclusions. Cite event.id values, separate observations from inferences, and do not assume compromise without evidence."
 INTERPRETATION_BOUNDARY = "Publisher-labelled malicious processes in DEDALE (Inria, CC BY 4.0); facts derived mechanically from the labels; no decoys or coverage facts."
@@ -253,8 +259,9 @@ def event_id(position):
     return "evt-%06d" % (position + 1)
 
 
-def group_key(record):
-    category = field(record, "event", "category")
+def group_key(record, category=None):
+    if category is None:
+        category = field(record, "event", "category")
     if isinstance(category, list) and category:
         return "category:" + str(category[0])
     if isinstance(category, str) and category:
@@ -275,8 +282,9 @@ def distinct(records, *path):
     return sorted({value for value in (field(record, *path) for record in records) if isinstance(value, str) and value})
 
 
-def build_facts(assigned):
-    """assigned: process index -> (process, [(position, record, rule)]) in position order."""
+def build_facts(assigned, siblings):
+    """assigned: process index -> (process, [(position, record, rule)]) in position order;
+    siblings: (process index, group key) -> positions of that process's unlabelled events with that key."""
     facts, used = [], set()
     for process, members in sorted(assigned.values(), key=lambda item: item[1][0][0]):
         records = [record for _, record, _ in members]
@@ -292,10 +300,12 @@ def build_facts(assigned):
         for position, record, _ in members:
             groups.setdefault(group_key(record), []).append(position)
         first, last = members[0][1].get("@timestamp"), members[-1][1].get("@timestamp")
+        ordered = sorted(groups.items(), key=lambda item: min(item[1]))
         facts.append({
             "fact_id": candidate, "kind": "attack",
-            "evidence_event_groups": [[event_id(position) for position in sorted(group)]
-                                      for group in sorted(groups.values(), key=min)],
+            "evidence_event_groups": [[event_id(position) for position in sorted(group)] for _, group in ordered],
+            "evidence_sibling_groups": [[event_id(position) for position in sorted(siblings.get((id(process), key), ()))]
+                                        for key, _ in ordered],
             "entities": {"hosts": [process["host"]], "users": distinct(records, "user", "name"),
                          "processes": distinct(records, "process", "name"),
                          "domains": distinct(records, "dns", "question", "name"), "ips": []},
@@ -304,6 +314,42 @@ def build_facts(assigned):
                 len(members), first, last),
         })
     return facts
+
+
+def unparsed_sysmon(record):
+    """(ProcessGuid, ECS category) of a Sysmon record winlogbeat's pipeline failed to parse, else None.
+
+    winlogbeat 7.10 rejects FileDeleteDetected (26) as an unexpected event_id and keeps only winlog.event_data,
+    so the record has no process or event.category; ECS files Sysmon file deletions (23, 26) under "file"."""
+    category = UNPARSED_SYSMON_CATEGORY.get(field(record, "event", "code"))
+    guid = field(record, "winlog", "event_data", "ProcessGuid")
+    if (category and isinstance(guid, str) and field(record, "winlog", "channel") == SYSMON_CHANNEL
+            and not field(record, "event", "category") and not field(record, "process")):
+        return guid, category
+    return None
+
+
+def sibling_positions(rows, matcher, assigned, labelled):
+    """(process index, group key) -> positions of events that carry no class-1 or class-2 label and belong to exactly
+    one fact process: by the rule that assigned its labelled events, unless the event's own process.entity_id names
+    another process, or, for a Sysmon file deletion winlogbeat failed to parse, by its own ProcessGuid."""
+    hosts = {process["host"].lower() for process, _ in assigned.values()}
+    siblings = defaultdict(list)
+    for position, (timestamp, host, _, _, line) in enumerate(rows):
+        if position in labelled or short_host(host) not in hosts:
+            continue
+        record = json.loads(line)
+        unparsed = unparsed_sysmon(record)
+        if unparsed:
+            found, key = matcher.by_guid.get((short_host(host), unparsed[0]), []), group_key(record, unparsed[1])
+        else:
+            own = field(record, "process", "entity_id")
+            found = [process for process in matcher.match(record, short_host(host), timestamp)[1]
+                     if not own or process["guid"] == own]
+            key = group_key(record)
+        if len(found) == 1 and id(found[0]) in assigned:
+            siblings[id(found[0]), key].append(position)
+    return siblings
 
 
 def build_truth(case_id, rows, class_1, class_1_and_2, processes):
@@ -340,7 +386,7 @@ def build_truth(case_id, rows, class_1, class_1_and_2, processes):
     if ambiguous:
         raise ValueError("%d class-1 labelled events match more than one ground-truth process (first: %s)" % (len(ambiguous), ambiguous[0]))
     truth = {"schema_version": SCHEMA_VERSION, "case_id": case_id, "source": SOURCE, "interpretation_boundary": INTERPRETATION_BOUNDARY,
-             "facts": build_facts(assigned),
+             "facts": build_facts(assigned, sibling_positions(rows, matcher, assigned, malicious | related)),
              "labels_class_2_event_ids": [event_id(position) for position in sorted(related - malicious)]}
     validate_truth(truth)
     return truth, len(malicious), len(related - malicious)

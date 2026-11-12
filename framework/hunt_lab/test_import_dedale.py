@@ -95,13 +95,13 @@ def jsonl(rows):
     return b"".join((json.dumps(row) + "\n").encode("utf-8") for row in rows)
 
 
-def build_dataset(root, class_1=CLASS_1, class_2=(CLASS_2,), ground_truth=GROUND_TRUTH):
+def build_dataset(root, class_1=CLASS_1, class_2=(CLASS_2,), ground_truth=GROUND_TRUTH, hour_10=HOUR_10):
     root = Path(root)
     (root / "raw").mkdir(parents=True)
     with zipfile.ZipFile(root / "raw" / "system_logs_winlogbeat.zip", "w") as archive:
         # Corrupt neighbours: reading a member outside the window would fail the import.
         archive.writestr("daily_winlogbeat/D15_H09_2025-01-06T09_winlogbeat_F346.jsonl.bz2", b"not bzip2")
-        archive.writestr("daily_winlogbeat/D15_H10_2025-01-06T10_winlogbeat_F347.jsonl.bz2", bz2.compress(jsonl(HOUR_10)))
+        archive.writestr("daily_winlogbeat/D15_H10_2025-01-06T10_winlogbeat_F347.jsonl.bz2", bz2.compress(jsonl(hour_10)))
         archive.writestr("daily_winlogbeat/D15_H11_2025-01-06T11_winlogbeat_F348.jsonl.bz2", bz2.compress(jsonl(HOUR_11)))
         archive.writestr("daily_winlogbeat/D15_H12_2025-01-06T12_winlogbeat_F349.jsonl.bz2", b"not bzip2")
         archive.writestr("winlogbeat_md5sum.sig", b"00  fixture\n")
@@ -220,6 +220,7 @@ class ImportCase(unittest.TestCase):
         self.assertEqual({fact["kind"] for fact in truth["facts"]}, {"attack"})
         scv, ps, host_id = (facts[name] for name in facts)
         self.assertEqual(scv["evidence_event_groups"], [["evt-000001"], ["evt-000003"]])
+        self.assertEqual([fact["evidence_sibling_groups"] for fact in truth["facts"]], [[[], []], [[], []], [[]]])
         self.assertEqual(scv["entities"], {"hosts": ["CLIENT2"], "users": ["alice"], "processes": ["scvhost.exe"],
                                            "domains": ["update.c2-example.test"], "ips": []})
         # B_SCRIPT and B_MODULE carry no process.pid; only the winlog.process.pid rule assigns them.
@@ -238,6 +239,39 @@ class ImportCase(unittest.TestCase):
         self.assertEqual(truth["labels_class_2_event_ids"], ["evt-000005"])
         grouped = {eid for fact in truth["facts"] for group in fact["evidence_event_groups"] for eid in group}
         self.assertNotIn("evt-000005", grouped)
+
+    def test_unlabelled_events_of_the_same_process_and_category_are_siblings(self):
+        scv = {"pid": 2768, "name": "scvhost.exe", "executable": SCVHOST}
+        a_file = evt("2025-01-06T10:45:30.000Z", C2, SYSMON, 110, sysmon(11, "file"), process=dict(scv, entity_id=GUID_A))
+        # A FileDeleteDetected record winlogbeat could not parse: no process or category, only winlog.event_data.
+        unparsed = {"code": 26, "provider": "Microsoft-Windows-Sysmon"}
+        a_delete = evt("2025-01-06T10:45:45.000Z", C2, SYSMON, 116, unparsed, winlog={"event_data": {"ProcessGuid": GUID_A}})
+        other_delete = evt("2025-01-06T10:45:50.000Z", C2, SYSMON, 117, unparsed, winlog={"event_data": {"ProcessGuid": "{z}"}})
+        a_access = evt("2025-01-06T10:46:00.000Z", C2, SYSMON, 111, sysmon(10, "process"), process=dict(scv, entity_id=GUID_A))
+        # No entity_id, but pid 2768 inside the process lifetime: the importer's pid rule assigns it.
+        a_dns = evt("2025-01-06T10:47:00.000Z", C2, SYSMON, 112, sysmon(22, "network"), process=scv)
+        # The same pid in the lifetime, but its own entity_id names another process: never a sibling.
+        x_dns = evt("2025-01-06T10:47:30.000Z", C2, SYSMON, 118, sysmon(22, "network"), process=dict(scv, entity_id="{x}"))
+        a_class_2 = evt("2025-01-06T10:48:00.000Z", C2, SYSMON, 113, sysmon(22, "network"), process=dict(scv, entity_id=GUID_A))
+        after_life = evt("2025-01-06T10:55:00.000Z", C2, SYSMON, 114, sysmon(10, "process"), process=dict(scv, entity_id="{y}"))
+        other = evt("2025-01-06T10:56:00.000Z", C2, SYSMON, 115, sysmon(10, "process"),
+                    process={"entity_id": "{other}", "pid": 7777, "name": "cmd.exe"})
+        data = build_dataset(self.root / "siblings", class_1=CLASS_1 + [a_file], class_2=(CLASS_2, a_class_2),
+                             hour_10=HOUR_10 + [a_file, a_delete, other_delete, a_access, a_dns, x_dns, a_class_2,
+                                                after_life, other])
+        _, evidence, operator = self.run_import(data=data)
+        events, truth, _ = self.load(evidence, operator)
+        ids = {event["winlog"]["record_id"]: event["event"]["id"] for event in events if event["host"]["name"] == C2}
+        facts = {fact["fact_id"]: fact for fact in truth["facts"]}
+        scv_fact = facts["attack.client2.scvhost.2768"]
+        self.assertEqual(scv_fact["evidence_event_groups"][2], [ids[110]])
+        # Class-2, out-of-lifetime, other-process and other-entity_id events, and another process's deletion, never are.
+        self.assertEqual(scv_fact["evidence_sibling_groups"], [[ids[111]], [ids[112]], [ids[116]]])
+        self.assertEqual(facts["attack.client2.powershell.4100"]["evidence_sibling_groups"], [[], []])
+        groups = scv_fact["evidence_event_groups"]
+        report = {"claims": [{"statement": "scvhost.exe on CLIENT2: %s %s %s" % (groups[0][0], ids[112], ids[116])}]}
+        result = scenario.score_report(truth, report)
+        self.assertEqual((result["by_kind"]["attack"]["found"], result["with_siblings"]["by_kind"]["attack"]["found"]), (0, 1))
 
     def test_perfect_report_finds_every_fact(self):
         _, evidence, operator = self.run_import()
