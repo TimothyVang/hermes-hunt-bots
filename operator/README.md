@@ -84,7 +84,7 @@ python operator\tool_loops.py lab-med-001 runtime\operator-only\lab-med-001\trut
 # Why did loop 3 halt?
 python operator\diagnose_rejections.py runtime\practice\tool-loops\loop-03=loop-03-lab-med-001:round:001
 
-# Record a hunt and cut the video
+# Record a hunt and cut the video (toolcam reads the lab's caller secret from the lab home's deployed seed)
 bun operator\toolcam\toolcam.mjs runtime\practice\cam <lab_url> <arkime_url> lab-med-001 <startEpoch> <stopEpoch> <activityAfter>
 bun operator\toolcam\card.mjs runtime\practice\end.html runtime\practice\end.png
 python operator\toolcam\assemble.py runtime\practice\cam runtime\practice\hunt.mp4 --end-card runtime\practice\end.png

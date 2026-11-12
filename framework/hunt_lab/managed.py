@@ -184,8 +184,21 @@ def _active(value):
     return actual is not None and actual == value.get('identity')
 
 
+def _console_url(root, result):
+    """The running lab's console page, opened with the seed's secret as ?key= (the one way a browser tab can send it)."""
+    if result.get('state') != 'running' or not result.get('lab_url'):
+        return None
+    endpoints = prepare_guest._endpoints()
+    try:
+        _instance, secret = endpoints.vm_caller(root)
+        return endpoints.endpoint(result['lab_url']) + '/?key=' + secret
+    except endpoints.QueryFailure:
+        return None
+
+
 def _view(root, deployment, setup, profile=PROFILE):
     result = runtime.invoke('status', state_dir=root, profile=profile)
+    result['lab_console_url'] = _console_url(root, result)
     result['prepared'] = deployment is not None
     result['setup'] = {key: setup[key] for key in ('stage', 'operation', 'started_at', 'deadline_at', 'reason') if setup and key in setup}
     if setup and setup['state'] == 'preparing':

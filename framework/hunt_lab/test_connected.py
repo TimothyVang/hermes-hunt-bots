@@ -7,17 +7,20 @@ cluster is opened. The bot side is the real hunt_lab.query_adapter talking to th
 
 import base64
 import contextlib
+import http.client
 import io
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 from urllib import parse, request
 
-from hunt_lab import connected, query_adapter
+from hunt_lab import connected, endpoints, query_adapter
 
 
 KEY = 'cmVhZC1vbmx5LWtleS1pZDpyZWFkLW9ubHkta2V5LXZhbHVl'
@@ -171,29 +174,28 @@ class ConnectedCase(unittest.TestCase):
         self.addCleanup(connected.stop, server, source, state)
         self.addCleanup(server.shutdown)
         self.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
+        self.secret = server.secret
         return server, source, state, environ
 
     def tool(self, tool_name, **arguments):
         return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments}, runtime=Runtime,
                                       state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
 
-    def get_text(self, path):
+    def open(self, path, headers):
         opener = request.build_opener(request.ProxyHandler({}))
         try:
-            with opener.open(self.lab_url + path, timeout=10) as response:
+            with opener.open(request.Request(self.lab_url + path, headers=headers), timeout=10) as response:
                 return response.status, dict(response.headers), response.read().decode('utf-8')
         except request.HTTPError as failure:
             with failure:
                 return failure.code, dict(failure.headers), failure.read().decode('utf-8')
 
-    def get(self, path):
-        opener = request.build_opener(request.ProxyHandler({}))
-        try:
-            with opener.open(self.lab_url + path, timeout=10) as response:
-                return response.status, dict(response.headers), json.loads(response.read())
-        except request.HTTPError as failure:
-            with failure:
-                return failure.code, dict(failure.headers), json.loads(failure.read())
+    def get_text(self, path, secret=True):
+        return self.open(path, {endpoints.SECRET_HEADER: self.secret} if secret else {})
+
+    def get(self, path, secret=True):
+        status, headers, body = self.get_text(path, secret)
+        return status, headers, json.loads(body)
 
 
 class RefusalTests(ConnectedCase):
@@ -620,8 +622,11 @@ class ServiceTests(ConnectedCase):
     def test_health_state_instance_header_and_console(self):
         server, _source, state, _environ = self.start()
         recorded = json.loads(state.read_text(encoding='utf-8'))
-        self.assertEqual(recorded, {'version': 1, 'pid': recorded['pid'], 'port': server.server_address[1], 'case_id': CASE_ID,
-                                    'instance': server.instance_id, 'api_key_env': 'HUNT_ELASTIC_API_KEY'})
+        self.assertEqual(recorded, {'version': 2, 'pid': recorded['pid'], 'port': server.server_address[1], 'case_id': CASE_ID,
+                                    'instance': server.instance_id, 'secret': server.secret,
+                                    'api_key_env': 'HUNT_ELASTIC_API_KEY'})
+        self.assertRegex(server.secret, r'^[0-9a-f]{64}$')
+        self.assertNotEqual(server.secret[:32], server.instance_id)
         status, headers, value = self.get('/health')
         self.assertEqual((status, value['ready'], value['event_count'], value['backend'], value['network_capture']),
                          (200, True, 5, 'work-elastic', 'none'))
@@ -642,6 +647,52 @@ class ServiceTests(ConnectedCase):
         self.assertEqual(status, 400)
         self.assertIn('Query refused: regex_not_supported', page)
         self.assertEqual(self.get('/health?x=1')[0], 400)
+
+    def test_connected_service_requires_the_secret(self):
+        server, _source, _state, _environ = self.start()
+        for path in ('/case', '/health', '/activity', '/', '/view?q=host.name:ws-01', '/es/search'):
+            with self.subTest(path=path):
+                status, headers, body = self.get_text(path, secret=False)
+                self.assertEqual((status, json.loads(body), headers['X-Hunt-Lab-Instance']),
+                                 (401, {'error': 'caller_not_authorized'}, server.instance_id))
+        port = server.server_address[1]
+        for host in ('evil.test:%d' % port, 'localhost:%d' % port, '127.0.0.1:%d' % (port + 1 if port < 65535 else 1)):
+            with self.subTest(host=host):
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                try:
+                    connection.request('GET', '/case', headers={'Host': host, endpoints.SECRET_HEADER: self.secret})
+                    response = connection.getresponse()
+                    self.assertEqual((response.status, json.loads(response.read())), (403, {'error': 'host_not_allowed'}))
+                finally:
+                    connection.close()
+        self.assertEqual(self.get('/case')[0], 200)
+        # The bot tools send it from the state file and still get data; nothing they return carries it.
+        searched = self.tool('elastic_search', size=2)
+        self.assertTrue(searched['ok'], searched)
+        self.assertEqual(len(searched['result']['hits']), 2)
+        self.assertNotIn(self.secret, json.dumps(searched))
+        self.assertNotIn(self.secret, repr(endpoints.resolve(self.home / 'hunt-lab-vm', CASE_ID, runtime=Runtime)))
+        # A state file naming another secret gets the service's own refusal, relayed as its fixed code.
+        state = self.home / connected.CONNECTED_STATE / 'state.json'
+        recorded = json.loads(state.read_text(encoding='utf-8'))
+        state.write_text(json.dumps(dict(recorded, secret='0' * 64)), encoding='utf-8')
+        self.assertEqual({key: self.tool('elastic_search').get(key) for key in ('ok', 'error', 'detail')},
+                         {'ok': False, 'error': 'lab_http_401', 'detail': 'caller_not_authorized'})
+        self.assertEqual(self.get('/activity')[2]['entries'][-1]['tool'], 'elastic_search')
+        self.assertEqual(len(self.get('/activity')[2]['entries']), 1)
+
+    def test_only_its_owner_can_read_the_state(self):
+        _server, _source, state, _environ = self.start()
+        if os.name != 'nt':
+            self.assertEqual((state.parent.stat().st_mode & 0o777, state.stat().st_mode & 0o777), (0o700, 0o600))
+            return
+        user = subprocess.run(['whoami'], capture_output=True, text=True, check=True).stdout.strip().lower()
+        for path in (state.parent, state):
+            with self.subTest(path=path.name):
+                listing = subprocess.run(['icacls', str(path)], capture_output=True, text=True, check=True).stdout
+                grantees = {line.strip().split(':(')[0].lower() for line in listing.replace(str(path), '').splitlines()
+                            if ':(' in line}
+                self.assertEqual(grantees, {user, 'nt authority\\system'}, listing)
 
     def test_stop_removes_the_state_and_closes_the_snapshot_and_citations_survive_a_restart(self):
         server, source, state, _environ = self.start()

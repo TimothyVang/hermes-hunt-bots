@@ -31,6 +31,7 @@ lab_server = load('lab_server')
 ARKIME_GET = lab_server.arkime_get
 ingest = load('ingest')
 
+SECRET = 'c0ffee' * 10 + 'beef'
 CASE = {'case_id': 'lab-med-001', 'question': 'Synthetic question.',
         'time_range_utc': {'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-05T00:00:00Z'}}
 START_S = 1772409600
@@ -83,30 +84,35 @@ class ServerCase(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        self.server = lab_server.make_server('127.0.0.1', 0, self.case, 'http://elastic.invalid:9200', self.scope)
+        self.server = lab_server.make_server('127.0.0.1', 0, self.case, 'http://elastic.invalid:9200', self.scope,
+                                             secret=SECRET)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def request(self, path, method='GET', profile=None):
+    def exchange(self, path, method='GET', headers=None):
+        """One request with exactly these headers (http.client still adds Host unless one is given)."""
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=10)
         try:
-            connection.request(method, path, headers={'X-Hermes-Profile': profile} if profile else {})
+            names = {name.lower() for name in headers or {}}
+            connection.putrequest(method, path, skip_host='host' in names, skip_accept_encoding=True)
+            for name, value in (headers or {}).items():
+                connection.putheader(name, value)
+            connection.endheaders()
             response = connection.getresponse()
-            body = response.read()
+            return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
-        return response.status, (json.loads(body) if body else None)
+
+    def request(self, path, method='GET', profile=None):
+        headers = {lab_server.SECRET_HEADER: SECRET, **({'X-Hermes-Profile': profile} if profile else {})}
+        status, _headers, body = self.exchange(path, method, headers)
+        return status, (json.loads(body) if body else None)
 
     def page(self, path):
-        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=10)
-        try:
-            connection.request('GET', path)
-            response = connection.getresponse()
-            return response.status, response.getheader('Content-Type'), response.read().decode()
-        finally:
-            connection.close()
+        status, headers, body = self.exchange(path, 'GET', {lab_server.SECRET_HEADER: SECRET})
+        return status, headers['Content-Type'], body.decode()
 
 
 class EndpointTests(ServerCase):
@@ -453,6 +459,94 @@ class EndpointTests(ServerCase):
         self.assertEqual((status, value['ready'], value['kibana_ready']), (200, True, True))
 
 
+class CallerTests(ServerCase):
+    """Only the service's own caller is answered: Host 127.0.0.1:<port> and this instance's secret."""
+
+    PATHS = ('/case', '/health', '/activity', '/', '/view?q=a', '/events', '/es/search?q=a', '/intel?values=a',
+             '/packets', '/not-a-route')
+
+    def test_request_without_secret_is_refused(self):
+        wrong = {'missing': {}, 'wrong': {lab_server.SECRET_HEADER: SECRET[:-1] + '0'},
+                 'upper': {lab_server.SECRET_HEADER: SECRET.upper()}, 'empty': {lab_server.SECRET_HEADER: ''},
+                 'padded': {lab_server.SECRET_HEADER: SECRET + ' x'}}
+        for name, headers in wrong.items():
+            for path in self.PATHS:
+                with self.subTest(secret=name, path=path):
+                    status, _headers, body = self.exchange(path, 'GET', dict(headers, **{'X-Hermes-Profile': 'framework-researcher'}))
+                    self.assertEqual((status, json.loads(body)), (401, {'error': 'caller_not_authorized'}))
+            for method in ('POST', 'DELETE'):
+                with self.subTest(secret=name, method=method):
+                    status, _headers, body = self.exchange('/es/search', method, headers)
+                    self.assertEqual((status, json.loads(body)), (401, {'error': 'caller_not_authorized'}))
+        self.assertEqual(self.elastic.calls, [])
+        self.arkime.assert_not_called()
+        # A refused caller leaves no trace on the board's tool feed either.
+        self.assertEqual(self.request('/activity')[1]['entries'], [])
+        self.assertEqual(self.request('/case'), (200, CASE))
+
+    def test_a_repeated_secret_header_is_refused(self):
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=10)
+        try:
+            connection.putrequest('GET', '/case')
+            connection.putheader(lab_server.SECRET_HEADER, SECRET)
+            connection.putheader(lab_server.SECRET_HEADER, SECRET)
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual((response.status, json.loads(response.read())), (401, {'error': 'caller_not_authorized'}))
+        finally:
+            connection.close()
+
+    def test_rebinding_host_is_refused(self):
+        port = self.server.server_address[1]
+        for host in ('evil.test', 'evil.test:%d' % port, 'localhost:%d' % port, '127.0.0.1', '127.0.0.1:0',
+                     '127.0.0.1:%d.evil.test' % port, '127.0.0.2:%d' % port, '[::1]:%d' % port, '127.0.0.1:99999'):
+            with self.subTest(host=host):
+                status, _headers, body = self.exchange('/case', 'GET', {'Host': host, lab_server.SECRET_HEADER: SECRET})
+                self.assertEqual((status, json.loads(body)), (403, {'error': 'host_not_allowed'}))
+        # The guest's QEMU forward picks the host port, so without public_port any 127.0.0.1 port is its caller's.
+        self.assertEqual(self.exchange('/case', 'GET', {'Host': '127.0.0.1:1', lab_server.SECRET_HEADER: SECRET})[0], 200)
+        self.server.public_port = port
+        self.assertEqual(self.exchange('/case', 'GET', {'Host': '127.0.0.1:1', lab_server.SECRET_HEADER: SECRET})[0], 403)
+        self.assertEqual(self.request('/case'), (200, CASE))
+        self.assertEqual(self.elastic.calls, [])
+
+    def test_every_answer_names_the_instance(self):
+        self.server.instance_id = 'hermes-framework-network-analyst-case-lab-med-001-6873a567'
+        for headers, expected in (({lab_server.SECRET_HEADER: SECRET}, 200), ({}, 401), ({'Host': 'evil.test'}, 403)):
+            with self.subTest(expected=expected):
+                status, answer, _body = self.exchange('/case', 'GET', headers)
+                self.assertEqual((status, answer[lab_server.INSTANCE_HEADER]), (expected, self.server.instance_id))
+        self.assertEqual(self.exchange('/view', 'GET', {lab_server.SECRET_HEADER: SECRET})[1][lab_server.INSTANCE_HEADER],
+                         self.server.instance_id)
+
+    def test_the_console_takes_the_secret_from_its_url_and_data_routes_never_do(self):
+        self.elastic.response = es_hits([{'event': {'id': 'evt-000001'}, 'message': 'hello'}])
+        for path in ('/?key=' + SECRET, '/view?q=hello&key=' + SECRET):
+            with self.subTest(path=path):
+                status, headers, body = self.exchange(path, 'GET', {})
+                page = body.decode()
+                self.assertEqual((status, headers['Content-Type']), (200, 'text/html; charset=utf-8'))
+                self.assertIn('1 of 1 events', page)
+                self.assertIn('<input type="hidden" name="key" value="%s">' % SECRET, page)
+                self.assertEqual(headers['Referrer-Policy'], 'no-referrer')
+        for path in ('/case?key=' + SECRET, '/events?key=' + SECRET, '/es/search?q=a&key=' + SECRET,
+                     '/health?key=' + SECRET, '/activity?key=' + SECRET, '/view?key=' + SECRET[:-1] + '0',
+                     '/view?key=' + SECRET + '&key=' + SECRET):
+            with self.subTest(path=path):
+                status, _headers, body = self.exchange(path, 'GET', {})
+                self.assertEqual((status, json.loads(body)), (401, {'error': 'caller_not_authorized'}))
+        status, _headers, body = self.exchange('/?key=' + SECRET, 'POST', {})
+        self.assertEqual((status, json.loads(body)), (401, {'error': 'caller_not_authorized'}))
+        status, _headers, body = self.exchange('/view?key=' + SECRET, 'GET', {'Host': 'evil.test'})
+        self.assertEqual((status, json.loads(body)), (403, {'error': 'host_not_allowed'}))
+        self.assertNotIn(SECRET, self.page('/view')[2])
+
+    def test_a_server_never_starts_without_a_well_formed_secret(self):
+        for secret in (None, '', 'a' * 63, 'A' * 64, 'g' * 64, SECRET + '\n'):
+            with self.subTest(secret=secret), self.assertRaises(ValueError):
+                lab_server.make_server('127.0.0.1', 0, CASE, 'http://elastic.invalid:9200', secret=secret)
+
+
 class InstanceIdTests(unittest.TestCase):
     def test_the_cloud_init_instance_id_is_read_and_junk_is_refused(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -615,7 +709,7 @@ class EventSourceTests(ServerCase):
     def setUp(self):
         super().setUp()
         self.source = CitingSource()
-        self.server = lab_server.make_server('127.0.0.1', 0, CASE, self.source)
+        self.server = lab_server.make_server('127.0.0.1', 0, CASE, self.source, secret=SECRET)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -770,12 +864,33 @@ class PacketFieldsTests(ServerCase):
 
     def test_server_main_points_packet_fields_at_the_capture_next_to_case_json(self):
         case = self.capture.parent / 'case.json'
+        (self.capture.parent / 'lab-secret').write_text(SECRET + '\n', encoding='ascii')
         with mock.patch.object(lab_server, 'make_server') as make, \
                 mock.patch.object(lab_server, 'load_case', return_value=CASE), \
                 mock.patch.object(lab_server, 'instance_id', return_value=None), \
+                mock.patch.dict(lab_server.os.environ, {'CREDENTIALS_DIRECTORY': str(self.capture.parent)}), \
                 mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case)]):
             lab_server.main()
         self.assertEqual(make.call_args.kwargs['capture'], case.resolve().parent / 'traffic.pcap')
+        self.assertEqual(make.call_args.kwargs['secret'], SECRET)
+
+    def test_server_main_refuses_to_start_without_its_secret(self):
+        case = self.capture.parent / 'case.json'
+        environment = {key: value for key, value in lab_server.os.environ.items() if key != 'CREDENTIALS_DIRECTORY'}
+        with mock.patch.object(lab_server, 'make_server') as make, \
+                mock.patch.object(lab_server, 'load_case', return_value=CASE), \
+                mock.patch.dict(lab_server.os.environ, environment, clear=True), \
+                mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case)]), \
+                mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            lab_server.main()
+        (self.capture.parent / 'bad-secret').write_text('not-hex\n', encoding='ascii')
+        with mock.patch.object(lab_server, 'make_server') as make, \
+                mock.patch.object(lab_server, 'load_case', return_value=CASE), \
+                mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case), '--secret-file',
+                                                str(self.capture.parent / 'bad-secret')]), \
+                self.assertRaises(ValueError):
+            lab_server.main()
+        make.assert_not_called()
 
     def test_fields_outside_the_allowlist_are_refused_before_tshark_runs(self):
         for field in DENIED_PACKET_FIELDS:

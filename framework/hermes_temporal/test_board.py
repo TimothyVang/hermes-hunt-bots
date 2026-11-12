@@ -24,7 +24,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
-from .test_lab_input import FakeLab, write_connected_state  # noqa: E402
+from .test_lab_input import VM_SECRET, FakeLab, write_connected_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
 
 FIXTURES = Path(__file__).with_name("fixtures") / "board"
@@ -896,7 +896,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.addCleanup(self.lab.close)
 
     def observer(self, case_id: str = "lab-med-001") -> LabObserver:
-        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME}, case_id)
+        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, case_id)
 
     def test_cited_ids_accept_four_or_more_digits(self) -> None:
         handoff, _ = parse_handoff(_handoff("scope", "framework-coordinator", "evt-0001, evt-000123 and evt-12."))
@@ -945,7 +945,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_untagged_window_scoped_lab_links_without_case_tag(self) -> None:
         lab = FakeLab(activity=ACTIVITY, network_scope="window")
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, "lab-med-001")
         observer.refresh([])
         lanes = {lane["profile"]: lane for lane in build_state(self.raw, None, None, observer.snapshot())["tools"]["lanes"]}
         url = parse.urlsplit(lanes["framework-network-analyst"]["entries"][0]["arkime_ui_url"])
@@ -962,7 +962,8 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_observer_skips_tool_calls_made_before_the_hunt(self) -> None:
         lab = FakeLab(events=[], activity=[dict(ACTIVITY[0], seq=seq) for seq in range(1, 8)])
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None}, "lab-med-001", activity_after=5)
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001",
+                               activity_after=5)
         observer.refresh([])
         self.assertEqual([entry["seq"] for entry in observer.snapshot()["activity"]], [6, 7])
 
@@ -972,7 +973,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         activity = [dict(ACTIVITY[0], seq=seq) for seq in range(1, 251)]
         lab = FakeLab(events=events, activity=activity)
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001")
         cited = [f"evt-{number:06d}" for number in range(1, 71)]
         observer.refresh(cited)
         snapshot = observer.snapshot()
@@ -1011,6 +1012,24 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.assertFalse(down.snapshot()["reachable"])
         self.assertEqual(len(resolved), 2)
 
+    def test_the_observer_sends_the_resolved_labs_secret_and_nothing_without_it(self) -> None:
+        for secret in (None, "0" * 64):
+            with self.subTest(secret=secret):
+                observer = LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": None, "secret": secret},
+                                       "lab-med-001")
+                observer.refresh(["evt-000101"])
+                snapshot = observer.snapshot()
+                self.assertEqual((snapshot["reachable"], snapshot["activity"], snapshot["events"]), (False, [], {}))
+        self.assertEqual(self.lab.requests, [])
+        self.assertEqual(set(self.lab.refused), {"/health"})
+        other = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, instance="a" * 32)
+        self.addCleanup(other.close)
+        observer = self.state_dir_observer(other, "lab-med-001")
+        observer.refresh(["evt-000101"])
+        self.assertTrue(observer.snapshot()["reachable"], observer.snapshot())
+        self.assertEqual(sorted(observer.snapshot()["events"]), ["evt-000101"])
+        self.assertNotIn(VM_SECRET, json.dumps(observer.snapshot()))
+
     def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
         lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
                       instance="a" * 32, refuse_unknown=True)
@@ -1038,7 +1057,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         patcher = mock.patch.object(lab_input.importlib, "import_module", return_value=runtime)
         patcher.start()
         self.addCleanup(patcher.stop)
-        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_url=None, lab_state_dir=state_dir)
+        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_state_dir=state_dir)
         return board._lab_observer(args, case_id)
 
     def test_the_state_dir_lab_names_another_case_or_two_labs_serving_this_one(self) -> None:
@@ -1079,9 +1098,10 @@ class ToolDrivenBoardTests(unittest.TestCase):
             tool_path.write_text(json.dumps(self.raw), encoding="utf-8")
             inline_path = FIXTURES / "lab-input.json"
             self.assertEqual(main(["--workflow-id", "w", "--input", str(tool_path)]), 2)
-            self.assertEqual(main(["--workflow-id", "w", "--input", str(inline_path), "--lab-url", self.lab.url]), 2)
-            with self.assertRaises(SystemExit):
-                main(["--workflow-id", "w", "--input", str(tool_path), "--lab-url", "http://localhost:8765"])
+            self.assertEqual(main(["--workflow-id", "w", "--input", str(inline_path), "--lab-state-dir", directory]), 2)
+            # A bare lab URL cannot carry the lab service's caller secret, so the board takes only the state dir.
+            with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+                main(["--workflow-id", "w", "--input", str(tool_path), "--lab-url", self.lab.url])
         self.assertEqual(self.lab.requests, [])
 
 

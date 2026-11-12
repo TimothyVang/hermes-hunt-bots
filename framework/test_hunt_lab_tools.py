@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -39,13 +40,31 @@ def guest_lab_server():
     return lab_server
 
 
-class GuestStub:
-    """Loopback stand-in for the guest lab_server; records every request it receives."""
+VM_INSTANCE = 'hermes-framework-network-analyst-case-lab-med-001-6873a567'
+VM_SECRET = '5e' * 32
+CONNECTED_SECRET = 'c0' * 32
 
-    def __init__(self, case_id=CASE, instance=None):
+
+def deploy_vm(state_dir, instance=VM_INSTANCE, secret=VM_SECRET):
+    """Write what prepare_guest leaves for a deployed seed: deployment.json and the seed's caller file."""
+    seed = Path(state_dir) / 'media' / 'cidata-lab-med-001-6873a567.iso'
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    (Path(state_dir) / 'deployment.json').write_text(json.dumps({'seed': str(seed)}), encoding='utf-8')
+    endpoints.caller_file(seed).unlink(missing_ok=True)
+    endpoints.write_vm_caller(seed, instance, secret)
+    return seed
+
+
+class GuestStub:
+    """Loopback stand-in for the guest lab_server; records every request it receives and, like it, answers only
+    a caller sending its secret."""
+
+    def __init__(self, case_id=CASE, instance=VM_INSTANCE, secret=VM_SECRET):
         self.case_id = case_id
         self.instance = instance
+        self.secret = secret
         self.requests = []
+        self.secrets = []
         self.overrides = {}
         stub = self
 
@@ -56,8 +75,12 @@ class GuestStub:
             def do_GET(self):
                 url = urlsplit(self.path)
                 params = {key: values[0] for key, values in parse_qs(url.query, keep_blank_values=True).items()}
-                stub.requests.append((url.path, params, self.headers.get('X-Hermes-Profile')))
-                status, body, headers = stub.overrides.get(url.path) or stub.default(url.path, params)
+                stub.secrets.append(self.headers.get(endpoints.SECRET_HEADER))
+                if self.headers.get(endpoints.SECRET_HEADER) != stub.secret:
+                    status, body, headers = 401, {'error': 'caller_not_authorized'}, {}
+                else:
+                    stub.requests.append((url.path, params, self.headers.get('X-Hermes-Profile')))
+                    status, body, headers = stub.overrides.get(url.path) or stub.default(url.path, params)
                 if stub.instance:
                     headers = {'X-Hunt-Lab-Instance': stub.instance, **headers}
                 data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -101,11 +124,16 @@ class Runtime:
 
 class ToolCallTests(unittest.TestCase):
     def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.state_dir = Path(temp.name) / 'profiles' / ANALYST / 'hunt-lab-vm'
+        deploy_vm(self.state_dir)
         self.guest = GuestStub()
         self.addCleanup(self.guest.close)
         self.runtime = Runtime(self.guest.url)
 
-    def call(self, name, arguments, profile='framework-researcher', state_dir='analyst-state'):
+    def call(self, name, arguments, profile='framework-researcher', state_dir=True):
+        state_dir = self.state_dir if state_dir is True else state_dir
         return query_adapter.call(name, arguments, runtime=self.runtime, state_dir=state_dir, profile=profile)
 
     def test_each_tool_reaches_only_its_guest_endpoint_with_caller_identity(self):
@@ -139,7 +167,8 @@ class ToolCallTests(unittest.TestCase):
                 self.assertEqual(self.guest.endpoint_calls(), [(path, params, 'framework-reviewer')])
                 # The loaded case is confirmed before the scoped query.
                 self.assertEqual(self.guest.requests[0][0], '/case')
-        self.assertTrue(all(call == ('status', 'analyst-state', ANALYST) for call in self.runtime.calls))
+        self.assertTrue(all(call == ('status', self.state_dir, ANALYST) for call in self.runtime.calls))
+        self.assertEqual(set(self.guest.secrets), {VM_SECRET})
 
     def test_case_mismatch_stops_before_any_scoped_query(self):
         result = self.call('elastic_search', {'case_id': 'dns-lab-001'})
@@ -286,7 +315,8 @@ class ToolCallTests(unittest.TestCase):
         case = {'case_id': CASE, 'question': 'Synthetic question.', 'network_capture': 'none',
                 'time_range_utc': {'start_inclusive': '2026-03-02T00:00:00Z', 'end_exclusive': '2026-03-05T00:00:00Z'}}
         # No backend exists: a refusal that touched Elasticsearch or Arkime would surface as backend_not_ready.
-        server = lab_server.make_server('127.0.0.1', 0, case, 'http://elastic.invalid:9200')
+        server = lab_server.make_server('127.0.0.1', 0, case, 'http://elastic.invalid:9200', instance=VM_INSTANCE,
+                                        secret=VM_SECRET)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -347,9 +377,10 @@ class ResolverTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.analyst = Path(temp.name) / 'profiles' / ANALYST
         self.state_dir = self.analyst / 'hunt-lab-vm'
+        deploy_vm(self.state_dir)
         self.vm = GuestStub()
         self.addCleanup(self.vm.close)
-        self.connected = GuestStub(case_id='work-conn-001', instance=INSTANCE)
+        self.connected = GuestStub(case_id='work-conn-001', instance=INSTANCE, secret=CONNECTED_SECRET)
         self.addCleanup(self.connected.close)
         self.runtime = Runtime(self.vm.url, state='stopped')
         self.serve()
@@ -360,8 +391,8 @@ class ResolverTests(unittest.TestCase):
 
     def serve(self, **changes):
         """Write the connected service's state.json as `hunt_lab.connected serve` does."""
-        state = {'version': 1, 'pid': 4242, 'port': self.connected.server.server_address[1], 'case_id': 'work-conn-001',
-                 'instance': INSTANCE, 'api_key_env': 'HUNT_ELASTIC_API_KEY', **changes}
+        state = {'version': 2, 'pid': 4242, 'port': self.connected.server.server_address[1], 'case_id': 'work-conn-001',
+                 'instance': INSTANCE, 'secret': CONNECTED_SECRET, 'api_key_env': 'HUNT_ELASTIC_API_KEY', **changes}
         folder = self.analyst / endpoints.CONNECTED_STATE
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
@@ -452,9 +483,9 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(self.call('elastic_search', {})['error'], 'owned_vm_not_running')
         self.runtime.state = 'running'
         self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
-        for bad in ({'version': 2}, {'version': True}, {'version': 1.0}, {'port': 0}, {'port': '80'},
-                    {'instance': 'A' * 32}, {'case_id': 'Work'},
-                    {'api_key_env': 'A B'}, {'extra': 1}):
+        for bad in ({'version': 1}, {'version': True}, {'version': 2.0}, {'port': 0}, {'port': '80'},
+                    {'instance': 'A' * 32}, {'case_id': 'Work'}, {'secret': 'C0' * 32}, {'secret': 'c0' * 31},
+                    {'secret': None}, {'api_key_env': 'A B'}, {'extra': 1}):
             with self.subTest(state=bad):
                 self.serve(**bad)
                 self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'connected_state_invalid')
@@ -493,6 +524,60 @@ class ResolverTests(unittest.TestCase):
                                       browser_root=self.analyst / 'browser')
         self.assertEqual(result['error'], 'invalid_owned_endpoint')
         session.assert_not_called()
+
+    def test_each_lab_gets_only_its_own_secret(self):
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual((set(self.vm.secrets), set(self.connected.secrets)), ({VM_SECRET}, {CONNECTED_SECRET}))
+        served = endpoints.resolve(self.state_dir, CASE, runtime=self.runtime)
+        self.assertEqual((served.instance, served.secret), (VM_INSTANCE, VM_SECRET))
+        self.assertNotIn(VM_SECRET, repr(served))
+
+    def test_a_vm_without_its_seed_caller_file_is_never_asked(self):
+        self.runtime.state = 'running'
+        seed = deploy_vm(self.state_dir)
+        endpoints.caller_file(seed).unlink()
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_secret_unavailable')
+        for caller in ('{not json', json.dumps({'version': 1, 'instance': VM_INSTANCE}),
+                       json.dumps({'version': 1, 'instance': 'bad id', 'secret': VM_SECRET}),
+                       json.dumps({'version': True, 'instance': VM_INSTANCE, 'secret': VM_SECRET}),
+                       json.dumps({'version': 1, 'instance': VM_INSTANCE, 'secret': VM_SECRET.upper()})):
+            with self.subTest(caller=caller):
+                endpoints.caller_file(seed).write_text(caller, encoding='utf-8')
+                self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_secret_unavailable')
+        (self.state_dir / 'deployment.json').unlink()
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_secret_unavailable')
+        self.assertEqual(self.vm.secrets, [])
+        # The connected case is still served while the VM's secret is missing.
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+
+    def test_a_vm_answering_with_another_instance_or_refusing_the_secret_fails_closed(self):
+        self.runtime.state = 'running'
+        self.vm.instance = VM_INSTANCE + '-load2'
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_instance_mismatch')
+        self.vm.instance, self.vm.secret = VM_INSTANCE, '00' * 32
+        self.assertEqual({key: value for key, value in self.call('elastic_search', {}, case_id=CASE).items()
+                          if key != 'profile'},
+                         {'ok': False, 'error': 'lab_http_401', 'detail': 'caller_not_authorized'})
+        self.assertEqual(self.vm.endpoint_calls(), [])
+
+    def test_the_vm_caller_file_is_written_once_and_owner_only(self):
+        seed = deploy_vm(self.state_dir)
+        with self.assertRaises(FileExistsError):
+            endpoints.write_vm_caller(seed, VM_INSTANCE, VM_SECRET)
+        for instance, secret in (('bad id', VM_SECRET), (VM_INSTANCE, 'x' * 64)):
+            with self.subTest(instance=instance), self.assertRaises(ValueError):
+                endpoints.write_vm_caller(seed.with_name('other.iso'), instance, secret)
+        self.assertEqual(endpoints.vm_caller(self.state_dir), (VM_INSTANCE, VM_SECRET))
+        if os.name != 'nt':
+            self.assertEqual(endpoints.caller_file(seed).stat().st_mode & 0o777, 0o600)
+            return
+        user = subprocess.run(['whoami'], capture_output=True, text=True, check=True).stdout.strip().lower()
+        listing = subprocess.run(['icacls', str(endpoints.caller_file(seed))], capture_output=True, text=True,
+                                 check=True).stdout.replace(str(endpoints.caller_file(seed)), '')
+        self.assertEqual({line.strip().split(':(')[0].lower() for line in listing.splitlines() if ':(' in line},
+                         {user, 'nt authority\\system'}, listing)
 
 
 class RegistrationTests(unittest.TestCase):

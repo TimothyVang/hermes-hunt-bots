@@ -292,14 +292,15 @@ def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
 
 
 def lab_get(base: str, path: str, *, profile: str | None = None,
-            timeout: float = _LAB_TIMEOUT_SECONDS, instance: str | None = None) -> dict:
+            timeout: float = _LAB_TIMEOUT_SECONDS, instance: str | None = None, secret: str | None = None) -> dict:
     """One bounded GET of a JSON object from the loopback lab (``hunt_lab.endpoints.get``): no proxies or redirects.
 
-    With ``instance`` (a connected service's), every answer must carry it in X-Hunt-Lab-Instance. A
-    refusal keeps only the lab's fixed code in ``LabInputError.code``.
+    ``secret`` (the resolved lab's ``LabEndpoint.secret``) is sent as the caller secret the lab service requires.
+    With ``instance``, every answer must carry it in X-Hunt-Lab-Instance. A refusal keeps only the lab's
+    fixed code in ``LabInputError.code``.
     """
     try:
-        return get(loopback_base(base), path, profile, timeout, instance=instance)
+        return get(loopback_base(base), path, profile, timeout, instance=instance, secret=secret)
     except QueryFailure as exc:
         raise LabInputError(code=exc.detail or str(exc)) from None
 

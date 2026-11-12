@@ -33,8 +33,10 @@ _id; event.id and bare evt- terms in a query resolve back to those documents, an
 <state-dir>/hunt-lab-connected/<case_id>/citations.jsonl (document IDs only) across restarts. Intel, Arkime and
 packets are off; the console page (/ and /view) names the work-connected origin; /health waits only for events.
 While serving,
-<state-dir>/hunt-lab-connected/state.json names the port and an instance token that every response carries in
-X-Hunt-Lab-Instance.
+<state-dir>/hunt-lab-connected/state.json names the port, an instance token that every response carries in
+X-Hunt-Lab-Instance, and the secret every caller must send in X-Hunt-Lab-Secret (anything else gets 401
+caller_not_authorized; a Host other than 127.0.0.1:<port> gets 403 host_not_allowed). The folder is
+owner-only (hunt_lab.endpoints.owner_only): only this user and SYSTEM can read the secret.
 """
 
 import argparse
@@ -54,7 +56,7 @@ import threading
 import time
 from urllib import parse
 
-from hunt_lab.endpoints import CONNECTED_STATE, INSTANCE_HEADER, STATE_VERSION
+from hunt_lab.endpoints import CONNECTED_STATE, STATE_VERSION, owner_only
 from hunt_lab.import_elastic import (API_KEY_ENV, ENV_NAME, ERROR_TYPE, check_version, cluster_base, https_transport,
                                      read_api_key)
 
@@ -669,13 +671,9 @@ def health(server):
 
 
 class ConnectedHandler(lab_server.Handler):
-    """The lab service's routes, each answer naming this service's instance, with its own /health."""
+    """The lab service's routes and caller check, with its own /health."""
 
-    def end_headers(self):
-        self.send_header(INSTANCE_HEADER, self.server.instance_id)
-        super().end_headers()
-
-    def do_GET(self):
+    def route(self):
         target = parse.urlsplit(self.path)
         if target.path == '/health':
             if target.query:
@@ -688,7 +686,7 @@ class ConnectedHandler(lab_server.Handler):
             else:
                 self.send(200 if ready else 503, value)
         else:
-            super().do_GET()
+            super().route()
 
 
 def _open(config_path, case_path, environ, transport, home=None):
@@ -745,6 +743,8 @@ def start(config_path, case_path, state_dir, *, environ=None, transport=None):
     """Open the source and bind the service on a free loopback port; returns (server, source, state path)."""
     folder = profile_home(state_dir) / CONNECTED_STATE
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Before the secret exists: what the folder holds (state.json, citations) inherits owner-only access.
+    owner_only(folder)
     state = folder / 'state.json'
     try:
         # Reserved before anything else, so two services started together cannot both claim this state dir.
@@ -755,12 +755,19 @@ def start(config_path, case_path, state_dir, *, environ=None, transport=None):
     try:
         config, case, source = _open(config_path, case_path, os.environ if environ is None else environ, transport,
                                      folder.parent)
-        server = lab_server.make_server('127.0.0.1', 0, case, source, instance=secrets.token_hex(16))
+        server = lab_server.make_server('127.0.0.1', 0, case, source, instance=secrets.token_hex(16),
+                                        secret=secrets.token_hex(32))
         server.RequestHandlerClass = ConnectedHandler
+        server.public_port = server.server_address[1]
         temporary = folder / f'state.{server.instance_id}.tmp'
-        temporary.write_text(json.dumps({'version': STATE_VERSION, 'pid': os.getpid(), 'port': server.server_address[1],
-                                         'case_id': case['case_id'], 'instance': server.instance_id,
-                                         'api_key_env': config['api_key_env']}, sort_keys=True), encoding='utf-8')
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
+        try:
+            os.write(descriptor, json.dumps({
+                'version': STATE_VERSION, 'pid': os.getpid(), 'port': server.public_port, 'case_id': case['case_id'],
+                'instance': server.instance_id, 'secret': server.secret, 'api_key_env': config['api_key_env']},
+                sort_keys=True).encode('ascii'))
+        finally:
+            os.close(descriptor)
         _while_unread(lambda: os.replace(temporary, state))
     except BaseException:
         if server is not None:

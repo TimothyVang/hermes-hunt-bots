@@ -29,7 +29,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from lab_paths import DEFAULT_LANE, FRAMEWORK, GATE_RUNS, PYTHON, TOOL_LOOPS
-from switch_case import lab
+from switch_case import serving_lab
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ROUNDS, MAX_LOOPS, PLATEAU, KEEP_MARGIN = 2, 8, 3, 1.0
@@ -58,22 +58,14 @@ def tcli(*args, lane=DEFAULT_LANE, timeout=180):
     return r.returncode, r.stdout, r.stderr
 
 
-def lab_url(lane=DEFAULT_LANE):
-    _, st = lab('status', 180, lane)
-    if st.get('state') != 'running':
-        raise SystemExit(f'lab not running: {st.get("state")} {st.get("reason")}')
-    return st['lab_url']
+def lab_get(served, path, **q):
+    return served.get(path + ('?' + urlencode(q) if q else ''), 'hunt-board', 60)
 
 
-def lab_get(url, path, **q):
-    req = urllib.request.Request(url + path + ('?' + urlencode(q) if q else ''), headers={'X-Hermes-Profile': 'hunt-board'})
-    return json.loads(OPENER.open(req, timeout=60).read())
-
-
-def activity_since(url, after):
+def activity_since(served, after):
     out = []
     while True:
-        a = lab_get(url, '/activity', after=after, limit=100)
+        a = lab_get(served, '/activity', after=after, limit=100)
         es = a.get('entries') or []
         if not es:
             return out
@@ -83,8 +75,8 @@ def activity_since(url, after):
             return out
 
 
-def last_seq(url):
-    es = activity_since(url, 0)
+def last_seq(served):
+    es = activity_since(served, 0)
     return max([e['seq'] for e in es] or [0])
 
 
@@ -209,8 +201,8 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
     d.mkdir(parents=True, exist_ok=True)
     raw = build_input(base, brief, guidance, case_id)
     (d / 'input.json').write_text(json.dumps(raw, indent=2), encoding='utf-8')
-    url = lab_url(lane)
-    seq0 = last_seq(url)
+    served = serving_lab(lane)
+    seq0 = last_seq(served)
     wf = workflow_id(name, case_id, lane)
     rc, out, err = tcli('practice', wf, '--input', str(d / 'input.json'), '--rounds', str(ROUNDS), lane=lane)
     if rc:
@@ -218,7 +210,7 @@ def run_config(name, base, brief, guidance, case_id, truth, d=None, lane=DEFAULT
     t0 = time.time()
     drv = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('drive_gates.py')), wf, *GATE_ARGS],
                          env=lane.env(), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=4 * 3600)
-    calls = activity_since(lab_url(lane), seq0)
+    calls = activity_since(serving_lab(lane), seq0)
     (d / 'activity.json').write_text(json.dumps(calls, indent=1), encoding='utf-8')
     rounds = []
     for n in range(1, ROUNDS + 1):

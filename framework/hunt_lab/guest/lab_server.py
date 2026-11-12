@@ -7,11 +7,17 @@ Arkime is reached only through two fixed read routes on guest loopback. A case w
 case.json says "network_capture": "none" has no sessions; its network queries are refused.
 Packet fields come only from the case's saved capture (tshark -r, never live capture), limited
 to a fixed field allowlist with URI query strings redacted (ADR 0003).
+
+Only its own caller is answered: a request whose Host is not 127.0.0.1:<port> is refused (403
+host_not_allowed, so a DNS-rebinding page gets nothing), and one without this instance's secret in
+X-Hunt-Lab-Secret is refused (401 caller_not_authorized). The guest reads the secret from the systemd
+credential its seed delivered; every answer, a refusal too, names the instance in X-Hunt-Lab-Instance.
 """
 import argparse
 import base64
 from collections import deque
 from datetime import datetime, timezone
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
@@ -43,6 +49,16 @@ CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 # cloud-init's record of the instance this boot belongs to; prepare_guest reseed makes a new ID per load.
 INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
 INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
+# The caller check. The guest cannot know the host port QEMU forwards to it, so without public_port
+# any 127.0.0.1 port is accepted; the hostname is what defeats DNS rebinding.
+INSTANCE_HEADER = 'X-Hunt-Lab-Instance'
+SECRET_HEADER = 'X-Hunt-Lab-Secret'
+SECRET = re.compile(r'[0-9a-f]{64}')
+SECRET_CREDENTIAL = 'lab-secret'
+LOOPBACK_HOST = re.compile(r'127\.0\.0\.1:([1-9][0-9]{0,4})')
+# The HTML console a browser tab opens: the only routes that also take the secret as ?key=.
+CONSOLE_PATHS = ('/', '/view')
+CONSOLE_KEY = 'key'
 EVENT_FIELDS = ['@timestamp', 'ecs', 'event', 'host', 'user', 'group', 'process', 'file', 'service', 'source', 'destination',
                 'network', 'dns', 'url', 'http', 'tls', 'user_agent', 'observer', 'winlog', 'powershell', 'message', 'labels']
 NO_CAPTURE = 'none'
@@ -850,8 +866,11 @@ def network_endpoint(server, params):
     return query(server, 'network', params)
 
 
-def console_page(server, params):
-    """The lab console: the events search as HTML. A refused query shows only its fixed code."""
+def console_page(server, params, key=None):
+    """The lab console: the events search as HTML. A refused query shows only its fixed code.
+
+    `key`: the secret this page was opened with (?key=); its search form carries it on, since a browser tab
+    cannot send X-Hunt-Lab-Secret. The JSON routes need the header, so the page links to none of them."""
     try:
         result = query(server, 'events', params)
     except BackendQueryError as exc:
@@ -875,9 +894,9 @@ def console_page(server, params):
         ' Read-only. No live capture.</p>'
         '<p>Case: ' + html.escape(case['case_id']) + '</p><p>' + html.escape(case['question']) + '</p>'
         '<form action="/view" method="get"><label for="q">Search</label><input id="q" name="q" size="60" value="' + shown['q'] + '">'
+        + ('<input type="hidden" name="key" value="' + html.escape(key) + '">' if key else '') +
         '<label for="host">Host</label><input id="host" name="host" value="' + shown['host'] + '"><button>Search logs</button></form>'
         '<p>Lucene query_string, as in elastic_search; no leading wildcards.</p>'
-        '<p><a href="/events">JSON events</a> · <a href="/network">Network metadata</a> · <a href="/case">Source coverage</a> · <a href="/health">Readiness</a></p>'
         + summary + '<table>' + rows + '</table></body></html>')
 
 
@@ -963,9 +982,40 @@ def kibana_case_ready(case_id):
         return False
 
 
+def allowed_host(server, value):
+    """Host is exactly 127.0.0.1:<port>, the service's own port when it knows the one its callers use."""
+    match = LOOPBACK_HOST.fullmatch(value)
+    return (match is not None and int(match[1]) <= 65535
+            and (server.public_port is None or int(match[1]) == server.public_port))
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
+
+    def end_headers(self):
+        if self.server.instance_id is not None:
+            self.send_header(INSTANCE_HEADER, self.server.instance_id)
+        super().end_headers()
+
+    def refused(self, console=False):
+        """Answer a request from anyone but this service's caller with a fixed code; True when it was refused.
+
+        The Host check comes first, so a DNS-rebinding page cannot even learn whether its secret guess was wrong.
+        Only the console pages (GET / and /view, `console`) also take the secret as ?key=, for a browser tab.
+        """
+        hosts = self.headers.get_all('Host') or []
+        if len(hosts) != 1 or not allowed_host(self.server, hosts[0]):
+            self.send(403, {'error': 'host_not_allowed'})
+            return True
+        secrets = self.headers.get_all(SECRET_HEADER) or []
+        if not secrets and console:
+            secrets = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get(CONSOLE_KEY, [])
+        if len(secrets) != 1 or not hmac.compare_digest(secrets[0].encode('latin-1', 'replace'),
+                                                        self.server.secret.encode('ascii')):
+            self.send(401, {'error': 'caller_not_authorized'})
+            return True
+        return False
 
     def send(self, status, value, kind='application/json'):
         body = (json.dumps(value, ensure_ascii=True).encode() if kind == 'application/json' else value.encode())
@@ -974,6 +1024,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
+        # The console URL carries the secret: no page may pass it on as a Referer.
+        self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -1006,6 +1058,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send(503, {'error': error, 'partial_results': False})
 
     def do_GET(self):
+        if not self.refused(console=urlsplit(self.path).path in CONSOLE_PATHS):
+            self.route()
+
+    def route(self):
         try:
             target = urlsplit(self.path)
             params = parse_qs(target.query, keep_blank_values=True)
@@ -1027,8 +1083,9 @@ class Handler(BaseHTTPRequestHandler):
                 if params:
                     raise ValueError('No case parameters supported')
                 self.send(200, self.server.case)
-            elif target.path in ('/', '/view'):
-                self.send(*console_page(self.server, params), 'text/html')
+            elif target.path in CONSOLE_PATHS:
+                key = params.pop(CONSOLE_KEY, [None])[-1]
+                self.send(*console_page(self.server, params, key), 'text/html')
             else:
                 self.send(404, {'error': 'not_found'})
         except (ValueError, TypeError, BackendQueryError):
@@ -1037,7 +1094,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(503, {'error': 'backend_not_ready', 'partial_results': False})
 
     def do_POST(self):
-        self.send(405, {'error': 'read_only'})
+        if not self.refused():
+            self.send(405, {'error': 'read_only'})
 
     do_PUT = do_POST
     do_DELETE = do_POST
@@ -1071,16 +1129,33 @@ def instance_id(path=INSTANCE_ID_FILE):
     return value if INSTANCE_ID.fullmatch(value) else None
 
 
-def make_server(bind, port, case, source, network_scope='tag', instance=None, capture=None):
-    """source: the event source, or the guest Elasticsearch URL that LabElastic reads."""
+def read_secret(path):
+    """The instance secret from a file holding exactly 64 lowercase hex digits (and an optional newline)."""
+    value = Path(path).read_text(encoding='ascii').strip()
+    if not SECRET.fullmatch(value):
+        raise ValueError('the lab secret must be 64 lowercase hex digits')
+    return value
+
+
+def make_server(bind, port, case, source, network_scope='tag', instance=None, capture=None, *, secret,
+                public_port=None):
+    """source: the event source, or the guest Elasticsearch URL that LabElastic reads.
+
+    secret: the value every caller must send in X-Hunt-Lab-Secret. public_port: the port callers reach this
+    service on, when it is known (the guest's QEMU forward is not).
+    """
     if network_scope not in ('tag', 'window'):
         raise ValueError('network_scope must be tag or window')
+    if not isinstance(secret, str) or not SECRET.fullmatch(secret):
+        raise ValueError('the lab secret must be 64 lowercase hex digits')
     server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
     server.source = LabElastic(source) if isinstance(source, str) else source
     server.case = case
     server.network_scope = network_scope
     server.instance_id = instance
+    server.secret = secret
+    server.public_port = public_port
     server.activity = Activity()
     # The case's saved capture (evidence/traffic.pcap next to case.json): packet_fields' only source.
     server.capture = capture
@@ -1096,10 +1171,17 @@ def main():
     parser.add_argument('--case', required=True)
     # "window" only serves a legacy dns-lab-001 pcap imported before case tagging.
     parser.add_argument('--network-scope', choices=('tag', 'window'), default='tag')
+    parser.add_argument('--secret-file',
+                        help=f'the instance secret (default: the {SECRET_CREDENTIAL} systemd credential)')
     args = parser.parse_args()
+    credentials = os.environ.get('CREDENTIALS_DIRECTORY')
+    if args.secret_file is None and not credentials:
+        parser.error(f'no --secret-file and no {SECRET_CREDENTIAL} credential: the service never runs without a secret')
+    secret = read_secret(args.secret_file or Path(credentials) / SECRET_CREDENTIAL)
     server = make_server(args.bind, args.port, load_case(args.case),
                          os.environ.get('LAB_ELASTICSEARCH', 'http://elasticsearch:9200'), args.network_scope,
-                         instance=instance_id(), capture=Path(args.case).resolve().parent / 'traffic.pcap')
+                         instance=instance_id(), capture=Path(args.case).resolve().parent / 'traffic.pcap',
+                         secret=secret)
     server.serve_forever()
 
 

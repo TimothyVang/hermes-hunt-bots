@@ -1052,6 +1052,7 @@ class LabObserver:
         self._lab_url: str | None = None
         self._arkime_url: str | None = None
         self._instance: str | None = None
+        self._secret: str | None = None
         self._network_scope: str | None = None
         # Entries at or before this /activity sequence (e.g. earlier checks or hunts)
         # are not this run's tool calls and are never shown.
@@ -1070,7 +1071,7 @@ class LabObserver:
             if self._lab_url is None:
                 endpoints = self._resolve()
                 self._lab_url, self._arkime_url = endpoints["lab_url"], endpoints.get("arkime_url")
-                self._instance = endpoints.get("instance")
+                self._instance, self._secret = endpoints.get("instance"), endpoints.get("secret")
                 scope = self._call("/health").get("network_scope")
                 self._network_scope = scope if scope in ("tag", "window") else "tag"
             self._poll_activity()
@@ -1093,7 +1094,7 @@ class LabObserver:
 
     def _call(self, path: str) -> dict:
         body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS,
-                         instance=self._instance)
+                         instance=self._instance, secret=self._secret)
         if self._case_id is not None and body.get("case_id") != self._case_id:
             raise _LabRefused("the lab has a different case loaded than this input")
         return body
@@ -1459,11 +1460,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workflow-id", required=True, help="practice parent workflow ID")
     parser.add_argument("--input", required=True, help="the supplied-evidence hunt JSON the practice was started with")
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="loopback port to serve on")
-    lab = parser.add_mutually_exclusive_group()
-    lab.add_argument("--lab-state-dir",
-                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's case "
-                          "is found from it (the VM's status, or a connected service's state)")
-    lab.add_argument("--lab-url", type=_lab_url, help="tool-driven input: the lab API, http://127.0.0.1:<port>")
+    parser.add_argument("--lab-state-dir",
+                        help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's "
+                             "case, and the caller secret it requires, are found from it (the VM's status, or a "
+                             "connected service's state)")
     parser.add_argument("--arkime-url", type=_lab_url,
                         help="Arkime viewer for copyable session links, http://127.0.0.1:<port> (default: from status)")
     parser.add_argument("--activity-after", type=int, default=0,
@@ -1479,9 +1479,6 @@ def _parser() -> argparse.ArgumentParser:
 def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
     override = {"arkime_url": args.arkime_url} if args.arkime_url else {}
     after = max(0, args.activity_after)
-    if args.lab_url:
-        endpoints = {"lab_url": args.lab_url, "arkime_url": None, **override}
-        return LabObserver(lambda: endpoints, case_id, activity_after=after)
 
     def resolve() -> dict:
         try:
@@ -1494,7 +1491,8 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
             arkime = loopback_base(served.arkime_url)
         except LabInputError:
             arkime = None
-        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, **override}
+        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, "secret": served.secret,
+                **override}
 
     return LabObserver(resolve, case_id, activity_after=after)
 
@@ -1512,9 +1510,9 @@ def main(argv: list[str] | None = None) -> int:
     if initial["input_errors"]:
         print("error: input is not a readable supplied-evidence hunt", file=sys.stderr)
         return 2
-    has_lab = bool(args.lab_state_dir or args.lab_url)
+    has_lab = bool(args.lab_state_dir)
     if initial["mode"] == "tool_driven" and not has_lab:
-        print("error: a tool-driven input needs --lab-state-dir or --lab-url", file=sys.stderr)
+        print("error: a tool-driven input needs --lab-state-dir", file=sys.stderr)
         return 2
     if initial["mode"] != "tool_driven" and (has_lab or args.arkime_url):
         print("error: lab options apply only to a tool-driven input", file=sys.stderr)

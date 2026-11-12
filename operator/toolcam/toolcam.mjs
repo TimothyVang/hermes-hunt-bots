@@ -5,8 +5,9 @@
 // Usage: bun operator/toolcam/toolcam.mjs <outDir> <labUrl> <arkimeUrl> <caseId> <startEpoch> <stopEpoch> <activityAfter>
 // The headless browser is TOOLCAM_BROWSER (default: Microsoft Edge on Windows, else chromium). Hunt progress comes
 // from the Hunt Board on 127.0.0.1:TOOLCAM_BOARD_PORT (default 8790, the board's own default).
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { pipeline as progress, endCard } from "./progress.mjs";
 
@@ -23,6 +24,14 @@ const log = obj => appendFileSync(LOG, JSON.stringify({ t: Date.now(), ...obj })
 const BROWSER = process.env.TOOLCAM_BROWSER || (process.platform === "win32"
   ? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" : "chromium");
 const BOARD_PORT = Number(process.env.TOOLCAM_BOARD_PORT || 8790);
+// The lab service answers only callers that send its secret: read it from the caller file beside the seed the
+// lab VM boots (deployment.json's seed + ".secret.json"), in the lab home lab_paths.py uses.
+const LAB_HOME = process.env.HUNT_BOTS_LAB_HOME || join(process.env.HUNT_BOTS_RUNTIME
+  || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "runtime"), "lab-home");
+const VM_STATE = join(LAB_HOME, "profiles", "framework-network-analyst", "hunt-lab-vm");
+const SEED = JSON.parse(readFileSync(join(VM_STATE, "deployment.json"), "utf8")).seed;
+const LAB_HEADERS = { "X-Hermes-Profile": "hunt-board",
+  "X-Hunt-Lab-Secret": JSON.parse(readFileSync(SEED + ".secret.json", "utf8")).secret };
 const PORT = 9400 + Math.floor(Math.random() * 400);
 const edge = spawn(BROWSER, ["--headless=new", `--remote-debugging-port=${PORT}`, "--remote-debugging-address=127.0.0.1",
   `--user-data-dir=${join(outDir, "edge-profile")}`, "--window-size=1920,1080", "--hide-scrollbars", "--no-first-run",
@@ -76,7 +85,7 @@ const table = (rows, cols) => `<table style="border-collapse:collapse;font:400 1
   ${rows.slice(0, 16).map(r => `<tr>${cols.map(c => `<td style="padding:5px 10px;border-bottom:1px solid #1e293b;max-width:520px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(typeof r[c] === "object" ? JSON.stringify(r[c]) : r[c])}</td>`).join("")}</tr>`).join("")}</table>`;
 
 async function labGet(e) {
-  const r = await fetch(`${LAB}${e.endpoint}?${new URLSearchParams(e.params)}`, { headers: { "X-Hermes-Profile": "hunt-board" } });
+  const r = await fetch(`${LAB}${e.endpoint}?${new URLSearchParams(e.params)}`, { headers: LAB_HEADERS });
   return r.ok ? await r.json() : { error: `HTTP ${r.status}` };
 }
 async function consoleView(e) {
@@ -123,14 +132,14 @@ let frame = 0, running = true, captureErrors = 0;
   else if (++captureErrors <= 50) log({ kind: "capture_error", error: r.timeout ? "timeout" : JSON.stringify(r.error ?? r).slice(0, 200) });
   await sleep(Math.max(0, 500 - (Date.now() - t))); } })();
 
-const h = await (await fetch(`${LAB}/health`, { headers: { "X-Hermes-Profile": "hunt-board" } })).json();
+const h = await (await fetch(`${LAB}/health`, { headers: LAB_HEADERS })).json();
 await card("Six AI bots hunt an intrusion", `${Number(h.event_count).toLocaleString()} events · ${Number(h.network_session_count).toLocaleString()} network sessions · ${Number(h.intel_count).toLocaleString()} intel indicators<br>Each bot drives its own tool: Elastic, Arkime, threat intel, detection tests`);
 log({ kind: "card", title: "opening" });
 let after = Number(AFTER), lastShown = 0, finishedAt = null, endedIso = null;
 let queue = [], steps = [];
 while (true) {
   try {
-    const a = await (await fetch(`${LAB}/activity?after=${after}&limit=100`, { headers: { "X-Hermes-Profile": "hunt-board" } })).json();
+    const a = await (await fetch(`${LAB}/activity?after=${after}&limit=100`, { headers: LAB_HEADERS })).json();
     // The activity log is shared by every hunt: once this workflow has ended, later calls belong to the next one.
     for (const e of a.entries || []) { after = Math.max(after, e.seq); if (!endedIso || e.time <= endedIso) queue.push(e); }
     const s = await (await fetch(`http://127.0.0.1:${BOARD_PORT}/state.json`)).json();
