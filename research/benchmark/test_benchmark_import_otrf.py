@@ -14,6 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import benchmark_import_otrf as otrf
 from benchmark_contracts import (BenchmarkError, canonical_bytes, decode_json, load_json,
                                  validate_public_bundle, validate_scenario, validate_truth)
+from benchmark_paths import FRAMEWORK
 
 SAMPLE = Path(__file__).resolve().parent / 'benchmarks' / 'importers' / 'sample'
 DATASET = SAMPLE / 'sample_owner_discovery_2026-01-0100000000.json'
@@ -504,10 +505,13 @@ class ImporterTest(unittest.TestCase):
         self.assertNotEqual(decode_json(stdout)['case_id'], files[0].parts[0])
 
     def test_output_inside_source_tree_is_refused(self):
-        code, _, stderr = run_cli('--dataset', DATASET, '--metadata', METADATA, '--draft-os-family', 'windows-client',
-                                  '--output', otrf.HERE / 'otrf-import-should-not-exist')
-        self.assertEqual((code, stderr.strip()), (2, 'error: output_in_source_tree: output'))
-        self.assertFalse((otrf.HERE / 'otrf-import-should-not-exist').exists())
+        for root in (otrf.HERE, FRAMEWORK):
+            with self.subTest(root=root):
+                code, _, stderr = run_cli('--dataset', DATASET, '--metadata', METADATA,
+                                          '--draft-os-family', 'windows-client',
+                                          '--output', root / 'otrf-import-should-not-exist')
+                self.assertEqual((code, stderr.strip()), (2, 'error: output_in_source_tree: output'))
+                self.assertFalse((root / 'otrf-import-should-not-exist').exists())
 
     def blocked_open(self, error, mode, name='evidence.json'):
         """Patch the importer's `open` so one output file fails like an antivirus-quarantined file."""

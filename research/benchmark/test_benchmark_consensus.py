@@ -12,6 +12,7 @@ import benchmark_consensus as consensus
 import benchmark_import_attackdata as ad
 import benchmark_import_otrf as otrf
 from benchmark_contracts import TRUTH_ATTESTATIONS, BenchmarkError, decode_json, digest_bytes, load_json, validate_truth
+from benchmark_paths import FRAMEWORK
 
 HERE = Path(__file__).resolve().parent
 SAMPLE = HERE / 'benchmarks' / 'importers' / 'sample'
@@ -512,12 +513,14 @@ class ConsensusTest(unittest.TestCase):
                 (('--output', self.root / 'same.json', '--report', self.root / 'same.json'),
                  'error: conflicting_arguments: report'),
                 (('--output', HERE / 'consensus-never-written.json'), 'error: output_in_source_tree: output'),
+                (('--output', FRAMEWORK / 'consensus-never-written.json'), 'error: output_in_source_tree: output'),
                 (('--output', self.root / 'missing' / 'x.json'), 'error: invalid_directory: output')):
             with self.subTest(args=args):
                 code, stdout, stderr = run_cli(*common, *args)
                 self.assertEqual((code, stdout, stderr.strip()), (2, '', message))
         self.assertFalse((self.root / 'other.json').exists() or (self.root / 'same.json').exists())
-        self.assertFalse((HERE / 'consensus-never-written.json').exists())
+        self.assertFalse((HERE / 'consensus-never-written.json').exists()
+                         or (FRAMEWORK / 'consensus-never-written.json').exists())
 
     def test_consensus_curation_imports_as_its_own_attestation(self):
         self.assertIn('agent_consensus', TRUTH_ATTESTATIONS)

@@ -11,6 +11,8 @@ HERE = Path(__file__).resolve().parent
 FRAMEWORK = HERE if (HERE / 'bot.py').is_file() else HERE.parents[1] / 'framework'
 # The whole checkout (or snapshot) that state roots must stay outside of.
 SOURCE_TREE = FRAMEWORK.parent
+# Folders whose files the benchmark reads as its own source; outputs never go inside them.
+SOURCE_ROOTS = (HERE,) if FRAMEWORK == HERE else (HERE, FRAMEWORK)
 if str(FRAMEWORK) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK))
 

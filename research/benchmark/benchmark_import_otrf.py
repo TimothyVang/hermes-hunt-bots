@@ -65,6 +65,7 @@ from benchmark_contracts import (ASSESSMENT_QUESTION, COVERAGE_AXES, BenchmarkEr
                                  canonical_bytes, decode_json, digest_bytes, load_json,
                                  parse_utc, validate_public_bundle, validate_scenario,
                                  validate_truth)
+from benchmark_paths import SOURCE_ROOTS
 from benchmark_sanitize import (ENCODED_PAYLOAD_MODES, MAX_CONTENT_BYTES, KnownIdentities, merge_reports, new_totals,
                                sanitize_text, scan_leaks)
 
@@ -1737,6 +1738,10 @@ def _inside(path, root):
         return False
 
 
+def _in_source(path):
+    return any(_inside(path, root) for root in SOURCE_ROOTS)
+
+
 # Windows reports a file that Defender (or another engine) quarantined as EINVAL or ERROR_VIRUS_INFECTED (225) /
 # ERROR_VIRUS_DELETED (226). Exclusions are the operator's decision; the importer never adds any.
 AV_WINERRORS = (225, 226)
@@ -1750,7 +1755,7 @@ def _refuse_blocked(error, relative):
 def write_outputs(output, case_id, outputs):
     """Create NEW output/<case_id>/... exclusively; never overwrite anything."""
     target = Path(os.path.abspath(os.fspath(output)))
-    if _inside(target.resolve(), HERE):
+    if _in_source(target.resolve()):
         _fail('output_in_source_tree', 'output')
     if os.path.lexists(target):
         _fail('output_exists', 'output')
@@ -1864,7 +1869,7 @@ def sign_curation(proposal_path, review_path, by, note, output_path, validate=No
     output = Path(os.path.abspath(os.fspath(output_path)))
     if os.path.lexists(output):
         _fail('output_exists', 'output')
-    if _inside(output.resolve(), HERE):
+    if _in_source(output.resolve()):
         _fail('output_in_source_tree', 'output')
     if not output.parent.is_dir():
         _fail('invalid_directory', 'output')

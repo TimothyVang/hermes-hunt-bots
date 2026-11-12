@@ -25,7 +25,7 @@ import sys
 import threading
 import uuid
 
-from benchmark_paths import FRAMEWORK, source_root
+from benchmark_paths import FRAMEWORK, SOURCE_ROOTS, source_root
 import bot
 from benchmark_contracts import (REVIEW_POLICY, BenchmarkError, call_cost_bound, canonical_bytes,
                                  confined_file, decode_json, digest_bytes, max_concurrent_calls,
@@ -593,7 +593,7 @@ def source_files():
                 continue
             for module in modules:
                 top = module.split('.')[0]
-                if any((root / top / '__init__.py').is_file() for root in (HERE, FRAMEWORK)):
+                if any((root / top / '__init__.py').is_file() for root in SOURCE_ROOTS):
                     _fail('unsupported_source_package', 'source')
                 if (source_root(top + '.py') / (top + '.py')).is_file():
                     pending.append(top + '.py')
@@ -614,7 +614,7 @@ def snapshot_source(output):
     never overwrites, never runs anything.
     """
     destination = Path(os.path.abspath(os.fspath(output)))
-    if any(destination == root or root in destination.parents for root in (HERE, FRAMEWORK)):
+    if any(destination == root or root in destination.parents for root in SOURCE_ROOTS):
         _fail('unsafe_path', 'output')
     files = [(name, confined_file(source_root(name), name).read_bytes())
              for name in source_files() + list(SOURCE_DATA)]
