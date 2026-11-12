@@ -42,31 +42,13 @@ The source and portable kit include `hunt_lab/`. The installed analyst backend d
 
 Human Start/Prepare observes read-only setup status for at most ten minutes; the setup worker has its own one-hour deadline. No lifecycle retry is issued. If observation ends first, refresh status explicitly. A running QEMU process is not service readiness: use the returned loopback `/health`, which requires ingested events, Arkime sessions, and its viewer. The real console is available before HTTP readiness. Closing Hermes does not stop the VM; use **Stop lab**.
 
-See [requirements, native CLI and evidence boundaries](README.md#built-in-local-hunting-lab). The current local development deployment uses `C:\HuntRange\native-hermes-home` and the separately prepared source-mode Desktop. It does not repair or replace the live PM-managed Hermes installation. On another machine a compatible native release is still required; the framework does not install a new Hermes application or silently apply `runtime-fixes.diff`.
+See [requirements, native CLI and evidence boundaries](README.md#built-in-local-hunting-lab). The current local development deployment uses `C:\HuntRange\native-hermes-home` and the separately prepared source-mode Desktop. It does not repair or replace the live PM-managed Hermes installation. On another machine a compatible native release is still required; the framework does not install a new Hermes application.
 
 ## Native Desktop workspace
 
 Normal framework setup includes `desktop/cybersecurity-workspace/plugin.js`. For a deliberately narrower companion-only installation, run `python install_desktop.py check` and `python install_desktop.py install --home <approved-general-Hermes-home>`. Use `py -3` on Windows or `python3` on macOS/Linux. Hash-owned components can be updated; unknown directories, altered managed files and aliases are refused without overwriting them. No profiles are reset or broadened. Review [permissions and prerequisites](desktop/REVIEW.md), [video coverage](desktop/VIDEO-INVENTORY.md), and [actual verification](desktop/VERIFICATION.md).
 
 The companion displays human gates and six roles, with human-clicked native navigation, explicit registered-route selection for native Bot Screen, and an optional fixed reminder through an already visible native pet. Screen discovery reads route metadata only after its button is clicked; opening a selected running screen observes live frames. A framework-named alias is not sufficient: its actual target must be an approved framework profile. Starting or controlling the screen remains a separate native action. This is not a VM boot/install console. The companion does not install pet assets or an image backend. Its gate diagram is advisory, not a live memory graph or approval record. Use the native HUD titlebar control and native Memory graph palette entry only under an approved data boundary. HUD is deliberately absent from the SDK action allowlist; do not inject shortcuts or import internals to bypass that boundary. Native Kanban completion is not ledger approval; no existing research card is advanced.
-
-### Native source patch and separate Desktop build
-
-`desktop/runtime-fixes.diff` targets exact Hermes base `bf0203a794a07aac3ff764972ab9087baa4e4f4e`, retaining `desktop/HERMES-LICENSE.txt`. Its 32 files include group-turn/gateway refusal repairs, the native `host.openScreen` SDK and provider lifecycle, embedded QEMU control and validation, early desktop-data isolation, and associated regression tests including native delegation success coverage. It is **not auto-applied**. Installing the companion alone does not add the required native APIs or update an existing Desktop binary.
-
-In a separately prepared development clone at that exact base, review both patches. Their recorded hashes cover raw LF bytes, not Windows checkout-normalized bytes. Apply `runtime-fixes.diff` first; then verify the prerequisite digest and every role-policy manifest preimage before applying `native-role-policy.diff`. A null preimage requires the path to be absent, including aliases. Stop on any mismatch; do not normalize a changed file to make its hash pass.
-
-```sh
-git -c core.autocrlf=false -c core.eol=lf apply --check /absolute/path/to/source-kit/desktop/runtime-fixes.diff
-git -c core.autocrlf=false -c core.eol=lf apply /absolute/path/to/source-kit/desktop/runtime-fixes.diff
-# Verify desktop/native-role-policy.json preconditions before the next two commands.
-git -c core.autocrlf=false -c core.eol=lf apply --check /absolute/path/to/source-kit/desktop/native-role-policy.diff
-git -c core.autocrlf=false -c core.eol=lf apply /absolute/path/to/source-kit/desktop/native-role-policy.diff
-npm ci
-npm run build --workspace apps/desktop
-```
-
-Use the source's supported Node/npm versions and build prerequisites. The patch was applied to pristine files from the pinned public archive and all 32 resulting files matched the exercised development source byte-for-byte. The latest focused native run passed 83 tests with one platform-specific skip across 11 files; both renderer and Electron TypeScript checks passed. Native delegation checks separately passed 71 tests and 31 related backend/route tests with scripted conversations, not provider calls. See `desktop/VERIFICATION.md` for actual UI evidence and its limits. Follow the destination's supported packaging/publication process and authorized lifecycle controls after building. Never hand-edit an immutable installed generation, suppress runtime errors or restart a shared messaging gateway as a shortcut. A running isolated source build is not proof that an active PM generation or the original parked goal was repaired.
 
 ## Native Hermes threat hunting
 
@@ -105,9 +87,7 @@ After reviewing the plan and selected profile state, `py -3 .\native_team.py --h
 
 `apply` verifies all six exact registered identities and preflights every reviewed safe leaf before its first explicit policy write. Missing non-model values are explicitly applied, and values that exactly equal the earlier reviewed policy (empty specialist allowlists, Network Analyst `[hunt_lab_query]`, the Threat Hunter and Network Analyst allowlists from before `lab_browser` and from before `packet_fields`, specialist CLI toolsets `[no_mcp]`) are upgraded; any other custom conflict is preserved and causes refusal. It refuses malformed/unknown inspection and conflicting allowlists, caps, or routes. Without the explicit projection interpreter it also refuses an ambiguous missing model leaf; with the projection, only exact supported persisted matches are admitted and never rewritten. Native output is suppressed. If a write fails, earlier settings may remain; no rollback is attempted. Ordinary native startup may have its own effects before policy preflight. `agent.max_turns` caps model/tool iterations; `delegation.max_summary_chars` caps child summaries, not provider output tokens. They are not aggregate spending caps.
 
-Pinned upstream's credential-free `--list-tools` catalog is built before final tool assembly and does not prove the effective tool boundary. The review-only [native role-policy patch](desktop/native-role-policy.diff) targets Hermes `bf0203a794a07aac3ff764972ab9087baa4e4f4e` **after** [runtime-fixes.diff](desktop/runtime-fixes.diff); [its manifest](desktop/native-role-policy.json) records the prerequisite patch hash and exact file preimages/postimages. It enforces `agent.allowed_tool_names` against final tools and invocation, validates `delegation.allowed_profiles` and every batch's submitted/backend-returned profile choices before credential resolution, and gives admitted named-profile children their own explicit CLI allowlists, disabled toolsets, and exact cap. Preserve the Hermes MIT notice. Check every manifest precondition in a separate source tree before applying; do not apply to an unmatched or running installation. The patch is not installed, activated, or verified by `native_team.py`. See [executed verification and limits](desktop/VERIFICATION.md); config persistence is not deployment evidence. The patch provides neither OS isolation nor an aggregate spending cap.
-
-Exact caps also survive stored-session reconstruction, compression, branch/reset publication, gateway cache rebuilds, background/preview agents, and API/one-shot/in-process ACP consumers. Pending or unreadable authority remains deny-all until a finalized row is available; a provisional watch cap does not permanently erase a finalized nonempty cap. One-shot calls restore their caller's mode flags, logging level and task-local delivery context on return or exception. These are native source changes, not capabilities supplied by the Python policy helper alone.
+Pinned upstream's credential-free `--list-tools` catalog is built before final tool assembly and does not prove the effective tool boundary. The `agent.allowed_tool_names` and `delegation.allowed_profiles` values that `native_team.py` writes are profile configuration; the native enforcement patch that once shipped beside this folder targeted a different Hermes base and has been removed. Preserve the Hermes MIT notice. See [executed verification and limits](desktop/VERIFICATION.md); config persistence is not deployment evidence. Profile configuration provides neither OS isolation nor an aggregate spending cap.
 
 The official advanced-delegation plugin was reviewed at commit `b3825d097195b5748585b0491fab48c95d105c19`; source is not bundled. On Hermes 0.22.5 or newer, its exact native pinned-source install form is:
 
@@ -188,8 +168,6 @@ The intended root `.env` variables are:
 | `ENVISION_TOKEN_EXPIRES_AT` | Expiry recorded from the token UI, including timezone when available; informational metadata, not automatic renewal or enforcement. |
 
 These instructions do not assert that the file has been created, that its values are valid, or that an API call has succeeded. Replace or revoke tokens through approved account controls before expiry or after suspected exposure; do not paste token values into commands.
-
-For a separately approved local-to-EITaaS integration, see the [optional Envision job bridge](README.md#optional-envision-job-bridge). Its worker uses an explicitly provisioned environment credential, not this `.env` file. It requires an approved relay and execution environment; Windows App is not a VPN, and an interactive CAC session is not an always-on service.
 
 #### Optional Python OpenAI client
 
