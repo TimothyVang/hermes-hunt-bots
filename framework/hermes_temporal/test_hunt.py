@@ -309,13 +309,15 @@ class DataOriginHuntTests(unittest.TestCase):
 
     def test_workflow_request_binds_synthetic_only_to_the_origin(self) -> None:
         step = HermesStep("one", "prompt")
-        for origin in ("public-dataset", "work-export"):
+        for origin in ("public-dataset", "work-export", "work-connected"):
             self.assertEqual(WorkflowRequest([step], synthetic_only=False, tool_driven=True,
                                              data_origin=origin).data_origin, origin)
         for kwargs in ({"data_origin": "public-dataset", "tool_driven": True},
                        {"data_origin": "public-dataset", "synthetic_only": False},
                        {"data_origin": "work-export", "tool_driven": True},
                        {"data_origin": "work-export", "synthetic_only": False},
+                       {"data_origin": "work-connected", "tool_driven": True},
+                       {"data_origin": "work-connected", "synthetic_only": False},
                        {"data_origin": "customer", "synthetic_only": False, "tool_driven": True},
                        {"synthetic_only": False, "tool_driven": True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):

@@ -1,14 +1,13 @@
 """Bounded GET-only evidence access; never boots a VM or accepts arbitrary URLs."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
-import json
 import re
-from urllib import error, parse, request
+from urllib import parse
 
-MAX_RESPONSE = 512 * 1024
-MAX_ERROR_BODY = 4096
-LAB_OWNER = 'framework-network-analyst'
+from .endpoints import CASE_ID, DEFAULT_TIMEOUT, LAB_OWNER, QueryFailure, resolve
+
 FRAMEWORK_PROFILES = frozenset({
     'framework-coordinator', 'framework-researcher', 'framework-builder',
     'framework-reviewer', 'framework-librarian', LAB_OWNER,
@@ -24,29 +23,13 @@ TOOL_OWNERSHIP = {
     'framework-librarian': ('intel_lookup', 'elastic_aggregate'),
     LAB_OWNER: ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'),
 }
-CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 TEXT = re.compile(r'[^\x00-\x1f\x7f]*')
 TOKEN = re.compile(r'[\x21-\x7e]{1,2048}')
 FIELD = re.compile(r'@timestamp|[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
 FIELD_LIST = re.compile(r'(?:@timestamp|[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})'
                         r'(?:,(?:@timestamp|[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})){0,39}')
-ERROR_CODE = re.compile(r'[a-z0-9_]{1,64}')
-DEFAULT_TIMEOUT = 12
 # The guest may first list tshark's fields (-G fields, once) and then decode, each bounded at 20 s.
 TOOL_TIMEOUTS = {'packet_fields': 50}
-
-
-class QueryFailure(Exception):
-    """Fixed public diagnostic; never initialized with raw exception data."""
-
-    def __init__(self, code, detail=None):
-        super().__init__(code)
-        self.detail = detail
-
-
-class NoRedirect(request.HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        return None
 
 
 def lab_state_dir(home, owner):
@@ -59,58 +42,13 @@ def lab_state_dir(home, owner):
     return None
 
 
-def _guest_error(exc):
-    try:
-        value = json.loads(exc.read(MAX_ERROR_BODY))
-    except Exception:
-        return None
-    code = value.get('error') if isinstance(value, dict) else None
-    # Relay only the guest's fixed snake_case code, never free text.
-    return code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else None
+def _caller(profile):
+    return profile if profile in FRAMEWORK_PROFILES else 'unknown'
 
 
-def _get(base, path, profile, timeout=DEFAULT_TIMEOUT):
-    # Ignore ambient proxy settings; neither proxy credentials nor redirects belong
-    # on this explicitly local, credential-free lab evidence path.
-    opener = request.build_opener(request.ProxyHandler({}), NoRedirect())
-    caller = profile if profile in FRAMEWORK_PROFILES else 'unknown'
-    req = request.Request(base + path, headers={'X-Hermes-Profile': caller}, method='GET')
-    try:
-        with opener.open(req, timeout=timeout) as response:
-            data = response.read(MAX_RESPONSE + 1)
-            if len(data) > MAX_RESPONSE:
-                raise QueryFailure('lab_response_too_large')
-            value = json.loads(data)
-            if not isinstance(value, dict):
-                raise QueryFailure('lab_invalid_response')
-            return value
-    except error.HTTPError as exc:
-        raise QueryFailure('lab_http_' + str(exc.code), _guest_error(exc)) from None
-    except (error.URLError, TimeoutError, OSError):
-        raise QueryFailure('lab_unreachable') from None
-
-
-def endpoint(value):
-    """The `http://127.0.0.1:<port>` origin of a runtime-reported lab URL, or invalid_owned_endpoint."""
-    url = parse.urlsplit(value or '')
-    if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port
-            or url.username or url.password or url.query or url.fragment or url.path not in ('', '/')):
-        raise QueryFailure('invalid_owned_endpoint')
-    return value.rstrip('/')
-
-
-def _lab_base(runtime, state_dir, profile, case_id):
-    """Resolve the running analyst VM read-only and confirm the loaded case."""
-    if state_dir is None:
-        raise QueryFailure('lab_state_unavailable')
-    status = runtime.invoke('status', state_dir=state_dir, profile=LAB_OWNER)
-    if status.get('profile') != LAB_OWNER or status.get('state') != 'running':
-        raise QueryFailure('owned_vm_not_running')
-    base = endpoint(status.get('lab_url'))
-    metadata = _get(base, '/case', profile)
-    if metadata.get('case_id') != case_id:
-        raise QueryFailure('case_mismatch')
-    return base, metadata, status
+def serving_lab(runtime, state_dir, profile, case_id):
+    """The lab serving `case_id`, VM or connected (endpoints.resolve), refused while this bot holds the work key."""
+    return resolve(state_dir, case_id, runtime=runtime, profile=_caller(profile), environ=os.environ)
 
 
 def _failure(profile, exc):
@@ -138,12 +76,12 @@ def query_lab(arguments, *, runtime, state_dir, profile):
             raise QueryFailure('invalid_query')
         if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or not 0 <= offset <= 5000:
             raise QueryFailure('invalid_pagination')
-        base, metadata, _status = _lab_base(runtime, state_dir, profile, case_id)
+        served = serving_lab(runtime, state_dir, profile, case_id)
         if dataset == 'case':
-            evidence = metadata
+            evidence = served.case
         else:
             params = parse.urlencode({'q': q, 'host': host, 'limit': limit, 'offset': offset})
-            evidence = _get(base, '/' + dataset + '?' + params, profile)
+            evidence = served.get('/' + dataset + '?' + params, _caller(profile))
             if evidence.get('case_id') != case_id or evidence.get('read_only') is not True:
                 raise QueryFailure('lab_invalid_response')
         return {'ok': True, 'profile': profile, 'case_id': case_id, 'evidence': evidence}
@@ -431,8 +369,8 @@ def run_tool(name, arguments, *, runtime, state_dir, profile):
             raise QueryFailure('invalid_arguments')
         case_id = _case_id(arguments)
         path, params = builder(arguments)
-        base, _metadata, _status = _lab_base(runtime, state_dir, profile, case_id)
-        result = _get(base, path + '?' + parse.urlencode(params), profile, TOOL_TIMEOUTS.get(name, DEFAULT_TIMEOUT))
+        served = serving_lab(runtime, state_dir, profile, case_id)
+        result = served.get(path + '?' + parse.urlencode(params), _caller(profile), TOOL_TIMEOUTS.get(name, DEFAULT_TIMEOUT))
         if result.pop('case_id', None) != case_id:
             raise QueryFailure('lab_invalid_response')
         return {'ok': True, 'profile': profile, 'tool': name, 'case_id': case_id, 'result': result}

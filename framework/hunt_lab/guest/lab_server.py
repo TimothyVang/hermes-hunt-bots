@@ -51,6 +51,7 @@ NO_CAPTURE = 'none'
 DATA_ORIGINS = {
     'public-dataset': ('public research dataset', 'real lab telemetry, no customer data'),
     'work-export': ('work log export', "real telemetry from the operator's environment; unclassified work data"),
+    'work-connected': ('work log connection', "live read-only queries of the operator's work Elastic; unclassified work data"),
 }
 NETWORK_FIELDS = ['firstPacket', 'lastPacket', 'source.ip', 'source.port', 'destination.ip', 'destination.port', 'network.packets', 'network.bytes', 'network.protocol', 'dns.host', 'node']
 MAX_RESULT = 200
@@ -490,7 +491,10 @@ def es_aggs_endpoint(server, params):
 
 def sample_event_id(source, bucket):
     hits = bucket.get('sample', {}).get('hits', {}).get('hits', [])
-    value = pick(source.document(hits[0]), ['event', 'id']) if hits else MISSING
+    if not hits:
+        return None
+    # A sample returned without _source cites nothing here; a source citing by _id still cites it.
+    value = pick(source.document({'_source': {}, **hits[0]}), ['event', 'id'])
     return None if value is MISSING else value
 
 

@@ -177,6 +177,13 @@ class PayloadSourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(prepare_guest.PreparationError, 'data_origin'):
                     prepare_guest.case_metadata(self.evidence / 'case.json')
 
+    def test_a_work_connected_case_is_never_seeded_into_the_vm(self):
+        self.write_case(data_origin='work-connected')
+        with self.assertRaisesRegex(prepare_guest.PreparationError, 'never seeded into the VM'):
+            prepare_guest.case_metadata(self.evidence / 'case.json')
+        with self.assertRaisesRegex(prepare_guest.PreparationError, 'never seeded into the VM'):
+            prepare_guest.payload_sources(self.evidence)
+
     def test_accepted_origins_are_the_hunt_origins(self):
         from hermes_temporal.contracts import DATA_ORIGINS
         self.assertEqual(prepare_guest.DATA_ORIGINS, tuple(DATA_ORIGINS))

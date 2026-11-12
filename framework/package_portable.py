@@ -200,7 +200,7 @@ FILES = (
     'test_hunt_lab_managed.py', 'test_hunt_lab_install.py',
     'test_hunt_lab_tools.py', 'test_lab_server.py', 'test_lab_browser.py', 'test_humanize.py',
     'hunt_lab/__init__.py', 'hunt_lab/runtime.py', 'hunt_lab/managed.py',
-    'hunt_lab/prepare_guest.py', 'hunt_lab/query_adapter.py',
+    'hunt_lab/prepare_guest.py', 'hunt_lab/query_adapter.py', 'hunt_lab/endpoints.py',
     'hunt_lab/lab_browser.py', 'hunt_lab/browser_policy.py', 'hunt_lab/humanize.py',
     'hunt_lab/actionability.py',
     'hunt_lab/plugin.yaml', 'hunt_lab/assets.json', 'hunt_lab/case.py',
