@@ -372,6 +372,26 @@ class LabInstallTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(sorted(path.name for path in self.home.iterdir()), [lab.UPDATE_MARKER, 'profiles'])
 
+    def test_a_marker_whose_owner_is_gone_is_named_stale_and_kept(self):
+        # Review of #51: a marker left by a killed update blocked every command with "retry after it finishes".
+        self.profile()
+        marker = self.home / lab.UPDATE_MARKER
+        dead = subprocess.Popen([sys.executable, '-c', 'pass'])
+        dead.wait()
+        self.assertTrue(lab._pid_alive(os.getpid()))
+        self.assertFalse(lab._pid_alive(dead.pid))
+        stale = (f'A stale Hermes update marker blocks this home: {marker} names process {dead.pid}, which is not '
+                 'running. If no Hermes update is running, delete that file, then retry.')
+        live = f'A Hermes update is in progress for this home ({marker} exists); retry after it finishes'
+        # Owner gone; owner alive; a claim still being written; unreadable content.
+        for body, message in ((f'{dead.pid}\n2026-11-11T16:06:00Z\nct:1.000\n', stale),
+                              (f'{os.getpid()}\n2026-11-11T16:06:00Z\nct:1.000\n', live), ('', live), ('garbage\n', live)):
+            marker.write_text(body)
+            with self.subTest(body=body), self.assertRaises(ValueError) as caught:
+                lab.command(self.lab_args('status', '--hermes', sys.executable))
+            self.assertEqual(str(caught.exception), message)
+            self.assertEqual(marker.read_text(), body)
+
 
 if __name__ == '__main__':
     unittest.main()

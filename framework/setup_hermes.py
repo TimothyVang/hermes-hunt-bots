@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -151,9 +150,16 @@ def _validate_manifest(path, entry):
 
 
 def resolve_hermes(override=None):
-    # shutil.which checks both PATH lookup and executable suitability (including
-    # Windows PATHEXT), unlike merely accepting an existing regular file.
-    return shutil.which(str(Path(override).expanduser()) if override else 'hermes')
+    """--hermes, else LAB_HERMES_EXE, else `hermes` on PATH (lab.hermes_executable); None when not found."""
+    import lab
+    try:
+        return _hermes_executable(lab, override)
+    except ValueError:
+        return None
+
+
+def _hermes_executable(lab, override):
+    return lab.hermes_executable(str(Path(override).expanduser()) if override else None)
 
 
 def missing_hermes_message():
@@ -184,11 +190,14 @@ def install(selected=None, hermes_override=None, kit_root=HERE, process_factory=
     chosen = [known[name] for name in requested] if requested else catalog
     import lab
     root = lab.resolve_home(home)
+    # Refuse before `profile install` runs; lab.install checks again before it stages anything.
+    lab.refuse_during_update(root)
     if not any(entry['name'] == lab.PROFILE for entry, _ in chosen):
         chosen.append(known[lab.PROFILE])
-    executable = resolve_hermes(hermes_override)
-    if not executable:
-        raise SetupError(missing_hermes_message())
+    try:
+        executable = _hermes_executable(lab, hermes_override)
+    except ValueError as exc:
+        raise SetupError(f'{exc}\n{missing_hermes_message()}') from None
     installed = []
     for entry, directory in chosen:
         if lab.registered_profile(root, entry['name'], required=False) is not None:
@@ -248,7 +257,8 @@ def _report_partial(installed):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description='Check the authored Hermes kit or install native profiles plus the built-in lab and companion. Existing exact authored profiles are preserved; new profiles use native confirmation. No provider configuration or VM launch.')
-    parser.add_argument('--hermes', metavar='PATH', help='Hermes executable override (otherwise resolve hermes from PATH).')
+    parser.add_argument('--hermes', metavar='PATH', help='Hermes executable override (otherwise LAB_HERMES_EXE, '
+                                                        'else hermes on PATH).')
     parser.add_argument('--home', metavar='PATH', help='General Hermes home (otherwise HERMES_HOME or the standard platform home).')
     subparsers = parser.add_subparsers(dest='command')
     subparsers.add_parser('check', help='validate all authored distributions and report Hermes CLI availability (default).')

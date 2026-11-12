@@ -56,7 +56,16 @@ class Lane:
         return self.state_dir.parent / 'hunt-lab-browser'
 
     def hermes_exe(self):
-        """The Hermes executable that serves this home. Installs differ per machine, so it is never guessed."""
+        """The Hermes executable that serves this home. Installs differ per machine, so it is never guessed.
+
+        Refused while a Hermes update holds the home: running its CLI then can stop a hunt's gateway."""
+        if str(FRAMEWORK) not in sys.path:
+            sys.path.insert(0, str(FRAMEWORK))
+        from lab import refuse_during_update
+        try:
+            refuse_during_update(self.home)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
         exe = self.exe or os.environ.get('LAB_HERMES_EXE')
         if not exe:
             raise SystemExit(f'LAB_HERMES_EXE is not set. Point it at the hermes executable for the lab home {self.home}.')
