@@ -6,6 +6,7 @@ import re
 import tempfile
 import unittest
 
+from benchmark_paths import SOURCE_TREE
 from benchmark_contracts import BenchmarkError, canonical_bytes, decode_json, digest_bytes, validate_public_bundle
 from benchmark_evidence import (BASENAMES, CONTENT_FIELDS, ENTITY_FIELDS, materialize_evidence,
                                 supported_cloudtrail_events, supported_event_ids, validate_rules)
@@ -22,7 +23,7 @@ CHANNEL_IDS = {'Security':[4624,4625,4627,4662,4688,4768,4769,4771,4798,4799], '
     'Microsoft-Windows-WMI-Activity/Operational':[5857,5858,5859,5860,5861]}
 CLOUD_EVENTS = sorted(['StopLogging','StartLogging','CreateTrail','DeleteTrail','GetTrailStatus',
                        'CreateBucket','DeleteBucket','PutBucketPolicy','GetCallerIdentity'])
-KIT_RULES = Path(__file__).resolve().parent.parent / 'hunt-range' / 'benchmark' / 'collector-fields.json'
+KIT_RULES = SOURCE_TREE / 'hunt-range' / 'benchmark' / 'collector-fields.json'
 
 
 def fixture_rules():

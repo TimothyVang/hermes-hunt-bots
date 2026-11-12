@@ -8,7 +8,8 @@ Built in the open. This file is the project's rulebook: **every contributor, hum
 
 | Path | What it is | License |
 |---|---|---|
-| `framework/` | The six-bot team: lab tools, Temporal workflows, hunting lab, scenario generator and scorer, Hunt Board, benchmarks, tests. Start with [framework/README.md](framework/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
+| `framework/` | The six-bot team: lab tools, Temporal workflows, hunting lab, scenario generator and scorer, Hunt Board, tests. Start with [framework/README.md](framework/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
+| `research/benchmark/` | The parked framework-managed team benchmark, outside the product: not in the portable ZIP, and its tests run only with `python scripts/hunt_bots_check.py --benchmark`. See [research/benchmark/README.md](research/benchmark/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
 | `operator/` | Operator tools around the hunts: the watcher improvement loop, case switching, the opt-in delegated gate driver, rejection diagnosis, the tool cam and honest video assembly. They read operator-only answer keys, so nothing here feeds bot prompts. See [operator/README.md](operator/README.md). | AGPL-3.0 ([framework/LICENSE](framework/LICENSE)) |
 | Everything else | Hermes 0.23.0 (upstream commit `2bd378ed`) plus our reviewed desktop fixes | MIT ([LICENSE](LICENSE)) |
 | `../runtime/` (next to the clone, never inside it) | Your local lab: Hermes environments, lab state, cases, answer keys, runs. The lab refuses a state folder inside the source workspace or any Git repository. | — |

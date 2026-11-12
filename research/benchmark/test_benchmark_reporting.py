@@ -10,6 +10,7 @@ from unittest.mock import patch
 from benchmark import load_experiment
 from benchmark_contracts import BenchmarkError, STAGE_KEYS, canonical_bytes, confined_file, digest_bytes
 from benchmark_reporting import export_snapshot, _holdout, _trial_timing
+from benchmark_paths import FRAMEWORK
 from benchmark_store import BenchmarkStore
 
 
@@ -20,7 +21,7 @@ NOW = '2026-01-01T00:00:00+00:00'
 def frozen_fixture():
     loaded = load_experiment(HERE / 'benchmarks' / 'examples' / 'experiment.json',
                              HERE / 'benchmarks')
-    catalog = json.loads((HERE / 'hermes-bots' / 'catalog.json').read_text(encoding='utf-8'))
+    catalog = json.loads((FRAMEWORK / 'hermes-bots' / 'catalog.json').read_text(encoding='utf-8'))
     frozen = {'experiment': loaded['experiment'], 'coverage': loaded['coverage'],
               'workflow': loaded['workflow'], 'prompt_contract': loaded['prompt_contract'],
               'cases': [{'scenario': case['scenario'], 'evidence': case['evidence'],

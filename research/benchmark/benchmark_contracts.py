@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from benchmark_paths import SOURCE_TREE
+
 
 SCHEMA_VERSION = 1
 MAX_BYTES = 1024 * 1024
@@ -428,7 +430,7 @@ def validate_state_root(path):
             _relative(part, 'state_root')
         _no_alias(candidate, 'state_root')
         candidate = candidate.resolve()
-        source = Path(__file__).resolve().parent.parent
+        source = SOURCE_TREE
         if _inside(candidate, source) or _inside(source, candidate):
             _fail('unsafe_state_root', 'state_root')
         home = Path.home().resolve()

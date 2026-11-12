@@ -19,6 +19,7 @@ import sqlite3
 import subprocess
 import sys
 
+from benchmark_paths import FRAMEWORK
 from benchmark_contracts import (
     AUTO_ADVANCE_ACTOR, AUTO_ADVANCE_NOTE, BenchmarkError, MAX_BYTES, REVIEW_POLICY, STAGE_KEYS,
     canonical_bytes, confined_file, decode_json, digest_bytes, parse_utc, validate_stage_output,
@@ -31,7 +32,7 @@ from benchmark_store import (AUTO_RECONCILE_ACTOR, AUTO_RECONCILE_POLICY, AUTO_R
 WORKFLOW_TITLE = 'Framework-managed threat-hunt benchmark'
 WORKFLOW_SCOPE = 'Use only the frozen public evidence supplied by this benchmark.'
 WORKFLOW_ACCEPTANCE = 'Produce the structured stage output; it advances automatically once it validates.'
-BOT = Path(__file__).resolve().with_name('bot.py')
+BOT = FRAMEWORK / 'bot.py'
 CHECKER_DESCRIPTION = 'Benchmark evidence checker'
 RECONCILED_DESCRIPTION = 'Benchmark reconciled response'
 AUTO_RESUME_NOTE = 'Automatic resume after automatic reconciliation of an unknown model call (automatic_model_call).'

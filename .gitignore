@@ -344,4 +344,4 @@ apps/desktop/.dist-build*
 /framework/bot-workspace/
 # Upstream ignores every examples/ folder; these two are reviewed source.
 !/framework/examples/
-!/framework/benchmarks/examples/
+!/research/benchmark/benchmarks/examples/

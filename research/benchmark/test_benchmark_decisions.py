@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from benchmark_paths import FRAMEWORK
 import bot
 from benchmark_contracts import (AUTO_ADVANCE_ACTOR, AUTO_ADVANCE_NOTE, BenchmarkError,
                                  canonical_bytes, digest_bytes)
@@ -66,7 +67,7 @@ class _StageFixture(unittest.TestCase):
         self.authorization = authorize_fixture(self.store, self.frozen, self.trial)
 
     def cli(self, *args, expected=0):
-        result = subprocess.run([sys.executable, '-B', str(HERE / 'bot.py'), '-w', str(self.workspace),
+        result = subprocess.run([sys.executable, '-B', str(FRAMEWORK / 'bot.py'), '-w', str(self.workspace),
                                  *map(str, args)], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         self.assertEqual(result.returncode, expected, result.stderr.decode('utf-8', errors='replace'))

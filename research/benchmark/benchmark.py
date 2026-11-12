@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+import benchmark_paths
 from benchmark_contracts import (BenchmarkError, canonical_bytes, confined_file, digest_bytes,
                                  load_json, validate_coverage, validate_experiment,
                                  validate_public_bundle, validate_scenario)

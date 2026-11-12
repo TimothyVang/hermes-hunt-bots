@@ -20,6 +20,7 @@ from benchmark import main as benchmark_main
 from benchmark_contracts import (
     BenchmarkError, ROLE_IDS, STAGE_KEYS, canonical_bytes, digest_bytes, load_json,
 )
+from benchmark_paths import FRAMEWORK, source_root
 from benchmark_store import BenchmarkStore, STAGE_ROLES
 from workflows import ROLES
 
@@ -530,20 +531,21 @@ class BenchmarkStoreTests(unittest.TestCase):
 
 
 # Runs init and status on a bundle under an open() audit hook and reports every
-# framework file (module or data) the run opened; never a model or lab call.
+# benchmark or framework file (module or data) the run opened; never a model or lab call.
 AUDITED_RUN = '''
 import contextlib, io, json, os, sys
-here, state, bundle, experiment_id = sys.argv[1:5]
+here, framework, state, bundle, experiment_id = sys.argv[1:6]
 sys.path.insert(0, here)
 opened = set()
-prefix = os.path.normcase(here) + os.sep
+roots = [(os.path.normcase(root) + os.sep, root) for root in (here, framework)]
 
 
 def hook(event, args):
     if event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
         path = os.path.abspath(os.fsdecode(args[0]))
-        if os.path.normcase(path).startswith(prefix) and os.path.isfile(path):
-            opened.add(os.path.relpath(path, here).replace(os.sep, '/'))
+        for prefix, root in roots:
+            if os.path.normcase(path).startswith(prefix) and os.path.isfile(path):
+                opened.add(os.path.relpath(path, root).replace(os.sep, '/'))
 
 
 sys.addaudithook(hook)
@@ -582,7 +584,7 @@ class SourceSnapshotTests(unittest.TestCase):
         here = Path(benchmark_runner.__file__).resolve().parent
         bundle, experiment_id = self.bundle()
         environment = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
-        result = subprocess.run([sys.executable, '-B', '-c', AUDITED_RUN, str(here),
+        result = subprocess.run([sys.executable, '-B', '-c', AUDITED_RUN, str(here), str(FRAMEWORK),
                                  str(Path(self.temp.name) / 'state'), str(bundle), experiment_id],
                                 capture_output=True, text=True, cwd=self.temp.name, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -622,7 +624,6 @@ class SourceSnapshotTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['experiment_id'], experiment_id)
 
     def test_copy_is_complete_exact_and_runs_on_its_own(self):
-        here = Path(benchmark_runner.__file__).resolve().parent
         output = Path(self.temp.name) / 'source'
         code, printed = self.cli('snapshot-source', '--output', output)
         self.assertEqual(code, 0, printed)
@@ -641,7 +642,7 @@ class SourceSnapshotTests(unittest.TestCase):
         for item in manifest['files']:
             data = (output / 'framework' / item['path']).read_bytes()
             self.assertEqual((digest_bytes(data), len(data)), (item['sha256'], item['byte_count']))
-            self.assertEqual(data, (here / item['path']).read_bytes())
+            self.assertEqual(data, (source_root(item['path']) / item['path']).read_bytes())
         # The copy validates offline from its own tree and fingerprints identically.
         environment = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
         result = subprocess.run([sys.executable, '-B', str(output / 'framework' / 'benchmark.py'), 'validate',
@@ -650,25 +651,28 @@ class SourceSnapshotTests(unittest.TestCase):
                                 capture_output=True, text=True, cwd=self.temp.name, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         probe = ('import sys; sys.path.insert(0, sys.argv[1]); import benchmark_runner as r; '
-                 'print(r.HERE); print(r.digest_bytes(r.canonical_bytes({n: r.digest_bytes((r.HERE / n).read_bytes()) '
+                 'print(r.HERE); print(r.FRAMEWORK); '
+                 'print(r.digest_bytes(r.canonical_bytes({n: r.digest_bytes((r.HERE / n).read_bytes()) '
                  'for n in r.FINGERPRINTED_SOURCES})))')
         result = subprocess.run([sys.executable, '-B', '-c', probe, str(output / 'framework')],
                                 capture_output=True, text=True, cwd=self.temp.name, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
-        copied_here, copied_digest = result.stdout.splitlines()
+        copied_here, copied_framework, copied_digest = result.stdout.splitlines()
         self.assertEqual(Path(copied_here), (output / 'framework').resolve())
+        self.assertEqual(Path(copied_framework), (output / 'framework').resolve())
         self.assertEqual(copied_digest, digest_bytes(canonical_bytes(
-            {n: digest_bytes((here / n).read_bytes()) for n in benchmark_runner.FINGERPRINTED_SOURCES})))
+            {n: digest_bytes((source_root(n) / n).read_bytes()) for n in benchmark_runner.FINGERPRINTED_SOURCES})))
 
     def test_never_overwrites_or_writes_into_the_source_tree(self):
         output = Path(self.temp.name) / 'existing'
         output.mkdir()
         code, _ = self.cli('snapshot-source', '--output', output)
         self.assertEqual((code, list(output.iterdir())), (2, []))
-        inside = Path(benchmark_runner.__file__).resolve().parent / 'snapshot-refused-test-only'
-        code, _ = self.cli('snapshot-source', '--output', inside)
-        self.assertEqual(code, 2)
-        self.assertFalse(inside.exists())
+        for source in (Path(benchmark_runner.__file__).resolve().parent, FRAMEWORK):
+            inside = source / 'snapshot-refused-test-only'
+            code, _ = self.cli('snapshot-source', '--output', inside)
+            self.assertEqual(code, 2)
+            self.assertFalse(inside.exists())
 
 
 if __name__ == '__main__':
