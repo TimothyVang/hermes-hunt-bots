@@ -81,6 +81,11 @@ def run_suite(python, folder, pattern):
                           env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
 
 
+def reported_a_pass(tail):
+    ran = re.match(r'Ran (\d+) tests? in ', tail[-2]) if len(tail) >= 2 else None
+    return bool(ran) and int(ran[1]) >= 1 and tail[-1].startswith('OK')
+
+
 def resolve_python(name):
     found = shutil.which(name) or name
     return os.path.abspath(found) if os.path.dirname(found) else found
@@ -118,14 +123,14 @@ def run_tests(python, log_path, results):
     for label, folder, pattern in SUITES:
         tests = run_suite(python, folder, pattern)
         tail = [line for line in tests.stderr.splitlines() if line.startswith(('Ran ', 'OK', 'FAILED'))]
-        results.append(f'{label}: ' + (' '.join(tail[-2:]) or f'exit {tests.returncode}'))
+        results.append(f'{label}: ' + (' '.join(tail[-2:]) or f'no test report, exit {tests.returncode}'))
         log += [f'===== {label} ({folder}/): {python} -B -m unittest discover -v -p {pattern}, exit {tests.returncode}',
                 tests.stdout, tests.stderr]
-        if tests.returncode:
+        if tests.returncode or not reported_a_pass(tail):
             failed = True
             names = FAILED_TEST.findall(tests.stderr)
             print(tests.stderr[-4000:])
-            print(f'{label} failed: ' + ('; '.join(names) or f'exit {tests.returncode} before any test reported'))
+            print(f'{label} failed: ' + ('; '.join(names) or f'exit {tests.returncode} without a passing test report'))
     if log_path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text('\n'.join(log), encoding='utf-8')

@@ -93,10 +93,32 @@ class GateTests(unittest.TestCase):
         code, summary, _ = self.run_gate(python=relative)
         self.assertEqual(code, 0, summary)
 
+    def test_suite_without_a_test_report_fails(self):
+        if os.name == 'nt':
+            silent = self.tmp / 'silent.cmd'
+            silent.write_text('@exit /b 0\n', encoding='utf-8')
+        else:
+            silent = self.tmp / 'silent'
+            silent.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            silent.chmod(0o755)
+        code, summary, out = self.run_gate(python=str(silent))
+        self.assertEqual(code, 1, summary)
+        self.assertIn('framework tests: no test report, exit 0', summary)
+        self.assertTrue(summary.endswith('-> FAIL'), summary)
+        self.assertIn('framework tests failed: exit 0 without a passing test report', out)
+
+    def test_suite_that_runs_no_tests_fails(self):
+        for folder in ('framework', 'operator'):
+            (self.root / folder / 'test_good.py').unlink()
+        code, summary, _ = self.run_gate()
+        self.assertEqual(code, 1, summary)
+        self.assertIn('framework tests: Ran 0 tests', summary)
+        self.assertTrue(summary.endswith('-> FAIL'), summary)
+
     def test_bare_python_name_is_resolved_on_path(self):
         folder, name = os.path.split(sys.executable)
         with mock.patch.dict(os.environ, {'PATH': folder + os.pathsep + os.environ.get('PATH', '')}):
-            code, summary, out = self.run_gate(python=os.path.splitext(name)[0])
+            code, summary, out = self.run_gate(python=os.path.splitext(name)[0] if os.name == 'nt' else name)
         self.assertEqual(code, 0, summary)
         self.assertIn(f'testing with {os.path.join(folder, name)}'.lower(), out.lower())
 
