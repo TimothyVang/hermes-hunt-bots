@@ -118,6 +118,46 @@ Real work hunts take one time window of the operator's own **unclassified** work
 
    The bots are told the case is a work log export (real telemetry from the operator's environment; unclassified work data), never synthetic, and the lab console says the same. Use the Slack bridge's minimal cards for these hunts (HUNT-BOTS.md rule 4).
 
+### Serving a work Elastic directly (connected mode)
+
+`hunt_lab/connected.py` is the connected mode of ADR 0005 (planning notes): instead of an export, a lab service on this PC holds a read-only API key to the work Elastic and answers the bots' existing Elasticsearch tools on `127.0.0.1`. The VM is not involved. The bots never see the key or the cluster address. **Not yet reachable by the bots:** the tools still find their lab through the VM's runtime status, and lab-input does not yet accept the `work-connected` origin. Both are follow-up units (one lab-endpoint resolver; the `work-connected` origin and HUNT-BOTS.md rule 2). Until then, use the export above for real hunts.
+
+- `connect.json` (operator-only, never served) names the cluster: `{"url": "https://elastic.example.internal:9243", "index": "logs-*", "ca_file": "C:\\path\\http_ca.crt"}`. `ca_file` and `api_key_env` (default `HUNT_ELASTIC_API_KEY`) are optional. Cross-cluster patterns (`remote:index`) are refused.
+- `case.json` is what the bots see: `case_id`, `question`, `time_range_utc` (with a UTC offset such as `Z`), `"data_origin": "work-connected"`, `"network_capture": "none"` and optional `hosts` (exact `host.name` values, at most 50). It names no cluster or index. The window must have ended at least 15 minutes ago.
+- The API key needs `read` and `view_index_metadata` on the pattern, the `monitor` cluster privilege for the version check (`GET /`; without it the check fails with `HTTP 403`), and nothing that can write, delete or manage. Give it role descriptors limited to the hunted pattern.
+- Before serving, the service asks `_has_privileges` about the pattern and every index, alias and data stream it resolves to, and about the manage-type cluster privileges listed in `connected.py`. It refuses the key if any of those comes back granted or missing. Privileges on indices outside the pattern are not inspected.
+- The service also refuses a key whose text is in the Hermes home's or any profile's `.env` or `config.yaml`.
+- As with the exporter, the key is read only from the environment variable. The service then removes it from its own environment and never prints, logs or writes it. TLS, `ca_file` and redirect handling match the exporter.
+
+```powershell
+$env:HUNT_ELASTIC_API_KEY = Read-Host -MaskInput 'Elastic API key'   # this terminal only
+py -3 -m hunt_lab.connected check --config ..\runtime\connect.json --case ..\runtime\cases\work-conn-001\case.json
+py -3 -m hunt_lab.connected serve --config ..\runtime\connect.json --case ..\runtime\cases\work-conn-001\case.json `
+    --state-dir <hermes home>\profiles\framework-network-analyst
+```
+
+`check` prints the Elasticsearch version, the number of events in scope, which allowlisted aggregation fields the cluster does not index as aggregatable (`unavailable_fields`), and which default query fields it lacks (`unsearched_query_fields`); it serves nothing. `serve` binds a free loopback port, prints the `lab_url`, and writes `<state-dir>\hunt-lab-connected\state.json` (port, case, instance token and the key variable's name, never the key). The file is removed when that service stops. A second `serve` is refused while the file exists; if a service crashed, delete the stale file.
+
+While serving:
+- Every query is filtered to the case window and hosts, and all of them read one point-in-time snapshot sorted on `@timestamp` and `_shard_doc`.
+- A record's `event.id` is its citation: `evt-` plus 16 digits derived from its `_id`. `event.id:evt-…`, bare `evt-…` and `event.id:("evt-…" OR …)` terms find the cited documents again. Quoted phrases are searched as written, and plain terms never match the cluster's own `event.id`.
+- Citations are kept in `hunt-lab-connected\<case_id>\citations.jsonl` (document IDs only) across restarts. An unknown citation is refused as `unknown_citation`, never answered with zero hits.
+- A page token from an expired or lost snapshot, or from an earlier run of the service, is refused as `cursor_expired`.
+- Lucene `/regex/` terms are refused as `regex_not_supported` (the cluster is shared production).
+- Aggregating a field the cluster does not index is refused as `field_unavailable`. A search on a field the cluster lacks matches nothing, as in the lab; `check` lists the aggregation and default query fields the cluster lacks.
+- Intel (`no_intel_source`), Arkime, `/network` and packets (`no_network_capture`) and the console page are off. `/health` waits only for events.
+- Every response carries the instance token in `X-Hunt-Lab-Instance`.
+
+Live run (2026-11-11, Elasticsearch 8.15.3 in a throwaway container with security and TLS on, synthetic Sysmon-shaped events; the bot tools run through `query_adapter` against `serve` running as its own process with the key only in its environment):
+- `check` reported 8.15.3 and 31 events in scope. A key without `monitor` failed with `HTTP 403`. These keys were refused as `key_not_read_only`: an unrestricted key, a key that could write only to the data stream inside the pattern, and a key holding `manage_slm`. The read-only key placed in a researcher profile's `.env` was refused as `key_in_bot_profile`.
+- `elastic_search` paged all 31 in-scope events in 5 pages, with 31 unique 16-digit citations, in both sort orders.
+- The out-of-window and other-host events never appeared.
+- Follow-up (`event.id:evt-…`), board-style (`event.id:("…" OR …)`) and `NOT evt-…` queries returned exactly the cited events.
+- `elastic_aggregate`, `detection_test` and `hunt_lab_query` (events) answered.
+- Every refusal above came back as its fixed code.
+- On shutdown the point in time was closed and `state.json` removed.
+- Neither the key nor the elastic password appeared in any tool result, the service's output, or its state or citation files.
+
 ### Operator scoring
 
 From this framework directory, generate into **new, separate external directories**, never a live profile or source fixture:

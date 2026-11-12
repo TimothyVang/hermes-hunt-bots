@@ -178,6 +178,7 @@ hunt_lab/actionability.py
 hunt_lab/assets.json
 hunt_lab/browser_policy.py
 hunt_lab/case.py
+hunt_lab/connected.py
 hunt_lab/desktop/console-provenance.json
 hunt_lab/desktop/licenses/babel-LICENSE.MIT
 hunt_lab/desktop/licenses/LICENSE.BSD-2-Clause
@@ -217,6 +218,7 @@ hunt_lab/query_adapter.py
 hunt_lab/runtime.py
 hunt_lab/scenario.py
 hunt_lab/screencast.py
+hunt_lab/test_connected.py
 hunt_lab/test_import_dedale.py
 hunt_lab/test_import_elastic.py
 hunt_lab/test_scenario.py

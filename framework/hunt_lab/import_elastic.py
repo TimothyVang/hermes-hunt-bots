@@ -138,6 +138,16 @@ def check_version(info):
     return number
 
 
+def read_api_key(environ, name):
+    """The API key held in environment variable `name`; refused if absent or unsafe for a header."""
+    api_key = environ.get(name, "")
+    if not api_key:
+        raise ExportError(f"environment variable {name} holds no API key")
+    if not api_key.isascii() or any(character.isspace() or not character.isprintable() for character in api_key):
+        raise ExportError(f"the API key in {name} holds whitespace, a line break or a non-ASCII character")
+    return api_key
+
+
 def export_window(url, index, start, end, output, *, hosts=None, max_events=DEFAULT_MAX_EVENTS,
                   api_key_env=API_KEY_ENV, ca_file=None, transport=None, environ=None, page_size=PAGE_SIZE):
     base, host = cluster_base(url)
@@ -151,11 +161,7 @@ def export_window(url, index, start, end, output, *, hosts=None, max_events=DEFA
     hosts = host_names(hosts)
     if not isinstance(api_key_env, str) or not ENV_NAME.match(api_key_env):
         raise ExportError("--api-key-env must name an environment variable")
-    api_key = (os.environ if environ is None else environ).get(api_key_env, "")
-    if not api_key:
-        raise ExportError("environment variable %s holds no API key" % api_key_env)
-    if not api_key.isascii() or any(character.isspace() or not character.isprintable() for character in api_key):
-        raise ExportError("the API key in %s holds whitespace, a line break or a non-ASCII character" % api_key_env)
+    api_key = read_api_key(os.environ if environ is None else environ, api_key_env)
     output = Path(output)
     meta = output.with_name(output.name + ".meta.json")
     for path in (output, meta):
