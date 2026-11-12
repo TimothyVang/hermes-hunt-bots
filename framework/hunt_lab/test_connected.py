@@ -209,7 +209,9 @@ class RefusalTests(ConnectedCase):
                                ('index_grants', {INDEX: {'manage_data_stream_lifecycle': True}}),
                                ('index_grants', {BACKING: {'delete': True}}),
                                ('cluster_grants', {'manage_search_synonyms': True}),
-                               ('cluster_grants', {'cluster:admin/ingest/pipeline/put': True})):
+                               ('cluster_grants', {'cluster:admin/ingest/pipeline/put': True}),
+                               ('cluster_grants', {'indices:admin/index_template/put': True}),
+                               ('index_grants', {INDEX: {'cross_cluster_replication': True}})):
             with self.subTest(setting=setting, value=value):
                 self.elastic = FakeElastic()
                 setattr(self.elastic, setting, value)
@@ -506,7 +508,9 @@ class ServiceTests(ConnectedCase):
                         (r'\*:source-id', 'invalid_query'), (r'\u0065vent.id:source-id', 'invalid_query'),
                         (r'event.i\u0064:source-id', 'invalid_query'), (r'_exists_:event.i\*', 'invalid_query'),
                         (r'a!event.\*:source-id', 'invalid_query'), (r'a^2event\.id:source-id', 'invalid_query'),
-                        ('a~2event.id:source-id', 'invalid_query')):
+                        ('a~2event.id:source-id', 'invalid_query'), (r'\*.keyword:source-id', 'invalid_query'),
+                        (r'event.i\*.keyword:source-id', 'invalid_query'), ('_exists_:"event.id"', 'invalid_query'),
+                        ('_exists_:("event.id")', 'invalid_query')):
             with self.subTest(q=q):
                 self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
         self.assertEqual(len(self.elastic.searches()), searches)
@@ -519,6 +523,13 @@ class ServiceTests(ConnectedCase):
                 self.assertTrue(self.tool('elastic_search', q=q)['ok'])
                 self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
                                  sent or q)
+
+    def test_the_clusters_own_event_id_is_never_aggregated(self):
+        _server, source, _state, _environ = self.start()
+        source.aggregatable = source.aggregatable | {'event.id'}
+        searches = len(self.elastic.searches())
+        self.assertEqual(self.tool('elastic_aggregate', field='event.id').get('detail'), 'field_unavailable')
+        self.assertEqual(len(self.elastic.searches()), searches)
 
     def test_a_query_error_on_some_shards_is_invalid_query(self):
         self.start()

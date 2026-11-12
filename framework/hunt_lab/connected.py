@@ -105,7 +105,8 @@ WRITE_INDEX_ACTIONS = (
     'indices:admin/data_stream/modify', 'indices:admin/data_stream/promote',
     'indices:admin/data_stream/lifecycle/put', 'indices:admin/data_stream/lifecycle/delete',
     'indices:admin/data_stream/options/put', 'indices:admin/data_stream/options/delete',
-    'indices:admin/xpack/ccr/put_follow', 'indices:admin/xpack/ccr/unfollow', 'indices:admin/xpack/downsample')
+    'indices:admin/xpack/ccr/put_follow', 'indices:admin/xpack/ccr/unfollow', 'indices:admin/xpack/downsample',
+    'indices:admin/freeze', 'indices:admin/seq_no/add_retention_lease')
 WRITE_CLUSTER_ACTIONS = (
     'cluster:admin/settings/update', 'cluster:admin/reroute', 'cluster:admin/tasks/cancel',
     'cluster:admin/ingest/pipeline/put', 'cluster:admin/ingest/pipeline/delete', 'cluster:admin/script/put',
@@ -122,11 +123,20 @@ WRITE_CLUSTER_ACTIONS = (
     'cluster:admin/xpack/security/api_key/create', 'cluster:admin/xpack/security/api_key/invalidate',
     'cluster:admin/xpack/security/user/put', 'cluster:admin/xpack/security/role/put',
     'cluster:admin/xpack/security/role_mapping/put', 'cluster:admin/xpack/security/service_account/token/create',
-    'cluster:admin/xpack/license/put', 'cluster:admin/features/reset', 'cluster:admin/nodes/reload_secure_settings')
+    'cluster:admin/xpack/license/put', 'cluster:admin/features/reset', 'cluster:admin/nodes/reload_secure_settings',
+    'indices:admin/template/put', 'indices:admin/template/delete', 'indices:admin/index_template/put',
+    'indices:admin/index_template/delete', 'cluster:admin/snapshot/clone', 'cluster:admin/xpack/watcher/watch/delete',
+    'cluster:admin/xpack/ml/job/delete', 'cluster:admin/logstash/pipeline/delete',
+    'cluster:admin/xpack/query_rules/delete', 'cluster:admin/xpack/inference/delete',
+    'cluster:admin/xpack/connector/delete', 'cluster:admin/xpack/application/search_application/delete',
+    'cluster:admin/xpack/security/user/delete', 'cluster:admin/xpack/security/user/change_password',
+    'cluster:admin/xpack/security/role/delete', 'cluster:admin/xpack/security/role_mapping/delete',
+    'cluster:admin/xpack/license/delete')
 # Privilege names added after 7.12. A cluster that does not know one refuses it alone (HTTP 400), and then no
 # key can hold it there, so each is asked about by itself. A name that grants no action reads as held by every
 # key (manage_data_stream_global_retention on 8.19), so such names stay out; the actions above cover them.
-NEWER_INDEX_PRIVILEGES = ('manage_data_stream_lifecycle', 'manage_failure_store', 'cross_cluster_replication_internal')
+NEWER_INDEX_PRIVILEGES = ('manage_data_stream_lifecycle', 'manage_failure_store', 'cross_cluster_replication',
+                          'cross_cluster_replication_internal')
 NEWER_CLUSTER_PRIVILEGES = ('manage_service_account', 'manage_user_profile', 'manage_search_application',
                             'manage_behavioral_analytics', 'post_behavioral_analytics_event', 'manage_search_synonyms',
                             'manage_search_query_rules', 'manage_connector', 'write_connector_secrets',
@@ -148,7 +158,7 @@ HIDDEN = re.compile('\x00(\\d+)\x00')
 # The field before a colon: a Lucene term, so !, ^ and ~ end the one before it and a ^2 / ~2 number is its
 # own token. Wildcards stay (Lucene reads event.\* as a field pattern). _exists_ names a field too.
 FIELD = re.compile(r'([\^~]?)([^\s()!^~:"\[\]{}/\\]+)\s*:')
-EXISTS = re.compile(r'\b_exists_\s*:\s*([^\s()]+)')
+EXISTS = re.compile(r'\b_exists_\s*:\s*[(\s"]*([^\s()"]+)')
 # Lucene's escapes, as its parser decodes them in field names and terms.
 LUCENE_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(.))', re.DOTALL)
 # Shard failure types that refuse the query itself.
@@ -470,7 +480,8 @@ class WorkElastic:
             raise lab_server.BackendQueryError('no_intel_source')
         if index != lab_server.EVENT_INDEX:
             raise lab_server.BackendQueryError('no_network_capture')
-        if any(field not in self.aggregatable for field in _terms_fields(body.get('aggs', {}))):
+        # The cluster's own event.id is not what the bots see as event.id, so it is never a bucket key either.
+        if any(field == 'event.id' or field not in self.aggregatable for field in _terms_fields(body.get('aggs', {}))):
             raise lab_server.BackendQueryError('field_unavailable')
         for attempt in (1, 2):
             with self.lock:
@@ -539,16 +550,21 @@ class WorkElastic:
             phrases.append(match.group(0))
             return f'\x00{len(phrases) - 1}\x00'
 
+        def decode(value):
+            return LUCENE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)) if match.group(1) else match.group(2),
+                                     value)
+
+        # _exists_ takes a field name, also quoted, so it is read with phrases shown.
+        exists = EXISTS.findall(decode(text))
         text = CITATION.sub(rewrite, QUOTED.sub(hide, text))
         # Lucene decodes escapes (event\.id and \u0065vent.id are event.id); phrases stay hidden as text.
-        unescaped = LUCENE_ESCAPE.sub(
-            lambda match: chr(int(match.group(1), 16)) if match.group(1) else match.group(2),
-            HIDDEN.sub(lambda match: phrases[int(match.group(1))] if phrases[int(match.group(1))][0] == '\\' else ' ',
-                       text))
-        names = [*EXISTS.findall(unescaped),
-                 *((re.sub(r'\A\d+(?:\.\d+)?', '', name) if after else name).lstrip('+-')
-                   for after, name in FIELD.findall(unescaped))]
-        if re.search(r'\bevent\.id\b', unescaped) or any(fnmatch.fnmatchcase('event.id', name) for name in names):
+        unescaped = decode(HIDDEN.sub(
+            lambda match: phrases[int(match.group(1))] if phrases[int(match.group(1))][0] == '\\' else ' ', text))
+        names = [*exists, *((re.sub(r'\A\d+(?:\.\d+)?', '', name) if after else name).lstrip('+-')
+                            for after, name in FIELD.findall(unescaped))]
+        # A field pattern reaching event.id or one of its sub-fields (event.id.keyword) reads the cluster's event.id.
+        if re.search(r'\bevent\.id\b', unescaped) or any(fnmatch.fnmatchcase(field, name) for name in names
+                                                          for field in ('event.id', 'event.id.keyword', 'event.id.text')):
             raise lab_server.BackendQueryError('invalid_query')
         return HIDDEN.sub(lambda match: phrases[int(match.group(1))], text)
 

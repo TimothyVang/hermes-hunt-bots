@@ -144,7 +144,7 @@ While serving:
 - Citations are kept in `hunt-lab-connected\<case_id>\citations.jsonl` (document IDs only) across restarts. An unknown citation is refused as `unknown_citation`, never answered with zero hits.
 - A page token from an expired or lost snapshot, or from an earlier run of the service, is refused as `cursor_expired`.
 - Lucene `/regex/` terms are refused as `regex_not_supported` (the cluster is shared production), also inside a range (`[a TO /z/]`). A `"` inside a range and an unclosed phrase are refused as `invalid_query`, so neither can hide a regex. Searches do not allow partial results, so a query error on some shards is `invalid_query`, never a partial answer.
-- Aggregating a field the cluster does not index is refused as `field_unavailable`. A search on a field the cluster lacks matches nothing, as in the lab; `check` lists the aggregation and default query fields the cluster lacks.
+- Aggregating a field the cluster does not index is refused as `field_unavailable`, and so is aggregating `event.id` (its buckets would be the cluster's own values, not citations). A search on a field the cluster lacks matches nothing, as in the lab; `check` lists the aggregation and default query fields the cluster lacks.
 - Intel (`no_intel_source`), Arkime, `/network` and packets (`no_network_capture`) are off. The console page (`/`, `/view`) names the case's origin, as in the lab. `/health` waits only for events.
 - Every response carries the instance token in `X-Hunt-Lab-Instance`.
 
