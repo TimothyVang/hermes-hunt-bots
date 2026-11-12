@@ -302,6 +302,26 @@ class ExecutionReceiptTests(unittest.TestCase):
         result = self.invoke_plain(StreamProcess(b'', 2, ('\n'.join(lines) + '\n').encode('utf-8')))
         self.assertEqual(result.diagnostic, 'exit code 2: ValueError: blob [redacted]')
 
+    def test_redaction_covers_key_names_quotes_and_escapes(self):
+        # Each line and the exact diagnostic text it must become (review of #45 found these unredacted).
+        table = [
+            ('ValueError: secret_key=abc123def', 'ValueError: secret_key=[redacted]'),
+            ('ValueError: SECRET_KEY "a b"', 'ValueError: SECRET_KEY "[redacted]"'),
+            ('ValueError: private_key=MIIEabc123', 'ValueError: private_key=[redacted]'),
+            ('ValueError: aws_secret_access_key=abc123def', 'ValueError: aws_secret_access_key=[redacted]'),
+            ('ValueError: password "it\\"s abc123"', 'ValueError: password "[redacted]"'),
+            ('ValueError: api_key=\\"abc123def\\"', 'ValueError: api_key=\\"[redacted]\\"'),
+            ('ValueError: {\\"api_key\\": \\"abc123def\\"}', 'ValueError: {\\"api_key\\": \\"[redacted]\\"}'),
+            ('ValueError: token `abc123def`', 'ValueError: token `[redacted]`'),
+            ('ValueError: secret_key=`abc123def`', 'ValueError: secret_key=`[redacted]`'),
+            ('ValueError: token=abc\\def', 'ValueError: token=[redacted]'),
+            ('ValueError: sk_live_abc123def rejected', 'ValueError: [redacted] rejected'),
+        ]
+        for line, expected in table:
+            with self.subTest(line=line):
+                self.assertEqual(execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False),
+                                 'exit code 1: ' + expected)
+
     def test_redaction_keeps_ordinary_words_and_identifiers(self):
         lines = [
             'RuntimeError: token limit exceeded',
@@ -309,6 +329,10 @@ class ExecutionReceiptTests(unittest.TestCase):
             'KeyError: secret manager unavailable',
             'sqlite3.IntegrityError: UNIQUE constraint failed: pk_receipts_execution',
             'RuntimeError: max_tokens "4096" is too large',
+            # Review of #45: the first two were over-redacted; the third guards the added key names.
+            'KeyError: pk_users_v2',
+            "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+            'KeyError: access_key_id missing',
         ]
         for line in lines:
             with self.subTest(line=line):

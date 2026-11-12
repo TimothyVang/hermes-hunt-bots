@@ -228,7 +228,9 @@ class ToolCallTests(unittest.TestCase):
     def test_static_bot_texts_do_not_call_the_loaded_case_synthetic(self):
         # Live (work-export proof hunt): six step outputs called real data synthetic, repeating these texts.
         # Only the stage prompts know a case's origin; static texts may name synthetic cases conditionally.
+        from hunt_lab import lab_browser
         texts = {name: json.dumps(schema) for name, schema in query_adapter.SCHEMAS.items()}
+        texts['lab_browser'] = json.dumps(lab_browser.SCHEMA)
         bots = Path(query_adapter.__file__).resolve().parents[1] / 'hermes-bots'
         souls = sorted(bots.glob('framework-*/SOUL.md'))
         self.assertEqual(len(souls), 6)
