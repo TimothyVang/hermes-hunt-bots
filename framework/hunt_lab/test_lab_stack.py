@@ -296,6 +296,7 @@ class StackTests(unittest.TestCase):
             ({'pcap-import': ('exited', 2)}, True, 'error', 'pcap_import_failed'),
             ({'lab': ('exited', 137)}, True, 'error', 'lab_exited'),
             ({'arkime': None}, False, 'error', 'compose_up_failed'),
+            ({'relay': ('created', None)}, False, 'error', 'compose_up_failed'),
             ({'arkime': None}, True, 'starting', 'loading_case'),
             ({'kibana-setup': ('running', None)}, True, 'starting', 'loading_case'),
             ({}, True, 'starting', 'lab_unreachable'),

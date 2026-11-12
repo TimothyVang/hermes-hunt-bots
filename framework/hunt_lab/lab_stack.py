@@ -141,8 +141,10 @@ def _stage(files, target):
             shutil.copyfile(path, target / name)
 
 
-def _write_new(path, data):
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
+def _write_new(path, data, mode=0o600):
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), mode)
+    if os.name != 'nt':
+        os.fchmod(descriptor, mode)
     try:
         os.write(descriptor, data)
         os.fsync(descriptor)
@@ -312,11 +314,13 @@ def _status(profile, root, case_id):
               and services[name][1] not in (0, None)]
     stopped = [name for name in SERVICES if services.get(name, (None,))[0] in ('exited', 'dead')]
     missing = [name for name in SERVICES + ONE_SHOTS if name not in services]
+    # `up` creates every container before it starts any; one it left only created will not start on its own.
+    created = [name for name in SERVICES + ONE_SHOTS if services.get(name, (None,))[0] == 'created']
     if failed:
         result.update(state='error', reason=failed[0].replace('-', '_') + '_failed')
     elif stopped:
         result.update(state='error', reason=stopped[0] + '_exited')
-    elif missing and not _up_running(case_dir):
+    elif (missing or created) and not _up_running(case_dir):
         result.update(state='error', reason='compose_up_failed')
     else:
         loading = missing or any(services[name][0] != 'exited' for name in ONE_SHOTS)
@@ -337,9 +341,14 @@ def _launch(argv, variables, log_path):
 
 
 def _terminate(pid):
+    """End the background `docker compose up` and, on Windows, the compose plugin process it started."""
     try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=30, creationflags=NO_WINDOW)
+        else:
+            os.killpg(pid, signal.SIGTERM)
+    except (OSError, subprocess.TimeoutExpired):
         pass
 
 
@@ -364,12 +373,16 @@ def _start(profile, root, evidence_dir, case_id):
     root.mkdir(parents=True, exist_ok=True)
     endpoints.owner_only(root)
     case_dir.mkdir()
+    pid = None
     try:
         endpoints.owner_only(case_dir)
         _stage(files, case_dir / 'evidence')
         secret, instance = secrets.token_hex(32), uuid.uuid4().hex
-        _write_new(case_dir / 'lab-secret', secret.encode('ascii'))
-        _write_new(case_dir / 'instance-id', (instance + '\n').encode('ascii'))
+        # Mounted into the lab service, which runs as nobody. The case folder stays owner-only; on a Linux engine
+        # the bind mount keeps the host mode, so these two are readable inside it.
+        mounted = 0o600 if os.name == 'nt' else 0o644
+        _write_new(case_dir / 'lab-secret', secret.encode('ascii'), mounted)
+        _write_new(case_dir / 'instance-id', (instance + '\n').encode('ascii'), mounted)
         lab_port, kibana_port, arkime_port = _ports()
         state = {'version': endpoints.CONTAINER_VERSION, 'case_id': loaded, 'project': project(loaded),
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
@@ -386,6 +399,8 @@ def _start(profile, root, evidence_dir, case_id):
         _write_json(case_dir / 'up.json', {'pid': pid, 'identity': _identity(pid)})
     except BaseException:
         if not (case_dir / 'up.json').exists():
+            if pid is not None:
+                _terminate(pid)
             shutil.rmtree(case_dir, ignore_errors=True)
         raise
     return _status(profile, root, loaded)

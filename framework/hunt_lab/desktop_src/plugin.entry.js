@@ -456,7 +456,7 @@ function HuntingLab() {
         ] }),
         limits('Requirements and limits', [
           'Only local framework routes are offered; duplicate local owners and every remote route are excluded.',
-          'With Docker running, Start runs the lab as host containers, one compose project per case: the last case started, else the bundled fixture. Elasticsearch is never published, the lab, Arkime and Kibana listen on 127.0.0.1 only, and no container has a route out.',
+          'With Docker running, Start runs the lab as host containers, one compose project per case: the last case started, else the bundled fixture. Elasticsearch is never published, the lab, Arkime and Kibana listen on 127.0.0.1 only, and no container but the port relay has a route out.',
           'Without Docker, the lab is the VM. The first explicit Start prepares verified public runtime assets, then boots. Prepare downloads and provisions without booting.',
           'Automatic first setup of the VM needs Windows x64 with Windows Hypervisor Platform already enabled, 5 GiB available RAM and 37 GiB free disk, and makes large public downloads.',
           'The VM guest uses 4 GiB RAM, two vCPUs and a 32 GiB virtual disk. No elevation, Windows-feature change or software-emulation fallback is attempted.',
