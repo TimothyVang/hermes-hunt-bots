@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -192,11 +193,19 @@ def write_payload(destination, sources: list[tuple[str, Path]]) -> int:
 
 def write_seed(pycdlib, seed: Path, images: Path | None, payload, payload_length: int,
                instance_id: str = INSTANCE_ID) -> None:
+    """Write the NoCloud ISO and, beside it, its owner-only caller file (hunt_lab.endpoints.write_vm_caller).
+
+    Each seed carries a new instance secret as `lab-secret`; the guest hands it to the lab service as a
+    systemd credential, and the host's callers read it from the caller file. The ISO is made owner-only
+    before any byte is written, since it holds the secret too.
+    """
     cloud_config = user_data()
     metadata = (json.dumps({
         "instance-id": instance_id,
         "local-hostname": "hermes-hunt-lab",
     }) + "\n").encode("utf-8")
+    secret = secrets.token_hex(32)
+    endpoints = _endpoints()
     iso = pycdlib.PyCdlib()
     try:
         # Level 3 permits multi-extent files (>4 GiB); RR/Joliet preserve the
@@ -207,6 +216,8 @@ def write_seed(pycdlib, seed: Path, images: Path | None, payload, payload_length
                 ("user-data", "/USERDATA.;1", stack.enter_context(io.BytesIO(cloud_config)), len(cloud_config)),
                 ("meta-data", "/METADATA.;1", stack.enter_context(io.BytesIO(metadata)), len(metadata)),
                 ("lab-payload.tar", "/LABPAYLD.TAR;1", payload, payload_length),
+                ("lab-secret", "/LABSECRT.;1", stack.enter_context(io.BytesIO(secret.encode("ascii") + b"\n")),
+                 len(secret) + 1),
             ]
             if images is not None:
                 entries.append((
@@ -220,11 +231,13 @@ def write_seed(pycdlib, seed: Path, images: Path | None, payload, payload_length
                 )
             # Exclusive creation makes a pre-existing ISO an unconditional refusal.
             with seed.open("xb") as output:
+                endpoints.owner_only(seed)
                 iso.write_fp(output)
                 output.flush()
                 os.fsync(output.fileno())
     finally:
         iso.close()
+    endpoints.write_vm_caller(seed, instance_id, secret)
 
 
 def prepare(args: argparse.Namespace) -> dict:
@@ -388,7 +401,8 @@ class _HashWriter:
 
 
 def validate_seed(pycdlib, seed: Path, instance_id: str, payload_sha256: str) -> None:
-    """Read the written ISO back: NoCloud volume, exact instance-id, exact payload bytes."""
+    """Read the written ISO back: NoCloud volume, exact instance-id, exact payload bytes, and the secret its
+    caller file names."""
     with seed.open("rb") as stream:
         stream.seek(32769)
         if stream.read(5) != b"CD001":
@@ -400,12 +414,19 @@ def validate_seed(pycdlib, seed: Path, instance_id: str, payload_sha256: str) ->
         iso.get_file_from_iso_fp(metadata, rr_path="/meta-data")
         payload = _HashWriter()
         iso.get_file_from_iso_fp(payload, rr_path="/lab-payload.tar")
+        secret = io.BytesIO()
+        iso.get_file_from_iso_fp(secret, rr_path="/lab-secret")
     finally:
         iso.close()
     if json.loads(metadata.getvalue()).get("instance-id") != instance_id:
         raise PreparationError(f"Written seed has an unexpected instance-id: {seed}")
     if payload.digest.hexdigest() != payload_sha256:
         raise PreparationError(f"Written seed payload does not match the staged payload: {seed}")
+    endpoints = _endpoints()
+    caller = json.loads(endpoints.caller_file(seed).read_text(encoding="ascii"))
+    if (caller.get("instance") != instance_id
+            or secret.getvalue() != caller.get("secret", "").encode("ascii") + b"\n"):
+        raise PreparationError(f"Written seed and its caller file do not match: {seed}")
 
 
 def _runtime():
@@ -414,6 +435,14 @@ def _runtime():
     else:
         import runtime
     return runtime
+
+
+def _endpoints():
+    if __package__:
+        from . import endpoints
+    else:
+        import endpoints
+    return endpoints
 
 
 def _switchable_deployment(root: Path):

@@ -167,6 +167,9 @@ else:
 PY
 fi
 docker-compose -p hermes-hunt-lab up -d arkime
+# The instance secret every lab API caller must send. It comes on this instance's seed and reaches the
+# service only as a systemd credential; a seed without one leaves the service unable to start.
+install -m 0400 -o root -g root /media/lab-setup/lab-secret "$ROOT/lab-secret"
 cat >/etc/systemd/system/hermes-hunt-lab-api.service <<UNIT
 [Unit]
 Description=Read-only synthetic hunting evidence API
@@ -178,6 +181,7 @@ Type=simple
 User=nobody
 Group=nogroup
 Environment=LAB_ELASTICSEARCH=$ELASTIC
+LoadCredential=lab-secret:$ROOT/lab-secret
 ExecStart=/usr/bin/python3 /opt/hermes-hunt-lab/lab_server.py --bind 0.0.0.0 --port 8765 --case /opt/hermes-hunt-lab/evidence/case.json --network-scope $SCOPE
 Restart=on-failure
 NoNewPrivileges=true

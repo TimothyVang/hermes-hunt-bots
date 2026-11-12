@@ -55,24 +55,47 @@ CONNECTED_TEXT = ("work log connection (live read-only queries of the operator's
                   "unclassified work data)")
 
 
+VM_INSTANCE = "hermes-framework-network-analyst-case-lab-med-001-6873a567"
+VM_SECRET = "5e" * 32
+
+
+def deploy_vm(state_dir: Path) -> None:
+    """What prepare_guest leaves for the deployed seed: deployment.json and the seed's owner-only caller file."""
+    from hunt_lab import endpoints
+
+    seed = state_dir / "media" / "cidata.iso"
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    (state_dir / "deployment.json").write_text(json.dumps({"seed": str(seed)}), encoding="utf-8")
+    endpoints.caller_file(seed).unlink(missing_ok=True)
+    endpoints.write_vm_caller(seed, VM_INSTANCE, VM_SECRET)
+
+
 class FakeLab:
-    """A loopback stand-in for the guest lab API: /case, /health, paged /activity and /es/search by event.id."""
+    """A loopback stand-in for the guest lab API: /case, /health, paged /activity and /es/search by event.id.
+
+    Like the real service it answers only a caller sending its secret; refused requests are kept apart."""
 
     def __init__(self, case=None, events=(), activity=(), *, redirect=False, body=None, network_scope="tag",
-                 instance=None, refuse_unknown=False):
+                 instance=VM_INSTANCE, refuse_unknown=False, secret=VM_SECRET):
         self.case = dict(case or TOOL_CASE)
         self.instance = instance
+        self.secret = secret
         self.refuse_unknown = refuse_unknown
         self.network_scope = network_scope
         self.events = {event["event.id"]: event for event in events}
         self.activity = list(activity)
         self.requests: list[tuple[str, dict, str | None]] = []
+        self.refused: list[str] = []
         lab = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 url = parse.urlsplit(self.path)
                 query = {key: values[-1] for key, values in parse.parse_qs(url.query).items()}
+                if self.headers.get("X-Hunt-Lab-Secret") != lab.secret:
+                    lab.refused.append(url.path)
+                    self._json(401, {"error": "caller_not_authorized"})
+                    return
                 lab.requests.append((url.path, query, self.headers.get("X-Hermes-Profile")))
                 if redirect:
                     self.send_response(302)
@@ -130,11 +153,13 @@ class FakeLab:
 
 
 def write_connected_state(analyst: Path, lab: FakeLab, case_id: str) -> str:
-    """Write the state.json `hunt_lab.connected serve` writes for `lab`; returns the VM state dir beside it."""
+    """Write the state.json `hunt_lab.connected serve` writes for `lab`, beside a VM state dir whose deployed seed
+    has its caller file; returns that VM state dir."""
     (analyst / "hunt-lab-connected").mkdir(parents=True, exist_ok=True)
     (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
-        "version": 1, "pid": 1, "port": lab.server.server_address[1], "case_id": case_id,
-        "instance": lab.instance, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
+        "version": 2, "pid": 1, "port": lab.server.server_address[1], "case_id": case_id,
+        "instance": lab.instance, "secret": lab.secret, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
+    deploy_vm(analyst / "hunt-lab-vm")
     return str(analyst / "hunt-lab-vm")
 
 
@@ -403,17 +428,24 @@ class LabInputTests(unittest.TestCase):
 class ToolDrivenInputTests(unittest.TestCase):
     STATUS = {"profile": "framework-network-analyst", "state": "running"}
 
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.state_dir = Path(temp.name) / "hunt-lab-vm"
+        deploy_vm(self.state_dir)
+
     def collect(self, lab, status=None, **options):
         runtime = fake_runtime({**self.STATUS, "lab_url": lab.url, **(status or {})})
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            return lab_input.collect_tool_input("approved-state", **options), runtime
+            return lab_input.collect_tool_input(self.state_dir, **options), runtime
 
     def test_export_reads_only_case_metadata_for_the_loaded_case(self):
         lab = FakeLab(events=[{"event.id": "evt-000001", "message": "never exported"}])
         self.addCleanup(lab.close)
         raw, runtime = self.collect(lab)
         self.assertEqual(lab.paths(), ["/case"])
-        self.assertEqual(runtime.calls, [("status", "approved-state", "framework-network-analyst")])
+        self.assertEqual(runtime.calls, [("status", self.state_dir, "framework-network-analyst")])
+        self.assertEqual(lab.refused, [])
         self.assertEqual(raw["mode"], "tool_driven")
         self.assertEqual(raw["ontology"]["case_id"], "lab-med-001")
         [item] = raw["evidence"]
@@ -556,9 +588,12 @@ class ToolDrivenInputTests(unittest.TestCase):
         with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
                 self.assertRaisesRegex(lab_input.LabInputError, "lab_instance_mismatch"):
             lab_input.collect_tool_input(state_dir, data_origin="work-connected")
-        self.assertEqual(lab_input.lab_get(lab.url, "/case")["case_id"], "work-conn-001")
+        self.assertEqual(lab_input.lab_get(lab.url, "/case", secret=VM_SECRET)["case_id"], "work-conn-001")
         with self.assertRaises(lab_input.LabInputError):
-            lab_input.lab_get(lab.url, "/case", instance="a" * 32)
+            lab_input.lab_get(lab.url, "/case", instance="a" * 32, secret=VM_SECRET)
+        with self.assertRaises(lab_input.LabInputError) as refused:
+            lab_input.lab_get(lab.url, "/case")
+        self.assertEqual(refused.exception.code, "caller_not_authorized")
 
     def test_a_connected_case_is_exported_only_from_a_connected_service_with_its_origin(self):
         _lab, state_dir = self.connected(CONNECTED_CASE)

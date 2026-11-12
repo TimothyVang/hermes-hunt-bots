@@ -3,7 +3,7 @@ with every search scoped to the loaded case, and Kibana's Discover with every se
 data view and window. Pure; lab_browser applies it through CDP Fetch."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import re
@@ -64,21 +64,24 @@ class Refused(Exception):
 
 @dataclass(frozen=True)
 class LabScope:
+    """The loaded case and its lab origins. `lab_secret` is the caller secret the lab service requires; the
+    browser adds it to lab-origin requests only, never to Arkime or Kibana, and it stays out of the repr."""
     case_id: str
     lab_origin: str
     arkime_origin: str
     start: int
     stop: int
     kibana_origin: str | None = None
+    lab_secret: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_case(cls, case, lab_origin, arkime_origin, kibana_origin=None):
+    def from_case(cls, case, lab_origin, arkime_origin, kibana_origin=None, lab_secret=None):
         bounds = case['time_range_utc']
         start, stop = (int(datetime.fromisoformat(bounds[key].replace('Z', '+00:00')).timestamp())
                        for key in ('start_inclusive', 'end_exclusive'))
         if start >= stop:
             raise ValueError('empty case window')
-        return cls(case['case_id'], lab_origin, arkime_origin, start, stop, kibana_origin)
+        return cls(case['case_id'], lab_origin, arkime_origin, start, stop, kibana_origin, lab_secret)
 
     @property
     def origins(self):

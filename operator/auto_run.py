@@ -32,7 +32,7 @@ def main():
     for _ in range(160):
         rc, st = sc.lab('status', 180)
         try:
-            h = sc.health(st['lab_url'])
+            h = sc.health(sc.serving_lab())
             if h.get('ready') is True and h.get('event_count'):
                 break
         except Exception:

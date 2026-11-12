@@ -46,7 +46,7 @@ def run_rounds(statuses):
     scored = {'found': 18, 'total': 18, 'misattributed_decoys': [], 'facts': []}
     with tempfile.TemporaryDirectory() as tmp, patch.object(tl, 'GATE_RUNS', Path(tmp)), \
             patch.object(tl, 'ROUNDS', len(statuses)), patch.object(tl, 'tcli', fake_tcli), \
-            patch.object(tl, 'lab_url', return_value='http://lab'), patch.object(tl, 'last_seq', return_value=0), \
+            patch.object(tl, 'serving_lab', return_value=Mock()), patch.object(tl, 'last_seq', return_value=0), \
             patch.object(tl, 'activity_since', return_value=[]), patch.object(tl, 'score', return_value=scored), \
             patch.object(tl.subprocess, 'run', return_value=Mock(stdout='')), patch.object(tl, 'log') as log:
         outputs = Path(tmp) / 'outputs' / tl.workflow_id('loop-t', 'case-1')
