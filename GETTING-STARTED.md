@@ -2,7 +2,7 @@
 
 This is the shortest path from a fresh clone to a working setup, a first synthetic hunt, and a first PR. Each step links to the detailed docs. The rules for every change are in [HUNT-BOTS.md](HUNT-BOTS.md).
 
-Use one project folder with two parts: `repo/`, the Git clone, and `runtime/` next to it for everything you generate (cases, answer keys, the lab's Hermes home and VM, runs). `runtime/` must stay outside the clone. The lab refuses to keep VM state inside any Git repository, so lab disks and logs can never be committed. The operator tools default to this layout.
+Use one project folder with two parts: `repo/`, the Git clone, and `runtime/` next to it for everything you generate (cases, answer keys, the lab's Hermes home and lab state, runs). `runtime/` must stay outside the clone. The lab refuses to keep its state inside the source workspace or any Git repository, so lab state and logs can never be committed. The operator tools default to this layout.
 
 ## 1. Clone and check (5 minutes)
 
@@ -30,7 +30,7 @@ python3 -m venv .venv-dev
 
 The last line must end in `-> PASS`. It runs the framework tests, the operator tests and the gate's own tests in about eight minutes; a few are skipped because they need the private range kit, the optional orchestration or LangChain OpenAI packages, another operating system, symbolic or hard links the host cannot create, `IMAGER_BIN` (a built imager binary), `BENCHMARK_ATTACK_PROVENANCE` (the pinned ATT&CK bundle outside the repository), or Node or Bun on `PATH` (the board page, Desktop contract and film tests). A Python without the lock installed fails at once with `missing: temporalio` (or another package) instead of skipping suites. The tests run with the Python given by `--python <python.exe>`, else the `HUNT_BOTS_PYTHON` environment variable, else the Python running the script, so another Python can start the gate as long as it points at this venv. `--log <file>` writes every test's name and output to that file, `--policy` runs only the file-list checks in seconds, and installing [gitleaks](https://github.com/gitleaks/gitleaks) adds the secret scan.
 
-## 2. Generate a synthetic case (no VM, no model)
+## 2. Generate a synthetic case (no lab, no model)
 
 From `framework/`:
 
@@ -70,11 +70,18 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
    That writes an unpacked, unsigned app to `apps\desktop\release\win-unpacked\Hunt Command.exe`. It keeps its own app settings and single-instance lock, so it runs beside an installed Hermes desktop app without replacing it, and it never updates itself: pull and rerun `pack:hunt` for a new version. When its Hermes home has no Hermes checkout yet, its first-run install clones this fork instead of upstream Hermes. Both apps answer `hermes://` links and the one launched last wins; starting Hunt Command with `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1` skips its registration and keeps whatever handler is current, without restoring Hermes. If Hunt Command already took the links, start stock Hermes once to take them back. It uses the same Hermes home as Hermes unless told otherwise, so start it on the lab home: `$env:HERMES_HOME = '<full path to runtime\lab-home>'; & '.\apps\desktop\release\win-unpacked\Hunt Command.exe'`. Details: [apps/desktop/BUILDING.md](apps/desktop/BUILDING.md#hunt-command-variant).
 
-## 4. Build the hunting lab VM
+## 4. Start the hunting lab
 
-The lab is a local QEMU VM running Elasticsearch, Arkime and the read-only lab service, reachable only on `127.0.0.1`. It needs QEMU, the pinned Ubuntu cloud image, and about 5 GB of free RAM while it runs. Prepare it with `framework/hunt_lab/prepare_guest.py`, load a case with `prepare_guest.py reseed --update-deployment`, and start it from the Network Analyst profile with `hermes -p framework-network-analyst hunt-lab start`. Details: [framework/README.md, Built-in local hunting lab](framework/README.md#built-in-local-hunting-lab).
+The lab runs as local Docker containers: Elasticsearch, Kibana, Arkime and the read-only lab service, published only on `127.0.0.1`. It needs Docker (Docker Desktop on Windows) with the engine running and about 3.6 GiB of memory for the containers; the first start pulls the pinned images and builds the lab image, so it needs Internet. Without Docker, every `hunt-lab` command answers `"state": "error"` with reason `docker_unavailable`.
 
-With Docker running, the same `hunt-lab start` runs the lab as host containers instead, with no VM: `hermes -p framework-network-analyst hunt-lab start --evidence-dir <case folder> --wait 120` loads that case and waits until it is ready, and `hunt-lab stop` removes it. Add `--vm` to drive the VM while Docker runs. Details: [framework/README.md, Container lab](framework/README.md#built-in-local-hunting-lab).
+From `framework/`, in the shell where step 3 set `$hermes` and `HERMES_HOME`, load the case from step 2 and wait until it is ready, then check it:
+
+```powershell
+& $hermes -p framework-network-analyst hunt-lab start --evidence-dir ([IO.Path]::GetFullPath("$PWD\..\..\runtime\cases\lab-med-001\evidence")) --wait 600
+& $hermes -p framework-network-analyst hunt-lab status
+```
+
+`status` prints JSON with `"state": "running"` once the lab service reports the case ready, plus the case, the compose project `hunt-lab-lab-med-001`, and the loopback `lab_url`, `kibana_url`, `arkime_url` and `lab_console_url`. `..\.venv-dev\Scripts\python.exe bot.py lab status --home ..\..\runtime\lab-home --hermes $hermes` runs the same status. To switch cases, run `& $hermes -p framework-network-analyst hunt-lab stop`, then `hunt-lab start` again with the other case's `--evidence-dir` (`operator/switch_case.py` does both). `hunt-lab stop` removes the case's containers, networks and volumes. Details: [framework/README.md, Built-in local hunting lab](framework/README.md#built-in-local-hunting-lab).
 
 ## 5. Run a hunt
 
@@ -109,7 +116,7 @@ A maintainer reviews it with `/deep-mode:review-pr`, and a code owner approves.
 
 ## 7. Optional: the operator tools
 
-`operator/` holds the tools that run around the hunts. They include the watcher loop that tunes the bots' instructions and keeps only measured gains, case switching for the lab VM, an opt-in gate driver that labels every approval as delegated, and the tool cam and video assembler. Set `LAB_HERMES_EXE` to the lab's `hermes` executable first. Details and safety notes: [operator/README.md](operator/README.md).
+`operator/` holds the tools that run around the hunts. They include the watcher loop that tunes the bots' instructions and keeps only measured gains, case switching for the lab, an opt-in gate driver that labels every approval as delegated, and the tool cam and video assembler. Set `LAB_HERMES_EXE` to the lab's `hermes` executable first. Details and safety notes: [operator/README.md](operator/README.md).
 
 ## Where to help
 

@@ -202,7 +202,7 @@ stock full client (bootstrap payload) with these changes only:
   `package.json` names `TimothyVang/hermes-hunt-bots` as its repository. Hermes variants
   keep `com.nousresearch.*`; userData stays `<appData>/HuntCommand`.
 - Notices: `resources/licenses/hunt-command/` carries the compiled framework/ plugins'
-  license texts (AGPL-3.0, noVNC, Lucide; see `THIRD-PARTY-NOTICES.md`), the Hermes MIT
+  license texts (AGPL-3.0, Lucide; see `THIRD-PARTY-NOTICES.md`), the Hermes MIT
   licence it is built from (`LICENSE.Hermes-MIT`), and `SOURCE.txt` (below).
 - First-run install: Hunt Command and stock Hermes share one checkout,
   `HERMES_HOME/hermes-agent`, and whichever app installs it first decides its

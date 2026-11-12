@@ -40,7 +40,6 @@ import {
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
 import { bindProfileSync, RoutinesPane } from './cron'
-import { QemuConsolePane } from './qemu-console-pane'
 import {
   $botMeta,
   $lastRoster,
@@ -458,19 +457,6 @@ export default {
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
-    })
-    ctx.register({
-      id: 'qemu-console',
-      area: 'panes',
-      title: 'Local QEMU console',
-      data: {
-        placement: 'main',
-        defaultCollapsed: true,
-        width: '720px',
-        tabTitle: () => 'QEMU',
-        tabTitleText: () => 'Local QEMU console'
-      },
-      render: () => <QemuConsolePane />
     })
     ctx.register({
       id: 'pane',

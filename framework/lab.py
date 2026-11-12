@@ -16,25 +16,17 @@ ROOT = Path(__file__).absolute().parent
 PROFILE = 'framework-network-analyst'
 # Written into a Hermes home by the self-updating launcher while it updates and restarts that home's gateway.
 UPDATE_MARKER = '.hermes-update-in-progress'
-# Every authored profile receives the read-only hunt tools; only PROFILE owns the VM.
+# Every authored profile receives the read-only hunt tools; only PROFILE owns the lab.
 AUTHORED_PROFILES = (
     'framework-coordinator', 'framework-researcher', 'framework-builder',
     'framework-reviewer', 'framework-librarian', PROFILE,
 )
-LICENSES = (
-    'noVNC-LICENSE.txt', 'noVNC-AUTHORS.txt', 'LICENSE.MPL-2.0',
-    'LICENSE.BSD-2-Clause', 'LICENSE.BSD-3-Clause', 'LICENSE.OFL-1.1',
-    'pako-LICENSE.MIT', 'regenerator-LICENSE.MIT', 'babel-LICENSE.MIT',
-    'lucide-LICENSE.txt',
-)
-DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple(
-    'licenses/' + name for name in LICENSES)
+DESKTOP_FILES = ('plugin.js', 'package.json', 'licenses/lucide-LICENSE.txt')
 BACKEND_FILES = (
-    '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py', 'lab_stack.py',
+    '__init__.py', 'case_files.py', 'lab_stack.py',
     'query_adapter.py', 'endpoints.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
-    'actionability.py', 'plugin.yaml', 'assets.json',
-    'guest/compose.yaml', 'guest/compose.stack.yaml', 'guest/Dockerfile.lab', 'guest/arkime.ini',
-    'guest/bootstrap_guest.sh',
+    'actionability.py', 'plugin.yaml',
+    'guest/compose.stack.yaml', 'guest/Dockerfile.lab', 'guest/arkime.ini',
     'guest/ingest.py', 'guest/lab_server.py', 'guest/image-lock.json',
     'guest/kibana.yml', 'guest/kibana_setup.py',
     'fixtures/dns-lab-001/events.jsonl', 'fixtures/dns-lab-001/traffic.pcap',
@@ -236,10 +228,10 @@ def _pid_alive(pid):
 
 
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
-    """Stage both native halves and the existing companion; no VM/download action.
+    """Stage both native halves and the existing companion; never starts the lab.
 
     The backend goes to the analyst (required) and every other registered authored
-    profile so each can load its read-only tools; VM lifecycle stays analyst-only.
+    profile so each can load its read-only tools; lab lifecycle stays analyst-only.
     """
     root = resolve_home(home)
     refuse_during_update(root)
@@ -260,7 +252,7 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     companion_data = companion.read_bytes()
     # A backend desktop/ folder makes Hermes auto-copy a unified package with
     # Desktop opt-in posture. Install the explicit standalone SDK component
-    # instead; only its human Start authorizes setup or VM execution.
+    # instead; only its human Start starts the lab.
     backend_files = {name: files[name] for name in BACKEND_FILES}
     backends = {name: install_desktop.sync_bundle(profile / 'plugins', 'hunt-lab', backend_files)
                 for name, profile in profiles.items()}
@@ -272,10 +264,10 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
         result = runner([executable, '-p', name, 'plugins', 'enable', 'hunt-lab'],
                         env=env, check=False)
         if result.returncode != 0:
-            raise ValueError('Native Hermes plugin enable failed; no VM operation was attempted')
+            raise ValueError('Native Hermes plugin enable failed; no lab operation was attempted')
     gateway = {name: reload_gateway(profile, python, runner) for name, profile in profiles.items()}
     return {'profile': PROFILE, 'tool_profiles': list(profiles), 'backend': str(backends[PROFILE]),
-            'desktop': str(desktop), 'gateway': gateway, 'state': 'installed', 'prepared': False}
+            'desktop': str(desktop), 'gateway': gateway, 'state': 'installed'}
 
 
 def command(args):
@@ -285,7 +277,7 @@ def command(args):
     registered_profile(home, PROFILE)
     executable = hermes_executable(args.hermes)
     if args.lab_operation == 'check':
-        # Source and exact registered paths only; no enable, download, or VM RPC.
+        # Source and exact registered paths only; no enable or lab action.
         bundle_source()
         print(json.dumps({'profile': PROFILE, 'state': 'available'}))
         return 0

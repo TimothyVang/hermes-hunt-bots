@@ -14,7 +14,7 @@ import random
 import tempfile
 import unittest
 
-from hunt_lab import import_dedale, import_elastic, prepare_guest
+from hunt_lab import case_files, import_dedale, import_elastic
 
 
 URL = "https://elastic.example.test:9243"
@@ -387,7 +387,7 @@ class Import(unittest.TestCase):
         self.assertEqual(case["sources"], [{"artifact": "events.jsonl", "coverage":
                                             "Real ECS records exported from the operator's work Elastic: 7 records from 2 hosts; "
                                             "datasets: system.security; no packet capture, no intel feed."}])
-        self.assertEqual(prepare_guest.case_metadata(evidence / "case.json"), case)
+        self.assertEqual(case_files.case_metadata(evidence / "case.json"), case)
         self.assertEqual({path.name for path in evidence.iterdir()}, {"events.jsonl", "case.json"})
         text = ((evidence / "case.json").read_text(encoding="utf-8") + (evidence / "events.jsonl").read_text(encoding="utf-8"))
         for word in ("synthetic", "logs-a", "id-3", "_index"):

@@ -363,7 +363,7 @@ class LabInstallTests(unittest.TestCase):
         marker.write_text('')
         run = Mock(return_value=subprocess.CompletedProcess([], 0))
         with patch.object(lab.subprocess, 'run', run):
-            for operation in ('check', 'status', 'prepare', 'start', 'stop', 'query'):
+            for operation in ('check', 'status', 'start', 'stop', 'query'):
                 with self.subTest(operation=operation), self.assertRaises(ValueError) as caught:
                     lab.command(self.lab_args(operation, '--hermes', sys.executable))
                 self.assertIn(str(marker), str(caught.exception))

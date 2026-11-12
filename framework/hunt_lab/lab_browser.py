@@ -1012,14 +1012,14 @@ def _bounded(envelope):
     return envelope
 
 
-def call(arguments, *, runtime, state_dir, profile, browser_root=None):
+def call(arguments, *, state_dir, profile, browser_root=None):
     """Run one lab_browser action for `profile`; returns JSON-safe data or a fixed error code."""
     session, command, case_id, outcome = None, None, None, None
     try:
         command = parse_command(arguments)
         case_id = _case_id(arguments)
-        served = serving_lab(runtime, state_dir, profile, case_id)
-        if served.origin not in ('vm', 'container'):
+        served = serving_lab(state_dir, profile, case_id)
+        if served.origin != 'container':
             raise QueryFailure('no_lab_browser')
         try:
             kibana = endpoint(served.kibana_url) if served.kibana_url else None

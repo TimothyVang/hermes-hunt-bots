@@ -292,7 +292,7 @@ def parser():
     p.add_argument('-w', '--workspace', default='./bot-workspace', help='workspace directory (default: ./bot-workspace)')
     sub = p.add_subparsers(dest='command', required=True)
     lab = sub.add_parser('lab', help='human-operated native built-in lab; never opens the ledger')
-    lab.add_argument('lab_operation', choices=('check', 'status', 'prepare', 'start', 'stop', 'query'))
+    lab.add_argument('lab_operation', choices=('check', 'status', 'start', 'stop', 'query'))
     lab.add_argument('--home', help='General Hermes home (otherwise HERMES_HOME or standard platform home)')
     lab.add_argument('--hermes', help='Native Hermes executable override')
     lab.add_argument('--case-id')

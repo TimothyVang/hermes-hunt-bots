@@ -340,7 +340,7 @@ def watcher(context, d, attempt_note='', rules=WATCHER_RULES):
 
 def parse_args(argv=None, prog=None, description=__doc__):
     ap = argparse.ArgumentParser(prog=prog, description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('dev_case', help='case ID loaded in the lab VM')
+    ap.add_argument('dev_case', help='case ID loaded in the lab')
     ap.add_argument('dev_truth', help='operator-only answer key (truth.json) for dev_case')
     ap.add_argument('--delegated-by', required=True, help='person who delegated the gate approvals (see drive_gates.py)')
     ap.add_argument('--reason', required=True, help='their instruction, recorded in every approval note')

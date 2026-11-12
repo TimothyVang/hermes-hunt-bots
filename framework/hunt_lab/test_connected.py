@@ -138,14 +138,6 @@ class FakeElastic:
         return [value for method, path, value in self.requests if path.startswith('/_search')]
 
 
-class Runtime:
-    """The analyst VM is stopped, so the bot tools can reach the connected service only through its state file."""
-
-    @classmethod
-    def invoke(cls, action, **_):
-        return {'profile': query_adapter.LAB_OWNER, 'state': 'stopped'}
-
-
 class ConnectedCase(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -178,7 +170,7 @@ class ConnectedCase(unittest.TestCase):
         return server, source, state, environ
 
     def tool(self, tool_name, **arguments):
-        return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments}, runtime=Runtime,
+        return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments},
                                       state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
 
     def open(self, path, headers):
@@ -671,7 +663,7 @@ class ServiceTests(ConnectedCase):
         self.assertTrue(searched['ok'], searched)
         self.assertEqual(len(searched['result']['hits']), 2)
         self.assertNotIn(self.secret, json.dumps(searched))
-        self.assertNotIn(self.secret, repr(endpoints.resolve(self.home / 'hunt-lab-vm', CASE_ID, runtime=Runtime)))
+        self.assertNotIn(self.secret, repr(endpoints.resolve(self.home / 'hunt-lab-vm', CASE_ID)))
         # A state file naming another secret gets the service's own refusal, relayed as its fixed code.
         state = self.home / connected.CONNECTED_STATE / 'state.json'
         recorded = json.loads(state.read_text(encoding='utf-8'))

@@ -7,8 +7,8 @@ Steps, each stopping the run on failure:
               the export child alone: no other child (lab, hunt, gate driver, so no bot) inherits it.
   2. import   hunt_lab.import_elastic import into runtime/cases/<case-id>/evidence ("data_origin":
               "work-export"). An existing case folder or export file is refused before any network call.
-  3. load     operator/switch_case.py <evidence> --hold as a holder that outlives this command and keeps
-              the VM up; its output goes to runtime/practice/work-hunts/<case-id>/holder.log.
+  3. load     operator/switch_case.py <evidence>: restarts the container lab on this case, which stays loaded
+              after this command ends; its output goes to runtime/practice/work-hunts/<case-id>/lab.log.
   4. input    hermes_temporal.cli lab-input --tool-driven --data-origin work-export: the bots get only the
               loaded case, labelled a work log export, never the cluster address, index or key.
   5. hunt     one parallel practice round with --follow-ups follow-up hunters (default 6).
@@ -23,7 +23,7 @@ evaluation. The run's record is runtime/practice/work-hunts/<case-id>/hunt.json.
 
 Usage: python operator/work_hunt.py --url https://HOST:9200 --index PATTERN --start ISO --end ISO --case-id ID
            (--operator "<name>" | --delegated-by "<person>" --reason "<text>")
-           [--hosts NAME,NAME] [--ca-file CA.pem] [--follow-ups 6] [--max-events N] [--reseed-python PATH]
+           [--hosts NAME,NAME] [--ca-file CA.pem] [--follow-ups 6] [--max-events N]
 """
 import argparse
 import contextlib
@@ -71,8 +71,6 @@ def parse_args(argv=None):
     ap.add_argument('--operator', help='two-decision mode: you approve the scope and decide the final report')
     ap.add_argument('--delegated-by', help='delegated mode: the person who delegated every gate approval')
     ap.add_argument('--reason', help='delegated mode: their instruction, recorded in every approval note')
-    ap.add_argument('--reseed-python', default=PYTHON,
-                    help='Python with pycdlib that reseeds the lab VM (default: HUNT_BOTS_PYTHON or this Python)')
     args = ap.parse_args(argv)
     if not CASE_ID_PATTERN.match(args.case_id):
         ap.error('--case-id must match [a-z0-9-]{3,64}')
@@ -92,8 +90,6 @@ def parse_args(argv=None):
         if not Path(args.ca_file).is_file():
             ap.error(f'--ca-file is not a file: {args.ca_file}')
         args.ca_file = str(Path(args.ca_file).resolve())
-    if not shutil.which(args.reseed_python):
-        ap.error(f'--reseed-python is not an executable: {args.reseed_python}')
     if args.operator is not None:
         args.gate_args = ['--two-decisions', '--operator', args.operator]
         if args.delegated_by is not None or args.reason is not None:
@@ -150,44 +146,31 @@ def last_json(text):
     return json.loads(line)
 
 
-def start_holder(evidence, log_path, reseed_python):
-    """switch_case.py --hold in its own process group, logging to log_path, so Ctrl+C at the gate driver and the
-    end of this command leave it running."""
-    group = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
-             else {'start_new_session': True})
-    log = log_path.open('ab')
-    try:
-        return subprocess.Popen([sys.executable, '-B', '-u', str(Path(__file__).with_name('switch_case.py')),
-                                 str(evidence), '--hold'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                env=dict(DEFAULT_LANE.env(), HUNT_BOTS_PYTHON=reseed_python), **group)
-    finally:
-        log.close()
+def load_lab(evidence, log_path, case_id, timeout=READY_SECONDS):
+    """switch_case.py on the case's evidence, logging to log_path; its READY line once it names this case with
+    events, else SystemExit."""
+    with log_path.open('ab') as log:
+        try:
+            rc = subprocess.run([sys.executable, '-B', '-u', str(Path(__file__).with_name('switch_case.py')),
+                                 str(evidence)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                env=DEFAULT_LANE.env(), timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f'the lab did not report READY within {timeout // 60} minutes; see {log_path}') from None
+    text = log_path.read_text(encoding='utf-8', errors='replace')
+    ready = next((line for line in text.splitlines() if ' READY ' in line), None)
+    if rc or not ready:
+        raise SystemExit(f'switch_case.py exited ({rc}) before READY; see {log_path}')
+    fields = dict(part.split('=', 1) for part in ready.split() if '=' in part)
+    if fields.get('case') != case_id or fields.get('events') in (None, 'None', '0'):
+        raise SystemExit(f'the lab did not load {case_id}: {ready.strip()} (lab log {log_path})')
+    return ready.strip()
 
 
-def stop_hint(holder_pid):
-    # QEMU runs detached from the holder, so ending the holder alone leaves the VM running.
-    end = f'taskkill /PID {holder_pid} /F' if os.name == 'nt' else f'kill {holder_pid}'
-    return (f'stop the holder ({end}) and then the VM ('
+def stop_hint(case_id):
+    return ('stop it with '
             + drive_gates.shell_join([DEFAULT_LANE.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', 'stop',
-                                      '--vm'])
-            + f' with HERMES_HOME={DEFAULT_LANE.home})')
-
-
-def wait_ready(holder, log_path, case_id, timeout=READY_SECONDS, poll=5):
-    """The holder's READY line once it names this case with events; SystemExit if it ends or times out first."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        text = log_path.read_text(encoding='utf-8', errors='replace') if log_path.exists() else ''
-        ready = next((line for line in text.splitlines() if ' READY ' in line), None)
-        if ready:
-            fields = dict(part.split('=', 1) for part in ready.split() if '=' in part)
-            if fields.get('case') != case_id or fields.get('events') in (None, 'None', '0'):
-                raise SystemExit(f'the lab did not load {case_id}: {ready.strip()} (holder log {log_path})')
-            return ready.strip()
-        if holder.poll() is not None:
-            raise SystemExit(f'the lab holder exited ({holder.returncode}) before READY; see {log_path}')
-        time.sleep(poll)
-    raise SystemExit(f'the lab did not report READY within {timeout // 60} minutes; see {log_path}')
+                                      '--case-id', case_id])
+            + f' with HERMES_HOME={DEFAULT_LANE.home}')
 
 
 def drive(workflow, gate_args):
@@ -268,11 +251,10 @@ def main(args):
     record['import'] = {name: result[name] for name in ('data_origin', 'event_count', 'host_count', 'outside_window', 'files')}
 
     work.mkdir(parents=True)
-    holder_log = work / 'holder.log'
-    holder = start_holder(evidence, holder_log, args.reseed_python)
-    record['lab'] = {'holder_pid': holder.pid, 'holder_log': str(holder_log)}
+    lab_log = work / 'lab.log'
+    record['lab'] = {'log': str(lab_log)}
     try:
-        return hunt(args, record, work, holder)
+        return hunt(args, record, work, evidence)
     except BaseException as failure:
         # Whatever ends the run early (a failed step, Ctrl+C, an unreadable status), the lab stays loaded and a
         # started workflow may wait at a gate: keep the record and say how to resume and how to stop.
@@ -281,15 +263,15 @@ def main(args):
         if 'workflow' in record:
             print('resume the gate driver with: '
                   + drive_gates.shell_join(drive_command(record['workflow'], args.gate_args)), flush=True)
-        print(f"the lab stays loaded with case {args.case_id}; {stop_hint(holder.pid)}. Record: {work / 'hunt.json'}",
+        print(f"the lab stays loaded with case {args.case_id}; {stop_hint(args.case_id)}. Record: {work / 'hunt.json'}",
               flush=True)
         raise
 
 
-def hunt(args, record, work, holder):
-    say(f"loading the lab VM (holder pid {holder.pid}, log {record['lab']['holder_log']}); this takes several minutes")
-    ready = wait_ready(holder, Path(record['lab']['holder_log']), args.case_id)
-    print(ready, flush=True)  # the holder's line already carries its time
+def hunt(args, record, work, evidence):
+    say(f"loading case {args.case_id} into the lab (log {record['lab']['log']}); this takes several minutes")
+    ready = load_lab(evidence, Path(record['lab']['log']), args.case_id)
+    print(ready, flush=True)  # switch_case's line already carries its time
     record['lab']['ready'] = ready
 
     base_path = work / 'lab-input.json'
@@ -336,7 +318,7 @@ def hunt(args, record, work, holder):
     say(f"HUNT {'COMPLETED' if completed else 'ENDED'} {child_id} stage={record['stage']} "
         f"tokens={usage['total_tokens'] if usage else 'unknown'} "
         + (f'report={report}' if report.exists() else 'no final report'))
-    say(f'the lab stays loaded with case {args.case_id}; when you are done, {stop_hint(holder.pid)}. '
+    say(f'the lab stays loaded with case {args.case_id}; when you are done, {stop_hint(args.case_id)}. '
         f"Record: {work / 'hunt.json'}")
     return 0 if completed else 1
 

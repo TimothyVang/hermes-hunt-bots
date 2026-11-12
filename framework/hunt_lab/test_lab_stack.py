@@ -3,7 +3,8 @@
 Run from framework/: python -B -m unittest hunt_lab.test_lab_stack
 With Docker installed, the compose checks also read Docker's own rendering of the file (`docker compose config`).
 """
-from contextlib import redirect_stdout
+import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -101,12 +102,6 @@ class ComposeFileTests(unittest.TestCase):
         self.assertEqual(lab_stack.lab_image(),
                          'hermes-hunt-lab:' + hashlib.sha256((GUEST / 'Dockerfile.lab').read_bytes()).hexdigest()[:12])
 
-    def test_the_vm_guest_compose_file_is_unchanged_for_the_vm(self):
-        # bootstrap_guest.sh still addresses Elasticsearch at the fixed guest address until the VM is removed.
-        text = (GUEST / 'compose.yaml').read_text(encoding='utf-8')
-        self.assertIn('ipv4_address: 172.30.91.2', text)
-        self.assertIn('network_mode: host', text)
-
 
 class FakeDocker:
     """Stands in for the Docker CLI: records each call and answers `compose ps` with `services`."""
@@ -173,7 +168,7 @@ class StackTests(unittest.TestCase):
         self.docker.services = {name: ('running', 0) for name in lab_stack.SERVICES}
         self.docker.services.update({name: ('exited', 0) for name in lab_stack.ONE_SHOTS})
 
-    def test_start_stages_only_the_vm_payload_evidence_and_writes_a_state_the_resolver_accepts(self):
+    def test_start_stages_only_allowlisted_evidence_and_writes_a_state_the_resolver_accepts(self):
         folder = self.evidence(**{'answer-key.json': '{"facts": []}', 'notes.txt': 'operator only'})
         result = self.invoke('start', evidence_dir=str(folder))
         self.assertEqual((result['state'], result['reason'], result['origin'], result['case_id']),
@@ -234,7 +229,7 @@ class StackTests(unittest.TestCase):
         self.assertEqual(self.invoke('start', evidence_dir=str(folder), case_id='dns-lab-001')['reason'],
                          'case_mismatch')
 
-    def test_start_refuses_evidence_the_vm_would_refuse(self):
+    def test_start_refuses_evidence_the_case_rules_refuse(self):
         no_capture = self.evidence()
         case = json.loads((no_capture / 'case.json').read_text(encoding='utf-8'))
         (no_capture / 'case.json').write_text(json.dumps({**case, 'network_capture': 'none'}), encoding='utf-8')
@@ -366,46 +361,45 @@ class StackTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
-    """`hermes -p framework-network-analyst hunt-lab ...` uses the container lab while Docker answers."""
+    """`hermes -p framework-network-analyst hunt-lab ...` acts only on the container lab."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name) / 'profiles' / lab_stack.PROFILE
 
-    def command(self, operation, available, **options):
+    def command(self, operation, **options):
         cli = types.SimpleNamespace(explicit_cli_profile=lambda: lab_stack.PROFILE)
         constants = types.SimpleNamespace(get_hermes_home=lambda: self.home,
                                           profile_name_for_home=lambda _home: lab_stack.PROFILE)
-        args = types.SimpleNamespace(hunt_lab_operation=operation, case_id=None, evidence_dir=None, wait=0, vm=False)
+        args = types.SimpleNamespace(hunt_lab_operation=operation, case_id=None, evidence_dir=None, wait=0)
         args.__dict__.update(options)
-        stack_calls, vm_calls = [], []
-        managed = types.ModuleType('managed')
-        managed.invoke = lambda action, **kw: vm_calls.append(action) or {
-            'profile': lab_stack.PROFILE, 'state': 'stopped', 'reason': 'not_started'}
+        stack_calls = []
         stdout = io.StringIO()
         with patch.dict(sys.modules, {'hermes_cli': types.ModuleType('hermes_cli'), 'hermes_cli.main': cli,
-                                      'hermes_constants': constants, 'hunt_lab.managed': managed}), \
-                patch.object(lab_stack, 'available', return_value=available), \
+                                      'hermes_constants': constants}), \
                 patch.object(lab_stack, 'invoke', side_effect=lambda action, **kw: stack_calls.append((action, kw)) or {
                     'profile': lab_stack.PROFILE, 'origin': 'container', 'state': 'running', 'reason': None}), \
                 redirect_stdout(stdout):
             code = hunt_lab._command(args)
-        return code, json.loads(stdout.getvalue()), stack_calls, vm_calls
+        return code, json.loads(stdout.getvalue()), stack_calls
 
-    def test_lifecycle_uses_the_container_lab_when_docker_answers(self):
-        code, result, stack_calls, vm_calls = self.command('start', True, evidence_dir='C:/case', wait=120)
-        self.assertEqual((code, result['origin'], result['state'], vm_calls), (0, 'container', 'running', []))
+    def test_lifecycle_uses_the_container_lab(self):
+        code, result, stack_calls = self.command('start', evidence_dir='C:/case', wait=120)
+        self.assertEqual((code, result['origin'], result['state']), (0, 'container', 'running'))
         [(action, options)] = stack_calls
         self.assertEqual((action, options['evidence_dir'], options['wait'], options['state_dir']),
                          ('start', 'C:/case', 120, self.home / 'hunt-lab-vm'))
 
-    def test_the_vm_serves_prepare_vm_and_hosts_without_docker(self):
-        for operation, available, options in (('prepare', True, {}), ('start', True, {'vm': True}),
-                                              ('status', False, {})):
-            with self.subTest(operation=operation, available=available, options=options):
-                code, result, stack_calls, vm_calls = self.command(operation, available, **options)
-                self.assertEqual((code, result['origin'], stack_calls, vm_calls), (0, 'vm', [], [operation]))
+    def test_the_cli_offers_no_vm_operation(self):
+        parser = argparse.ArgumentParser()
+        hunt_lab._setup(parser)
+        for argv in (['prepare'], ['start', '--vm']):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+        for operation in ('status', 'start', 'stop'):
+            with self.subTest(operation=operation):
+                self.assertEqual(self.command(operation)[2][0][0], operation)
 
 
 if __name__ == '__main__':
