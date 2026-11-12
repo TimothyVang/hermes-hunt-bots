@@ -680,6 +680,19 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
             WorkflowHistory.from_json("test-hermes-pre-retry-history", raw))
         self.assertEqual(_replayed_gate_records, [[]])
 
+    def test_the_cli_refuses_a_malformed_identity_with_its_rules_before_connecting(self) -> None:
+        from .cli import _DECIDER_REFUSAL, main
+        base = ["--address", "127.0.0.1:1", "decision", "wf", "--step-id", "scope", "--phase", "execute",
+                "--choice", "approve", "--decision-id", "d1"]
+        for extra in (["--decided-by", "   "], ["--decided-by", "Ada", "--via", "slack"], ["--via", "automated"],
+                      ["--decided-by", "Ada", "--slack-user", "U0ADA"]):
+            stderr = io.StringIO()
+            with self.subTest(extra=extra), contextlib.redirect_stderr(stderr), \
+                    self.assertRaises(SystemExit) as stopped:
+                main(base + extra)
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertIn(_DECIDER_REFUSAL, " ".join(stderr.getvalue().split()))
+
     async def test_status_records_who_decided_each_gate_and_ignores_invalid_identities(self) -> None:
         @activity.defn(name="execute_hermes_step")
         async def execute(request: ExecutionRequest) -> ExecutionResult:
