@@ -57,9 +57,10 @@ class FakeLab:
     """A loopback stand-in for the guest lab API: /case, /health, paged /activity and /es/search by event.id."""
 
     def __init__(self, case=None, events=(), activity=(), *, redirect=False, body=None, network_scope="tag",
-                 instance=None):
+                 instance=None, refuse_unknown=False):
         self.case = dict(case or TOOL_CASE)
         self.instance = instance
+        self.refuse_unknown = refuse_unknown
         self.network_scope = network_scope
         self.events = {event["event.id"]: event for event in events}
         self.activity = list(activity)
@@ -76,11 +77,12 @@ class FakeLab:
                     self.send_header("Location", "http://127.0.0.1:9/case")
                     self.end_headers()
                     return
-                self._json(body if body is not None else lab.route(url.path, query))
+                answer = body if body is not None else lab.route(url.path, query)
+                self._json(*(answer if isinstance(answer, tuple) else (200, answer)))
 
-            def _json(self, value):
+            def _json(self, status, value):
                 data = json.dumps(value).encode("utf-8")
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 if lab.instance:
@@ -108,8 +110,10 @@ class FakeLab:
             more = len([entry for entry in self.activity if entry["seq"] > after]) > len(page)
             return {"case_id": case_id, "next": page[-1]["seq"] if page else after, "more": more, "entries": page}
         if path == "/es/search":
-            hits = [self.events[event_id] for event_id in re.findall(r"evt-\d+", query.get("q", ""))
-                    if event_id in self.events]
+            cited = re.findall(r"evt-\d+", query.get("q", ""))
+            if self.refuse_unknown and set(cited) - set(self.events):
+                return 400, {"error": "unknown_citation"}
+            hits = [self.events[event_id] for event_id in cited if event_id in self.events]
             return {"case_id": case_id, "total": len(hits), "total_relation": "eq", "returned": len(hits),
                     "hits": hits, "next_after": None}
         return {"case_id": case_id}
@@ -121,6 +125,15 @@ class FakeLab:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(5)
+
+
+def write_connected_state(analyst: Path, lab: FakeLab, case_id: str) -> str:
+    """Write the state.json `hunt_lab.connected serve` writes for `lab`; returns the VM state dir beside it."""
+    (analyst / "hunt-lab-connected").mkdir(parents=True, exist_ok=True)
+    (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
+        "version": 1, "pid": 1, "port": lab.server.server_address[1], "case_id": case_id,
+        "instance": lab.instance, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
+    return str(analyst / "hunt-lab-vm")
 
 
 def fake_runtime(status):
@@ -486,12 +499,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.addCleanup(lab.close)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        analyst = Path(temp.name) / "framework-network-analyst"
-        (analyst / "hunt-lab-connected").mkdir(parents=True)
-        (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
-            "version": 1, "pid": 1, "port": lab.server.server_address[1], "case_id": case["case_id"],
-            "instance": "a" * 32, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
-        return lab, str(analyst / "hunt-lab-vm")
+        return lab, write_connected_state(Path(temp.name) / "framework-network-analyst", lab, case["case_id"])
 
     def test_export_finds_a_connected_case_while_the_vm_is_stopped_and_refuses_two_labs(self):
         lab, state_dir = self.connected(CONNECTED_CASE)

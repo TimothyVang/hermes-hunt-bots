@@ -6,9 +6,8 @@ from pathlib import Path
 import re
 from urllib import parse
 
-from .endpoints import DEFAULT_TIMEOUT, QueryFailure, resolve
+from .endpoints import CASE_ID, DEFAULT_TIMEOUT, LAB_OWNER, QueryFailure, resolve
 
-LAB_OWNER = 'framework-network-analyst'
 FRAMEWORK_PROFILES = frozenset({
     'framework-coordinator', 'framework-researcher', 'framework-builder',
     'framework-reviewer', 'framework-librarian', LAB_OWNER,
@@ -24,7 +23,6 @@ TOOL_OWNERSHIP = {
     'framework-librarian': ('intel_lookup', 'elastic_aggregate'),
     LAB_OWNER: ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'),
 }
-CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 TEXT = re.compile(r'[^\x00-\x1f\x7f]*')
 TOKEN = re.compile(r'[\x21-\x7e]{1,2048}')
 FIELD = re.compile(r'@timestamp|[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')

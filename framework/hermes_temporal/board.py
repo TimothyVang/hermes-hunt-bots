@@ -1029,6 +1029,13 @@ class _LabRefused(Exception):
     """The lab answered with something the board will not display."""
 
 
+# The lab resolver's refusals that mean a lab is up but is not this input's.
+_RESOLVER_REFUSALS = {
+    "case_mismatch": "the lab has a different case loaded than this input",
+    "ambiguous_lab": "both the VM and a connected service serve this case (ambiguous_lab)",
+}
+
+
 class LabObserver:
     """Poll one loopback lab's ``/activity`` ring and look up cited events by ``event.id``.
 
@@ -1126,15 +1133,28 @@ class LabObserver:
                 self._missing.add(wanted.pop(0))  # an ID too long for any lookup query
                 continue
             wanted = wanted[len(batch):]
-            query = "event.id:(" + " OR ".join(f'"{item}"' for item in batch) + ")"
-            body = self._call("/es/search?" + parse.urlencode({"q": query, "size": 200, "fields": _LOOKUP_FIELDS}))
-            if not isinstance(body.get("hits"), list):
-                raise _LabRefused("lab search response is malformed")
-            for hit in body["hits"]:
+            for hit in self._search(batch):
                 row = _nest(hit) if isinstance(hit, dict) else {}
                 if _get(row, "event", "id") in batch:
                     self._events[row["event"]["id"]] = row
             self._missing.update(event_id for event_id in batch if event_id not in self._events)
+
+    def _search(self, batch: list[str]) -> list:
+        """The lab's hits for ``event.id:(batch)``.
+
+        A connected service refuses a query naming any citation it never served (``unknown_citation``)
+        rather than answer no hits, so such a batch is looked up one ID at a time.
+        """
+        query = "event.id:(" + " OR ".join(f'"{item}"' for item in batch) + ")"
+        try:
+            body = self._call("/es/search?" + parse.urlencode({"q": query, "size": 200, "fields": _LOOKUP_FIELDS}))
+        except LabInputError as exc:
+            if exc.code != "unknown_citation":
+                raise
+            return [] if len(batch) == 1 else [hit for event_id in batch for hit in self._search([event_id])]
+        if not isinstance(body.get("hits"), list):
+            raise _LabRefused("lab search response is malformed")
+        return body["hits"]
 
 
 class Board:
@@ -1443,8 +1463,17 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
         return LabObserver(lambda: endpoints, case_id, activity_after=after)
 
     def resolve() -> dict:
-        served = resolve_lab(args.lab_state_dir, case_id)
-        return {"lab_url": served.lab_url, "arkime_url": served.arkime_url, "instance": served.instance, **override}
+        try:
+            served = resolve_lab(args.lab_state_dir, case_id)
+        except LabInputError as exc:
+            if exc.code in _RESOLVER_REFUSALS:
+                raise _LabRefused(_RESOLVER_REFUSALS[exc.code]) from None
+            raise
+        try:
+            arkime = loopback_base(served.arkime_url)
+        except LabInputError:
+            arkime = None
+        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, **override}
 
     return LabObserver(resolve, case_id, activity_after=after)
 
