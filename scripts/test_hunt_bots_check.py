@@ -165,6 +165,24 @@ class GateTests(unittest.TestCase):
         run_tests.assert_not_called()
         self.assertEqual(out.getvalue().strip(), 'hunt-bots-check: policy: 3 tracked files, 0 problem(s)  -> PASS')
 
+    def test_benchmark_runs_only_with_its_flag(self):
+        (self.root / 'research' / 'benchmark').mkdir(parents=True)
+        self.write('research/benchmark', 'test_good.py', PASSING)
+        self.write('research/benchmark', 'test_more.py', PASSING.replace('Good', 'More'))
+        code, summary, _ = self.run_gate()
+        self.assertEqual(code, 0, summary)
+        self.assertNotIn('benchmark tests', summary)
+        code, summary, _ = self.run_gate('--benchmark')
+        self.assertEqual(code, 0, summary)
+        self.assertIn('benchmark tests: Ran 2 tests', summary)
+        for label in ('framework tests', 'operator tests', 'gate tests'):
+            self.assertNotIn(label, summary)
+        self.write('research/benchmark', 'test_broken.py', failing('test_benchmark_breaks'))
+        code, summary, out = self.run_gate('--benchmark')
+        self.assertEqual(code, 1)
+        self.assertIn('benchmark tests failed: FAIL: test_benchmark_breaks', out)
+        self.assertEqual(self.run_gate()[0], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

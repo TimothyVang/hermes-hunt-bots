@@ -2,6 +2,7 @@
 
     python scripts/hunt_bots_check.py                 policy gate + framework, operator and gate tests + gitleaks (if installed)
     python scripts/hunt_bots_check.py --policy        policy gate only (seconds)
+    python scripts/hunt_bots_check.py --benchmark     policy gate + the parked benchmark's tests (research/benchmark/) only
     python scripts/hunt_bots_check.py --python EXE    run the tests with EXE (default: $HUNT_BOTS_PYTHON, else this Python)
     python scripts/hunt_bots_check.py --log FILE      also write every test's full output to FILE
 
@@ -29,6 +30,8 @@ ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
 REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
 SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
           ('gate tests', 'scripts', 'test_hunt_bots_check.py'))
+# The parked benchmark (research/benchmark/README.md) runs only on demand, never in the default gate.
+BENCHMARK_SUITES = (('benchmark tests', 'research/benchmark', 'test*.py'),)
 FAILED_TEST = re.compile(r'^(?:FAIL|ERROR): .+$', re.MULTILINE)
 MISSING_PROBE = (
     'import importlib, sys\n'
@@ -94,6 +97,8 @@ def resolve_python(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='hermes-hunt-bots local pre-PR gate')
     parser.add_argument('--policy', action='store_true', help='run the policy gate only')
+    parser.add_argument('--benchmark', action='store_true',
+                        help="run the parked benchmark's tests (research/benchmark/) instead of the default suites")
     parser.add_argument('--python', default=os.environ.get('HUNT_BOTS_PYTHON') or sys.executable,
                         help='interpreter for the tests (default: $HUNT_BOTS_PYTHON, else this Python)')
     parser.add_argument('--log', type=Path, help='write the full test output to this file')
@@ -104,12 +109,13 @@ def main(argv=None):
     results = [f'policy: {count} tracked files, {len(problems)} problem(s)']
     failed = bool(problems)
     if not args.policy:
-        failed |= run_tests(resolve_python(args.python), args.log, results)
+        suites = BENCHMARK_SUITES if args.benchmark else SUITES
+        failed |= run_tests(resolve_python(args.python), args.log, results, suites)
     print('hunt-bots-check: ' + '; '.join(results) + ('  -> FAIL' if failed else '  -> PASS'))
     return 1 if failed else 0
 
 
-def run_tests(python, log_path, results):
+def run_tests(python, log_path, results, suites=SUITES):
     print(f'hunt-bots-check: testing with {python}', flush=True)
     missing = missing_modules(python)
     if missing is None:
@@ -120,7 +126,7 @@ def run_tests(python, log_path, results):
         return True
     failed = False
     log = []
-    for label, folder, pattern in SUITES:
+    for label, folder, pattern in suites:
         tests = run_suite(python, folder, pattern)
         tail = [line for line in tests.stderr.splitlines() if line.startswith(('Ran ', 'OK', 'FAILED'))]
         results.append(f'{label}: ' + (' '.join(tail[-2:]) or f'no test report, exit {tests.returncode}'))

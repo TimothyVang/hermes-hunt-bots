@@ -1,4 +1,4 @@
-"""Bounded, secret-safe protocol helpers for the optional Envision bridge."""
+"""Bounded, secret-safe JSON and HTTP helpers for the benchmark (benchmark_contracts, benchmark_models, benchmark_typesafe)."""
 import ipaddress
 import json
 import math
