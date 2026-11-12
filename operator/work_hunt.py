@@ -116,9 +116,33 @@ def parse_args(argv=None):
 
 def child(cmd, env, timeout):
     """(exit code, stdout, stderr) of one child run from framework/."""
-    r = subprocess.run(cmd, cwd=FRAMEWORK, env=env, capture_output=True, text=True, encoding='utf-8',
-                       errors='replace', timeout=timeout, check=False)
-    return r.returncode, r.stdout, r.stderr
+    process = subprocess.Popen(cmd, cwd=FRAMEWORK, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, encoding='utf-8', errors='replace')
+    try:
+        out, err = process.communicate(timeout=timeout)
+    except BaseException:
+        # subprocess.run kills without waiting, and Windows refuses to delete a file the dying child still holds.
+        # Waiting for the pipes to close also waits for the interpreter a venv launcher started.
+        process.kill()
+        process.communicate()
+        raise
+    return process.returncode, out, err
+
+
+def remove_partial(what, *paths):
+    """Remove a killed child's partial work data; the sentence to tell the operator, naming any path left behind."""
+    left = []
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            left.append(str(path))
+    if left:
+        return f'could not remove the partial {what}, which holds real work data; delete it yourself: {", ".join(left)}'
+    return f'the partial {what} was removed'
 
 
 def last_json(text):
@@ -197,12 +221,11 @@ def main(args):
     try:
         rc, out, err = child(cmd, dict(os.environ, **{API_KEY_ENV: key}), EXPORT_SECONDS)
     except BaseException as failure:
-        # A child killed on timeout or Ctrl+C cannot remove its partial file of real work data.
-        export.unlink(missing_ok=True)
-        meta.unlink(missing_ok=True)
+        removed = remove_partial('export', export, meta)
         if isinstance(failure, subprocess.TimeoutExpired):
-            raise SystemExit(f'export timed out after {EXPORT_SECONDS // 60} minutes; the partial export was removed. '
+            raise SystemExit(f'export timed out after {EXPORT_SECONDS // 60} minutes; {removed}. '
                              'Narrow the window or --hosts') from None
+        print(f'export interrupted; {removed}', file=sys.stderr, flush=True)
         raise
     result = last_json(out)
     if rc or 'error' in result:
@@ -228,10 +251,10 @@ def main(args):
                               '--evidence-dir', str(evidence), '--max-events', str(args.max_events)], None, IMPORT_SECONDS)
     except BaseException as failure:
         # The case folder did not exist before this run, so all of it is the killed import's partial output.
-        shutil.rmtree(case_dir, ignore_errors=True)
+        removed = remove_partial('case', case_dir)
         if isinstance(failure, subprocess.TimeoutExpired):
-            raise SystemExit(f'import timed out after {IMPORT_SECONDS // 60} minutes; the partial case was removed; '
-                             + kept) from None
+            raise SystemExit(f'import timed out after {IMPORT_SECONDS // 60} minutes; {removed}; {kept}') from None
+        print(f'import interrupted; {removed}; {kept}', file=sys.stderr, flush=True)
         raise
     result = last_json(out)
     if rc or 'error' in result:

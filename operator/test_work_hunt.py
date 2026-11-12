@@ -4,7 +4,9 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -285,10 +287,30 @@ class MainTest(unittest.TestCase):
         def interrupted(cmd, env, timeout):
             Path(cmd[cmd.index('--output') + 1]).write_text('{"_source": {}}\n', encoding='utf-8')
             raise KeyboardInterrupt
+        err = io.StringIO()
         with patch.object(wh, 'child', interrupted), contextlib.redirect_stdout(io.StringIO()), \
-                self.assertRaises(KeyboardInterrupt):
+                contextlib.redirect_stderr(err), self.assertRaises(KeyboardInterrupt):
             wh.main(wh.parse_args([*ARGS, *DELEGATED]))
         self.assertEqual(list((self.root / 'work-exports').iterdir()), [])
+        self.assertIn('export interrupted; the partial export was removed', err.getvalue())
+
+    def test_a_partial_export_that_cannot_be_removed_is_named(self):
+        export = self.root / 'work-exports' / 'work-test-001.ndjson'
+
+        def slow_export(cmd, env, timeout):
+            export.write_text('{"_source": {}}\n', encoding='utf-8')
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        unlink = Path.unlink
+
+        def held(path, missing_ok=False):
+            if path == export:
+                raise PermissionError(32, 'The process cannot access the file')
+            return unlink(path, missing_ok=missing_ok)
+        with patch.object(wh, 'child', slow_export), patch.object(Path, 'unlink', held):
+            code, _ = self.run_main(*DELEGATED)
+        self.assertIn('could not remove the partial export, which holds real work data; delete it yourself: '
+                      + str(export), str(code))
+        self.assertTrue(export.exists())
 
     def test_an_import_timeout_removes_the_partial_case_and_keeps_the_export(self):
         export_child = self.lab.child
@@ -312,6 +334,32 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn('the gate driver failed; resume it with:', out)
         self.assertIn('drive_gates.py', out.split('resume it with:')[1].splitlines()[0])
+
+
+class ChildTest(unittest.TestCase):
+    def test_an_interrupted_child_has_exited_and_released_its_files_when_child_raises(self):
+        # Seen in review: subprocess.run kills without waiting, and deleting a file the dying child still holds
+        # fails on Windows (WinError 32), leaving partial work data behind.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        held, opened = Path(temp.name) / 'partial.ndjson', Path(temp.name) / 'opened'
+        script = (f'import pathlib, time\nf = open({str(held)!r}, "w")\nf.write("x")\nf.flush()\n'
+                  f'pathlib.Path({str(opened)!r}).write_text("1")\ntime.sleep(60)\n')
+        communicate, calls = subprocess.Popen.communicate, []
+
+        def interrupted_once(process, *args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                deadline = time.time() + 30
+                while not opened.exists() and time.time() < deadline:
+                    time.sleep(0.05)
+                raise KeyboardInterrupt
+            return communicate(process, *args, **kwargs)
+        with patch.object(subprocess.Popen, 'communicate', interrupted_once), self.assertRaises(KeyboardInterrupt):
+            wh.child([sys.executable, '-c', script], None, 120)
+        self.assertTrue(opened.exists())
+        held.unlink()
+        self.assertFalse(held.exists())
 
 
 class WaitReadyTest(unittest.TestCase):
