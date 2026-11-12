@@ -1,5 +1,5 @@
 {
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5-5",
   "currency": "USD",
   "source": "Anthropic public list price, to be confirmed by the operator",
   "per_million": {

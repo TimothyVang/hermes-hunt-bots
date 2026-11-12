@@ -23,11 +23,11 @@ from hunt_lab.query_adapter import TOOL_OWNERSHIP
 PROVIDER = 'anthropic'
 PROFILES = {
     'framework-coordinator': {'model': 'claude-opus-5-5', 'max_turns': 8},
-    'framework-researcher': {'model': 'claude-sonnet-5', 'max_turns': 6},
-    'framework-builder': {'model': 'claude-sonnet-5', 'max_turns': 6},
+    'framework-researcher': {'model': 'claude-sonnet-5-5', 'max_turns': 6},
+    'framework-builder': {'model': 'claude-sonnet-5-5', 'max_turns': 6},
     'framework-reviewer': {'model': 'claude-opus-5-5', 'max_turns': 6},
-    'framework-librarian': {'model': 'claude-sonnet-5', 'max_turns': 6},
-    'framework-network-analyst': {'model': 'claude-sonnet-5', 'max_turns': 6},
+    'framework-librarian': {'model': 'claude-sonnet-5-5', 'max_turns': 6},
+    'framework-network-analyst': {'model': 'claude-sonnet-5-5', 'max_turns': 6},
 }
 
 # Exact choices and descriptions exposed by the pinned advanced-delegation
