@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
+import { IS_HUNT_VARIANT } from '@/variant'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 import { Wordmark } from './wordmark'
@@ -176,7 +177,8 @@ export function Intro({ personality, seed }: IntroProps) {
       data-slot="aui_intro"
     >
       <div className="w-full min-w-0">
-        <Wordmark className="mb-1" text={WORDMARK} />
+        {/* The Hunt Command build keeps its home screen plain: no Hermes wordmark, no display-type hero. */}
+        {IS_HUNT_VARIANT ? null : <Wordmark className="mb-1" text={WORDMARK} />}
 
         <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
       </div>

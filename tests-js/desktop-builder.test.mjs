@@ -237,6 +237,34 @@ test('a renderer built under different VITE_*/NODE_ENV settings is never reused 
   }
 }, 90000)
 
+test('the hunt variant bakes Hunt Command from its stamp and never reuses a stale renderer', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  const restamp = fields => put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), ...fields }))
+  const run = () => JSON.parse(execFileSync(process.execPath, [join(input.out, 'electron-main.mjs')], { cwd: tmpdir(), encoding: 'utf8' }))
+  const saved = process.env.HERMES_DESKTOP_VARIANT
+  try {
+    delete process.env.HERMES_DESKTOP_VARIANT
+    restamp({ payload: 'bootstrap', updateMechanism: 'self', tag: null })
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    expect(run().identity.displayName).toBe('Hermes')
+    expect(run().identity.hunt).toBeUndefined()
+
+    process.env.HERMES_DESKTOP_VARIANT = 'hunt'
+    restamp({ variant: 'hunt' })
+    // vite.config.ts bakes the variant: a stock renderer is never reused for a hunt build.
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    expect(run().identity).toMatchObject({ hunt: true, displayName: 'Hunt Command', channel: null })
+    restamp({ commit: 'c'.repeat(40) })
+    expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+    // Its bundled framework/ plugins sit outside the desktop source hash but still invalidate it.
+    put(join(input.source, 'framework/hunt_lab/desktop/plugin.js'), 'export default {}')
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  } finally {
+    if (saved === undefined) delete process.env.HERMES_DESKTOP_VARIANT; else process.env.HERMES_DESKTOP_VARIANT = saved
+  }
+}, 90000)
+
 test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')

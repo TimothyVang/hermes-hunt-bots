@@ -47,7 +47,13 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
   const publicIcons = join(resolve(icons), app, 'public')
   if (!existsSync(join(publicIcons, 'apple-touch-icon.png'))) throw new Error(`Missing desktop icon: ${join(publicIcons, 'apple-touch-icon.png')}`)
   validateNativeTree(resolve(nativeDeps), platform)
-  const inputs = buildInputs(source, 'desktop', { icons: publicIcons, stamp, nativeDeps })
+  // The Hunt Command renderer compiles two framework/ plugins (src/contrib/variant-plugins.hunt.ts)
+  // that lie outside the desktop source hash; an edit to either must not reuse a stale renderer.
+  const variantPlugins = process.env.HERMES_DESKTOP_VARIANT === 'hunt' ? {
+    huntLabPlugin: join(resolve(source), 'framework/hunt_lab/desktop/plugin.js'),
+    cybersecurityWorkspacePlugin: join(resolve(source), 'framework/desktop/cybersecurity-workspace/plugin.js'),
+  } : {}
+  const inputs = buildInputs(source, 'desktop', { icons: publicIcons, stamp, nativeDeps, ...variantPlugins })
   // A typechecked build must run the check: a reused renderer never passed through tsc here.
   const reuse = !typecheck && rendererCurrent(out, inputs)
   await withProduct(out, async (product, scratch) => {

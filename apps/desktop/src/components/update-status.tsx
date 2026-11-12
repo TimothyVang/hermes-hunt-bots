@@ -24,6 +24,7 @@ import {
   type UpdateApplyState,
   type UpdateTarget
 } from '@/store/updates'
+import { IS_HUNT_VARIANT, PRODUCT_NAME } from '@/variant'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
@@ -231,15 +232,16 @@ export function VersionHero({
 }): ReactElement {
   const { t } = useI18n()
   const u = t.updates
+  const appName = IS_HUNT_VARIANT ? PRODUCT_NAME : u.appName
 
   return (
     <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
       <BrandMark className="size-16" />
       <div>
         {renderHeading ? (
-          renderHeading(u.appName)
+          renderHeading(appName)
         ) : (
-          <h2 className="text-lg font-semibold tracking-tight">{u.appName}</h2>
+          <h2 className="text-lg font-semibold tracking-tight">{appName}</h2>
         )}
         <p className="mt-1 text-xs text-muted-foreground">
           {version?.appVersion ? u.version(shortVersion(version.appVersion)) : u.versionUnavailable}

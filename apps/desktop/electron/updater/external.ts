@@ -12,24 +12,39 @@ export const EXTERNAL_UNSUPPORTED_MESSAGE = 'Updates are managed by the package 
 export const COMMIT_BUILD_UPDATE_MESSAGE: string =
   "This build doesn't get updates. Ask the developer who gave it to you for a new build."
 
+// The Hunt Command build (stamp variant 'hunt') is rebuilt from its repo, never updated in place.
+export const HUNT_BUILD_UPDATE_MESSAGE: string =
+  'Hunt Command updates by rebuilding: pull the repo and run npm run pack:hunt.'
+
 export class ExternalStrategy {
-  constructor(private readonly stamp: Pick<InstallStamp, 'source'> | null = null) {}
+  constructor(private readonly stamp: Pick<InstallStamp, 'source' | 'variant'> | null = null) {}
   readonly mechanism = 'external' as const
   readonly supported = false
+
+  // A self-built artifact (Hunt Command, a one-commit build) has no package owner to name.
+  private get selfBuilt(): { reason: string; message: string } | null {
+    if (this.stamp?.variant === 'hunt') {
+      return { reason: 'hunt-build', message: HUNT_BUILD_UPDATE_MESSAGE }
+    }
+
+    return this.stamp?.source === 'commit-build' ? { reason: 'commit-build', message: COMMIT_BUILD_UPDATE_MESSAGE } : null
+  }
 
   async check(): Promise<UpdaterStatusWire> {
     return {
       supported: false,
       mechanism: 'external',
-      reason: this.stamp?.source === 'commit-build' ? 'commit-build' : 'bundled-not-appinstaller',
-      message: this.stamp?.source === 'commit-build' ? COMMIT_BUILD_UPDATE_MESSAGE : EXTERNAL_UNSUPPORTED_MESSAGE,
+      reason: this.selfBuilt?.reason ?? 'bundled-not-appinstaller',
+      message: this.selfBuilt?.message ?? EXTERNAL_UNSUPPORTED_MESSAGE,
       fetchedAt: Date.now()
     }
   }
 
   async apply(): Promise<UpdaterApplyResultWire> {
-    if (this.stamp?.source === 'commit-build') {
-      return { ok: false, mechanism: 'external', error: 'commit-build', message: COMMIT_BUILD_UPDATE_MESSAGE }
+    const selfBuilt = this.selfBuilt
+
+    if (selfBuilt) {
+      return { ok: false, mechanism: 'external', error: selfBuilt.reason, message: selfBuilt.message }
     }
 
     return { ok: true, manual: true, bundled: true, mechanism: 'external' }

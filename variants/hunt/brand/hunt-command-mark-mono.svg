@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Hunt Command">
+  <rect width="24" height="24" rx="6" fill="currentColor"/>
+  <g fill="none" stroke="#0B0C0E" stroke-width="1.75" stroke-linecap="round">
+    <circle cx="12" cy="12" r="5.25"/>
+    <path d="M12 3.75v3M12 17.25v3M3.75 12h3M17.25 12h3"/>
+  </g>
+</svg>

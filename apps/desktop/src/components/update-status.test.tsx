@@ -278,6 +278,25 @@ describe('VersionHero bundle banners', () => {
     expect(screen.getByText(`${en.updates.version('0.19.0')} · pm-preview`)).toBeTruthy()
   })
 
+  it('names the stock app Hermes and the Hunt Command build by its own name', async (): Promise<void> => {
+    render(<VersionHero version={version({})} />)
+    expect(screen.getByRole('heading', { name: en.updates.appName })).toBeTruthy()
+    cleanup()
+
+    vi.resetModules()
+    vi.doMock('@/variant', () => ({ DESKTOP_VARIANT: 'hunt', IS_HUNT_VARIANT: true, PRODUCT_NAME: 'Hunt Command' }))
+
+    try {
+      // A fresh module instance: the variant is read at module load.
+      const { VersionHero: HuntVersionHero } = await import('./update-status')
+      render(<HuntVersionHero version={version({})} />)
+      expect(screen.getByRole('heading', { name: 'Hunt Command' })).toBeTruthy()
+    } finally {
+      vi.doUnmock('@/variant')
+      vi.resetModules()
+    }
+  })
+
   it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
     'localizes version channels in %s',
     (locale: Locale, copy: Translations): void => {

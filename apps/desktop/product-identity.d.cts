@@ -3,6 +3,12 @@ interface ProductIdentity {
   light: boolean
   /** True for a Store-submission build (Windows Store packaging identity). */
   store: boolean
+  /** True only for the Hunt Command fork build (HERMES_DESKTOP_VARIANT=hunt):
+   *  own userData and app name even when stable. Absent on every other variant. */
+  readonly hunt?: boolean
+  /** GitHub `owner/repo` the first-launch installer is fetched and cloned from.
+   *  Present only on the Hunt Command build; absent means NousResearch/hermes-agent. */
+  readonly sourceRepo?: string
   /** Display name. e.g. "Hermes Light" */
   displayName: string
   /** OS-level app identity. e.g. "com.nousresearch.hermes-light" */
