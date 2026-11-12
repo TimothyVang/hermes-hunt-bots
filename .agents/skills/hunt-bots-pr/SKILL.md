@@ -20,7 +20,7 @@ There is no hosted CI and no paid review service. The gate runs locally, and rev
    - A new file under `framework/` gets a line in `framework/TRACKED-FILES.txt`, and a shipped one also goes in the portable package lists.
    - A behavior change ships with a test that fails before and passes after, plus the docs it affects.
 4. **Prove it works on the real thing.** Run the lab, the desktop app, or a live hunt, and observe the changed behavior. Tests alone are not proof. Note each run and its outcome.
-5. **Run the gate.** `python scripts/hunt_bots_check.py` must print `-> PASS`. It runs the policy gate, the framework test suite, and gitleaks when installed. Fix failures at the root; never weaken a guard, cap, or test to pass.
+5. **Run the gate.** `python scripts/hunt_bots_check.py` must print `-> PASS`. It runs the policy gate, the framework and operator test suites, and gitleaks when installed. Run it in a Python with `framework/requirements-hunt.lock` installed (or point `--python` or `HUNT_BOTS_PYTHON` at one); otherwise it fails with `missing: <package>`. `--log <file>` keeps every test's output. Fix failures at the root; never weaken a guard, cap, or test to pass.
 6. **Self-review.** Run deep-mode's PR review in local mode (`skill://deep-mode/references/techniques/pr-review.md`) on the committed branch, with `HUNT-BOTS.md` § Review as the project constraints. Fix, dismiss with a concrete reason, or ask for each finding, then re-run the gate if code changed.
 7. **Commit.** Small, ordered commits, each one landable. The subject line uses Conventional Commits, `type(scope): subject`, for example `feat(hunt_lab): add the lab-origin browser allowlist`.
 8. **Open the PR, ready, not draft.**

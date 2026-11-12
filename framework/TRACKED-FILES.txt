@@ -234,6 +234,8 @@ optional-runtime.md
 orchestrate.py
 package_portable.py
 README.md
+requirements-hunt.lock
+requirements-hunt.txt
 requirements-orchestration.txt
 roles/builder.txt
 roles/coordinator.txt

@@ -65,7 +65,7 @@ Start any task with `/deep-mode:poteto <task>`. The project skill **`hunt-bots-p
 1. Branch from `hunt-bots` and open the PR against `hunt-bots`. Prefer several narrow PRs to one large one; stack dependent PRs on their parent branch. Open PRs ready, not as drafts.
 2. Title in Conventional Commits form, `type(scope): subject`, for example `fix(hunt_lab): report field_not_allowed refusals`.
 3. Prove it works on the real thing (the lab, the desktop app, a live hunt), not only with tests. A bug fix shows the failure before and the pass after.
-4. Run `python scripts/hunt_bots_check.py` (policy gate, framework tests, gitleaks when installed).
+4. Run `python scripts/hunt_bots_check.py` (policy gate, framework and operator tests, gitleaks when installed) in a Python with `framework/requirements-hunt.lock` installed; without it the gate fails with `missing: <package>`.
 5. Write the PR body with these sections, short sentences, and nothing invented: `## Why`, `## What changed`, `## Scope` (what it leaves out), `## Tradeoffs` (only if there was a real choice), `## Blast Radius`, `## Verification` (each real run and its outcome, plus the check summary line).
 6. Review with deep-mode (below). Triage every finding on its merits: fix it, dismiss it with a concrete reason, or ask. Do not churn code for nitpicks.
 7. Maintainers land their own PRs with no human step: `/deep-mode:land-pr <number>` (see Landing below). A contributor's PR still needs a code owner's approval.
