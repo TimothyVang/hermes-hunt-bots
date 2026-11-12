@@ -49,6 +49,7 @@ import threading
 import time
 from urllib import parse
 
+from hunt_lab.endpoints import CONNECTED_STATE, INSTANCE_HEADER, STATE_VERSION
 from hunt_lab.import_elastic import (API_KEY_ENV, ENV_NAME, ERROR_TYPE, check_version, cluster_base, https_transport,
                                      read_api_key)
 
@@ -65,8 +66,6 @@ lab_server = _guest_lab_server()
 
 DATA_ORIGIN = 'work-connected'
 PROFILE = 'framework-network-analyst'
-STATE_NAME = 'hunt-lab-connected'
-STATE_VERSION = 1
 KEEP_ALIVE = '30m'
 SETTLE_SECONDS = 15 * 60
 MAX_HOSTS = 50
@@ -462,7 +461,7 @@ class ConnectedHandler(lab_server.Handler):
     """The lab service's routes, each answer naming this service's instance; its own /health and no console page."""
 
     def end_headers(self):
-        self.send_header('X-Hunt-Lab-Instance', self.server.instance_id)
+        self.send_header(INSTANCE_HEADER, self.server.instance_id)
         super().end_headers()
 
     def do_GET(self):
@@ -496,7 +495,7 @@ def _open(config_path, case_path, environ, transport, home=None):
     if home is not None:
         if key_in_bot_profiles(home, key):
             raise ConnectError('key_in_bot_profile: the API key is in a Hermes .env or config.yaml, where a bot would load it')
-        folder = home / STATE_NAME / case['case_id']
+        folder = home / CONNECTED_STATE / case['case_id']
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         citations = folder / 'citations.jsonl'
     source = WorkElastic(config, case, key, transport=transport, citations=citations)
@@ -523,7 +522,7 @@ def check(config_path, case_path, *, environ=None, transport=None):
 
 def start(config_path, case_path, state_dir, *, environ=None, transport=None):
     """Open the source and bind the service on a free loopback port; returns (server, source, state path)."""
-    folder = profile_home(state_dir) / STATE_NAME
+    folder = profile_home(state_dir) / CONNECTED_STATE
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     state = folder / 'state.json'
     try:

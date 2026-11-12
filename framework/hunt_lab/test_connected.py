@@ -114,13 +114,13 @@ class FakeElastic:
 
 
 class Runtime:
-    """The bot tools' lab resolver, pointed at the connected service (U3 replaces this with the real resolver)."""
+    """The analyst VM is stopped, so the bot tools can reach the connected service only through its state file."""
 
-    lab_url = None
+    lab_url = None  # the connected service's, for this file's direct requests
 
     @classmethod
     def invoke(cls, action, **_):
-        return {'profile': query_adapter.LAB_OWNER, 'state': 'running', 'lab_url': cls.lab_url}
+        return {'profile': query_adapter.LAB_OWNER, 'state': 'stopped'}
 
 
 class ConnectedCase(unittest.TestCase):
@@ -154,7 +154,7 @@ class ConnectedCase(unittest.TestCase):
 
     def tool(self, tool_name, **arguments):
         return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments}, runtime=Runtime,
-                                      state_dir=self.root, profile='framework-researcher')
+                                      state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
 
     def get(self, path):
         opener = request.build_opener(request.ProxyHandler({}))
@@ -175,7 +175,7 @@ class RefusalTests(ConnectedCase):
             else:
                 connected.start(self.config, self.case_path, self.home, environ=environ, transport=self.elastic)
         self.assertNotIn(KEY, str(caught.exception))
-        self.assertFalse((self.home / connected.STATE_NAME / 'state.json').exists())
+        self.assertFalse((self.home / connected.CONNECTED_STATE / 'state.json').exists())
         return str(caught.exception)
 
     def test_a_key_that_can_write_delete_or_manage_is_refused_before_serving(self):
@@ -232,7 +232,7 @@ class RefusalTests(ConnectedCase):
         with self.assertRaises(connected.ConnectError):
             connected.start(self.config, self.case_path, self.root, environ={'HUNT_ELASTIC_API_KEY': KEY},
                             transport=self.elastic)
-        state = self.home / connected.STATE_NAME / 'state.json'
+        state = self.home / connected.CONNECTED_STATE / 'state.json'
         state.parent.mkdir(parents=True)
         state.write_text('{"instance": "other"}', encoding='utf-8')
         with self.assertRaises(connected.ConnectError) as caught:
@@ -271,7 +271,7 @@ class RefusalTests(ConnectedCase):
         self.assertEqual(len(started), 1, outcomes)
         self.assertIn('already serves', next(outcome for outcome in outcomes if isinstance(outcome, str)))
         connected.stop(*started[0])
-        self.assertFalse((self.home / connected.STATE_NAME / 'state.json').exists())
+        self.assertFalse((self.home / connected.CONNECTED_STATE / 'state.json').exists())
 
     def test_a_cluster_error_reports_status_and_type_only(self):
         original = self.elastic.__call__
@@ -321,7 +321,7 @@ class ServiceTests(ConnectedCase):
         self.assertEqual(records[0]['sample_event_id'], cited[0])
         detect = self.tool('detection_test', q='process.name:cmd.exe', name='cmd')['result']
         self.assertEqual(detect['sample'][0]['event.id'], cited[0])
-        lines = (self.home / connected.STATE_NAME / CASE_ID / 'citations.jsonl').read_text(encoding='utf-8').splitlines()
+        lines = (self.home / connected.CONNECTED_STATE / CASE_ID / 'citations.jsonl').read_text(encoding='utf-8').splitlines()
         self.assertIn({'evt': cited[0], '_id': 'AbC0x_-'}, [json.loads(line) for line in lines])
 
     def test_refusals_reach_the_bot_as_fixed_codes(self):
@@ -431,7 +431,7 @@ class ServiceTests(ConnectedCase):
             ('elastic_search', {}), ('elastic_aggregate', {'field': 'host.name'}), ('intel_lookup', {'values': 'x'}),
             ('detection_test', {'q': 'a', 'name': 'b'}))]
         outputs += [self.get(path) for path in ('/health', '/case', '/activity', '/')]
-        files = [path.read_text(encoding='utf-8') for path in (self.home / connected.STATE_NAME).rglob('*') if path.is_file()]
+        files = [path.read_text(encoding='utf-8') for path in (self.home / connected.CONNECTED_STATE).rglob('*') if path.is_file()]
         bodies = [json.dumps(value) for _method, _path, value in self.elastic.requests]
         self.assertFalse([text for text in [*map(json.dumps, outputs), *files, *bodies] if KEY in text])
         self.assertEqual({headers['Authorization'] for headers in self.elastic.headers}, {'ApiKey ' + KEY})

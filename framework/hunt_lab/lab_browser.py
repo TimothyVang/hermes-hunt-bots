@@ -29,7 +29,8 @@ from . import humanize
 from .actionability import CLICK_ACTIONABLE
 from .browser_policy import (KIBANA_INDEX, LabScope, Refused, check_expression, decide, document_allowed,
                              kibana_window, origin)
-from .query_adapter import QueryFailure, _case_id, _failure, _lab_base, _schema, endpoint
+from .endpoints import QueryFailure, endpoint
+from .query_adapter import _case_id, _failure, _schema, serving_lab
 
 
 @dataclass(frozen=True)
@@ -1012,10 +1013,13 @@ def call(arguments, *, runtime, state_dir, profile, browser_root=None):
     try:
         command = parse_command(arguments)
         case_id = _case_id(arguments)
-        base, metadata, status = _lab_base(runtime, state_dir, profile, case_id)
+        served = serving_lab(runtime, state_dir, profile, case_id)
+        if served.origin != 'vm':
+            # A connected case has no Kibana or Arkime to browse (ADR 0005).
+            raise QueryFailure('no_lab_browser')
         try:
-            kibana = endpoint(status['kibana_url']) if status.get('kibana_url') else None
-            scope = LabScope.from_case(metadata, base, endpoint(status.get('arkime_url')), kibana)
+            kibana = endpoint(served.kibana_url) if served.kibana_url else None
+            scope = LabScope.from_case(served.case, served.lab_url, endpoint(served.arkime_url), kibana)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise QueryFailure('lab_invalid_response') from None
         root = Path(browser_root) if browser_root else Path(state_dir).parent / 'hunt-lab-browser' / profile

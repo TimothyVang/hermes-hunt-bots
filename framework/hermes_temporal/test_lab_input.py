@@ -46,8 +46,10 @@ WORK_TEXT = "work log export (real telemetry from the operator's environment; un
 class FakeLab:
     """A loopback stand-in for the guest lab API: /case, /health, paged /activity and /es/search by event.id."""
 
-    def __init__(self, case=None, events=(), activity=(), *, redirect=False, body=None, network_scope="tag"):
+    def __init__(self, case=None, events=(), activity=(), *, redirect=False, body=None, network_scope="tag",
+                 instance=None):
         self.case = dict(case or TOOL_CASE)
+        self.instance = instance
         self.network_scope = network_scope
         self.events = {event["event.id"]: event for event in events}
         self.activity = list(activity)
@@ -71,6 +73,8 @@ class FakeLab:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
+                if lab.instance:
+                    self.send_header("X-Hunt-Lab-Instance", lab.instance)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -458,6 +462,49 @@ class ToolDrivenInputTests(unittest.TestCase):
             with self.subTest(kwargs=list(kwargs)), self.assertRaises(lab_input.LabInputError):
                 self.collect(odd)
 
+
+    def connected(self, case):
+        """A connected service serving `case`, found through the state.json it writes beside the VM's state dir."""
+        lab = FakeLab(case=case, instance="a" * 32)
+        self.addCleanup(lab.close)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        analyst = Path(temp.name) / "framework-network-analyst"
+        (analyst / "hunt-lab-connected").mkdir(parents=True)
+        (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
+            "version": 1, "pid": 1, "port": lab.server.server_address[1], "case_id": case["case_id"],
+            "instance": "a" * 32, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
+        return lab, str(analyst / "hunt-lab-vm")
+
+    def test_export_finds_a_connected_case_while_the_vm_is_stopped_and_refuses_two_labs(self):
+        case = {**TOOL_CASE, "case_id": "work-conn-001"}
+        lab, state_dir = self.connected(case)
+        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+        modules = {"hunt_lab.runtime": runtime}.__getitem__
+        with patch.object(lab_input.importlib, "import_module", side_effect=modules):
+            raw = lab_input.collect_tool_input(state_dir)
+        self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
+        self.assertEqual(lab.paths(), ["/case"])
+        vm = FakeLab()
+        self.addCleanup(vm.close)
+        runtime = fake_runtime({**self.STATUS, "lab_url": vm.url})
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
+                self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable: ambiguous_lab$"):
+            lab_input.collect_tool_input(state_dir)
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            self.assertEqual(lab_input.resolve_lab(state_dir, "work-conn-001").origin, "connected")
+            self.assertEqual(lab_input.resolve_lab(state_dir, "lab-med-001").origin, "vm")
+
+    def test_a_connected_answer_must_carry_its_instance(self):
+        lab, state_dir = self.connected({**TOOL_CASE, "case_id": "work-conn-001"})
+        lab.instance = "b" * 32
+        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
+        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
+                self.assertRaisesRegex(lab_input.LabInputError, "lab_instance_mismatch"):
+            lab_input.collect_tool_input(state_dir)
+        self.assertEqual(lab_input.lab_get(lab.url, "/case")["case_id"], "work-conn-001")
+        with self.assertRaises(lab_input.LabInputError):
+            lab_input.lab_get(lab.url, "/case", instance="a" * 32)
 
 
 if __name__ == "__main__":

@@ -823,6 +823,35 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.assertFalse(down.snapshot()["reachable"])
         self.assertEqual(len(resolved), 2)
 
+    def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
+        from . import board, lab_input
+
+        lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
+                      instance="a" * 32)
+        self.addCleanup(lab.close)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        analyst = Path(temp.name) / "framework-network-analyst"
+        (analyst / "hunt-lab-connected").mkdir(parents=True)
+        (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
+            "version": 1, "pid": 1, "port": lab.server.server_address[1], "case_id": "work-conn-001",
+            "instance": "a" * 32, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
+        runtime = types.SimpleNamespace(invoke=lambda *_args, **_kwargs: {"profile": "framework-network-analyst",
+                                                                            "state": "running", "lab_url": self.lab.url})
+        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_url=None,
+                                     lab_state_dir=str(analyst / "hunt-lab-vm"))
+        observer = board._lab_observer(args, "work-conn-001")
+        with mock.patch.object(lab_input.importlib, "import_module", return_value=runtime):
+            observer.refresh(["evt-000101"])
+            snapshot = observer.snapshot()
+            self.assertTrue(snapshot["reachable"], snapshot)
+            self.assertIn("evt-000101", snapshot["events"])
+            self.assertEqual({path for path, _, _ in self.lab.requests}, {"/case"})
+            lab.instance = "b" * 32
+            observer.refresh(["evt-000102"])
+            self.assertFalse(observer.snapshot()["reachable"])
+            self.assertNotIn("evt-000102", observer.snapshot()["events"])
+
     def test_board_server_serves_tool_state(self) -> None:
         board = Board(self.raw, lambda: ({"stage": "running_round"}, _tool_child()), lab=self.observer())
         server = make_server(board, 0)

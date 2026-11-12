@@ -13,6 +13,8 @@ import json
 import re
 from urllib import error, parse, request
 
+from hunt_lab.endpoints import INSTANCE_HEADER, LabEndpoint, QueryFailure, resolve
+
 from .contracts import DATA_ORIGINS, origin_text
 from .hunt import supplied_evidence_hunt
 
@@ -268,34 +270,36 @@ def loopback_base(url: object) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def lab_endpoints(state_dir) -> dict:
-    """Read the analyst VM's loopback lab/Arkime URLs through the read-only runtime status.
+def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
+    """The one loopback lab serving ``case_id``, or the one lab serving any case when it is ``None``.
 
-    Never starts, stops, or creates VM state; ``arkime_url`` is ``None`` when unavailable.
+    That is the analyst VM's, read through the read-only runtime status, or the host-side connected
+    service (``hunt_lab.endpoints``). Never starts, stops, or creates lab state. A refusal names only the
+    resolver's fixed code, such as ``ambiguous_lab`` when both serve the case.
     """
     try:
         runtime = importlib.import_module("hunt_lab.runtime")
-        status = runtime.invoke("status", state_dir=state_dir, profile=PROFILE)
+        return resolve(state_dir, case_id, runtime=runtime)
+    except QueryFailure as exc:
+        raise LabInputError(f"lab input unavailable: {exc}") from None
     except Exception:
         _reject()
-    if not isinstance(status, dict) or status.get("profile") != PROFILE or status.get("state") != "running":
-        _reject()
-    try:
-        arkime = loopback_base(status.get("arkime_url"))
-    except LabInputError:
-        arkime = None
-    return {"lab_url": loopback_base(status.get("lab_url")), "arkime_url": arkime}
 
 
 def lab_get(base: str, path: str, *, profile: str | None = None,
-            timeout: float = _LAB_TIMEOUT_SECONDS) -> dict:
-    """One bounded GET of a JSON object from the loopback lab; no proxies or redirects."""
+            timeout: float = _LAB_TIMEOUT_SECONDS, instance: str | None = None) -> dict:
+    """One bounded GET of a JSON object from the loopback lab; no proxies or redirects.
+
+    With ``instance`` (a connected service's), the answer must carry it in X-Hunt-Lab-Instance.
+    """
     opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
     headers = {"Accept": "application/json"}
     if profile:
         headers["X-Hermes-Profile"] = profile
     try:
         with opener.open(request.Request(loopback_base(base) + path, headers=headers), timeout=timeout) as response:
+            if instance is not None and response.headers.get(INSTANCE_HEADER) != instance:
+                _reject()
             data = response.read(MAX_LAB_RESPONSE + 1)
         if len(data) > MAX_LAB_RESPONSE:
             _reject()
@@ -329,13 +333,13 @@ def tool_driven_scope(case_id: str, data_origin: str | None = None) -> str:
 
 
 def collect_tool_input(state_dir, *, data_origin: str | None = None) -> dict:
-    """Return a tool-driven hunt for whatever case the analyst VM has loaded.
+    """Return a tool-driven hunt for the one loaded case, on the analyst VM or a connected service.
 
-    Reads only ``/case`` through the read-only runtime status; exports no events or sessions.
+    Reads only ``/case`` from the lab ``resolve_lab`` finds; exports no events or sessions.
     ``data_origin`` records the operator's approval and must equal the case's declared origin:
     a case that declares one is refused without it, and a synthetic case is refused with one.
     """
-    case = lab_get(lab_endpoints(state_dir)["lab_url"], "/case")
+    case = resolve_lab(state_dir).case
     case_id = case.get("case_id")
     if (not isinstance(case_id, str) or _TOOL_CASE_ID.fullmatch(case_id) is None
             or set(case) - {"network_capture", "data_origin"} != _CASE_FIELDS or case.get("network_capture", "none") != "none"

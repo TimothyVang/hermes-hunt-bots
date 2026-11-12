@@ -179,6 +179,7 @@ hunt_lab/assets.json
 hunt_lab/browser_policy.py
 hunt_lab/case.py
 hunt_lab/connected.py
+hunt_lab/endpoints.py
 hunt_lab/desktop/console-provenance.json
 hunt_lab/desktop/licenses/babel-LICENSE.MIT
 hunt_lab/desktop/licenses/LICENSE.BSD-2-Clause

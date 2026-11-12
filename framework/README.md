@@ -120,7 +120,7 @@ Real work hunts take one time window of the operator's own **unclassified** work
 
 ### Serving a work Elastic directly (connected mode)
 
-`hunt_lab/connected.py` is the connected mode of ADR 0005 (planning notes): instead of an export, a lab service on this PC holds a read-only API key to the work Elastic and answers the bots' existing Elasticsearch tools on `127.0.0.1`. The VM is not involved. The bots never see the key or the cluster address. **Not yet reachable by the bots:** the tools still find their lab through the VM's runtime status, and lab-input does not yet accept the `work-connected` origin. Both are follow-up units (one lab-endpoint resolver; the `work-connected` origin and HUNT-BOTS.md rule 2). Until then, use the export above for real hunts.
+`hunt_lab/connected.py` is the connected mode of ADR 0005 (planning notes): instead of an export, a lab service on this PC holds a read-only API key to the work Elastic and answers the bots' existing Elasticsearch tools on `127.0.0.1`. The VM is not involved. The bots never see the key or the cluster address. **Not yet a hunt:** `lab-input` does not yet accept the `work-connected` origin (a follow-up unit, with HUNT-BOTS.md rule 2). Until then, use the export above for real hunts.
 
 - `connect.json` (operator-only, never served) names the cluster: `{"url": "https://elastic.example.internal:9243", "index": "logs-*", "ca_file": "C:\\path\\http_ca.crt"}`. `ca_file` and `api_key_env` (default `HUNT_ELASTIC_API_KEY`) are optional. Cross-cluster patterns (`remote:index`) are refused.
 - `case.json` is what the bots see: `case_id`, `question`, `time_range_utc` (with a UTC offset such as `Z`), `"data_origin": "work-connected"`, `"network_capture": "none"` and optional `hosts` (exact `host.name` values, at most 50). It names no cluster or index. The window must have ended at least 15 minutes ago.
@@ -147,6 +147,12 @@ While serving:
 - Aggregating a field the cluster does not index is refused as `field_unavailable`. A search on a field the cluster lacks matches nothing, as in the lab; `check` lists the aggregation and default query fields the cluster lacks.
 - Intel (`no_intel_source`), Arkime, `/network` and packets (`no_network_capture`) and the console page are off. `/health` waits only for events.
 - Every response carries the instance token in `X-Hunt-Lab-Instance`.
+
+How the bots find it (`hunt_lab/endpoints.py`, the one lab resolver behind every bot tool, `lab-input` and the board's `--lab-state-dir`): a case is served by the VM when its runtime `status` says running and its `/case` names the case, or by the connected service whose `hunt-lab-connected\state.json` sits beside the analyst's `hunt-lab-vm` state dir and whose `/case` names it. Refusals are fixed codes:
+- `ambiguous_lab` when both serve the case, `case_mismatch` when a lab answers for another case, `owned_vm_not_running` when neither is up.
+- `lab_instance_mismatch` when any answer from the connected port lacks the state file's instance token (another process holds the port), and `connected_state_invalid` for a malformed state file. A state file left by a crashed service is skipped while the VM serves the case, and is `lab_unreachable` otherwise.
+- `key_in_bot_environment`: a bot's tool refuses a connected case while the bot's own process environment holds the variable named in `state.json` (`api_key_env`), so start the worker and gateways from a terminal without the key.
+- `no_lab_browser`: `lab_browser` has no Kibana or Arkime to show for a connected case.
 
 Live run (2026-11-11, Elasticsearch 8.15.3 in a throwaway container with security and TLS on, synthetic Sysmon-shaped events; the bot tools run through `query_adapter` against `serve` running as its own process with the key only in its environment):
 - `check` reported 8.15.3 and 31 events in scope. A key without `monitor` failed with `HTTP 403`. These keys were refused as `key_not_read_only`: an unrestricted key, a key that could write only to the data stream inside the pattern, and a key holding `manage_slm`. The read-only key placed in a researcher profile's `.env` was refused as `key_in_bot_profile`.

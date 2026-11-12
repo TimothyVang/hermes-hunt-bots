@@ -28,7 +28,7 @@ DESKTOP_FILES = ('plugin.js', 'package.json', 'console-provenance.json') + tuple
     'licenses/' + name for name in LICENSES)
 BACKEND_FILES = (
     '__init__.py', 'runtime.py', 'managed.py', 'prepare_guest.py',
-    'query_adapter.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
+    'query_adapter.py', 'endpoints.py', 'lab_browser.py', 'browser_policy.py', 'humanize.py',
     'actionability.py', 'plugin.yaml', 'assets.json',
     'guest/compose.yaml', 'guest/arkime.ini', 'guest/bootstrap_guest.sh',
     'guest/ingest.py', 'guest/lab_server.py', 'guest/image-lock.json',

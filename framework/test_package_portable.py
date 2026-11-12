@@ -215,6 +215,7 @@ APPROVED_FILES = frozenset({
     'hunt_lab/managed.py',
     'hunt_lab/prepare_guest.py',
     'hunt_lab/query_adapter.py',
+    'hunt_lab/endpoints.py',
     'hunt_lab/lab_browser.py',
     'hunt_lab/browser_policy.py',
     'hunt_lab/humanize.py',

@@ -30,7 +30,7 @@ from hunt_lab import screencast
 
 from .contracts import USAGE_KEYS, validate_loopback_address
 from .hunt import supplied_evidence_hunt
-from .lab_input import LabInputError, lab_endpoints, lab_get, loopback_base
+from .lab_input import LabInputError, lab_get, loopback_base, resolve_lab
 from .workflows import _unwrap_single_fence
 
 BIND_HOST = "127.0.0.1"
@@ -1043,6 +1043,7 @@ class LabObserver:
         self._get = get
         self._lab_url: str | None = None
         self._arkime_url: str | None = None
+        self._instance: str | None = None
         self._network_scope: str | None = None
         # Entries at or before this /activity sequence (e.g. earlier checks or hunts)
         # are not this run's tool calls and are never shown.
@@ -1061,6 +1062,7 @@ class LabObserver:
             if self._lab_url is None:
                 endpoints = self._resolve()
                 self._lab_url, self._arkime_url = endpoints["lab_url"], endpoints.get("arkime_url")
+                self._instance = endpoints.get("instance")
                 scope = self._call("/health").get("network_scope")
                 self._network_scope = scope if scope in ("tag", "window") else "tag"
             self._poll_activity()
@@ -1082,7 +1084,8 @@ class LabObserver:
                 "lookup_truncated": self._truncated, **self._status}
 
     def _call(self, path: str) -> dict:
-        body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS)
+        body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS,
+                         instance=self._instance)
         if self._case_id is not None and body.get("case_id") != self._case_id:
             raise _LabRefused("the lab has a different case loaded than this input")
         return body
@@ -1417,7 +1420,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="loopback port to serve on")
     lab = parser.add_mutually_exclusive_group()
     lab.add_argument("--lab-state-dir",
-                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; its URLs are read from status")
+                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's case "
+                          "is found from it (the VM's status, or a connected service's state)")
     lab.add_argument("--lab-url", type=_lab_url, help="tool-driven input: the lab API, http://127.0.0.1:<port>")
     parser.add_argument("--arkime-url", type=_lab_url,
                         help="Arkime viewer for copyable session links, http://127.0.0.1:<port> (default: from status)")
@@ -1437,7 +1441,12 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
     if args.lab_url:
         endpoints = {"lab_url": args.lab_url, "arkime_url": None, **override}
         return LabObserver(lambda: endpoints, case_id, activity_after=after)
-    return LabObserver(lambda: {**lab_endpoints(args.lab_state_dir), **override}, case_id, activity_after=after)
+
+    def resolve() -> dict:
+        served = resolve_lab(args.lab_state_dir, case_id)
+        return {"lab_url": served.lab_url, "arkime_url": served.arkime_url, "instance": served.instance, **override}
+
+    return LabObserver(resolve, case_id, activity_after=after)
 
 
 def main(argv: list[str] | None = None) -> int:
