@@ -342,6 +342,23 @@ class NativeTeamPolicyTests(unittest.TestCase):
             self.assertTrue(first_line.startswith('Hermes executable: '), first_line)
             self.assertEqual(Path(first_line.split(': ', 1)[1]).resolve(), lab_cli.resolve())
 
+    def test_check_names_the_executable_when_a_read_fails(self):
+        # SF9: check printed `Hermes executable:` only when every read succeeded, so a refusal hid which CLI ran.
+        with tempfile.TemporaryDirectory() as temp:
+            lab_cli = self._fake_cli(Path(temp) / 'lab-bin')
+            refused = type('Result', (), {'returncode': 1, 'stderr': 'Permission denied', 'stdout': ''})()
+            for registered in (None, ValueError('not installed')):
+                with self.subTest(registered=registered), \
+                        unittest.mock.patch.dict(os.environ, {'LAB_HERMES_EXE': str(lab_cli)}), \
+                        unittest.mock.patch.object(native_team.lab, 'resolve_home', return_value='selected-home'), \
+                        unittest.mock.patch.object(native_team.lab, 'registered_profile', side_effect=registered), \
+                        unittest.mock.patch.object(native_team, '_run', return_value=refused), \
+                        self.assertRaises(native_team.PolicyError) as caught:
+                    native_team.inspect(home='selected-home')
+                first_line = str(caught.exception).splitlines()[0]
+                self.assertTrue(first_line.startswith('Hermes executable: '), first_line)
+                self.assertEqual(Path(first_line.split(': ', 1)[1]).resolve(), lab_cli.resolve())
+
     def test_explicit_hermes_wins_and_missing_lab_hermes_exe_is_an_error(self):
         with tempfile.TemporaryDirectory() as temp:
             on_path = self._fake_cli(Path(temp) / 'path-bin')
