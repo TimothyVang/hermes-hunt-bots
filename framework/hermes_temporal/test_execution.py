@@ -322,6 +322,20 @@ class ExecutionReceiptTests(unittest.TestCase):
                 self.assertEqual(execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False),
                                  'exit code 1: ' + expected)
 
+    def test_key_shapes_and_backslash_values_are_redacted(self):
+        # Review of #50: narrowing the sk_/pk_/rk_ rule exposed the first seven forms and `token=\\\\abc123`,
+        # all redacted on trunk; whsec_, npm_, xapp- and aws_access_key_id= were never covered.
+        secrets = ['sk_prod_abc12345', 'pk_9f8e7d6c5b', 'rk_live_abc-123456789', 'sk_live_abc_def123456',
+                   'sk_test_51FAKE_abcd1234efgh', 'sk_org_FAKE1234abcdEFGH5678', 'sk_12345678',
+                   'whsec_' + 'Ab3' * 8, 'npm_' + 'a1B2c3' * 6, 'xapp-1-A0123ABCD-456789']
+        lines = [f'ValueError: key {secret} rejected' for secret in secrets] + [
+            'ValueError: token=\\abc123', 'ValueError: token=\\\\abc123', 'ValueError: aws_access_key_id=EXAMPLEID123']
+        for line, secret in zip(lines, secrets + ['abc123', 'abc123', 'EXAMPLEID123']):
+            with self.subTest(line=line):
+                diagnostic = execution_module._diagnostic(1, (line + '\n').encode('utf-8'), False)
+                self.assertNotIn(secret, diagnostic)
+                self.assertIn('[redacted]', diagnostic)
+
     def test_redaction_keeps_ordinary_words_and_identifiers(self):
         lines = [
             'RuntimeError: token limit exceeded',
@@ -333,6 +347,8 @@ class ExecutionReceiptTests(unittest.TestCase):
             'KeyError: pk_users_v2',
             "SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
             'KeyError: access_key_id missing',
+            'KeyError: pk_receipts_2024',
+            'KeyError: npm_config_cache',
         ]
         for line in lines:
             with self.subTest(line=line):
