@@ -416,7 +416,7 @@ function HuntingLab() {
         ] }),
         limits('Requirements and limits', [
           'Only local framework routes are offered; duplicate local owners and every remote route are excluded.',
-          'The lab needs Docker Desktop or another running Docker engine. Without one, Start, Status and Stop report docker_unavailable and nothing is started.',
+          'The lab needs Docker Desktop or another running Docker engine. Without one, Start reports docker_unavailable and nothing is started; Status and Stop report the Docker failure.',
           'Start runs the lab as host containers, one compose project per case: the last case started, else the bundled fixture. Elasticsearch is never published, the lab, Arkime and Kibana listen on 127.0.0.1 only, and no container but the port relay has a route out.',
           'The lab reports running only once its lab service says ready. Stop removes the containers of the last case started.',
           'After a human Start, only read-only status is observed, for up to ten minutes. Refresh explicitly after that.',

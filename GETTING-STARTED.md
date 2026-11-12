@@ -72,7 +72,7 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 ## 4. Start the hunting lab
 
-The lab runs as local Docker containers: Elasticsearch, Kibana, Arkime and the read-only lab service, published only on `127.0.0.1`. It needs Docker (Docker Desktop on Windows) with the engine running and about 3.6 GiB of memory for the containers; the first start pulls the pinned images and builds the lab image, so it needs Internet. Without Docker, every `hunt-lab` command answers `"state": "error"` with reason `docker_unavailable`.
+The lab runs as local Docker containers: Elasticsearch, Kibana, Arkime and the read-only lab service, published only on `127.0.0.1`. It needs Docker (Docker Desktop on Windows) with the engine running and about 3.6 GiB of memory for the containers; the first start pulls the pinned images and builds the lab image, so it needs Internet. Without Docker, `hunt-lab start` answers `"state": "error"` with reason `docker_unavailable`; `status` and `stop` report a Docker failure (such as `docker_ps_failed`) for a case that was started.
 
 From `framework/`, in the shell where step 3 set `$hermes` and `HERMES_HOME`, load the case from step 2 and wait until it is ready, then check it:
 

@@ -9,7 +9,7 @@ constant-speed cut (film/review.py). A watcher (tool_loops.watcher, Opus) then p
 stage guidance and drive note, seeing the score breakdown, the coverage and the video review, never the key.
 
 LANES (--lanes, see film/lanes.py): each loop runs the same round on every lane at the same time. A lane
-is a fully separate lab (Hermes home, container lab, lab_browser state, Temporal task queue and worker) filmed
+is a fully separate lab (Hermes home, container lab (one Docker engine per lane: the project is named for the case), lab_browser state, Temporal task queue and worker) filmed
 from its own board. The loop's found and coverage are the means over lanes; halts and
 blamed decoys are summed, so a halt or blamed decoy in any lane fails the keep rule. Without --lanes
 there is one lane, the lab the environment names, with the folders and workflow IDs of a single run.
