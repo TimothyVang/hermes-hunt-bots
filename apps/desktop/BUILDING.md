@@ -222,6 +222,10 @@ From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
 `release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
 also packages installers. Both run `scripts/pack-hunt.mjs`, which copies the variant
 icons over the committed `assets/` and restores them afterwards, even on failure.
+Every build writes `resources/licenses/hunt-command/SOURCE.txt` naming its Corresponding
+Source (this repository at the build commit), and says so when the tree was dirty.
+`dist:hunt` makes copies for others, so it refuses a dirty tree or a `HEAD` that no
+remote branch contains.
 
 ## Commit-only builds
 

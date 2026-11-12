@@ -36,7 +36,9 @@ const {
 // where its Corresponding Source is (AGPL-3.0 section 6): this commit of the fork.
 function huntSourceNotice() {
   const stampPath = path.join(__dirname, 'build/install-stamp.json')
-  const commit = fs.existsSync(stampPath) ? JSON.parse(fs.readFileSync(stampPath, 'utf8')).commit : null
+  const stamp = fs.existsSync(stampPath) ? JSON.parse(fs.readFileSync(stampPath, 'utf8')) : {}
+  // A non-git checkout stamps an all-zero placeholder, which is no commit at all.
+  const commit = stamp.commit && !/^0+$/.test(stamp.commit) ? stamp.commit : null
   const out = path.join(__dirname, 'build/hunt-SOURCE.txt')
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(
@@ -50,6 +52,11 @@ function huntSourceNotice() {
       'Corresponding Source:',
       `  https://github.com/TimothyVang/hermes-hunt-bots${commit ? `/tree/${commit}` : ''}`,
       `  commit ${commit || 'unknown (built without an install stamp)'}`,
+      // A dirty tree is not that commit: say so rather than point at source this copy isn't.
+      ...(stamp.dirty
+        ? ['  This copy was built with uncommitted changes, so that commit is NOT its exact source;',
+           '  it is a local build, not for distribution.']
+        : []),
       ''
     ].join('\n')
   )
