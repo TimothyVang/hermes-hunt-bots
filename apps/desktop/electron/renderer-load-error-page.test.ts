@@ -20,6 +20,17 @@ test('error page names the failure and carries a Reload button', () => {
   assert.match(html, /location\.reload\(\)/)
 })
 
+test('error page shows the repair command it is given (a Hunt Command build rebuilds itself)', () => {
+  const html = buildRendererLoadErrorPage({
+    errorDescription: 'load failed',
+    repairHint: 'npm run pack:hunt',
+    rebuildCommand: 'npm run pack:hunt'
+  })
+
+  assert.match(html, /Repair with: <code>npm run pack:hunt<\/code>/)
+  assert.doesNotMatch(html, /hermes desktop/)
+})
+
 test('error page reload button targets the real renderer URL when provided', () => {
   const html = buildRendererLoadErrorPage({
     errorDescription: 'load failed',

@@ -141,6 +141,9 @@ const INITIAL_SKIN_NAME = IS_HUNT_VARIANT ? 'hunt-command' : DEFAULT_SKIN_NAME
 const localBootSkin =
   IS_HUNT_VARIANT && localDisplaySkinName && RETIRED_SKINS.has(localDisplaySkinName) ? null : localDisplaySkinName
 
+// The Hunt Command build's picker offers none of the Nous-branded or Classic Hermes skins.
+const HUNT_HIDDEN_SKINS: ReadonlySet<string> = new Set(['nous', 'nous-alt', 'classic'])
+
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend
 // skin the gateway hasn't seeded on this launch) isn't flattened to the default
 // for the rest of the session — it paints as soon as the registry can resolve it.
@@ -618,6 +621,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [themeName, userThemes, backendThemes, registryVersion]
   )
 
+  // A stored pick of a hidden skin still paints, and the picker keeps listing it while it is the
+  // active one (also nous, the fallback while the hunt-command theme is unregistered).
+  const pickerThemes = useMemo(
+    () =>
+      IS_HUNT_VARIANT
+        ? availableThemes.filter(({ name }) => !HUNT_HIDDEN_SKINS.has(name) || name === committedName)
+        : availableThemes,
+    [availableThemes, committedName]
+  )
+
   const paintedName = preview ? preview.name : committedName
   const paintedMode = preview ? preview.mode : resolvedMode
 
@@ -714,7 +727,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       mode,
       resolvedMode,
       renderedMode,
-      availableThemes,
+      availableThemes: pickerThemes,
       setTheme,
       setMode,
       previewTheme,
@@ -726,7 +739,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       mode,
       resolvedMode,
       renderedMode,
-      availableThemes,
+      pickerThemes,
       setTheme,
       setMode,
       previewTheme,

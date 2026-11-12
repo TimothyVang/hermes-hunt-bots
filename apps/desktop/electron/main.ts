@@ -1401,6 +1401,10 @@ const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAM
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 // Stock windows and tray keep 'Hermes'; the Hunt Command build shows its own name.
 const WINDOW_TITLE = PRODUCT_IDENTITY.hunt ? APP_NAME : 'Hermes'
+// The renderer error pages: a Hunt Command build is repaired by rebuilding it, since
+// `hermes desktop --force-build` would build stock Hermes.
+const RENDERER_LOAD_ERROR_TITLE = `${WINDOW_TITLE} couldn\u2019t start the desktop UI`
+const RENDERER_REPAIR_HINT = PRODUCT_IDENTITY.hunt ? 'npm run pack:hunt' : 'hermes desktop --force-build'
 // The About panel's copyright: Nous Research, or the Hunt Command build's own (product-identity.cjs).
 const ABOUT_COPYRIGHT: string = PRODUCT_IDENTITY.copyright ?? 'Copyright © 2026 Nous Research'
 const TITLEBAR_HEIGHT = 34
@@ -13841,10 +13845,12 @@ function createWindow() {
             '[renderer] Windows stack-cookie crash loop (0xC0000409) with GPU fallback unavailable; surfacing error page (#108047)'
           )
           void loadRendererLoadErrorPage(mainWindow, {
+            title: RENDERER_LOAD_ERROR_TITLE,
             errorCode: details?.exitCode,
             errorDescription:
               'The desktop renderer crashed repeatedly (Windows STATUS_STACK_BUFFER_OVERRUN / 0xC0000409). GPU fallback could not recover the window.',
-            repairHint: 'hermes desktop --force-build',
+            repairHint: RENDERER_REPAIR_HINT,
+            rebuildCommand: RENDERER_REPAIR_HINT,
             reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
           })
 
@@ -13898,10 +13904,12 @@ function createWindow() {
             `${details?.errorCode === undefined ? '' : ` code=${String(details.errorCode)}`}`
         )
         void loadRendererLoadErrorPage(mainWindow, {
+          title: RENDERER_LOAD_ERROR_TITLE,
           errorCode: details?.errorCode,
           url: details?.url,
           errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
-          repairHint: 'hermes desktop --force-build',
+          repairHint: RENDERER_REPAIR_HINT,
+          rebuildCommand: RENDERER_REPAIR_HINT,
           reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
       },
@@ -13920,7 +13928,8 @@ function createWindow() {
         const exit = details?.exitCode === undefined ? '' : `, exit code ${String(details.exitCode)}`
         rememberLog(`[renderer:main] renderer terminated while live (reason=${reason}${exit}); surfacing recovery page`)
         void loadRendererLoadErrorPage(mainWindow, {
-          title: 'Hermes desktop UI was terminated',
+          title: `${WINDOW_TITLE} desktop UI was terminated`,
+          rebuildCommand: RENDERER_REPAIR_HINT,
           errorDescription:
             `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
             'Your sessions and the background gateway are unaffected — reload to continue.',
@@ -13959,10 +13968,12 @@ function createWindow() {
         `(${tornAssets.length} missing asset(s)); loading visible repair page instead of a white screen`
     )
     void loadRendererLoadErrorPage(mainWindow, {
+      title: RENDERER_LOAD_ERROR_TITLE,
       errorCode: 'ERR_FILE_NOT_FOUND',
       errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
       missingAssets: tornAssets,
-      repairHint: 'hermes desktop --force-build',
+      repairHint: RENDERER_REPAIR_HINT,
+      rebuildCommand: RENDERER_REPAIR_HINT,
       reloadUrl: pathToFileURL(rendererIndex).toString()
     })
   } else {
