@@ -6,7 +6,7 @@ Use one project folder with two parts: `repo/`, the Git clone, and `runtime/` ne
 
 ## 1. Clone and check (5 minutes)
 
-You need Git and Python 3.10 or newer (tested on 3.13).
+You need Git and Python 3.10 or newer (tested on 3.13). On Windows, build the venv from a python.org Python, not the Microsoft Store Python: in a venv built from Store Python 3.13.14, two process-tree tests in `framework/test_benchmark_process.py` fail.
 
 ```powershell
 mkdir hermes-hunt-bots; cd hermes-hunt-bots; mkdir runtime
