@@ -119,10 +119,17 @@ class ExecutionTests(unittest.TestCase):
             ('--adapter', 'hermes', '--profile', 'researcher', '--allow-profile-config',
              '1', '--', '--yolo'),
         ]
+        # A resolvable LAB_HERMES_EXE, so only the option checks can keep the task active.
+        environment = {**os.environ, 'LAB_HERMES_EXE': sys.executable}
         for options in cases:
             with self.subTest(options=options):
-                self.call('run', *options, success=False)
+                self.call('run', *options, success=False, env=environment)
                 self.assertEqual(self.state(), 'active')
+
+    def test_generic_launch_failure_blocks_task(self):
+        missing = str(self.workspace / 'missing-agent.exe')
+        self.call('run', '--adapter', 'generic', '1', '--', missing, success=False)
+        self.assertEqual(self.state(), 'blocked')
 
 
 class AutoAdvanceTests(unittest.TestCase):
