@@ -293,6 +293,36 @@ test('hunt is a stable Hunt Command identity with its own userData and no releas
   assert.equal(config.mac.publish, null)
 })
 
+test('only Hunt Command ships the bundled plugins\' license notices, and every source exists', async (): Promise<void> => {
+  const load = async (variant: string | undefined): Promise<{ from: string; to: string }[]> => {
+    await identityForVariant(variant)
+    delete require.cache[require.resolve('../electron-builder.config.cjs')]
+
+    return (require('../electron-builder.config.cjs') as PackagingConfiguration).extraResources as { from: string; to: string }[]
+  }
+
+  const notices = (await load('hunt')).filter(entry => entry.to.startsWith('licenses/hunt-command'))
+  assert.deepEqual(notices.map(entry => entry.to).sort(), [
+    'licenses/hunt-command/LICENSE.AGPL-3.0',
+    'licenses/hunt-command/NOTICE',
+    'licenses/hunt-command/hunt-lab',
+    'licenses/hunt-command/licenses'
+  ])
+
+  for (const entry of notices) {
+    assert.ok(fs.existsSync(path.resolve(import.meta.dirname, '..', entry.from)), entry.from)
+  }
+
+  // The plugins carry Lucide (ISC) and Feather (MIT) paths, and the Hunting Lab noVNC (MPL-2.0).
+  const root: string = path.resolve(import.meta.dirname, '../../..')
+  assert.match(fs.readFileSync(path.join(root, 'variants/hunt/licenses/lucide-LICENSE.txt'), 'utf8'), /ISC License[\s\S]*Feather/)
+  assert.ok(fs.existsSync(path.join(root, 'framework/hunt_lab/desktop/licenses/LICENSE.MPL-2.0')))
+
+  for (const variant of [undefined, 'light', 'bundled', 'store']) {
+    assert.doesNotMatch(JSON.stringify(await load(variant)), /hunt-command/, String(variant))
+  }
+})
+
 test('packaging isolates boot metadata and executable names without renaming release artifacts', async (): Promise<void> => {
   const pkg: { name: string; productName: string; version: string; description: string } = require('../package.json')
 

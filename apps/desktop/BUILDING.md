@@ -211,6 +211,17 @@ stock full client (bootstrap payload) with these changes only:
   `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
   pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
   screen drops the Hermes wordmark. Any explicit pick wins.
+- Notices: the renderer minifier drops the plugins' license comments, so the build
+  copies `variants/hunt/NOTICE`, the Lucide/Feather text (`variants/hunt/licenses/`),
+  `framework/LICENSE` (AGPL-3.0) and the Hunting Lab's noVNC notices and provenance
+  (`framework/hunt_lab/desktop/`) to `resources/licenses/hunt-command/`. Stock builds
+  ship none of them.
+- Deep links: it registers the stock `hermes://` scheme. The backend and connector
+  flows emit `hermes://` links (for example `cron/blueprint_catalog.py`,
+  `hermes://connections/done`, `hermes://mcp/install`), so the scheme is shared: with
+  stock Hermes also installed, whichever app launched last answers them. Set
+  `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1` when starting Hunt Command to leave
+  stock Hermes as the handler.
 
 From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
 `release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`

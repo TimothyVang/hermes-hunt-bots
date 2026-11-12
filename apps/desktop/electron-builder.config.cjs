@@ -136,7 +136,21 @@ module.exports = {
     {
       from: 'assets/icon.ico',
       to: 'icon.ico'
-    }
+    },
+    // Hunt Command bundles the framework/ plugins into its renderer, whose minifier
+    // drops their license comments; their notices ship beside the app instead.
+    ...(hunt
+      ? [
+          { from: '../../variants/hunt/NOTICE', to: 'licenses/hunt-command/NOTICE' },
+          { from: '../../variants/hunt/licenses', to: 'licenses/hunt-command/licenses' },
+          { from: '../../framework/LICENSE', to: 'licenses/hunt-command/LICENSE.AGPL-3.0' },
+          {
+            from: '../../framework/hunt_lab/desktop',
+            to: 'licenses/hunt-command/hunt-lab',
+            filter: ['console-provenance.json', 'licenses/**']
+          }
+        ]
+      : [])
   ],
   asar: {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']

@@ -1,0 +1,21 @@
+Hunt Command desktop build (HERMES_DESKTOP_VARIANT=hunt), hermes-hunt-bots
+
+Hunt Command is Hermes Desktop (MIT, Copyright (c) 2025 Nous Research) with two
+plugins from this repository's framework/ bundled into its renderer:
+framework/hunt_lab/desktop/plugin.js (Hunting Lab, Hunt Board) and
+framework/desktop/cybersecurity-workspace/plugin.js. The renderer bundle drops
+source comments, so this file and the texts beside it carry their notices.
+
+- The authored plugin code is AGPL-3.0, like the rest of framework/
+  (LICENSE.AGPL-3.0 here; source at https://github.com/TimothyVang/hermes-hunt-bots).
+- Both plugins carry Lucide 0.577.0 icon path data: ISC, Copyright (c) Lucide
+  Contributors 2026, with portions Copyright (c) 2013-2026 Cole Bemis as part
+  of Feather, MIT (licenses/lucide-LICENSE.txt holds both texts).
+- The Hunting Lab plugin embeds the noVNC 1.6.0 core library as its
+  CONSOLE_BUNDLE string: MPL-2.0, Copyright (C) 2022 The noVNC authors; its
+  core/des.js carries BSD-style terms and its vendored pako is MIT. Texts and
+  the other licenses noVNC lists are in hunt-lab/licenses/; the pinned source
+  archive and its SHA-256 are in hunt-lab/console-provenance.json.
+
+Only Hunt Command builds copy this file; they place it, with the texts above,
+in resources/licenses/hunt-command/.
