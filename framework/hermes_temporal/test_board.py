@@ -1045,9 +1045,11 @@ class ParallelBoardTests(unittest.TestCase):
 
     def test_an_all_dropped_round_names_each_steps_cause_in_the_agents_rail(self) -> None:
         cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
-        child = _wave_child({step_id: ("dropped", "native_nonzero") for step_id in STEP_IDS}, [])
+        failed = self.result(0, status="unknown", output="", reason_code="native_nonzero", diagnostic=cause)
+        child = _wave_child({step_id: ("dropped", "native_nonzero") for step_id in STEP_IDS}, [failed])
         state = build_state(self.raw, self.parent, child)
-        state["steps"][0]["result"] = {"status": "unknown", "reason_code": "native_nonzero", "diagnostic": cause}
+        # The step's unparsed feed item must not hide its cause behind "handoff not parsed".
+        self.assertIsNone(next(item for item in state["feed"] if item["step_id"] == "scope")["handoff"])
         rail = _render_page(state, "agents")["rail"]
         self.assertIn("wave 1 \u00b7 dropped \u00b7 native nonzero: " + cause, rail["text"])
         self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero", rail["text"])
