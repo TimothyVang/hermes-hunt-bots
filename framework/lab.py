@@ -57,8 +57,8 @@ GATEWAY_RELOAD = '\n'.join((
 ))
 
 
-def resolve_home(home=None):
-    """Resolve one standard root, never search other homes or read private config."""
+def resolve_home(home=None, *, create=False):
+    """Resolve one standard root, never search other homes or read private config; `create` makes a missing one."""
     suffix = os.environ.get('HERMES_DATA_DIR_SUFFIX', '')
     if sys.platform == 'win32':
         base = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local')
@@ -78,7 +78,7 @@ def resolve_home(home=None):
     # root. Refuse a nested alternative rather than stage here and enable there.
     if path != standard and path.is_relative_to(standard):
         raise ValueError('Nested alternative Hermes roots are not supported; use the general native home')
-    return install_desktop.ordinary_directory(path)
+    return install_desktop.ordinary_directory(path, create=create)
 
 
 def registered_profile(home, name, *, required=True):

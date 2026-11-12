@@ -302,15 +302,16 @@ def setup_all(hermes_override=None, home=None, kit_root=HERE, process_factory=su
 
     def prerequisites():
         catalog = load_catalog(kit_root)
-        root = lab.resolve_home(home)
-        lab.refuse_during_update(root)
         executable = resolve_hermes(hermes_override)
-        state.update(catalog=catalog, root=root, executable=executable)
         print(f'Validated {len(catalog)} authored Hermes distributions.')
         print(f'Hermes executable: {executable}')
-        print(f'Hermes home: {root}')
         print('Docker: ' + check_docker(runner, which))
         print('Temporal CLI: ' + check_temporal(runner, which))
+        # A fresh home does not exist yet; create it only once every prerequisite has passed.
+        root = lab.resolve_home(home, create=True)
+        lab.refuse_during_update(root)
+        print(f'Hermes home: {root}')
+        state.update(catalog=catalog, root=root, executable=executable)
 
     def profiles():
         if _install_profiles(state['catalog'], state['executable'], state['root'], process_factory):

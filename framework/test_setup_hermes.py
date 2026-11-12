@@ -228,8 +228,8 @@ class SetupAllTests(unittest.TestCase):
         self.root = Path(self.temp.name) / 'kit'
         self.root.mkdir()
         create_kit(self.root)
-        self.home = Path(self.temp.name) / 'home'
-        self.home.mkdir()
+        # A fresh home does not exist until setup creates it, as on a new machine.
+        self.home = Path(self.temp.name) / 'runtime' / 'lab-home'
         self.ready = version_probe({'docker': '29.1.3\n', 'temporal': 'temporal version 1.5.1\n'})
         self.lab_install = patch('lab.install', return_value={'profile': 'framework-network-analyst'})
 
@@ -262,7 +262,7 @@ class SetupAllTests(unittest.TestCase):
                 factory.assert_not_called()
                 lab_install.assert_not_called()
                 native['apply'].assert_not_called()
-                self.assertFalse((self.home / 'profiles').exists())
+                self.assertFalse((self.home.parent).exists(), 'a failed prerequisite must leave no home behind')
         patcher, native = self.native()
         with patcher, self.lab_install as lab_install, patch('native_team.initialize') as initialize:
             factory = native_install(self.home, returncode=2)
