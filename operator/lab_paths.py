@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# Next to the clone, never inside it: the lab runtime refuses VM state inside any Git work tree
-# (state_inside_git), even a git-ignored folder, so lab disks and logs cannot be committed.
+# Next to the clone, never inside it: the lab refuses its state inside any Git work tree, even a
+# git-ignored folder, so case evidence, secrets and logs cannot be committed.
 RUNTIME = Path(os.environ.get('HUNT_BOTS_RUNTIME') or ROOT.parent / 'runtime')
 FRAMEWORK = ROOT / 'framework'
 LAB_HOME = Path(os.environ.get('HUNT_BOTS_LAB_HOME') or RUNTIME / 'lab-home')
@@ -38,7 +38,7 @@ TOOLCAM_FONT = os.environ.get('TOOLCAM_FONT') or (
 
 @dataclass(frozen=True)
 class Lane:
-    """One complete lab: a Hermes home (its six profiles, lab VM and lab_browser state), the Temporal task
+    """One complete lab: a Hermes home (its six profiles, container lab and lab_browser state), the Temporal task
     queue its worker polls, and the Hermes executable serving it. Every tool that touches a lab takes its
     Lane, so two lanes can run side by side."""
     name: str = ''

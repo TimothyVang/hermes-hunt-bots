@@ -257,8 +257,9 @@ def _parser() -> argparse.ArgumentParser:
                                 "log export; work-connected: a window of the operator's work Elastic served live by "
                                 "hunt_lab.connected); it must equal the case's origin, and such a case is refused without it")
     lab_input.add_argument("--case-id",
-                           help="with --tool-driven: export this case from whichever lab serves it, the VM or a connected "
-                                "service (default: the one lab serving a case; both serving one is refused as ambiguous)")
+                           help="with --tool-driven: export this case from whichever lab serves it, a container lab "
+                                "or a connected service (default: the one lab serving a case; two serving one is "
+                                "refused as ambiguous)")
     lab_input.set_defaults(handler=_lab_input)
     return parser
 

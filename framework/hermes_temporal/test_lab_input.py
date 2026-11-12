@@ -12,12 +12,13 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import shutil
 import tempfile
-import types
 import unittest
 from urllib import parse
 
 from unittest.mock import patch
+from hunt_lab import endpoints
 from . import lab_input
 from .hunt import supplied_evidence_hunt
 
@@ -55,19 +56,20 @@ CONNECTED_TEXT = ("work log connection (live read-only queries of the operator's
                   "unclassified work data)")
 
 
-VM_INSTANCE = "hermes-framework-network-analyst-case-lab-med-001-6873a567"
-VM_SECRET = "5e" * 32
+LAB_INSTANCE = "6873a567" * 4
+LAB_SECRET = "5e" * 32
 
 
-def deploy_vm(state_dir: Path) -> None:
-    """What prepare_guest leaves for the deployed seed: deployment.json and the seed's owner-only caller file."""
-    from hunt_lab import endpoints
-
-    seed = state_dir / "media" / "cidata.iso"
-    seed.parent.mkdir(parents=True, exist_ok=True)
-    (state_dir / "deployment.json").write_text(json.dumps({"seed": str(seed)}), encoding="utf-8")
-    endpoints.caller_file(seed).unlink(missing_ok=True)
-    endpoints.write_vm_caller(seed, VM_INSTANCE, VM_SECRET)
+def write_container_state(analyst: Path, lab: FakeLab, case_id: str, **changes) -> None:
+    """Write the state.json `hunt_lab.lab_stack start` writes for a container lab serving `case_id` on `lab`'s port.
+    Kibana and Arkime get two other valid ports (port ^ 1 and port ^ 2); nothing calls them."""
+    port = lab.server.server_address[1]
+    state = {"version": 1, "case_id": case_id, "project": "hunt-lab-" + case_id, "instance": lab.instance,
+             "secret": lab.secret, "lab_port": port, "kibana_port": port ^ 1, "arkime_port": port ^ 2,
+             "started_at": 1.0, **changes}
+    folder = analyst / endpoints.CONTAINER_STATE / case_id
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
 class FakeLab:
@@ -76,7 +78,7 @@ class FakeLab:
     Like the real service it answers only a caller sending its secret; refused requests are kept apart."""
 
     def __init__(self, case=None, events=(), activity=(), *, redirect=False, body=None, network_scope="tag",
-                 instance=VM_INSTANCE, refuse_unknown=False, secret=VM_SECRET):
+                 instance=LAB_INSTANCE, refuse_unknown=False, secret=LAB_SECRET):
         self.case = dict(case or TOOL_CASE)
         self.instance = instance
         self.secret = secret
@@ -153,24 +155,12 @@ class FakeLab:
 
 
 def write_connected_state(analyst: Path, lab: FakeLab, case_id: str) -> str:
-    """Write the state.json `hunt_lab.connected serve` writes for `lab`, beside a VM state dir whose deployed seed
-    has its caller file; returns that VM state dir."""
+    """Write the state.json `hunt_lab.connected serve` writes for `lab`; returns the analyst's lab state dir."""
     (analyst / "hunt-lab-connected").mkdir(parents=True, exist_ok=True)
     (analyst / "hunt-lab-connected" / "state.json").write_text(json.dumps({
         "version": 2, "pid": 1, "port": lab.server.server_address[1], "case_id": case_id,
         "instance": lab.instance, "secret": lab.secret, "api_key_env": "HUNT_ELASTIC_API_KEY"}), encoding="utf-8")
-    deploy_vm(analyst / "hunt-lab-vm")
     return str(analyst / "hunt-lab-vm")
-
-
-def fake_runtime(status):
-    calls = []
-
-    def invoke(action, *, state_dir, profile):
-        calls.append((action, state_dir, profile))
-        return dict(status)
-
-    return types.SimpleNamespace(invoke=invoke, calls=calls)
 
 
 class FixtureAdapter:
@@ -205,10 +195,10 @@ class FixtureAdapter:
         self.fault = fault
         self.event_offsets = []
 
-    def query_lab(self, arguments, *, runtime, state_dir, profile):
+    def query_lab(self, arguments, *, state_dir, profile):
         case_id = "dns-lab-001"
         if self.fault == "owner_stopped":
-            return {"ok": False, "profile": profile, "error": "owned_vm_not_running"}
+            return {"ok": False, "profile": profile, "error": "lab_not_running"}
         if self.fault == "wrong_owner":
             return {"ok": True, "profile": "wrong-owner", "case_id": case_id, "evidence": {}}
         if self.fault == "case_mismatch":
@@ -236,7 +226,7 @@ class FixtureAdapter:
 
 class LabInputTests(unittest.TestCase):
     def collect(self, adapter, case_id="dns-lab-001"):
-        modules = {"hunt_lab.runtime": types.SimpleNamespace(), "hunt_lab.query_adapter": adapter}
+        modules = {"hunt_lab.query_adapter": adapter}
         with patch.object(lab_input.importlib, "import_module", side_effect=modules.__getitem__):
             return lab_input.collect_lab_input("approved-state", case_id)
 
@@ -426,25 +416,28 @@ class LabInputTests(unittest.TestCase):
 
 
 class ToolDrivenInputTests(unittest.TestCase):
-    STATUS = {"profile": "framework-network-analyst", "state": "running"}
-
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.state_dir = Path(temp.name) / "hunt-lab-vm"
-        deploy_vm(self.state_dir)
+        self.analyst = Path(temp.name) / "framework-network-analyst"
+        self.state_dir = self.analyst / "hunt-lab-vm"
 
-    def collect(self, lab, status=None, **options):
-        runtime = fake_runtime({**self.STATUS, "lab_url": lab.url, **(status or {})})
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            return lab_input.collect_tool_input(self.state_dir, **options), runtime
+    def collect(self, lab, state=None, **options):
+        """collect_tool_input with one container lab serving `lab`'s case; `state` overrides its state.json fields,
+        and False writes none."""
+        shutil.rmtree(self.analyst / endpoints.CONTAINER_STATE, ignore_errors=True)
+        if state is not False:
+            case_id = lab.case.get("case_id")
+            if not isinstance(case_id, str) or not endpoints.CASE_ID.fullmatch(case_id):
+                case_id = TOOL_CASE["case_id"]
+            write_container_state(self.analyst, lab, case_id, **(state or {}))
+        return lab_input.collect_tool_input(self.state_dir, **options)
 
     def test_export_reads_only_case_metadata_for_the_loaded_case(self):
         lab = FakeLab(events=[{"event.id": "evt-000001", "message": "never exported"}])
         self.addCleanup(lab.close)
-        raw, runtime = self.collect(lab)
+        raw = self.collect(lab)
         self.assertEqual(lab.paths(), ["/case"])
-        self.assertEqual(runtime.calls, [("status", self.state_dir, "framework-network-analyst")])
         self.assertEqual(lab.refused, [])
         self.assertEqual(raw["mode"], "tool_driven")
         self.assertEqual(raw["ontology"]["case_id"], "lab-med-001")
@@ -457,12 +450,12 @@ class ToolDrivenInputTests(unittest.TestCase):
         for step in request.steps:
             self.assertEqual(step.hunt_context["evidence_ids"], [item["source_id"]])
             self.assertIn("lab-med-001", step.prompt)
-        self.assertEqual(self.collect(lab)[0], raw)
+        self.assertEqual(self.collect(lab), raw)
 
     def test_a_log_only_case_is_exported_with_its_network_capture_field(self):
         lab = FakeLab(case={**TOOL_CASE, "network_capture": "none"})
         self.addCleanup(lab.close)
-        raw, _runtime = self.collect(lab)
+        raw = self.collect(lab)
         self.assertIn('"network_capture":"none"', raw["evidence"][0]["content"])
         supplied_evidence_hunt(raw)
 
@@ -471,7 +464,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.addCleanup(lab.close)
         with self.assertRaisesRegex(lab_input.LabInputError, "--data-origin public-dataset"):
             self.collect(lab)
-        raw, _runtime = self.collect(lab, data_origin="public-dataset")
+        raw = self.collect(lab, data_origin="public-dataset")
         self.assertIs(raw["synthetic_only"], False)
         self.assertEqual(raw["data_origin"], "public-dataset")
         self.assertTrue(raw["scope"].startswith(
@@ -492,7 +485,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         for approval in ({}, {"data_origin": "public-dataset"}, {"data_origin": "synthetic"}):
             with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError):
                 self.collect(lab, **approval)
-        raw, _runtime = self.collect(lab, data_origin="work-export")
+        raw = self.collect(lab, data_origin="work-export")
         self.assertIs(raw["synthetic_only"], False)
         self.assertEqual(raw["data_origin"], "work-export")
         self.assertTrue(raw["scope"].startswith(
@@ -514,7 +507,7 @@ class ToolDrivenInputTests(unittest.TestCase):
         for origin in ("public-dataset", "work-export"):
             with self.subTest(origin=origin), self.assertRaisesRegex(lab_input.LabInputError, "synthetic"):
                 self.collect(lab, data_origin=origin)
-        raw, _runtime = self.collect(lab)
+        raw = self.collect(lab)
         self.assertIs(raw["synthetic_only"], True)
         self.assertNotIn("data_origin", raw)
 
@@ -525,16 +518,18 @@ class ToolDrivenInputTests(unittest.TestCase):
             with self.subTest(origin=origin), self.assertRaises(lab_input.LabInputError):
                 self.collect(lab, data_origin="public-dataset")
 
-    def test_export_refuses_unowned_unsafe_or_malformed_lab(self):
-        endpoint_faults = ({"state": "stopped"}, {"profile": "framework-researcher"},
-                           {"lab_url": "http://192.0.2.10:8765"}, {"lab_url": "https://127.0.0.1:8765"},
-                           {"lab_url": "http://localhost:8765"}, {"lab_url": "http://127.0.0.1:8765/api"})
+    def test_export_refuses_a_missing_invalid_or_unsafe_lab(self):
+        state_faults = (False, {"lab_port": 0}, {"kibana_port": "8766"}, {"project": "hunt-lab-other"},
+                        {"instance": "A" * 32}, {"secret": "5e"}, {"version": 2}, {"started_at": None},
+                        {"extra": 1})
         lab = FakeLab()
         self.addCleanup(lab.close)
-        for status in endpoint_faults:
-            with self.subTest(status=status), self.assertRaises(lab_input.LabInputError):
-                self.collect(lab, status)
+        for state in state_faults:
+            with self.subTest(state=state), self.assertRaises(lab_input.LabInputError):
+                self.collect(lab, state)
         self.assertEqual(lab.requests, [])
+        with self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable: lab_not_running$"):
+            self.collect(lab, False)
         bad_cases = ({**TOOL_CASE, "case_id": "Lab Med"}, {**TOOL_CASE, "truth": "x"},
                      {key: value for key, value in TOOL_CASE.items() if key != "schema_version"},
                      {**TOOL_CASE, "sources": "events.jsonl"}, {**TOOL_CASE, "network_capture": "full"})
@@ -551,58 +546,48 @@ class ToolDrivenInputTests(unittest.TestCase):
 
 
     def connected(self, case):
-        """A connected service serving `case`, found through the state.json it writes beside the VM's state dir."""
+        """A connected service serving `case`, found through the state.json it writes beside the lab state dir."""
         lab = FakeLab(case=case, instance="a" * 32)
         self.addCleanup(lab.close)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         return lab, write_connected_state(Path(temp.name) / "framework-network-analyst", lab, case["case_id"])
 
-    def test_export_finds_a_connected_case_while_the_vm_is_stopped_and_refuses_two_labs(self):
+    def test_export_finds_a_connected_case_without_a_container_lab_and_refuses_two_labs(self):
         lab, state_dir = self.connected(CONNECTED_CASE)
-        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-        modules = {"hunt_lab.runtime": runtime}.__getitem__
-        with patch.object(lab_input.importlib, "import_module", side_effect=modules):
-            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
         self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
         self.assertEqual(lab.paths(), ["/case"])
-        vm = FakeLab()
-        self.addCleanup(vm.close)
-        runtime = fake_runtime({**self.STATUS, "lab_url": vm.url})
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
-                self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable: ambiguous_lab$"):
+        container = FakeLab()
+        self.addCleanup(container.close)
+        write_container_state(Path(state_dir).parent, container, "lab-med-001")
+        with self.assertRaisesRegex(lab_input.LabInputError, "^lab input unavailable: ambiguous_lab$"):
             lab_input.collect_tool_input(state_dir, data_origin="work-connected")
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected", case_id="work-conn-001")
-            self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
-            self.assertEqual(lab_input.collect_tool_input(state_dir, case_id="lab-med-001")["ontology"]["case_id"],
-                             "lab-med-001")
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            self.assertEqual(lab_input.resolve_lab(state_dir, "work-conn-001").origin, "connected")
-            self.assertEqual(lab_input.resolve_lab(state_dir, "lab-med-001").origin, "vm")
+        raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected", case_id="work-conn-001")
+        self.assertEqual(raw["ontology"]["case_id"], "work-conn-001")
+        self.assertEqual(lab_input.collect_tool_input(state_dir, case_id="lab-med-001")["ontology"]["case_id"],
+                         "lab-med-001")
+        self.assertEqual(lab_input.resolve_lab(state_dir, "work-conn-001").origin, "connected")
+        self.assertEqual(lab_input.resolve_lab(state_dir, "lab-med-001").origin, "container")
 
     def test_a_connected_answer_must_carry_its_instance(self):
         lab, state_dir = self.connected(CONNECTED_CASE)
         lab.instance = "b" * 32
-        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__), \
-                self.assertRaisesRegex(lab_input.LabInputError, "lab_instance_mismatch"):
+        with self.assertRaisesRegex(lab_input.LabInputError, "lab_instance_mismatch"):
             lab_input.collect_tool_input(state_dir, data_origin="work-connected")
-        self.assertEqual(lab_input.lab_get(lab.url, "/case", secret=VM_SECRET)["case_id"], "work-conn-001")
+        self.assertEqual(lab_input.lab_get(lab.url, "/case", secret=LAB_SECRET)["case_id"], "work-conn-001")
         with self.assertRaises(lab_input.LabInputError):
-            lab_input.lab_get(lab.url, "/case", instance="a" * 32, secret=VM_SECRET)
+            lab_input.lab_get(lab.url, "/case", instance="a" * 32, secret=LAB_SECRET)
         with self.assertRaises(lab_input.LabInputError) as refused:
             lab_input.lab_get(lab.url, "/case")
         self.assertEqual(refused.exception.code, "caller_not_authorized")
 
     def test_a_connected_case_is_exported_only_from_a_connected_service_with_its_origin(self):
         _lab, state_dir = self.connected(CONNECTED_CASE)
-        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            for approval in (None, "work-export", "public-dataset"):
-                with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError):
-                    lab_input.collect_tool_input(state_dir, data_origin=approval)
-            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        for approval in (None, "work-export", "public-dataset"):
+            with self.subTest(approval=approval), self.assertRaises(lab_input.LabInputError):
+                lab_input.collect_tool_input(state_dir, data_origin=approval)
+        raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
         self.assertEqual((raw["synthetic_only"], raw["data_origin"]), (False, "work-connected"))
         self.assertTrue(raw["scope"].startswith("Work log connection work-conn-001 (live read-only queries"))
         [item] = raw["evidence"]
@@ -617,9 +602,7 @@ class ToolDrivenInputTests(unittest.TestCase):
 
     def test_a_connected_case_is_told_it_is_real_work_data(self):
         _lab, state_dir = self.connected(CONNECTED_CASE)
-        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-        with patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
-            raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
+        raw = lab_input.collect_tool_input(state_dir, data_origin="work-connected")
         self.assertTrue(raw["scope"].startswith(
             "Work log connection work-conn-001 (live read-only queries of the operator's work Elastic; "
             "unclassified work data) only; "))
@@ -635,26 +618,22 @@ class ToolDrivenInputTests(unittest.TestCase):
                     self.assertIn("Work log connection tool-driven hunt: the loaded lab case is a " + CONNECTED_TEXT,
                                   step.prompt)
 
-    def test_a_vm_case_claiming_the_connected_origin_or_bad_hosts_is_refused(self):
-        vm = FakeLab(case=CONNECTED_CASE)
-        self.addCleanup(vm.close)
+    def test_a_container_case_claiming_the_connected_origin_or_bad_hosts_is_refused(self):
+        container = FakeLab(case=CONNECTED_CASE)
+        self.addCleanup(container.close)
         with self.assertRaises(lab_input.LabInputError):
-            self.collect(vm, data_origin="work-connected")
+            self.collect(container, data_origin="work-connected")
         hosted = FakeLab(case={**WORK_CASE, "hosts": ["ws-01"]})
         self.addCleanup(hosted.close)
         with self.assertRaises(lab_input.LabInputError):
             self.collect(hosted, data_origin="work-export")
         unlabelled, state_dir = self.connected({**TOOL_CASE, "case_id": "work-conn-002"})
-        runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-        with self.assertRaises(lab_input.LabInputError), \
-                patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+        with self.assertRaises(lab_input.LabInputError):
             lab_input.collect_tool_input(state_dir)
         self.assertEqual(unlabelled.paths(), ["/case"])
         for hosts in ([], ["ws-01", "ws-01"], ["ws\n01"], [" ws-01"], "ws-01", [1], [f"h{n}" for n in range(51)]):
             _lab, state_dir = self.connected({**CONNECTED_CASE, "hosts": hosts})
-            runtime = fake_runtime({**self.STATUS, "state": "stopped"})
-            with self.subTest(hosts=hosts), self.assertRaises(lab_input.LabInputError), \
-                    patch.object(lab_input.importlib, "import_module", side_effect={"hunt_lab.runtime": runtime}.__getitem__):
+            with self.subTest(hosts=hosts), self.assertRaises(lab_input.LabInputError):
                 lab_input.collect_tool_input(state_dir, data_origin="work-connected")
 
 

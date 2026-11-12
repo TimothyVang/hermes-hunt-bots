@@ -12,7 +12,7 @@ State sits in `hunt-lab-container/` beside the analyst's `hunt-lab-vm` dir. Its 
 (hunt_lab.endpoints.owner_only): only this user and SYSTEM can read the secret.
 - `<case_id>/state.json`: the case, compose project, published ports, instance and caller secret. The resolver
   (hunt_lab.endpoints) reads it as the `container` origin.
-- `<case_id>/evidence/`: the evidence files the VM's seed would carry (prepare_guest.payload_sources), linked or
+- `<case_id>/evidence/`: the case folder's allowlisted evidence files (case_files.evidence_files), linked or
   copied, mounted read-only.
 - `<case_id>/lab-secret` and `<case_id>/instance-id`: mounted into the lab service only.
 - `<case_id>/compose.log` and `<case_id>/up.json`: the background `docker compose up` and its process.
@@ -24,6 +24,8 @@ Ports are three free loopback ports, or, when HUNT_LAB_PORTS is `<first>-<last>`
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -39,7 +41,7 @@ import time
 import uuid
 from urllib import error, request
 
-from . import endpoints, prepare_guest
+from . import case_files, endpoints
 
 PROFILE = 'framework-network-analyst'
 SOURCE = Path(__file__).resolve().parent
@@ -114,7 +116,7 @@ def lab_image():
 
 
 def _root(state_dir):
-    return prepare_guest.state_location(os.fspath(Path(state_dir).parent / endpoints.CONTAINER_STATE))
+    return case_files.state_location(os.fspath(Path(state_dir).parent / endpoints.CONTAINER_STATE))
 
 
 def _case_dir(root, case_id):
@@ -124,13 +126,12 @@ def _case_dir(root, case_id):
 
 
 def _evidence(evidence_dir):
-    """The case id and the (name, path) evidence files the VM's seed would carry for this folder."""
+    """The case id and the (name, path) evidence files the container lab loads for this folder."""
     try:
-        folder = prepare_guest.local_path(evidence_dir)
-        files = [(name.removeprefix('evidence/'), path) for name, path in prepare_guest.payload_sources(folder)
-                 if name.startswith('evidence/')]
-        case_id = prepare_guest.case_metadata(folder / 'case.json')['case_id']
-    except (prepare_guest.PreparationError, OSError):
+        folder = case_files.local_path(evidence_dir)
+        files = case_files.evidence_files(folder)
+        case_id = case_files.case_metadata(folder / 'case.json')['case_id']
+    except (case_files.CaseError, OSError):
         raise StackFailure('invalid_evidence') from None
     return case_id, folder, files
 
@@ -253,14 +254,46 @@ def _ports(reserved=frozenset(), count=3):
             listener.close()
 
 
+def _windows_identity(pid):
+    """Creation time plus executable of a running process, or None once it has exited."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                  ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    # PROCESS_QUERY_LIMITED_INFORMATION; error 87 is a PID with no process.
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == 87:
+            return None
+        raise StackFailure('process_identity_unavailable')
+    try:
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise StackFailure('process_identity_unavailable')
+        if code.value != 259:
+            return None
+        times = [wintypes.FILETIME() for _ in range(4)]
+        name, length = ctypes.create_unicode_buffer(32768), wintypes.DWORD(32768)
+        if not kernel.GetProcessTimes(handle, *[ctypes.byref(item) for item in times]):
+            raise StackFailure('process_identity_unavailable')
+        if not kernel.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(length)):
+            raise StackFailure('process_identity_unavailable')
+        return {'created': (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime,
+                'executable': str(Path(name.value).resolve()).casefold()}
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _identity(pid):
     """A process's creation identity, or None once it has exited; a reused PID never matches."""
     if os.name == 'nt':
-        from . import managed
-        try:
-            return managed._identity(pid)
-        except managed.SetupFailure:
-            raise StackFailure('process_identity_unavailable') from None
+        return _windows_identity(pid)
     try:
         return {'created': Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]}
     except (OSError, IndexError):
@@ -341,7 +374,7 @@ def _status(profile, root, case_id):
     ready, health, reason = _health(state)
     result['health'] = health
     if ready:
-        # The console page takes the secret as ?key=, the one way a browser tab can send it (as for the VM).
+        # The console page takes the secret as ?key=, the one way a browser tab can send it.
         result.update(state='running', reason=None, lab_console_url=lab_url + '/?key=' + state['secret'])
         return result
     failed = [name for name in ONE_SHOTS if services.get(name, (None, 0))[0] == 'exited'
@@ -497,7 +530,7 @@ def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=Non
         result = _base(profile)
         result.update(state='error', reason=failure.args[0], case_id=case_id)
         return result
-    except prepare_guest.PreparationError:
+    except case_files.CaseError:
         result = _base(profile)
         result.update(state='error', reason='invalid_state_dir', case_id=case_id)
         return result

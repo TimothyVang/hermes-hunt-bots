@@ -1,6 +1,6 @@
 # The practice lab as host containers, one compose project per case (hunt_lab/lab_stack.py runs it and sets the
-# variables below). It serves the same guest files the VM does (lab_server.py, ingest.py, kibana_setup.py,
-# arkime.ini, kibana.yml), unmodified. compose.yaml stays the VM guest's until the VM is removed.
+# variables below). It mounts this folder's lab_server.py, ingest.py, kibana_setup.py, arkime.ini and kibana.yml
+# unmodified.
 #
 # - Nothing here has a network route out. Every service sits on the internal network `backend` only, except
 #   `relay`, whose one job is to publish the three ports on 127.0.0.1: Docker publishes no port of a container
@@ -9,8 +9,8 @@
 #   Kibana and the Arkime viewer share one network namespace, held by `netns`. Restarting any one of them
 #   leaves the other two in place.
 # - Elasticsearch has no fixed address; Arkime and Kibana get its address by environment.
-# - The guest's bootstrap steps (Arkime database, event and intel ingest, capture import, Kibana data view)
-#   are one-shot services.
+# - The loading steps (Arkime database, event and intel ingest, capture import, Kibana data view) are one-shot
+#   services.
 # - Images are pinned to the digests in image-lock.json; the lab image is built from Dockerfile.lab.
 name: ${PROJECT:?}
 services:
@@ -48,7 +48,7 @@ services:
     networks: [backend]
     restart: 'no'
 
-  # The guest's systemd unit hermes-hunt-lab-api: user nobody, read-only, no privileges.
+  # The lab service: user nobody, read-only, no privileges.
   lab:
     image: ${LAB_IMAGE:?}
     pull_policy: never
@@ -67,7 +67,7 @@ services:
       - ./lab_server.py:/lab/lab_server.py:ro
       - ${EVIDENCE_DIR:?}:/lab/evidence:ro
       - ${SECRET_FILE:?}:/run/lab/lab-secret:ro
-      # lab_server.py names its instance from cloud-init's file; here it is a plain file lab_stack writes.
+      # lab_server.py reads its instance ID from this path; lab_stack writes a new one for every start.
       - ${INSTANCE_FILE:?}:/var/lib/cloud/data/instance-id:ro
     depends_on:
       elasticsearch:
@@ -127,7 +127,7 @@ services:
         condition: service_healthy
     restart: 'no'
 
-  # The guest's capture import, tagged case:<case_id>. A case without a capture has no traffic.pcap here.
+  # The capture import, tagged case:<case_id>. A case without a capture has no traffic.pcap here.
   pcap-import:
     image: ghcr.io/arkime/arkime/arkime:v6.9.1@sha256:6f72a8ac29bb129f98297f65e27b5aee4f5b75d1cf0fcd4b2416815db3360af0
     environment:
@@ -168,7 +168,7 @@ services:
         condition: service_started
     restart: 'no'
 
-  # The guest's last step: point the Kibana data view at this case.
+  # The last step: point the Kibana data view at this case.
   kibana-setup:
     image: ${LAB_IMAGE:?}
     pull_policy: never

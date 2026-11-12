@@ -3,15 +3,15 @@
 
 Every query is scoped server-side to the loaded case: events by the event source (LabElastic: event.dataset),
 intel by case_id, network sessions by the Arkime case tag and the case window.
-Arkime is reached only through two fixed read routes on guest loopback. A case whose
+Arkime is reached only through two fixed read routes on the lab's own loopback. A case whose
 case.json says "network_capture": "none" has no sessions; its network queries are refused.
 Packet fields come only from the case's saved capture (tshark -r, never live capture), limited
 to a fixed field allowlist with URI query strings redacted (ADR 0003).
 
 Only its own caller is answered: a request whose Host is not 127.0.0.1:<port> is refused (403
 host_not_allowed, so a DNS-rebinding page gets nothing), and one without this instance's secret in
-X-Hunt-Lab-Secret is refused (401 caller_not_authorized). The guest reads the secret from the systemd
-credential its seed delivered; every answer, a refusal too, names the instance in X-Hunt-Lab-Instance.
+X-Hunt-Lab-Secret is refused (401 caller_not_authorized). The container lab mounts the secret as the file
+--secret-file names; every answer, a refusal too, names the instance in X-Hunt-Lab-Instance.
 """
 import argparse
 import base64
@@ -46,15 +46,14 @@ PROFILES = frozenset({
 })
 BOARD_PROFILE = 'hunt-board'
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
-# cloud-init's record of the instance this boot belongs to; prepare_guest reseed makes a new ID per load.
+# The instance this start belongs to: the container lab mounts a file here with a new ID for every start.
 INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
 INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
-# The caller check. The guest cannot know the host port QEMU forwards to it, so without public_port
-# any 127.0.0.1 port is accepted; the hostname is what defeats DNS rebinding.
+# The caller check. The lab cannot know the host port the container lab's relay publishes it on, so without
+# public_port any 127.0.0.1 port is accepted; the hostname is what defeats DNS rebinding.
 INSTANCE_HEADER = 'X-Hunt-Lab-Instance'
 SECRET_HEADER = 'X-Hunt-Lab-Secret'
 SECRET = re.compile(r'[0-9a-f]{64}')
-SECRET_CREDENTIAL = 'lab-secret'
 LOOPBACK_HOST = re.compile(r'127\.0\.0\.1:([1-9][0-9]{0,4})')
 # The HTML console a browser tab opens: the only routes that also take the secret as ?key=.
 CONSOLE_PATHS = ('/', '/view')
@@ -359,7 +358,7 @@ def lucene(q):
 
 
 class LabElastic:
-    """The guest's own Elasticsearch, where ingest.py gives every case event event.dataset = case_id and its evt- event.id.
+    """The lab's own Elasticsearch, where ingest.py gives every case event event.dataset = case_id and its evt- event.id.
 
     The event source answers every Elasticsearch read the endpoints make: how the case is scoped, and how events
     are ordered, cited and paged. make_server takes another source in its place (ADR 0005's connected service on
@@ -476,7 +475,7 @@ def es_aggs_endpoint(server, params):
             raise ValueError('interval too fine for the case window')
         aggregation = {'date_histogram': {'field': '@timestamp', 'fixed_interval': interval, 'min_doc_count': 1,
                                           'format': "yyyy-MM-dd'T'HH:mm:ss'Z'"}}
-        # The window bounds the events, not hard_bounds: Elasticsearch (8.15.3 and the guest's 8.19.23) drops every
+        # The window bounds the events, not hard_bounds: Elasticsearch (8.15.3 and the lab's 8.19.23) drops every
         # bucket that ends after hard_bounds.max, so the window's last interval, or all of a window shorter than one
         # interval, came back empty.
         bounds = [{'range': {'@timestamp': {'gte': epoch(start), 'lt': epoch(end), 'format': 'epoch_millis'}}}]
@@ -1121,7 +1120,7 @@ def load_case(path):
 
 
 def instance_id(path=INSTANCE_ID_FILE):
-    """The cloud-init instance this server was started for; every reseed makes a new one."""
+    """The instance this server was started for; every container lab start makes a new one."""
     try:
         value = Path(path).read_text(encoding='ascii').strip()
     except (OSError, UnicodeDecodeError):
@@ -1139,10 +1138,10 @@ def read_secret(path):
 
 def make_server(bind, port, case, source, network_scope='tag', instance=None, capture=None, *, secret,
                 public_port=None):
-    """source: the event source, or the guest Elasticsearch URL that LabElastic reads.
+    """source: the event source, or the lab Elasticsearch URL that LabElastic reads.
 
     secret: the value every caller must send in X-Hunt-Lab-Secret. public_port: the port callers reach this
-    service on, when it is known (the guest's QEMU forward is not).
+    service on, when it is known (the port the container lab's relay publishes is not).
     """
     if network_scope not in ('tag', 'window'):
         raise ValueError('network_scope must be tag or window')
@@ -1171,13 +1170,10 @@ def main():
     parser.add_argument('--case', required=True)
     # "window" only serves a legacy dns-lab-001 pcap imported before case tagging.
     parser.add_argument('--network-scope', choices=('tag', 'window'), default='tag')
-    parser.add_argument('--secret-file',
-                        help=f'the instance secret (default: the {SECRET_CREDENTIAL} systemd credential)')
+    parser.add_argument('--secret-file', required=True,
+                        help='the instance secret; the service never runs without one')
     args = parser.parse_args()
-    credentials = os.environ.get('CREDENTIALS_DIRECTORY')
-    if args.secret_file is None and not credentials:
-        parser.error(f'no --secret-file and no {SECRET_CREDENTIAL} credential: the service never runs without a secret')
-    secret = read_secret(args.secret_file or Path(credentials) / SECRET_CREDENTIAL)
+    secret = read_secret(args.secret_file)
     server = make_server(args.bind, args.port, load_case(args.case),
                          os.environ.get('LAB_ELASTICSEARCH', 'http://elasticsearch:9200'), args.network_scope,
                          instance=instance_id(), capture=Path(args.case).resolve().parent / 'traffic.pcap',

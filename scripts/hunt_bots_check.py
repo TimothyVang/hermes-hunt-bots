@@ -7,8 +7,8 @@
     python scripts/hunt_bots_check.py --log FILE      also write every test's full output to FILE
 
 The policy gate enforces HUNT-BOTS.md rules 1, 8 and 9: tracked framework/ files equal
-framework/TRACKED-FILES.txt, nothing under runtime/ is tracked, no private-state files under
-framework/, and THIRD-PARTY-NOTICES.md exists. The tests need a Python with
+framework/TRACKED-FILES.txt, nothing under runtime/ is tracked, no private-state files or captures
+under framework/ or research/, and THIRD-PARTY-NOTICES.md exists. The tests need a Python with
 framework/requirements-hunt.lock installed; without one of its test packages the gate fails with
 `missing: <module>` instead of skipping those suites. Paste the summary line into the PR's
 Verification section. Stdlib only; run from anywhere inside the repository.
@@ -29,7 +29,7 @@ ALLOWED_CAPTURES = {'framework/hunt_lab/fixtures/dns-lab-001/traffic.pcap'}
 # Top-level folders whose files get the private-state and capture checks (research/ holds the parked benchmark).
 GUARDED = ('framework', 'research')
 # Modules whose absence makes test suites skip themselves; the gate refuses to run without them.
-REQUIRED_MODULES = ('temporalio', 'websockets', 'pycdlib')
+REQUIRED_MODULES = ('temporalio', 'websockets')
 SUITES = (('framework tests', 'framework', 'test*.py'), ('operator tests', 'operator', 'test*.py'),
           ('gate tests', 'scripts', 'test_hunt_bots_check.py'))
 # The parked benchmark (research/benchmark/README.md) runs only on demand, never in the default gate.

@@ -46,8 +46,18 @@ def ordinary_directory(path, *, create=False):
     return path
 
 
+def _bundle_entry(relative):
+    """A relative path inside a bundle: no absolute, backslash, `.` or `..` part, and never the marker."""
+    parts = Path(relative).parts if isinstance(relative, str) else ()
+    return (bool(parts) and not Path(relative).is_absolute() and '\\' not in relative
+            and not any(part in {'.', '..'} for part in parts) and relative != MARKER)
+
+
 def sync_bundle(parent, name, files):
-    """Synchronize only a hash-owned bundle; never adopt unknown existing files."""
+    """Synchronize only a hash-owned bundle; never adopt unknown existing files.
+
+    A file the old marker owns that `files` no longer has is removed, with its bytecode cache, only when its
+    bytes still match the marker."""
     if not files:
         raise ValueError('Empty bundle refused')
     if name not in {'hunt-lab', PLUGIN}:
@@ -55,10 +65,7 @@ def sync_bundle(parent, name, files):
     parent = ordinary_directory(parent, create=True)
     destination = parent / name
     for relative, data in files.items():
-        parts = Path(relative).parts
-        if (not parts or Path(relative).is_absolute() or '\\' in relative
-                or any(part in {'.', '..'} for part in parts)
-                or relative == MARKER or not isinstance(data, bytes)):
+        if not _bundle_entry(relative) or not isinstance(data, bytes):
             raise ValueError('Invalid authored bundle entry')
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
     old = {}
@@ -74,7 +81,7 @@ def sync_bundle(parent, name, files):
             raise ValueError('Unowned existing bundle refused')
         old = metadata['files']
         for relative, digest in old.items():
-            if (not isinstance(relative, str) or relative not in files
+            if (not _bundle_entry(relative)
                     or not isinstance(digest, str) or len(digest) != 64
                     or any(character not in '0123456789abcdef' for character in digest)):
                 raise ValueError('Invalid ownership marker')
@@ -83,8 +90,8 @@ def sync_bundle(parent, name, files):
             info = no_alias(path)
             if stat.S_ISREG(info.st_mode):
                 relative = path.relative_to(destination)
-                # Python's native loader creates bytecode beside installed
-                # sources. Do not adopt, read, copy or delete those cache bytes.
+                # Python's native loader creates bytecode beside installed sources. Do not adopt, read or
+                # copy those cache bytes; they are deleted only with an obsolete source.
                 match = re.fullmatch(r'(.+)\.cpython-[0-9]+(?:\.opt-[012])?\.pyc', path.name)
                 cached_source = relative.parent.parent / (match.group(1) + '.py') if match else None
                 if (relative.parent.name == '__pycache__' and cached_source is not None
@@ -96,9 +103,9 @@ def sync_bundle(parent, name, files):
         if actual != set(old) | {MARKER}:
             raise ValueError('Unknown bundle files refused')
         for relative, digest in old.items():
-            if (relative not in files or not isinstance(digest, str)
+            if (not isinstance(digest, str)
                     or hashlib.sha256((destination / relative).read_bytes()).hexdigest() != digest):
-                raise ValueError('User-modified or obsolete bundle refused')
+                raise ValueError('User-modified bundle refused')
     else:
         destination.mkdir()
     # Validate the complete destination before replacing any managed bytes.
@@ -111,6 +118,15 @@ def sync_bundle(parent, name, files):
         with temporary.open('xb') as out:
             out.write(data)
         os.replace(temporary, path)
+    for relative in sorted(set(old) - set(files)):
+        obsolete = destination / relative
+        if obsolete.suffix == '.py':
+            for cached in (obsolete.parent / '__pycache__').glob(obsolete.stem + '.cpython-*.pyc'):
+                cached.unlink()
+        obsolete.unlink()
+        for folder in (obsolete.parent / '__pycache__', obsolete.parent):
+            if folder != destination and folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
     metadata = {'owner': 'bot-framework', 'bundle': name, 'files': hashes}
     temporary = destination / (MARKER + '.new')
     with temporary.open('x', encoding='utf-8') as out:

@@ -1,4 +1,4 @@
-"""Guest lab API and ingest contracts with fake backends; no VM, Elasticsearch or Arkime.
+"""Guest lab API and ingest contracts with fake backends; no containers, Elasticsearch or Arkime.
 
 Run from framework/: py -3 -B -m unittest -v test_lab_server
 """
@@ -503,7 +503,7 @@ class CallerTests(ServerCase):
             with self.subTest(host=host):
                 status, _headers, body = self.exchange('/case', 'GET', {'Host': host, lab_server.SECRET_HEADER: SECRET})
                 self.assertEqual((status, json.loads(body)), (403, {'error': 'host_not_allowed'}))
-        # The guest's QEMU forward picks the host port, so without public_port any 127.0.0.1 port is its caller's.
+        # Without public_port the host port is not known, so any 127.0.0.1 port is its caller's.
         self.assertEqual(self.exchange('/case', 'GET', {'Host': '127.0.0.1:1', lab_server.SECRET_HEADER: SECRET})[0], 200)
         self.server.public_port = port
         self.assertEqual(self.exchange('/case', 'GET', {'Host': '127.0.0.1:1', lab_server.SECRET_HEADER: SECRET})[0], 403)
@@ -868,18 +868,16 @@ class PacketFieldsTests(ServerCase):
         with mock.patch.object(lab_server, 'make_server') as make, \
                 mock.patch.object(lab_server, 'load_case', return_value=CASE), \
                 mock.patch.object(lab_server, 'instance_id', return_value=None), \
-                mock.patch.dict(lab_server.os.environ, {'CREDENTIALS_DIRECTORY': str(self.capture.parent)}), \
-                mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case)]):
+                mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case), '--secret-file',
+                                                str(self.capture.parent / 'lab-secret')]):
             lab_server.main()
         self.assertEqual(make.call_args.kwargs['capture'], case.resolve().parent / 'traffic.pcap')
         self.assertEqual(make.call_args.kwargs['secret'], SECRET)
 
     def test_server_main_refuses_to_start_without_its_secret(self):
         case = self.capture.parent / 'case.json'
-        environment = {key: value for key, value in lab_server.os.environ.items() if key != 'CREDENTIALS_DIRECTORY'}
         with mock.patch.object(lab_server, 'make_server') as make, \
                 mock.patch.object(lab_server, 'load_case', return_value=CASE), \
-                mock.patch.dict(lab_server.os.environ, environment, clear=True), \
                 mock.patch.object(sys, 'argv', ['lab_server.py', '--case', str(case)]), \
                 mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
             lab_server.main()

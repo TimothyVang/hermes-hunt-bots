@@ -24,7 +24,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
-from .test_lab_input import VM_SECRET, FakeLab, write_connected_state  # noqa: E402
+from .test_lab_input import LAB_SECRET, FakeLab, write_connected_state, write_container_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
 
 FIXTURES = Path(__file__).with_name("fixtures") / "board"
@@ -896,7 +896,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.addCleanup(self.lab.close)
 
     def observer(self, case_id: str = "lab-med-001") -> LabObserver:
-        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, case_id)
+        return LabObserver(lambda: {"lab_url": self.lab.url, "arkime_url": ARKIME, "secret": LAB_SECRET}, case_id)
 
     def test_cited_ids_accept_four_or_more_digits(self) -> None:
         handoff, _ = parse_handoff(_handoff("scope", "framework-coordinator", "evt-0001, evt-000123 and evt-12."))
@@ -945,7 +945,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_untagged_window_scoped_lab_links_without_case_tag(self) -> None:
         lab = FakeLab(activity=ACTIVITY, network_scope="window")
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME, "secret": VM_SECRET}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": ARKIME, "secret": LAB_SECRET}, "lab-med-001")
         observer.refresh([])
         lanes = {lane["profile"]: lane for lane in build_state(self.raw, None, None, observer.snapshot())["tools"]["lanes"]}
         url = parse.urlsplit(lanes["framework-network-analyst"]["entries"][0]["arkime_ui_url"])
@@ -962,7 +962,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
     def test_observer_skips_tool_calls_made_before_the_hunt(self) -> None:
         lab = FakeLab(events=[], activity=[dict(ACTIVITY[0], seq=seq) for seq in range(1, 8)])
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001",
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": LAB_SECRET}, "lab-med-001",
                                activity_after=5)
         observer.refresh([])
         self.assertEqual([entry["seq"] for entry in observer.snapshot()["activity"]], [6, 7])
@@ -973,7 +973,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         activity = [dict(ACTIVITY[0], seq=seq) for seq in range(1, 251)]
         lab = FakeLab(events=events, activity=activity)
         self.addCleanup(lab.close)
-        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": VM_SECRET}, "lab-med-001")
+        observer = LabObserver(lambda: {"lab_url": lab.url, "arkime_url": None, "secret": LAB_SECRET}, "lab-med-001")
         cited = [f"evt-{number:06d}" for number in range(1, 71)]
         observer.refresh(cited)
         snapshot = observer.snapshot()
@@ -1028,7 +1028,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         observer.refresh(["evt-000101"])
         self.assertTrue(observer.snapshot()["reachable"], observer.snapshot())
         self.assertEqual(sorted(observer.snapshot()["events"]), ["evt-000101"])
-        self.assertNotIn(VM_SECRET, json.dumps(observer.snapshot()))
+        self.assertNotIn(LAB_SECRET, json.dumps(observer.snapshot()))
 
     def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
         lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
@@ -1039,24 +1039,22 @@ class ToolDrivenBoardTests(unittest.TestCase):
         snapshot = observer.snapshot()
         self.assertTrue(snapshot["reachable"], snapshot)
         self.assertEqual((sorted(snapshot["events"]), snapshot["missing"]), (["evt-000101", "evt-000102"], ["evt-009999"]))
-        self.assertEqual({path for path, _, _ in self.lab.requests}, {"/case"})
+        # The container lab of another case is never asked.
+        self.assertEqual(self.lab.requests, [])
         lab.instance = "b" * 32
         observer.refresh(["evt-000103"])
         self.assertFalse(observer.snapshot()["reachable"])
 
-    def state_dir_observer(self, connected: FakeLab, case_id: str) -> LabObserver:
-        """The board's --lab-state-dir observer, with the VM (self.lab) running and `connected` serving beside it."""
-        from . import board, lab_input
+    def state_dir_observer(self, connected: FakeLab, case_id: str, container_case: str = "lab-med-001") -> LabObserver:
+        """The board's --lab-state-dir observer, with `connected` serving beside a container lab (self.lab, which
+        serves lab-med-001) whose state.json names `container_case`."""
+        from . import board
 
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        state_dir = write_connected_state(Path(temp.name) / "framework-network-analyst", connected,
-                                          connected.case["case_id"])
-        runtime = types.SimpleNamespace(invoke=lambda *_args, **_kwargs: {"profile": "framework-network-analyst",
-                                                                            "state": "running", "lab_url": self.lab.url})
-        patcher = mock.patch.object(lab_input.importlib, "import_module", return_value=runtime)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        analyst = Path(temp.name) / "framework-network-analyst"
+        state_dir = write_connected_state(analyst, connected, connected.case["case_id"])
+        write_container_state(analyst, self.lab, container_case)
         args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_state_dir=state_dir)
         return board._lab_observer(args, case_id)
 
@@ -1066,7 +1064,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         for connected, case_id, error in ((other, "lab-other-001", "the lab has a different case loaded than this input"),
                                           (other, "lab-med-001", None)):
             with self.subTest(case_id=case_id):
-                observer = self.state_dir_observer(connected, case_id)
+                observer = self.state_dir_observer(connected, case_id, container_case=case_id)
                 observer.refresh([])
                 self.assertEqual((observer.snapshot()["reachable"], observer.snapshot()["error"]), (True, error))
         both = FakeLab(case=self.lab.case, instance="a" * 32)
@@ -1074,7 +1072,7 @@ class ToolDrivenBoardTests(unittest.TestCase):
         observer = self.state_dir_observer(both, "lab-med-001")
         observer.refresh([])
         self.assertEqual((observer.snapshot()["reachable"], observer.snapshot()["error"]),
-                         (True, "both the VM and a connected service serve this case (ambiguous_lab)"))
+                         (True, "more than one lab serves this case (ambiguous_lab)"))
 
     def test_board_server_serves_tool_state(self) -> None:
         board = Board(self.raw, lambda: ({"stage": "running_round"}, _tool_child()), lab=self.observer())

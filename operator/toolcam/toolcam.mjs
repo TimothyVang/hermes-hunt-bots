@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { pipeline as progress, endCard } from "./progress.mjs";
 
 const args = process.argv.slice(2);
-if (args.length !== 7 || args.includes("--help")) {
+if (args.length !== 7 || args.includes("--help") || !/^[a-z0-9-]{3,64}$/.test(args[3])) {
   console.error("usage: bun toolcam.mjs <outDir> <labUrl> <arkimeUrl> <caseId> <startEpoch> <stopEpoch> <activityAfter>");
   process.exit(2);
 }
@@ -24,14 +24,17 @@ const log = obj => appendFileSync(LOG, JSON.stringify({ t: Date.now(), ...obj })
 const BROWSER = process.env.TOOLCAM_BROWSER || (process.platform === "win32"
   ? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" : "chromium");
 const BOARD_PORT = Number(process.env.TOOLCAM_BOARD_PORT || 8790);
-// The lab service answers only callers that send its secret: read it from the caller file beside the seed the
-// lab VM boots (deployment.json's seed + ".secret.json"), in the lab home lab_paths.py uses.
+// The lab service answers only callers that send its secret: read it from the case's container lab state
+// (hunt-lab-container/<caseId>/state.json beside hunt-lab-vm) in the lab home lab_paths.py uses.
 const LAB_HOME = process.env.HUNT_BOTS_LAB_HOME || join(process.env.HUNT_BOTS_RUNTIME
   || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "runtime"), "lab-home");
-const VM_STATE = join(LAB_HOME, "profiles", "framework-network-analyst", "hunt-lab-vm");
-const SEED = JSON.parse(readFileSync(join(VM_STATE, "deployment.json"), "utf8")).seed;
-const LAB_HEADERS = { "X-Hermes-Profile": "hunt-board",
-  "X-Hunt-Lab-Secret": JSON.parse(readFileSync(SEED + ".secret.json", "utf8")).secret };
+const STATE = join(LAB_HOME, "profiles", "framework-network-analyst", "hunt-lab-container", CASE, "state.json");
+const LAB_STATE = JSON.parse(readFileSync(STATE, "utf8"));
+if (new URL(LAB).port !== String(LAB_STATE.lab_port)) {
+  console.error(`${LAB} is not case ${CASE}'s lab (http://127.0.0.1:${LAB_STATE.lab_port} in ${STATE})`);
+  process.exit(2);
+}
+const LAB_HEADERS = { "X-Hermes-Profile": "hunt-board", "X-Hunt-Lab-Secret": LAB_STATE.secret };
 const PORT = 9400 + Math.floor(Math.random() * 400);
 const edge = spawn(BROWSER, ["--headless=new", `--remote-debugging-port=${PORT}`, "--remote-debugging-address=127.0.0.1",
   `--user-data-dir=${join(outDir, "edge-profile")}`, "--window-size=1920,1080", "--hide-scrollbars", "--no-first-run",

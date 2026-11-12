@@ -321,7 +321,7 @@ def film(d, name, base, brief, guidance, case_id, truth, lane=DEFAULT_LANE):
     workflow = tl.workflow_id(name, case_id, lane)
     # The board reads the round's input before run_config starts it; run_config rewrites the same file.
     (d / 'input.json').write_text(json.dumps(tl.build_input(base, brief, guidance, case_id), indent=2), encoding='utf-8')
-    after = tl.last_seq(tl.serving_lab(lane))
+    after = tl.last_seq(tl.serving_lab(lane, case_id))
     port = free_port()
     url = f'http://127.0.0.1:{port}/'
     rec = {'name': name, 'lane': lane.name, 'workflow': workflow, 'case_id': case_id, 'board_port': port,

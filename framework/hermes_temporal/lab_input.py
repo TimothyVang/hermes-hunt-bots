@@ -69,11 +69,11 @@ def _reject(_message: str = "") -> None:
     raise LabInputError("lab input unavailable or incomplete")
 
 
-def _query(adapter, runtime, state_dir: str, dataset: str, offset: int = 0) -> dict:
+def _query(adapter, state_dir: str, dataset: str, offset: int = 0) -> dict:
     try:
         result = adapter.query_lab(
             {"case_id": CASE_ID, "dataset": dataset, "limit": _PAGE_SIZE, "offset": offset},
-            runtime=runtime, state_dir=state_dir, profile=PROFILE,
+            state_dir=state_dir, profile=PROFILE,
         )
     except Exception:
         _reject()
@@ -94,8 +94,8 @@ def _canonical(value: object) -> str:
         _reject()
 
 
-def _collect_dataset(adapter, runtime, state_dir: str, dataset: str) -> tuple[dict, list[dict]]:
-    first = _query(adapter, runtime, state_dir, dataset)
+def _collect_dataset(adapter, state_dir: str, dataset: str) -> tuple[dict, list[dict]]:
+    first = _query(adapter, state_dir, dataset)
     if (first.get("case_id") != CASE_ID or first.get("dataset") != dataset
             or first.get("read_only") is not True or type(first.get("total")) is not int
             or not 1 <= first["total"] <= _MAX_OFFSET
@@ -127,7 +127,7 @@ def _collect_dataset(adapter, runtime, state_dir: str, dataset: str) -> tuple[di
             break
         if not batch or offset <= 0 or offset > _MAX_OFFSET:
             _reject()
-        page = _query(adapter, runtime, state_dir, dataset, offset)
+        page = _query(adapter, state_dir, dataset, offset)
     if len(rows) != total:
         _reject()
     return first, rows
@@ -182,25 +182,24 @@ def _case_body_ok(case: dict) -> bool:
 def collect_lab_input(state_dir, case_id: str = CASE_ID) -> dict:
     """Return only complete case metadata and paginated event/network summaries.
 
-    This uses the owned runtime status check and fixed query adapter route. It never
-    starts/stops a VM, selects an endpoint, reads raw packets, or accesses a truth key.
+    This uses the fixed query adapter route through the read-only resolver. It never
+    starts/stops a lab, selects an endpoint, reads raw packets, or accesses a truth key.
     """
     if case_id != CASE_ID:
         _reject()
     try:
-        runtime = importlib.import_module("hunt_lab.runtime")
         adapter = importlib.import_module("hunt_lab.query_adapter")
     except Exception:
         _reject()
-    case_result = _query(adapter, runtime, state_dir, "case")
+    case_result = _query(adapter, state_dir, "case")
     case = case_result
     if (set(case) != _CASE_FIELDS or case.get("case_id") != CASE_ID
             or type(case.get("schema_version")) is not int or case.get("schema_version") != 1
             or not _case_body_ok(case)):
         _reject()
     _canonical(case)
-    events_meta, events = _collect_dataset(adapter, runtime, state_dir, "events")
-    network_meta, network = _collect_dataset(adapter, runtime, state_dir, "network")
+    events_meta, events = _collect_dataset(adapter, state_dir, "events")
+    network_meta, network = _collect_dataset(adapter, state_dir, "network")
     records = _chunk_items("events", events) + _chunk_items("network", network)
     evidence: list[dict] = []
     for index, chunk in enumerate(records, 1):
@@ -278,13 +277,12 @@ def loopback_base(url: object) -> str:
 def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
     """The one loopback lab serving ``case_id``, or the one lab serving any case when it is ``None``.
 
-    That is the analyst VM's, read through the read-only runtime status, the host-side connected service,
-    or a container lab (``hunt_lab.endpoints``). Never starts, stops, or creates lab state. A refusal names
-    only the resolver's fixed code, such as ``ambiguous_lab`` when more than one serves the case.
+    That is a container lab or the host-side connected service (``hunt_lab.endpoints``). Never starts, stops,
+    or creates lab state. A refusal names only the resolver's fixed code, such as ``ambiguous_lab`` when more
+    than one serves the case.
     """
     try:
-        runtime = importlib.import_module("hunt_lab.runtime")
-        return resolve(state_dir, case_id, runtime=runtime)
+        return resolve(state_dir, case_id)
     except QueryFailure as exc:
         raise LabInputError(f"lab input unavailable: {exc}", str(exc)) from None
     except Exception:
@@ -335,7 +333,7 @@ def _hosts_ok(case: dict) -> bool:
 
 
 def collect_tool_input(state_dir, *, data_origin: str | None = None, case_id: str | None = None) -> dict:
-    """Return a tool-driven hunt for the loaded case, on the analyst VM or a connected service.
+    """Return a tool-driven hunt for the loaded case, on a container lab or a connected service.
 
     Reads only ``/case`` from the lab ``resolve_lab`` finds for ``case_id`` (default: the one lab
     serving a case); exports no events or sessions. ``data_origin`` records the operator's approval and

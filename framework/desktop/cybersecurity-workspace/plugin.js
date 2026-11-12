@@ -252,15 +252,15 @@ function workspace(ctx) {
         jsx('div', {className:'hw-notes', children:[
           jsx('p', {children:'Board transitions and successful execution never count as human approval. Knowledge and memory promotion need a separate human decision; nothing is written to trusted memory automatically.'}, 'gates'),
           notes('Bot screen', [
-            'Opens the native Bot Screen for one exact registered route. It is not a VM boot or console view; VM power state is unknown here.',
+            'Opens the native Bot Screen for one exact registered route. It does not show or start the Hunting Lab; lab state is unknown here.',
             'Opening an already-running screen attaches live frames; revealing an existing tab may retain its current control lease.',
             'Starting, taking over, handing back and pasting remain separate native user actions.'
           ]),
           notes('How to use these surfaces', [
-            'Hunting Lab: a separate human-operated page owns the local analyst-profile QEMU lab. Navigating there does not download or boot anything.',
-            'Explicit Start prepares verified public runtime assets on first use, then boots the VM; Prepare downloads and provisions without booting. Status does not install, repair or start anything.',
-            'The lab page shows real VM setup progress and the QEMU console, never Bot Screen.',
-            'VM launch, shutdown and guest-console input are deliberate human actions, not advisory ledger gates or model permissions. No provider or model call is needed to operate the lab.',
+            'Hunting Lab: a separate human-operated page owns the local analyst-profile lab, run as host Docker containers. Navigating there does not start anything.',
+            'Explicit Start loads one case into a fresh container project; Stop removes it. Status does not install, repair or start anything.',
+            'The lab page shows the real container lab state and links to the lab console, Kibana and Arkime, never Bot Screen.',
+            'Lab start and stop are deliberate human actions, not advisory ledger gates or model permissions. No provider or model call is needed to operate the lab.',
             'The Network Analyst keeps its existing SOUL restrictions: only bounded approved synthetic summaries through the read-only lab tool, never Arkime controls or raw captures.',
             'Kanban: inspect only. Do not add runnable research cards or enable dispatcher workers here. Native Kanban can run agents; it is not the human-operated ledger. This plugin has no task-write capability in its code.',
             'Browser: use an approved public page or synthetic local document only. Never inspect account pages, headers, cookies, credentials, authentication payloads or session data. No browser observation is automatic.',
@@ -279,7 +279,7 @@ function workspace(ctx) {
           notes('Boundaries', [
             'OMP is development-only, never a product runtime dependency.',
             'This companion performs no collection, telemetry, scanning, capture, Arkime connection, adversary emulation, remediation, trading, external messaging or schedules.',
-            'Navigating to Hunting Lab does not launch its VM; human lifecycle controls there are distinct from these advisory gates.',
+            'Navigating to Hunting Lab does not start the lab; human lifecycle controls there are distinct from these advisory gates.',
             'This plugin makes no model calls, reads no conversations or memory, saves no decisions and changes no specialist safeguards.',
             'It cannot enforce other tools or plugins; profiles and role instructions are not sandboxes.'
           ])

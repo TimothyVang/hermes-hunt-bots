@@ -1,4 +1,4 @@
-"""work_hunt.py with Elasticsearch, the lab VM, Temporal and the gate driver faked."""
+"""work_hunt.py with Elasticsearch, the container lab, Temporal and the gate driver faked."""
 import contextlib
 import io
 import json
@@ -39,7 +39,6 @@ class ParseArgsTest(unittest.TestCase):
             'bad index': (['--index', '/_all'], '--index'),
             'missing CA file': (['--ca-file', 'no-such-ca.pem'], '--ca-file is not a file'),
             'empty hosts': (['--hosts', ' , '], '--hosts names no host'),
-            'missing reseed Python': (['--reseed-python', 'no-such-python.exe'], '--reseed-python is not an executable'),
         }
         for name, (extra, message) in cases.items():
             with self.subTest(name):
@@ -89,12 +88,8 @@ class FakeLab:
         return 0, json.dumps({'case_id': 'work-test-001', 'data_origin': 'work-export', 'event_count': 3,
                               'host_count': 1, 'outside_window': 0, 'files': {}}), ''
 
-    def start_holder(self, evidence, log_path, reseed_python):
-        self.calls.append(('holder', KEY in os.environ.values(), str(evidence)))
-        return Mock(pid=4242)
-
-    def wait_ready(self, holder, log_path, case_id):
-        self.calls.append(('ready', KEY in os.environ.values(), case_id))
+    def load_lab(self, evidence, log_path, case_id):
+        self.calls.append(('load', KEY in os.environ.values(), str(evidence)))
         return '10:00:00 READY case=work-test-001 events=3 sessions=0 intel=0 lab_url=http://127.0.0.1:8765'
 
     def tcli(self, *args, timeout=180):
@@ -131,7 +126,7 @@ class MainTest(unittest.TestCase):
         patches = [patch.object(wh, name, self.root / folder) for name, folder in (
             ('CASES', 'cases'), ('EXPORTS', 'work-exports'), ('WORK_HUNTS', 'work-hunts'), ('GATE_RUNS', 'gate-runs'))]
         patches += [patch.object(wh, name, getattr(self.lab, name))
-                    for name in ('child', 'start_holder', 'wait_ready', 'tcli', 'drive')]
+                    for name in ('child', 'load_lab', 'tcli', 'drive')]
         patches += [patch.object(wh.DEFAULT_LANE.__class__, 'hermes_exe', lambda self: 'hermes'),
                     patch.dict(os.environ, {wh.API_KEY_ENV: KEY})]
         for item in patches:
@@ -151,7 +146,7 @@ class MainTest(unittest.TestCase):
         code, out = self.run_main(*DELEGATED)
         self.assertEqual(code, 0, out)
         self.assertEqual([call[0] for call in self.lab.calls],
-                         ['export', 'import', 'holder', 'ready', 'lab-input', 'practice', 'drive', 'status'])
+                         ['export', 'import', 'load', 'lab-input', 'practice', 'drive', 'status'])
         self.assertEqual([call[0] for call in self.lab.calls if call[1]], ['export'])
         self.assertNotIn(KEY, out)
         self.assertNotIn(wh.API_KEY_ENV, os.environ)
@@ -162,15 +157,15 @@ class MainTest(unittest.TestCase):
         evidence = self.root / 'cases' / 'work-test-001' / 'evidence'
         self.assertEqual(self.lab.calls[1][2][-3:-2], [str(evidence)])
         self.assertEqual(self.lab.calls[2][2], str(evidence))
-        lab_input = self.lab.calls[4][2]
+        lab_input = self.lab.calls[3][2]
         self.assertEqual(lab_input[:4], ('lab-input', '--tool-driven', '--data-origin', 'work-export'))
-        practice = self.lab.calls[5][2]
+        practice = self.lab.calls[4][2]
         self.assertEqual(practice[2:], ('--input', str(self.root / 'work-hunts' / 'work-test-001' / 'input.json'),
                                         '--rounds', '1'))
         hunt = json.loads(Path(practice[3]).read_text(encoding='utf-8'))
         self.assertEqual((hunt['parallel'], hunt['follow_ups'], hunt['data_origin']), (True, 6, 'work-export'))
         self.assertTrue(hunt['scope'].startswith('Work log export'))
-        self.assertEqual(self.lab.calls[6][2], DELEGATED)
+        self.assertEqual(self.lab.calls[5][2], DELEGATED)
         self.assertIn('recorded as delegated', out)
         record = json.loads((self.root / 'work-hunts' / 'work-test-001' / 'hunt.json').read_text(encoding='utf-8'))
         self.assertTrue(record['completed'])
@@ -181,7 +176,7 @@ class MainTest(unittest.TestCase):
     def test_two_decision_mode_leaves_both_decisions_to_the_operator_and_names_the_slack_bridge(self):
         code, out = self.run_main('--operator', 'Ada Lovelace', '--follow-ups', '0')
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.lab.calls[6][2], ['--two-decisions', '--operator', 'Ada Lovelace'])
+        self.assertEqual(self.lab.calls[5][2], ['--two-decisions', '--operator', 'Ada Lovelace'])
         self.assertIn('slack_gates.py --operator-name "Ada Lovelace"' if os.name == 'nt'
                       else "slack_gates.py --operator-name 'Ada Lovelace'", out)
         self.assertIn('recorded as automated', out)
@@ -234,16 +229,15 @@ class MainTest(unittest.TestCase):
     def record(self):
         return json.loads((self.root / 'work-hunts' / 'work-test-001' / 'hunt.json').read_text(encoding='utf-8'))
 
-    def test_a_lab_that_never_loads_says_how_to_stop_the_holder_and_the_vm(self):
-        def not_ready(holder, log_path, case_id):
+    def test_a_lab_that_never_loads_says_how_to_stop_it(self):
+        def not_ready(evidence, log_path, case_id):
             raise SystemExit('the lab did not load work-test-001')
-        with patch.object(wh, 'wait_ready', not_ready):
+        with patch.object(wh, 'load_lab', not_ready):
             code, out = self.run_main(*DELEGATED)
         self.assertIn('the lab did not load work-test-001', str(code))
-        self.assertIn('taskkill /PID 4242' if os.name == 'nt' else 'kill 4242', out)
-        self.assertIn('hunt-lab stop', out)
+        self.assertIn('hunt-lab stop --case-id work-test-001', out)
         self.assertNotIn('resume the gate driver', out)
-        self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import', 'holder'])
+        self.assertEqual([call[0] for call in self.lab.calls], ['export', 'import'])
         self.assertEqual(self.record()['ended_early'], 'SystemExit: the lab did not load work-test-001')
 
     def test_a_failed_hunt_start_keeps_a_record_and_says_how_to_stop_the_lab(self):
@@ -255,7 +249,7 @@ class MainTest(unittest.TestCase):
         record = self.record()
         self.assertIn('hunt start failed', record['ended_early'])
         self.assertEqual(record['gates'], {'mode': 'two-decisions', 'operator': 'Ada Lovelace'})
-        self.assertEqual(record['lab']['holder_pid'], 4242)
+        self.assertEqual(record['lab']['log'], str(self.root / 'work-hunts' / 'work-test-001' / 'lab.log'))
         self.assertNotIn('workflow', record)
 
     def test_ctrl_c_at_the_gate_driver_prints_how_to_resume_and_stop(self):
@@ -362,29 +356,44 @@ class ChildTest(unittest.TestCase):
         self.assertFalse(held.exists())
 
 
-class WaitReadyTest(unittest.TestCase):
+class LoadLabTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.log = Path(temp.name) / 'holder.log'
+        self.log = Path(temp.name) / 'lab.log'
+        self.commands = []
+
+    def load(self, output, returncode=0):
+        self.log.unlink(missing_ok=True)
+        def run(cmd, stdout, timeout, **kwargs):
+            self.commands.append(cmd)
+            stdout.write(output.encode('utf-8'))
+            return Mock(returncode=returncode)
+        with patch.object(wh.subprocess, 'run', run):
+            return wh.load_lab(Path('evidence'), self.log, 'work-test-001')
 
     def test_ready_for_this_case_returns_the_line(self):
-        self.log.write_text('10:00:00 vm stopped\n10:05:00 READY case=work-test-001 events=3 sessions=0\n',
-                            encoding='utf-8')
-        line = wh.wait_ready(Mock(poll=lambda: None), self.log, 'work-test-001', poll=0)
+        line = self.load('10:00:00 stopped case=lab-med-001 (stopped)\n'
+                         '10:05:00 READY case=work-test-001 events=3 sessions=0\n')
         self.assertIn('READY case=work-test-001', line)
+        [cmd] = self.commands
+        self.assertEqual(cmd[-2:], [str(Path(wh.__file__).with_name('switch_case.py')), 'evidence'])
 
     def test_ready_for_another_case_or_no_events_is_refused(self):
         for text in ('10:05:00 READY case=team-med-021 events=20000\n', '10:05:00 READY case=work-test-001 events=None\n'):
             with self.subTest(text):
-                self.log.write_text(text, encoding='utf-8')
                 with self.assertRaisesRegex(SystemExit, 'did not load work-test-001'):
-                    wh.wait_ready(Mock(poll=lambda: None), self.log, 'work-test-001', poll=0)
+                    self.load(text)
 
-    def test_a_holder_that_exits_before_ready_stops_the_run(self):
-        self.log.write_text('reseed failed\n', encoding='utf-8')
-        with self.assertRaisesRegex(SystemExit, r'holder exited \(1\)'):
-            wh.wait_ready(Mock(poll=lambda: 1, returncode=1), self.log, 'work-test-001', poll=0)
+    def test_a_switch_that_exits_before_ready_stops_the_run(self):
+        with self.assertRaisesRegex(SystemExit, r'exited \(1\) before READY'):
+            self.load('start failed: docker_unavailable\n', returncode=1)
+
+    def test_a_switch_that_times_out_stops_the_run(self):
+        def run(cmd, timeout, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        with patch.object(wh.subprocess, 'run', run), self.assertRaisesRegex(SystemExit, 'within 120 minutes'):
+            wh.load_lab(Path('evidence'), self.log, 'work-test-001')
 
 
 if __name__ == '__main__':

@@ -240,7 +240,7 @@ def install(selected=None, hermes_override=None, kit_root=HERE, process_factory=
     components = lab.install(root, executable, kit_root)
     print('Confirmed newly installed authored profiles: ' + (', '.join(installed) or 'none; existing profiles preserved'))
     print('Built-in hunting lab and Desktop companion installed and enabled: ' + components['profile'])
-    print('First explicit Start prepares public runtime assets automatically; no VM was started by setup.')
+    print('Setup started no lab; hunt-lab start runs the practice lab as Docker containers.')
     print('Profile registration does not establish Desktop rendering or provider/model readiness.')
     return 0
 
