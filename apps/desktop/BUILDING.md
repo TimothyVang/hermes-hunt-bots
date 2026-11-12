@@ -217,6 +217,13 @@ stock full client (bootstrap payload) with these changes only:
   `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
   pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
   screen drops the Hermes wordmark. Any explicit pick wins.
+- Deep links: it registers the stock `hermes://` scheme. Backend, connector and vendor
+  links use `hermes://` (for example `cron/blueprint_catalog.py`,
+  `hermes://connections/done`, vendor `hermes://mcp/install` buttons), so the scheme is
+  shared: with stock Hermes also installed, whichever app launched last answers them.
+  `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1` stops Hunt Command from registering, so
+  it keeps whatever handler is current; it does not restore stock Hermes. If Hunt Command
+  already took the links, start stock Hermes once to take them back.
 
 From `apps/desktop`, `npm run pack:hunt` writes the runnable app to
 `release/win-unpacked/Hunt Command.exe` (platform dir varies); `npm run dist:hunt`
