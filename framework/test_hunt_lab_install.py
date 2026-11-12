@@ -234,9 +234,11 @@ class LabInstallTests(unittest.TestCase):
     def test_upgrade_removes_unmodified_files_the_new_bundle_no_longer_has(self):
         parent = self.home / 'plugins'
         destination = install_desktop.sync_bundle(parent, 'hunt-lab', {
-            'a.py': b'kept', 'gone.py': b'old', 'guest/gone.sh': b'old sh'})
+            'a.py': b'kept', 'gone.py': b'old', 'guest/gone.sh': b'old sh', 'pkg/x.py': b'old x'})
         (destination / '__pycache__').mkdir()
         (destination / '__pycache__' / 'gone.cpython-313.pyc').write_bytes(b'cache')
+        (destination / 'pkg' / '__pycache__').mkdir()
+        (destination / 'pkg' / '__pycache__' / 'x.cpython-313.pyc').write_bytes(b'cache')
         install_desktop.sync_bundle(parent, 'hunt-lab', {'a.py': b'kept'})
         self.assertEqual(sorted(path.relative_to(destination).as_posix() for path in destination.rglob('*')),
                          [install_desktop.MARKER, 'a.py'])

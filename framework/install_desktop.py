@@ -124,7 +124,7 @@ def sync_bundle(parent, name, files):
             for cached in (obsolete.parent / '__pycache__').glob(obsolete.stem + '.cpython-*.pyc'):
                 cached.unlink()
         obsolete.unlink()
-        for folder in (obsolete.parent, obsolete.parent / '__pycache__'):
+        for folder in (obsolete.parent / '__pycache__', obsolete.parent):
             if folder != destination and folder.is_dir() and not any(folder.iterdir()):
                 folder.rmdir()
     metadata = {'owner': 'bot-framework', 'bundle': name, 'files': hashes}
