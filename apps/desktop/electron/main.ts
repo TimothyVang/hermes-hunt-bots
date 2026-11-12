@@ -1401,6 +1401,8 @@ const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAM
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 // Stock windows and tray keep 'Hermes'; the Hunt Command build shows its own name.
 const WINDOW_TITLE = PRODUCT_IDENTITY.hunt ? APP_NAME : 'Hermes'
+// The About panel's copyright: Nous Research, or the Hunt Command build's own (product-identity.cjs).
+const ABOUT_COPYRIGHT: string = PRODUCT_IDENTITY.copyright ?? 'Copyright © 2026 Nous Research'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -1795,7 +1797,7 @@ if (IS_WINDOWS) {
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
   applicationVersion: nativeAboutVersion(appVersionInfo(INSTALL_STAMP, '', app.getVersion())),
-  copyright: 'Copyright © 2026 Nous Research'
+  copyright: ABOUT_COPYRIGHT
 })
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
@@ -17097,7 +17099,7 @@ function showAboutPanelFresh(): void {
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync ? `${display} — app build out of date, update the desktop app` : display,
-      copyright: 'Copyright © 2026 Nous Research'
+      copyright: ABOUT_COPYRIGHT
     })
     app.showAboutPanel()
   })

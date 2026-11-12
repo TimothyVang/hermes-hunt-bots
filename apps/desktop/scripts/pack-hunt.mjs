@@ -24,6 +24,18 @@ if (git('status', '--porcelain', '--', 'assets').trim()) {
   process.exit(1)
 }
 
+// dist:hunt makes copies for others; their SOURCE.txt must name source they can get (AGPL-3.0 section 6).
+if (!process.argv.includes('--dir')) {
+  if (git('status', '--porcelain', '--untracked-files=no').trim()) {
+    console.error('pack-hunt: dist:hunt needs a clean tree; commit your changes first.')
+    process.exit(1)
+  }
+  if (!git('branch', '-r', '--contains', 'HEAD').trim()) {
+    console.error('pack-hunt: dist:hunt needs HEAD pushed to a remote branch, so SOURCE.txt points at published source.')
+    process.exit(1)
+  }
+}
+
 try {
   runNpm(['run', 'build', '--', '--icons', '../../variants/hunt/icons'])
   runNpm(['run', 'builder', '--', ...process.argv.slice(2)])

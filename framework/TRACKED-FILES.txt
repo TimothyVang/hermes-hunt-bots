@@ -184,6 +184,7 @@ hunt_lab/desktop/licenses/LICENSE.BSD-2-Clause
 hunt_lab/desktop/licenses/LICENSE.BSD-3-Clause
 hunt_lab/desktop/licenses/LICENSE.MPL-2.0
 hunt_lab/desktop/licenses/LICENSE.OFL-1.1
+hunt_lab/desktop/licenses/lucide-LICENSE.txt
 hunt_lab/desktop/licenses/noVNC-AUTHORS.txt
 hunt_lab/desktop/licenses/noVNC-LICENSE.txt
 hunt_lab/desktop/licenses/pako-LICENSE.MIT
