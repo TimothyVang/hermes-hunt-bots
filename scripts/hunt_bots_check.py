@@ -140,4 +140,5 @@ def run_tests(python, log_path, results):
 
 
 if __name__ == '__main__':
+    sys.stdout.reconfigure(errors='backslashreplace')
     sys.exit(main())
