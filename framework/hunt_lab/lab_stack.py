@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -55,7 +56,9 @@ DOWN_SECONDS = 300
 ONE_SHOTS = ('arkime-init', 'ingest', 'pcap-import', 'kibana-setup')
 SERVICES = ('elasticsearch', 'netns', 'lab', 'kibana', 'arkime', 'relay')
 HEALTH_KEYS = ('ready', 'event_count', 'network_session_count', 'intel_count', 'arkime_viewer_ready',
-               'kibana_ready')
+               'kibana_ready', 'network_capture')
+# A line `docker compose up` writes when it gives up (a port taken, a dependency that never became healthy).
+COMPOSE_ERROR = re.compile(r'(?im)^\s*(error\b|.*error response from daemon|.*dependency failed to start)')
 # The Docker CLI needs the OS and its own settings; no provider key or ambient COMPOSE_* setting reaches it.
 CHILD_ENV = frozenset({'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'USERPROFILE', 'HOME',
                        'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES',
@@ -185,8 +188,36 @@ def _last(root):
     return value
 
 
-def _ports(count=3):
-    """Free 127.0.0.1 ports: any, or the first free ones of HUNT_LAB_PORTS (`<first>-<last>`)."""
+def _recorded_ports(root):
+    """The ports every container lab's state.json under `root` records."""
+    ports = set()
+    for case_dir in root.iterdir() if root.is_dir() else ():
+        try:
+            state = endpoints.container_state(case_dir / 'state.json') if case_dir.is_dir() else None
+        except endpoints.QueryFailure:
+            state = None
+        if state is not None:
+            ports.update(state[key] for key in ('lab_port', 'kibana_port', 'arkime_port'))
+    return frozenset(ports)
+
+
+def _compose_failed(case_dir):
+    """`docker compose up` wrote that it gave up. Its process ending is not enough: a caller that ends the
+    process tree of the CLI it ran (as the desktop's profile CLI request can) takes docker.exe, while the
+    compose plugin it started goes on and finishes the stack."""
+    try:
+        with (case_dir / 'compose.log').open('rb') as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 16384))
+            tail = log.read().decode('utf-8', 'replace')
+    except OSError:
+        return False
+    return COMPOSE_ERROR.search(tail) is not None
+
+
+def _ports(reserved=frozenset(), count=3):
+    """Free 127.0.0.1 ports: any, or the first free ones of HUNT_LAB_PORTS (`<first>-<last>`), never one in
+    `reserved` (the ports other cases' labs recorded, which their relay may not have bound yet)."""
     spec = os.environ.get(PORTS_ENV)
     if spec:
         try:
@@ -197,7 +228,7 @@ def _ports(count=3):
             raise StackFailure('invalid_port_range')
         candidates = range(first, last + 1)
     else:
-        candidates = [0] * count
+        candidates = [0] * (count + len(reserved) + 8)
     listeners, ports = [], []
     try:
         for candidate in candidates:
@@ -210,7 +241,10 @@ def _ports(count=3):
                 listener.close()
                 continue
             listeners.append(listener)
-            ports.append(listener.getsockname()[1])
+            port = listener.getsockname()[1]
+            if port in reserved:
+                continue
+            ports.append(port)
             if len(ports) == count:
                 return ports
         raise StackFailure('ports_unavailable')
@@ -320,7 +354,7 @@ def _status(profile, root, case_id):
         result.update(state='error', reason=failed[0].replace('-', '_') + '_failed')
     elif stopped:
         result.update(state='error', reason=stopped[0] + '_exited')
-    elif (missing or created) and not _up_running(case_dir):
+    elif (missing or created) and not _up_running(case_dir) and _compose_failed(case_dir):
         result.update(state='error', reason='compose_up_failed')
     else:
         loading = missing or any(services[name][0] != 'exited' for name in ONE_SHOTS)
@@ -383,7 +417,7 @@ def _start(profile, root, evidence_dir, case_id):
         mounted = 0o600 if os.name == 'nt' else 0o644
         _write_new(case_dir / 'lab-secret', secret.encode('ascii'), mounted)
         _write_new(case_dir / 'instance-id', (instance + '\n').encode('ascii'), mounted)
-        lab_port, kibana_port, arkime_port = _ports()
+        lab_port, kibana_port, arkime_port = _ports(_recorded_ports(root))
         state = {'version': endpoints.CONTAINER_VERSION, 'case_id': loaded, 'project': project(loaded),
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
                  'arkime_port': arkime_port, 'started_at': time.time()}

@@ -291,18 +291,24 @@ class StackTests(unittest.TestCase):
 
     def test_status_names_the_failed_step_and_a_stalled_start(self):
         self.invoke('start')
+        log = self.root / 'dns-lab-001' / 'compose.log'
+        gave_up = ' Container hunt-lab-dns-lab-001-relay-1  Starting\nError response from daemon: ports are not available\n'
         cases = (
-            ({'ingest': ('exited', 1)}, True, 'error', 'ingest_failed'),
-            ({'pcap-import': ('exited', 2)}, True, 'error', 'pcap_import_failed'),
-            ({'lab': ('exited', 137)}, True, 'error', 'lab_exited'),
-            ({'arkime': None}, False, 'error', 'compose_up_failed'),
-            ({'relay': ('created', None)}, False, 'error', 'compose_up_failed'),
-            ({'arkime': None}, True, 'starting', 'loading_case'),
-            ({'kibana-setup': ('running', None)}, True, 'starting', 'loading_case'),
-            ({}, True, 'starting', 'lab_unreachable'),
+            ({'ingest': ('exited', 1)}, True, '', 'error', 'ingest_failed'),
+            ({'pcap-import': ('exited', 2)}, True, '', 'error', 'pcap_import_failed'),
+            ({'lab': ('exited', 137)}, True, '', 'error', 'lab_exited'),
+            ({'arkime': None}, False, gave_up, 'error', 'compose_up_failed'),
+            ({'relay': ('created', None)}, False, gave_up, 'error', 'compose_up_failed'),
+            # docker.exe gone with no failure written: a caller ended the CLI's process tree while the compose
+            # plugin goes on (desktop, take 1). Still starting, not compose_up_failed.
+            ({'arkime': ('created', None), 'kibana-setup': ('created', None)}, False, ' Container x  Waiting\n',
+             'starting', 'loading_case'),
+            ({'arkime': None}, True, '', 'starting', 'loading_case'),
+            ({'kibana-setup': ('running', None)}, True, '', 'starting', 'loading_case'),
+            ({}, True, '', 'starting', 'lab_unreachable'),
         )
-        for change, up_running, state, reason in cases:
-            with self.subTest(change=change, up_running=up_running):
+        for change, up_running, written, state, reason in cases:
+            with self.subTest(change=change, up_running=up_running, log=written):
                 self.running()
                 for name, value in change.items():
                     if value is None:
@@ -310,12 +316,26 @@ class StackTests(unittest.TestCase):
                     else:
                         self.docker.services[name] = value
                 self.up_running = up_running
+                log.write_text(written, encoding='utf-8')
                 result = self.invoke('status')
                 self.assertEqual((result['state'], result['reason']), (state, reason))
         self.running()
         with patch.object(lab_stack.time, 'time', return_value=lab_stack.time.time() + lab_stack.START_SECONDS + 1):
             self.assertEqual((self.invoke('status')['state'], self.invoke('status')['reason']),
                              ('error', 'lab_unreachable'))
+
+    def test_a_start_never_takes_ports_another_case_recorded(self):
+        other = self.root / 'team-med-901'
+        other.mkdir(parents=True)
+        (other / 'state.json').write_text(json.dumps({
+            'version': 1, 'case_id': 'team-med-901', 'project': 'hunt-lab-team-med-901', 'instance': 'a' * 32,
+            'secret': 'b' * 64, 'lab_port': 19340, 'kibana_port': 19341, 'arkime_port': 19342, 'started_at': 1.0}),
+            encoding='utf-8')
+        self.invoke('start')
+        state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        ports = {state['lab_port'], state['kibana_port'], state['arkime_port']}
+        self.assertFalse(ports & {19340, 19341, 19342}, ports)
+        self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
 
     def test_stop_removes_the_project_and_its_state_and_ends_a_start_in_progress(self):
         self.invoke('start')

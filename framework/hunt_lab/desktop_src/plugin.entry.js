@@ -325,8 +325,10 @@ function statusFacts(current, result) {
       ['Case', result.case_id == null ? NOT_REPORTED : mono(String(result.case_id))],
       ['Project', result.project == null ? NOT_REPORTED : mono(String(result.project))],
       ['Reason', result.reason ?? 'none'],
-      ['Evidence', health ? [mono(String(health.event_count ?? '?')), ' events · ', mono(String(health.network_session_count ?? '?')),
-        ' sessions · Kibana ', ready(health.kibana_ready), ' · Arkime ', ready(health.arkime_viewer_ready)] : NOT_REPORTED],
+      // A case without a capture has no Arkime sessions; Arkime's own page then shows no case fields.
+      ['Evidence', health ? [mono(String(health.event_count ?? '?')), ' events · ', health.network_capture === 'none'
+        ? 'no network capture (Arkime has no sessions)' : [mono(String(health.network_session_count ?? '?')), ' sessions'],
+        ' · Kibana ', ready(health.kibana_ready), ' · Arkime ', ready(health.arkime_viewer_ready)] : NOT_REPORTED],
       last
     ]);
   }
