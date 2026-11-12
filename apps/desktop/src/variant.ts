@@ -9,3 +9,6 @@ export const IS_HUNT_VARIANT: boolean = DESKTOP_VARIANT === 'hunt'
 
 /** The product name the renderer shows where stock Hermes says "Hermes" (document titles). */
 export const PRODUCT_NAME: string = IS_HUNT_VARIANT ? 'Hunt Command' : 'Hermes'
+
+/** The GitHub repository this build's source lives in (product-identity.cjs `sourceRepo` for Hunt Command). */
+export const SOURCE_REPO: string = IS_HUNT_VARIANT ? 'TimothyVang/hermes-hunt-bots' : 'NousResearch/hermes-agent'

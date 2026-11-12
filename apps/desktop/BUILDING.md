@@ -198,10 +198,12 @@ stock full client (bootstrap payload) with these changes only:
   and Uninstall says to delete the app folder.
 - Publisher: TimothyVang, not Nous Research. App ID `io.github.timothyvang.hunt-command`
   (also the Windows AppUserModelID), MSIX identity `TimothyVang.HuntCommand`, exe
-  CompanyName, and a copyright line that keeps the Hermes MIT notice. Hermes variants
+  CompanyName, and a copyright line that keeps the Hermes MIT notice. The packaged
+  `package.json` names `TimothyVang/hermes-hunt-bots` as its repository. Hermes variants
   keep `com.nousresearch.*`; userData stays `<appData>/HuntCommand`.
-- Notices: the compiled framework/ plugins' license texts (AGPL-3.0, noVNC, Lucide)
-  ship in `resources/licenses/hunt-command/` (see `THIRD-PARTY-NOTICES.md`).
+- Notices: `resources/licenses/hunt-command/` carries the compiled framework/ plugins'
+  license texts (AGPL-3.0, noVNC, Lucide; see `THIRD-PARTY-NOTICES.md`), the Hermes MIT
+  licence it is built from (`LICENSE.Hermes-MIT`), and `SOURCE.txt` (below).
 - First-run install: Hunt Command and stock Hermes share one checkout,
   `HERMES_HOME/hermes-agent`, and whichever app installs it first decides its
   source. A fresh install by Hunt Command fetches `install.ps1`/`install.sh` from
@@ -209,14 +211,33 @@ stock full client (bootstrap payload) with these changes only:
   `HERMES_REPO_URL`; stock Hermes then runs that checkout too, and `hermes update`
   follows the fork. An existing checkout keeps its origin: a repair passes the
   stamp's branch only when that origin is the fork, so an upstream checkout is
-  repaired on its own channel and never moved to the fork.
+  repaired on its own channel and never moved to the fork. A `HERMES_REPO_URL` you set
+  decides instead of the old origin, since the installer repoints origin to it. Any GitHub
+  spelling of the fork counts (https, `www.github.com`, scp-style, `ssh://…:22`, and
+  `ssh.github.com:443`).
 - Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
 - Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
   and Cybersecurity workspace plugins are bundled straight from `framework/`
   (`src/contrib/variant-plugins.hunt.ts`) and on by default; a same-id copy in
   `<HERMES_HOME>/desktop-plugins` is skipped as shadowed. A profile with no theme
   pick opens on the plugins' `hunt-command` theme, in dark mode, and the new-session
-  screen drops the Hermes wordmark. Any explicit pick wins.
+  screen drops the Hermes wordmark. Any explicit pick wins. The theme picker (Settings,
+  the palette and `/skin`) leaves out the Nous, Nous Alt and Classic Hermes skins; a profile
+  already on one keeps it, and the picker lists it while it is active.
+- Naming: where a string names the desktop app ("Hermes Desktop", "the Hermes app", the
+  tray's Quit, its test notification) it says Hunt Command, in every bundled language
+  (`src/i18n/hunt-catalog.ts`). "Hermes" stays where it names the agent, its backend or
+  CLI, which Hunt Command still runs, and Nous stays where it names a Nous service the app
+  still talks to (Portal sign-in, free tier, plugin catalog, Send diagnostics, which uploads
+  only when you click Upload). About links commits to this fork and labels the build
+  `Source + pack:hunt`; the renderer error pages say to rebuild with `npm run pack:hunt`.
+- Usage stats: Hunt Command never shows the first-run "Share usage stats?" offer. Shared
+  metrics are opt-in in the backend (`telemetry.shared_metrics.enabled`/`.send` in each
+  profile's `config.yaml`, both off until answered), so an unanswered profile collects
+  nothing and sends nothing; the fresh-install note stays on the machine unless you opt in.
+  Opting in (Settings › Safety › Privacy, or `hermes setup telemetry`)
+  sends daily counters to Nous's `telemetry.nousresearch.com`. The profile is shared with
+  stock Hermes and the terminal, which still ask there.
 - Deep links: it registers the stock `hermes://` scheme. Backend, connector and vendor
   links use `hermes://` (for example `cron/blueprint_catalog.py`,
   `hermes://connections/done`, vendor `hermes://mcp/install` buttons), so the scheme is
@@ -233,6 +254,25 @@ Every build writes `resources/licenses/hunt-command/SOURCE.txt` naming its Corre
 Source (this repository at the build commit), and says so when the tree was dirty.
 `dist:hunt` makes copies for others, so it refuses a dirty tree or a `HEAD` that no
 remote branch contains.
+
+On Windows `dist:hunt` packages the MSIX target. Unsigned (no certificate in the
+environment) electron-builder logs that the package is not signed, and Windows will not
+install it; run the `win-unpacked` folder, or add `--win zip` for an archive of it. To sign,
+put the certificate in the environment of the shell that runs `dist:hunt`; nothing in the
+repository or the build config holds it:
+
+```powershell
+$env:WIN_CSC_LINK = 'C:\path\to\hunt-command.pfx'   # or the .pfx as base64
+$env:WIN_CSC_KEY_PASSWORD = '<pfx password>'
+npm run dist:hunt
+```
+
+electron-builder signs the exe and the MSIX with it. The certificate's subject must be
+exactly `CN=TimothyVang`, the MSIX `Publisher`, or packaging fails. Pass the password only
+through the environment, never as a `--config` override: electron-builder writes its
+effective config beside the output. A self-signed certificate installs only on machines
+that trust it: import its public `.cer` into `Cert:\LocalMachine\TrustedPeople` before
+installing the `.msix`.
 
 ## Commit-only builds
 

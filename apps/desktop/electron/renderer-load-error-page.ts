@@ -35,6 +35,8 @@ export interface RendererLoadErrorDetails {
   missingAssets?: string[]
   /** Repair command hint, e.g. `hermes desktop --force-build`. */
   repairHint?: string
+  /** The command that rebuilds this app, named in the footer; defaults to `hermes desktop --force-build`. */
+  rebuildCommand?: string
   /**
    * URL to navigate to when the user clicks Reload. On a data: page
    * `location.reload()` would just re-render the error page, so recovery
@@ -107,7 +109,7 @@ export function buildRendererLoadErrorPage(details: RendererLoadErrorDetails = {
   const title = escapeHtml(details.title || 'Hermes couldn\u2019t start the desktop UI')
   const description = escapeHtml(details.errorDescription || 'The desktop renderer failed to load.')
   const url = details.url ? `<p><code>${escapeHtml(details.url)}</code></p>` : ''
-  const repair = details.repairHint ? `<p>Repair with: <code>hermes desktop --force-build</code></p>` : ''
+  const repair = details.repairHint ? `<p>Repair with: <code>${escapeHtml(details.repairHint)}</code></p>` : ''
 
   return `<!doctype html>
 <html lang="en">
@@ -166,7 +168,7 @@ export function buildRendererLoadErrorPage(details: RendererLoadErrorDetails = {
   ${missingAssetsList(details.missingAssets)}
   ${repair}
   <p>If this keeps happening, check <code>logs/desktop.log</code> and try
-  <code>hermes desktop --force-build</code>, then restart the app.</p>
+  <code>${escapeHtml(details.rebuildCommand || 'hermes desktop --force-build')}</code>, then restart the app.</p>
   ${reloadButtonJs(details)}
 </main>
 </body>

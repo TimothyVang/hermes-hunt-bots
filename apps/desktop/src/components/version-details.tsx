@@ -7,6 +7,7 @@ import { distributionLabelKey } from '@/lib/distribution-label'
 import { ExternalLink } from '@/lib/external-link'
 import { shortVersion } from '@/lib/version-label'
 import { $updateStatus, sourceUpdateTrack } from '@/store/updates'
+import { SOURCE_REPO } from '@/variant'
 
 /**
  * Human label for an external build's runtime source: the resolution rung
@@ -109,7 +110,7 @@ export function VersionDetails({ version, channelAction }: { version: DesktopVer
           <dd className="break-all text-right">
             <ExternalLink
               className="break-all font-mono text-xs"
-              href={`https://github.com/NousResearch/hermes-agent/commit/${version.commit}`}
+              href={`https://github.com/${SOURCE_REPO}/commit/${version.commit}`}
               native
             >
               {version.commit.slice(0, 14)}

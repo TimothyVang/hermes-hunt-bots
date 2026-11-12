@@ -29,7 +29,8 @@ const {
   msixAppIdWithOrg,
   token,
   publisher,
-  copyright
+  copyright,
+  sourceRepo
 } = require('./product-identity.cjs')
 
 // Hunt Command compiles AGPL-3.0 code into its renderer, so each copy states its terms and
@@ -145,7 +146,9 @@ module.exports = {
     ...((channelRequest && token) || hunt || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId,
     // electron-builder reads CompanyName from author.name; a bare string has none.
-    ...(publisher ? { author: { name: publisher } } : {})
+    ...(publisher ? { author: { name: publisher } } : {}),
+    // The packaged package.json names the repository this build comes from, not upstream.
+    ...(sourceRepo ? { repository: { type: 'git', url: `git+https://github.com/${sourceRepo}.git` } } : {})
   },
   directories: {
     output: 'release'

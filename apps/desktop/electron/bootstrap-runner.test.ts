@@ -63,11 +63,12 @@ test('the installer comes from upstream unless the build names its own source re
 test('a fork build repairs with its branch only a checkout of its own repo; other origins get none', () => {
   const hunt = { sourceRepo: 'TimothyVang/hermes-hunt-bots' }
 
-  const repair = (origin: string | Error, identity: { sourceRepo?: string } = hunt) =>
+  const repair = (origin: string | Error, identity: { sourceRepo?: string } = hunt, env: NodeJS.ProcessEnv = {}) =>
     installerGetsStampBranch({
       freshInstall: false,
       activeRoot: '/root',
       identity,
+      env,
       execGit: (args: string[]) => {
         assert.deepEqual(args, ['config', '--get', 'remote.origin.url'])
 
@@ -84,8 +85,15 @@ test('a fork build repairs with its branch only a checkout of its own repo; othe
     'https://github.com/TimothyVang/hermes-hunt-bots.git',
     'https://github.com/timothyvang/Hermes-Hunt-Bots',
     'https://token@github.com/TimothyVang/hermes-hunt-bots.git/',
+    'https://user:token@github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://www.github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://github.com:443/TimothyVang/hermes-hunt-bots',
     'git@github.com:TimothyVang/hermes-hunt-bots.git',
-    'ssh://git@github.com/TimothyVang/hermes-hunt-bots'
+    'git@ssh.github.com:TimothyVang/hermes-hunt-bots.git',
+    'ssh://git@github.com/TimothyVang/hermes-hunt-bots',
+    'ssh://git@github.com:22/TimothyVang/hermes-hunt-bots.git',
+    'ssh://git@ssh.github.com:443/TimothyVang/hermes-hunt-bots.git',
+    'https://github.com/TimothyVang/hermes-hunt-bots.git\n'
   ]) {
     assert.equal(repair(origin), true, origin)
   }
@@ -95,11 +103,31 @@ test('a fork build repairs with its branch only a checkout of its own repo; othe
     'https://github.com/NousResearch/hermes-agent.git',
     'https://github.com/TimothyVang/hermes-hunt-bots-old.git',
     'https://gitlab.com/TimothyVang/hermes-hunt-bots.git',
+    'https://github.com.example.net/TimothyVang/hermes-hunt-bots.git',
+    'https://notgithub.com/TimothyVang/hermes-hunt-bots.git',
+    'ssh://git@ssh.github.com.example.net:443/TimothyVang/hermes-hunt-bots.git',
+    'git@github.com:22/TimothyVang/hermes-hunt-bots.git',
+    // Userinfo tricks git resolves to another host.
+    'https://evil.com#@github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://evil.com?@github.com/TimothyVang/hermes-hunt-bots.git',
+    'https://evil.com\\@github.com/TimothyVang/hermes-hunt-bots.git',
+    'ssh://git@evil.com#@github.com/TimothyVang/hermes-hunt-bots.git',
+    'evil.com:x@github.com:TimothyVang/hermes-hunt-bots.git',
+    'evil.com#@github.com:TimothyVang/hermes-hunt-bots.git',
     '',
     new Error('no origin')
   ]) {
     assert.equal(repair(origin), false, String(origin))
   }
+
+  // A user-set HERMES_REPO_URL is what the installer repoints origin to, so it decides, not the old origin.
+  const fork = 'https://github.com/TimothyVang/hermes-hunt-bots.git'
+  const upstream = 'https://github.com/NousResearch/hermes-agent.git'
+  assert.equal(repair(upstream, hunt, { HERMES_REPO_URL: 'git@github.com:TimothyVang/hermes-hunt-bots.git' }), true)
+  assert.equal(repair(fork, hunt, { HERMES_REPO_URL: upstream }), false)
+  assert.equal(repair(fork, hunt, { HERMES_REPO_URL: 'https://example.test/own.git' }), false)
+  // Set but empty: the installers ignore it, so the checkout's origin decides.
+  assert.equal(repair(fork, hunt, { HERMES_REPO_URL: '' }), true)
 
   // Fresh installs and stock builds always pass the branch, without reading git.
   const noGit = () => assert.fail('git must not be read')
