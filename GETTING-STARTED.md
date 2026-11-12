@@ -74,6 +74,8 @@ The bots run on native Hermes. Use a Hermes home dedicated to this lab, never yo
 
 The lab is a local QEMU VM running Elasticsearch, Arkime and the read-only lab service, reachable only on `127.0.0.1`. It needs QEMU, the pinned Ubuntu cloud image, and about 5 GB of free RAM while it runs. Prepare it with `framework/hunt_lab/prepare_guest.py`, load a case with `prepare_guest.py reseed --update-deployment`, and start it from the Network Analyst profile with `hermes -p framework-network-analyst hunt-lab start`. Details: [framework/README.md, Built-in local hunting lab](framework/README.md#built-in-local-hunting-lab).
 
+With Docker running, the same `hunt-lab start` runs the lab as host containers instead, with no VM: `hermes -p framework-network-analyst hunt-lab start --evidence-dir <case folder> --wait 120` loads that case and waits until it is ready, and `hunt-lab stop` removes it. Add `--vm` to drive the VM while Docker runs. Details: [framework/README.md, Container lab](framework/README.md#built-in-local-hunting-lab).
+
 ## 5. Run a hunt
 
 1. Start a Temporal development server on loopback (the [Temporal CLI](https://docs.temporal.io/cli) `temporal server start-dev`).

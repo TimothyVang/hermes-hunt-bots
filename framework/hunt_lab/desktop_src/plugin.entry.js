@@ -8,8 +8,8 @@ const PROFILES = new Set([
   'framework-network-analyst'
 ]);
 const PAGE = '/hunt-lab';
-const INITIAL_MESSAGE = 'Click Find profiles, then choose the exact VM owner. No VM is started on page load.';
-const LAB_NOTE = 'Starting the VM is a human action. Nothing starts on page load.';
+const INITIAL_MESSAGE = 'Click Find profiles, then choose the exact lab owner. No lab is started on page load.';
+const LAB_NOTE = 'Starting the lab is a human action. Nothing starts on page load.';
 const state = atom({ routes: [], selected: '', busy: false, result: null, code: null, operation: null, observedAt: null, message: INITIAL_MESSAGE });
 const key = route => JSON.stringify([route.connectionId, route.mode, route.profile, route.targetProfile]);
 
@@ -315,6 +315,23 @@ function vmStatus(current, result) {
 }
 
 function statusFacts(current, result) {
+  const last = ['Last command', [mono(`hunt-lab ${current.operation ?? 'status'}`), ` · exit ${current.code}`]];
+  if (result.origin === 'container') {
+    const health = result.health && typeof result.health === 'object' ? result.health : null;
+    const ready = value => (value === true ? 'ready' : value === false ? 'not ready' : NOT_REPORTED);
+    return facts([
+      ['State', vmStatus(current, result)],
+      ['Lab', 'host containers'],
+      ['Case', result.case_id == null ? NOT_REPORTED : mono(String(result.case_id))],
+      ['Project', result.project == null ? NOT_REPORTED : mono(String(result.project))],
+      ['Reason', result.reason ?? 'none'],
+      // A case without a capture has no Arkime sessions; Arkime's own page then shows no case fields.
+      ['Evidence', health ? [mono(String(health.event_count ?? '?')), ' events · ', health.network_capture === 'none'
+        ? 'no network capture (Arkime has no sessions)' : [mono(String(health.network_session_count ?? '?')), ' sessions'],
+        ' · Kibana ', ready(health.kibana_ready), ' · Arkime ', ready(health.arkime_viewer_ready)] : NOT_REPORTED],
+      last
+    ]);
+  }
   const prepared = result.prepared === true ? 'Yes' : result.prepared === false ? 'No' : NOT_REPORTED;
   const stage = result.setup && typeof result.setup.stage === 'string'
     ? [' · setup stage ', mono(result.setup.stage), result.setup.reason ? ` · ${result.setup.reason}` : ''] : [];
@@ -325,7 +342,7 @@ function statusFacts(current, result) {
     ['Prepared', [prepared, ...stage]],
     ['Memory', result.memory_mib == null ? NOT_REPORTED : [mono(String(result.memory_mib)), ' MiB']],
     ['Acceleration', result.accel == null ? NOT_REPORTED : mono(String(result.accel))],
-    ['Last command', [mono(`hunt-lab ${current.operation ?? 'status'}`), ` · exit ${current.code}`]]
+    last
   ];
   // While running, the process id belongs with the running facts.
   if (result.pid != null && result.state !== 'running') rows.splice(2, 0, ['PID', mono(String(result.pid))]);
@@ -340,11 +357,30 @@ function runningState(current, owner, result, ready) {
   const running = result && current.code === 0 && result.state === 'running';
   if (!running) {
     return jsx('div', { className: 'hc-run', children: jsx('p', {
-      children: 'Guest service links and console are hidden until a successful running status for this owner is returned.' }) });
+      children: 'Lab links and console are hidden until a successful running status for this owner is returned.' }) });
   }
-  const consoleUrl = consoleFrameUrl(result.console_websocket_url);
   const arkime = loopbackUrl(result.arkime_url);
   const lab = loopbackUrl(result.lab_console_url);
+  if (result.origin === 'container') {
+    const kibana = loopbackUrl(result.kibana_url);
+    return jsxs('div', { className: 'hc-run', children: [
+      facts([
+        ['State', vmStatus(current, result)],
+        ['Case', result.case_id == null ? NOT_REPORTED : mono(String(result.case_id))],
+        ['Lab', endpoint(result.lab_url, ['http:'])],
+        ['Arkime', endpoint(result.arkime_url, ['http:'])],
+        ['Kibana', endpoint(result.kibana_url, ['http:'])]
+      ]),
+      jsx('p', { children: 'Host containers have no boot console. Elasticsearch is not published; the lab, Arkime and Kibana listen on 127.0.0.1 only.' }),
+      jsxs('div', { className: 'hc-actions', children: [
+        button('Stop lab', () => operate('stop'), { disabled: !ready, glyph: 'circleStop' }),
+        arkime ? link('Open Arkime', arkime) : null,
+        kibana ? link('Open Kibana', kibana) : null,
+        lab ? link('Open lab', lab) : null
+      ] })
+    ] });
+  }
+  const consoleUrl = consoleFrameUrl(result.console_websocket_url);
   return jsxs('div', { className: 'hc-run', children: [
     facts([
       ['State', vmStatus(current, result)],
@@ -393,7 +429,7 @@ function HuntingLab() {
   const result = current.result && current.result.profile === owner ? current.result : null;
   const vmState = result?.state;
   return jsxs('div', { className: 'hc-root hc-page', children: [sheet(),
-    pageBar('Hunting Lab', jsx('span', { className: 'hc-sub', children: 'Local VM for read-only evidence queries' })),
+    pageBar('Hunting Lab', jsx('span', { className: 'hc-sub', children: 'Local lab for read-only evidence queries' })),
     jsx('div', { className: 'hc-body', children: jsxs('div', { className: 'hc-lab', children: [
       jsxs('div', { className: 'hc-col', children: [
         jsxs('section', { 'aria-label': 'VM owner', children: [
@@ -411,8 +447,9 @@ function HuntingLab() {
         jsxs('div', { className: 'hc-actions', role: 'toolbar', 'aria-label': 'Lab VM lifecycle', children: [
           // While the last validated status is running, Stop lab beside the running facts is the only lifecycle action.
           button('Start lab', () => operate('start'), vmState === 'running'
-            ? { disabled: true, glyph: 'play', title: 'VM is running' } : { disabled: !ready, primary: true, glyph: 'play' }),
-          button(result?.prepared === true ? 'Prepare again' : 'Prepare lab', () => operate('prepare'),
+            ? { disabled: true, glyph: 'play', title: 'Lab is running' } : { disabled: !ready, primary: true, glyph: 'play' }),
+          // Prepare provisions the VM; the container lab needs none.
+          result?.origin === 'container' ? null : button(result?.prepared === true ? 'Prepare again' : 'Prepare lab', () => operate('prepare'),
             { disabled: !ready || vmState === 'running', title: vmState === 'running' ? 'VM is running' : undefined }),
           // Running with a clean status: Stop sits with the running facts. Stopped: there is nothing to stop.
           // A running state from a failed call (a Stop that exited non-zero) keeps Stop here, since the running column is hidden.
@@ -421,12 +458,13 @@ function HuntingLab() {
         ] }),
         limits('Requirements and limits', [
           'Only local framework routes are offered; duplicate local owners and every remote route are excluded.',
-          'The first explicit Start prepares verified public runtime assets, then boots. Prepare downloads and provisions without booting.',
-          'Automatic first setup needs Windows x64 with Windows Hypervisor Platform already enabled, 5 GiB available RAM and 37 GiB free disk, and makes large public downloads.',
-          'The guest uses 4 GiB RAM, two vCPUs and a 32 GiB virtual disk. No elevation, Windows-feature change or software-emulation fallback is attempted.',
-          'A running QEMU process is not proof that guest services finished booting.',
+          'With Docker running, Start runs the lab as host containers, one compose project per case: the last case started, else the bundled fixture. Elasticsearch is never published, the lab, Arkime and Kibana listen on 127.0.0.1 only, and no container but the port relay has a route out.',
+          'Without Docker, the lab is the VM. The first explicit Start prepares verified public runtime assets, then boots. Prepare downloads and provisions without booting.',
+          'Automatic first setup of the VM needs Windows x64 with Windows Hypervisor Platform already enabled, 5 GiB available RAM and 37 GiB free disk, and makes large public downloads.',
+          'The VM guest uses 4 GiB RAM, two vCPUs and a 32 GiB virtual disk. No elevation, Windows-feature change or software-emulation fallback is attempted.',
+          'A running QEMU process is not proof that guest services finished booting; the container lab reports running only once its lab service says ready.',
           'After a human Start or Prepare, only read-only status is observed, for up to ten minutes. Refresh explicitly after that.',
-          'No lifecycle retry, model call, host Docker fallback or VMware dependency is used. This page reads no conversations, credentials or memory.',
+          'No lifecycle retry, model call or VMware dependency is used. This page reads no conversations, credentials or memory.',
           'The console is the real QEMU boot console for this profile-owned VM; input goes to the guest. Bot Screen is separate: it is not a VM launcher or console.'
         ])
       ] }),

@@ -168,7 +168,8 @@ def stop_hint(holder_pid):
     # QEMU runs detached from the holder, so ending the holder alone leaves the VM running.
     end = f'taskkill /PID {holder_pid} /F' if os.name == 'nt' else f'kill {holder_pid}'
     return (f'stop the holder ({end}) and then the VM ('
-            + drive_gates.shell_join([DEFAULT_LANE.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', 'stop'])
+            + drive_gates.shell_join([DEFAULT_LANE.hermes_exe(), '-p', 'framework-network-analyst', 'hunt-lab', 'stop',
+                                      '--vm'])
             + f' with HERMES_HOME={DEFAULT_LANE.home})')
 
 

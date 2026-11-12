@@ -1,0 +1,9 @@
+# The container lab's own image (compose.stack.yaml): the lab service, its one-shot ingest and Kibana setup,
+# the shared network namespace and the port relay. Ubuntu 22.04 is the VM guest's OS (assets.json), so this
+# gives the guest's Python 3.10 and tshark 3.6.2, and packet_fields answers the same as in the VM.
+# iproute2 gives `ss` for watching the stack's connections; socat relays the published ports.
+FROM ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -q \
+    && apt-get install -y -q --no-install-recommends python3 tshark=3.6.2-2 iproute2 socat \
+    && rm -rf /var/lib/apt/lists/*

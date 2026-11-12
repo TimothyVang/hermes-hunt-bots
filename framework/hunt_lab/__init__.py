@@ -57,8 +57,16 @@ def _command(args):
         )
         return _emit(result, 0 if result["ok"] else 1)
     try:
-        managed = importlib.import_module(f"{__name__}.managed")
-        result = managed.invoke(operation, state_dir=state_dir, profile=owner)
+        stack = importlib.import_module(f"{__name__}.lab_stack")
+        # The container lab when Docker answers; the VM for prepare, for --vm, and without Docker.
+        if operation in ("status", "start", "stop") and not args.vm and stack.available():
+            result = stack.invoke(operation, state_dir=state_dir, profile=owner, case_id=args.case_id,
+                                  evidence_dir=args.evidence_dir, wait=args.wait)
+        else:
+            managed = importlib.import_module(f"{__name__}.managed")
+            result = managed.invoke(operation, state_dir=state_dir, profile=owner)
+            if isinstance(result, dict):
+                result["origin"] = "vm"
     except Exception:
         # Do not echo environment, command lines, private paths, or exception data.
         return _emit(_failure(owner, "error", "runtime_failed"), 4)
@@ -83,12 +91,19 @@ def _setup(parser):
     parser.add_argument("--host", default="")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--evidence-dir",
+                        help="start: the case folder to load into the container lab (default: the last one started, "
+                             "else the bundled fixture)")
+    parser.add_argument("--wait", type=int, default=0,
+                        help="start: seconds to keep reading the container lab's status while it starts")
+    parser.add_argument("--vm", action="store_true",
+                        help="status/start/stop the lab VM even when Docker is available")
 
 
 def register(ctx):
     ctx.register_cli_command(
         name="hunt-lab",
-        help="Inspect, prepare, explicitly start, or shut down this profile's built-in hunting lab VM",
+        help="Inspect, prepare, explicitly start, or shut down this profile's hunting lab (containers, else the VM)",
         setup_fn=_setup,
         handler_fn=_command,
         description="Explicit profile-owned lifecycle; model access is restricted to case-scoped evidence queries.",

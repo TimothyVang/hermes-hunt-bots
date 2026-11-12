@@ -278,9 +278,9 @@ def loopback_base(url: object) -> str:
 def resolve_lab(state_dir, case_id: str | None = None) -> LabEndpoint:
     """The one loopback lab serving ``case_id``, or the one lab serving any case when it is ``None``.
 
-    That is the analyst VM's, read through the read-only runtime status, or the host-side connected
-    service (``hunt_lab.endpoints``). Never starts, stops, or creates lab state. A refusal names only the
-    resolver's fixed code, such as ``ambiguous_lab`` when both serve the case.
+    That is the analyst VM's, read through the read-only runtime status, the host-side connected service,
+    or a container lab (``hunt_lab.endpoints``). Never starts, stops, or creates lab state. A refusal names
+    only the resolver's fixed code, such as ``ambiguous_lab`` when more than one serves the case.
     """
     try:
         runtime = importlib.import_module("hunt_lab.runtime")
