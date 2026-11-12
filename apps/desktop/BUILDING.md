@@ -196,11 +196,14 @@ stock full client (bootstrap payload) with these changes only:
   in-app updater (stamped `external`, like commit builds): the checkout hand-off would
   rebuild stock Hermes. Settings say to update by pulling and rerunning `pack:hunt`,
   and Uninstall says to delete the app folder.
-- First-run install: a fresh install fetches `install.ps1`/`install.sh` from this fork
-  (`TimothyVang/hermes-hunt-bots`) and clones it via `HERMES_REPO_URL`, never upstream.
-  A repair of an existing checkout (`HERMES_HOME/hermes-agent`, shared with stock
-  Hermes) keeps that checkout's origin and passes no fork branch, so stock Hermes and
-  `hermes update` never start following the fork.
+- First-run install: Hunt Command and stock Hermes share one checkout,
+  `HERMES_HOME/hermes-agent`, and whichever app installs it first decides its
+  source. A fresh install by Hunt Command fetches `install.ps1`/`install.sh` from
+  this fork (`TimothyVang/hermes-hunt-bots`) and clones the fork via
+  `HERMES_REPO_URL`; stock Hermes then runs that checkout too, and `hermes update`
+  follows the fork. An existing checkout keeps its origin: a repair passes the
+  stamp's branch only when that origin is the fork, so an upstream checkout is
+  repaired on its own channel and never moved to the fork.
 - Icons: the committed tree in `variants/hunt/icons` (see `variants/hunt/README.md`).
 - Renderer: `src/variant.ts` reads the baked variant. The Hunting Lab / Hunt Board
   and Cybersecurity workspace plugins are bundled straight from `framework/`

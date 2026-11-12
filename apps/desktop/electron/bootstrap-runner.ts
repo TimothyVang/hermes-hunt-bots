@@ -58,6 +58,22 @@ function isPinnedCommit(commit) {
 type ExecGitFn = (args: string[], cwd: string) => string
 type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
 
+// Bare 'git' takes the first PATH hit, which can exist yet be unlaunchable
+// (Intel-only build on Apple Silicon); main.ts passes its probed binary.
+function checkoutGit(opts: { execGit?: ExecGitFn; gitBinary?: string }): ExecGitFn {
+  return (
+    opts.execGit ||
+    ((args, cwd) =>
+      execFileSync(opts.gitBinary || 'git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 15_000,
+        ...hiddenWindowsChildOptions()
+      }).trim())
+  )
+}
+
 /**
  * Read HEAD from a managed checkout. Used after bootstrap so fallback
  * (all-zero) install stamps still produce a marker that
@@ -71,25 +87,49 @@ function resolveCheckoutHead(
     return null
   }
 
-  // Bare 'git' takes the first PATH hit, which can exist yet be unlaunchable
-  // (Intel-only build on Apple Silicon); main.ts passes its probed binary.
-  const run: ExecGitFn =
-    opts.execGit ||
-    ((args, cwd) =>
-      execFileSync(opts.gitBinary || 'git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 15_000,
-        ...hiddenWindowsChildOptions()
-      }).trim())
-
   try {
-    const sha = run(['-c', 'windows.appendAtomically=false', 'rev-parse', 'HEAD'], activeRoot)
+    const sha = checkoutGit(opts)(['-c', 'windows.appendAtomically=false', 'rev-parse', 'HEAD'], activeRoot)
 
     return isPinnedCommit(sha) ? sha : null
   } catch {
     return null
+  }
+}
+
+// A GitHub https, ssh or scp-style remote URL with an optional .git suffix.
+const GITHUB_REMOTE_RE = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i
+
+/**
+ * Whether the installer gets the stamp's branch. Fresh installs and stock
+ * builds always do. A build with its own source repo has a branch only that
+ * repo carries, so its repair passes the branch only to a checkout whose origin
+ * is that repo (one it cloned). Any other origin (upstream, the checkout stock
+ * Hermes shares) or an unreadable one gets no branch: install.ps1/install.sh
+ * then keep its channel logic instead of moving it to the fork's `main`.
+ */
+function installerGetsStampBranch({
+  freshInstall,
+  activeRoot,
+  identity = PRODUCT_IDENTITY,
+  execGit,
+  gitBinary
+}: {
+  freshInstall: boolean
+  activeRoot: string | null | undefined
+  identity?: Pick<ProductIdentity, 'sourceRepo'>
+  execGit?: ExecGitFn
+  gitBinary?: string
+}): boolean {
+  if (freshInstall || !identity.sourceRepo) {
+    return true
+  }
+
+  try {
+    const origin = activeRoot ? checkoutGit({ execGit, gitBinary })(['config', '--get', 'remote.origin.url'], activeRoot) : ''
+
+    return GITHUB_REMOTE_RE.exec(origin)?.[1].toLowerCase() === identity.sourceRepo.toLowerCase()
+  } catch {
+    return false
   }
 }
 
@@ -660,49 +700,26 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome,
 // a repair/update path and must not let an old packaged app detach the checkout
 // back to the commit baked into that app. All-zero fallback stamps are never
 // passed as -Commit/--commit — only the branch is used (#50823 / #50864 review).
-// A build with its own source repo has a branch only that repo carries, so its
-// repair of an existing checkout (whose origin it keeps, see installerEnv)
-// passes no branch and the checkout's own channel/branch logic decides.
-function stampBranch(installStamp, pinCommit, identity: Pick<ProductIdentity, 'sourceRepo'>) {
-  return installStamp && installStamp.branch && (pinCommit || !identity.sourceRepo) ? installStamp.branch : null
-}
-
-function buildPinArgs(
-  installStamp,
-  { pinCommit = true, identity = PRODUCT_IDENTITY }: { pinCommit?: boolean; identity?: Pick<ProductIdentity, 'sourceRepo'> } = {}
-) {
+// passBranch is installerGetsStampBranch's decision.
+function buildPinArgs(installStamp, { pinCommit = true, passBranch = true } = {}) {
   const args = []
-  const branch = stampBranch(installStamp, pinCommit, identity)
 
   if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
     args.push('-Commit', installStamp.commit)
   }
 
-  if (branch) {
-    args.push('-Branch', branch)
+  if (passBranch && installStamp && installStamp.branch) {
+    args.push('-Branch', installStamp.branch)
   }
 
   return args
 }
 
-function buildPosixPinArgs({
-  installStamp,
-  activeRoot,
-  hermesHome,
-  pinCommit = true,
-  identity = PRODUCT_IDENTITY
-}: {
-  installStamp
-  activeRoot
-  hermesHome
-  pinCommit?: boolean
-  identity?: Pick<ProductIdentity, 'sourceRepo'>
-}) {
+function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = true, passBranch = true }) {
   const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
-  const branch = stampBranch(installStamp, pinCommit, identity)
 
-  if (branch) {
-    args.push('--branch', branch)
+  if (passBranch && installStamp && installStamp.branch) {
+    args.push('--branch', installStamp.branch)
   }
 
   if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
@@ -720,14 +737,15 @@ async function fetchManifest({
   activeRoot,
   installStamp,
   pinCommit,
+  passBranch,
   abortSignal
 }) {
   abortSignal?.throwIfAborted()
   const isPosix = installerKind === 'posix'
 
   const args = isPosix
-    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })]
-    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit })]
+    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit, passBranch })]
+    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit, passBranch })]
 
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
@@ -800,7 +818,8 @@ async function runStage({
   activeRoot,
   abortSignal,
   installStamp,
-  pinCommit
+  pinCommit,
+  passBranch
 }) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
@@ -813,9 +832,9 @@ async function runStage({
         stage.name,
         '--non-interactive',
         '--json',
-        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })
+        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit, passBranch })
       ]
-    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit })]
+    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit, passBranch })]
 
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
@@ -957,6 +976,7 @@ async function runBootstrap(opts) {
   try {
     const existingCheckout = hasExistingGitCheckout(activeRoot)
     const pinCommit = !existingCheckout
+    const passBranch = installerGetsStampBranch({ freshInstall: pinCommit, activeRoot, gitBinary })
 
     if (existingCheckout && installStamp && installStamp.commit) {
       emit({
@@ -982,6 +1002,7 @@ async function runBootstrap(opts) {
       activeRoot,
       installStamp,
       pinCommit,
+      passBranch,
       abortSignal
     })
 
@@ -1013,7 +1034,8 @@ async function runBootstrap(opts) {
         activeRoot,
         abortSignal,
         installStamp,
-        pinCommit
+        pinCommit,
+        passBranch
       })
 
       if (ev.state === 'failed') {
@@ -1080,6 +1102,7 @@ export {
   cleanInstallerLogLine,
   hasExistingGitCheckout,
   installerEnv,
+  installerGetsStampBranch,
   installRefForStamp,
   installScriptUrl,
   isPinnedCommit,
