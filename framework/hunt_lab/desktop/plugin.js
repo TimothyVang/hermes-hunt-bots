@@ -150,7 +150,8 @@ const sheet = () => jsx('style', { href: 'hunt-command-lab-ui', precedence: 'def
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const ICONS = {
   play: [['path', { d: 'M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z' }]],
-  square: [['rect', { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
+  // circle-stop, with its square filled so Stop never reads as an empty checkbox.
+  circleStop: [['circle', { cx: 12, cy: 12, r: 10 }], ['rect', { x: 9, y: 9, width: 6, height: 6, rx: 1, fill: 'currentColor' }]],
   externalLink: [['path', { d: 'M15 3h6v6' }], ['path', { d: 'M10 14 21 3' }], ['path', { d: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' }]],
   server: [['rect', { width: 20, height: 8, x: 2, y: 2, rx: 2, ry: 2 }], ['rect', { width: 20, height: 8, x: 2, y: 14, rx: 2, ry: 2 }],
     ['line', { x1: 6, x2: 6.01, y1: 6, y2: 6 }], ['line', { x1: 6, x2: 6.01, y1: 18, y2: 18 }]],
@@ -394,7 +395,7 @@ function runningState(current, owner, result, ready) {
       }) })
       : jsx('p', { children: 'Console not available: no external page, alternate viewer, or Bot Screen was opened.' }),
     jsxs('div', { className: 'hc-actions', children: [
-      button('Stop lab', () => operate('stop'), { disabled: !ready, glyph: 'square' }),
+      button('Stop lab', () => operate('stop'), { disabled: !ready, glyph: 'circleStop' }),
       arkime ? link('Open Arkime', arkime) : null,
       lab ? link('Open lab', lab) : null
     ] })
@@ -450,7 +451,7 @@ function HuntingLab() {
             { disabled: !ready || vmState === 'running', title: vmState === 'running' ? 'VM is running' : undefined }),
           // Running with a clean status: Stop sits with the running facts. Stopped: there is nothing to stop.
           // A running state from a failed call (a Stop that exited non-zero) keeps Stop here, since the running column is hidden.
-          (vmState === 'running' && current.code === 0) || vmState === 'stopped' ? null : button('Stop lab', () => operate('stop'), { disabled: !ready, glyph: 'square' }),
+          (vmState === 'running' && current.code === 0) || vmState === 'stopped' ? null : button('Stop lab', () => operate('stop'), { disabled: !ready, glyph: 'circleStop' }),
           jsx('p', { className: 'hc-note', role: 'status', 'aria-live': 'polite', children: current.message || LAB_NOTE })
         ] }),
         limits('Requirements and limits', [

@@ -292,6 +292,13 @@ class BoardDerivationTests(unittest.TestCase):
         self.assertTrue(broken["input_errors"])
         self.assertEqual(broken["steps"], [])
 
+    def test_unreadable_input_says_no_steps_once_in_agents(self) -> None:
+        broken = build_state({"scope": "x"}, None, None)
+        for phone in (False, True):
+            page = _render_page(broken, "agents", phone=phone)
+            shown = page["rail"]["text"] + page["main"]["text"]
+            self.assertEqual(shown.count("No steps: the input could not be read."), 1, shown)
+
     def test_serial_round_keeps_its_shape_and_gains_the_wave_keys_with_serial_defaults(self) -> None:
         child = _mid_run(self.child, 5, "awaiting_review", "intel")
         child["results"][1] = dict(child["results"][1], usage=_tokens(1500))
@@ -1099,6 +1106,27 @@ class ParallelBoardTests(unittest.TestCase):
         rail = _render_page(state, "agents")["rail"]
         self.assertIn("wave 1 \u00b7 dropped \u00b7 native nonzero: " + cause, rail["text"])
         self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero", rail["text"])
+
+    def test_the_page_flags_uncounted_unknown_and_unparsed_handoffs_where_it_lists_the_step(self) -> None:
+        child = _wave_child({"scope": "done", "evidence": "done", "hypotheses": ("dropped", "timeout"),
+                             "network": "done", "intel": "working"},
+                            [self.result(0), self.result(1), self.result(2),
+                             self.result(3, output="Notes first.\n{\"claims\": [")])
+        state = build_state(self.raw, self.parent, child)
+        feed = {item["step_id"]: item for item in state["feed"]}
+        self.assertEqual((feed["hypotheses"]["counted"], feed["hypotheses"]["handoff"]["step_id"]), (False, "hypotheses"))
+        self.assertIsNone(feed["network"]["handoff"])
+        feed["evidence"]["unknown_cited_ids"] = ["evt-9991", "evt-9992"]
+        unknown = "Cites IDs not in the supplied events: evt-9991, evt-9992."
+        dropped = "Step dropped (timeout); the hunt continued without it and its citations are not counted."
+        for view, phone, region in (("agents", False, "rail"), ("", True, "main"), ("case", False, "main")):
+            shown = _render_page(state, view, phone=phone)[region]
+            for flag in ("not counted", "2 unknown IDs", "handoff not parsed"):
+                self.assertIn(flag, shown["text"], (view, region))
+            for title in (unknown, dropped):
+                self.assertIn(title, shown["titles"], (view, region))
+        # Only the dropped step's handoff is flagged as not counted; counted handoffs carry no flag.
+        self.assertEqual(_render_page(state, "agents")["rail"]["text"].count("not counted"), 1)
 
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],

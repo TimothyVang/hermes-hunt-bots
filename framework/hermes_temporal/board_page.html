@@ -123,6 +123,7 @@ ol.dec.loose li{margin-bottom:8px}
 .ri .t{font-size:13px;line-height:18px;color:var(--ink-1)}
 .ri .t .r{font-size:12px;color:var(--ink-3)}
 .ri .s{font-size:12px;line-height:16px;color:var(--ink-3)}
+.ri .s.flg{color:var(--ink-2)}
 .sep{height:var(--hair);background:var(--line-2);margin:8px 16px;flex:none}
 .main{min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .main > .pad-end{flex:none;height:24px}
@@ -183,7 +184,7 @@ ol.dec.loose li{margin-bottom:8px}
 .tlx{display:grid;grid-template-columns:140px minmax(0,1fr) 128px;align-items:center}
 .tlx .track{position:relative;height:32px;background:linear-gradient(var(--line-3),var(--line-3)) 0 50%/100% .5px no-repeat}
 .tlx .ticks{position:relative;height:24px}
-.tlx .ticks span{position:absolute;top:0;transform:translateX(-50%)}
+.tlx .ticks span{position:absolute;top:0;width:40px;text-align:center;white-space:nowrap}
 .dot{position:absolute;top:13px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--ink-2);padding:0}
 .dot.on{width:10px;height:10px;margin-left:-5px;top:11px;background:var(--accent)}
 .list > .li.evr{display:grid;grid-template-columns:104px 96px 96px 72px minmax(0,1fr) 180px;gap:12px}
@@ -237,7 +238,7 @@ ol.dec.loose li{margin-bottom:8px}
 #app.ph .cl{grid-template-columns:minmax(0,1fr);gap:4px}
 #app.ph .evr{grid-template-columns:96px minmax(0,1fr)}
 #app.ph .evr > :nth-child(2),#app.ph .evr > :nth-child(3),#app.ph .evr > :nth-child(4),#app.ph .evr > :nth-child(6){display:none}
-#app.ph .tlx{grid-template-columns:96px minmax(0,1fr) 0}
+#app.ph .tlx{grid-template-columns:96px minmax(0,1fr) 12px}
 #app.ph .tlx > :nth-child(3){display:none}
 #app.ph .ag-head{flex-wrap:wrap}
 #app.ph ~ #toasts{right:12px;left:12px;bottom:84px;align-items:stretch}
@@ -780,21 +781,40 @@ function idList(ids, key, cap){
   if (ids.length > cap) box.appendChild(toggleBtn(key, all ? "Show fewer" : "Show all " + num(ids.length), () => { if (all) ui.showAll.delete(key); else ui.showAll.add(key); }));
   return box;
 }
+// Why a step's citations are not counted, or null when they are.
+function notCountedWhy(f){
+  if (!f || !f.handoff || f.counted !== false) return null;
+  return f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
+    : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
+    : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
+    : "Its citations are not counted.";
+}
+function unknownIdsLead(){ return fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"; }
 // Lines above a step's claims: why its citations are not counted, and cited IDs the board could not find.
 function handoffNotes(s){
   const f = idx.feedBy.get(s.step_id), out = [];
   if (!f || !f.handoff) return out;
-  if (f.counted === false){
-    const why = f.state === "awaiting_review" ? "Waiting for human review; not yet accepted."
-      : f.state === "stopped" ? "Workflow stopped at this step (" + words(f.reason || "unknown") + "); its citations are not counted."
-      : f.state === "dropped" ? "Step dropped (" + words(f.reason || "no reason given") + "); the hunt continued without it and its citations are not counted."
-      : "Its citations are not counted.";
-    out.push(h("div", "hnote", why));
-  }
+  const why = notCountedWhy(f);
+  if (why) out.push(h("div", "hnote", why));
   const unk = f.unknown_cited_ids || [];
-  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, fromLab() ? "Cites IDs not found in the lab case:" : "Cites IDs not in the supplied events:"), idList(unk, "unk:" + s.step_id, 24)));
+  if (unk.length) out.push(add(h("div", "hnote"), h("div", null, unknownIdsLead()), idList(unk, "unk:" + s.step_id, 24)));
   return out;
 }
+// The same flags in a few words for the rows that list a step, with the full lines as the tooltip.
+function stepFlags(s){
+  const f = idx.feedBy.get(s.step_id), short = [], long = [];
+  if (!f) return null;
+  if (f.handoff){
+    if (f.counted === false && f.state !== "awaiting_review"){ short.push("not counted"); long.push(notCountedWhy(f)); }
+    const unk = f.unknown_cited_ids || [];
+    if (unk.length){
+      short.push(plural(unk.length, "unknown ID"));
+      long.push(unknownIdsLead() + " " + unk.slice(0, 24).join(", ") + (unk.length > 24 ? " and " + num(unk.length - 24) + " more" : "") + ".");
+    }
+  } else if (s.state === "done" && f.parse_error){ short.push("handoff not parsed"); long.push("Handoff not parsed: " + f.parse_error + "."); }
+  return short.length ? {text:short.join(" \u00b7 "), title:long.join("\n")} : null;
+}
+function flagEl(s, cls, tag){ const fl = stepFlags(s); return fl ? h(tag || "span", cls, fl.text, {title:fl.title}) : null; }
 function noHandoffShort(s){
   const f = idx.feedBy.get(s.step_id);
   return f && !f.handoff ? "Handoff not parsed." : s.state === "dropped" || s.state === "stopped" ? "No handoff: " + s.state + "." : "No handoff yet.";
@@ -858,7 +878,7 @@ function stepRowEl(r, on){
   const why = kindOf(s) === "dropped" ? cause(s) : "";
   const st = stEl(kindOf(s), stateWords(s));
   if (why){ st.appendChild(h("span", "cause", ": " + why)); st.title = stateWords(s) + ": " + why; }
-  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, h("span"),
+  const wv = add(h("div", "wv sub"), h("span", "mg", s.monogram || "?"), h("span", "sec ell", s.name, {title:s.name}), st, flagEl(s, "sm sec ell") || h("span"),
     h("span", "sm mut num", s.state === "done" && typeof s.claims === "number" ? plural(s.claims, "claim") : ""), timeEl(s, "sm sec num"));
   const li = add(h("div", "li btn subrow" + (on ? " on" : ""), null, {"data-key":r.key, role:"button", tabindex:"-1"}), wv);
   li.addEventListener("click", () => { if (ui.caseKey === r.key) openAgent(s); else { ui.caseKey = r.key; renderView(); } });
@@ -907,7 +927,9 @@ function renderCaseMain(sel){
   const aside = open ? ["wave " + open.wave].concat(c.blocked ? [c.blocked + " blocked"] : [], c.working ? [c.working + " working"] : [], c.dropped ? [c.dropped + " dropped"] : []).join(" \u00b7 ")
     : [plural(idx.waveList.length, "wave"), plural(steps.length, "step"), plural(idx.claims.length, "claim"), plural(idx.verdicts, "verdict")].join(" \u00b7 ");
   add(wsec, add(h("div", "sec-h"), "Waves", h("span", "aside", aside)));
-  const list = h("div", "box list" + (idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) ? " wv-wide" : ""), null, {id:"case-list"});
+  // The wide fourth column fits a wave's drop count and a step's flags.
+  const wide = idx.waveList.some((w) => !w.steps.some((s) => GATE.has(s.state)) && w.steps.some((s) => kindOf(s) === "dropped")) || steps.some(stepFlags);
+  const list = h("div", "box list" + (wide ? " wv-wide" : ""), null, {id:"case-list"});
   for (const r of sel.rows) list.appendChild(r.sub ? stepRowEl(r, r.key === ui.caseKey) : waveRowEl(r, r.key === ui.caseKey));
   if (!sel.rows.length) list.appendChild(h("div", "empty", "No steps: the input could not be read."));
   wsec.appendChild(list);
@@ -1028,9 +1050,8 @@ function agentList(){ const o = agentOrder(); return {list:ui.filter ? o.list.fi
 function agentSub(s, grouped){
   const k = kindOf(s);
   if (!grouped){
-    const f = idx.feedBy.get(s.step_id);
     if (k === "dropped" && cause(s)) return "wave " + s.wave + " \u00b7 " + s.state + " \u00b7 " + cause(s);
-    return "wave " + s.wave + " \u00b7 " + (f && !f.handoff && f.parse_error ? "handoff not parsed" : typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
+    return "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : stateWords(s));
   }
   if (k === "working" || k === "done") return add(h("span"), k + " \u00b7 ", timeEl(s));
   if (k === "dropped") return s.state + " \u00b7 " + (cause(s) || s.profile);
@@ -1048,7 +1069,7 @@ function renderAgentRail(selId){
     const sub = agentSub(s, o.grouped);
     const b = add(h("button", "ri sm8" + (on ? " on" : ""), null, {type:"button", role:"option", "aria-selected":String(on), "data-step":s.step_id, title:s.name + " \u00b7 " + roleOf(s) + " \u00b7 " + stateWords(s) + (cause(s) ? " \u00b7 " + cause(s) : "")}),
       glyph(kindOf(s)), add(h("div", "grow"), add(h("div", "t ell"), s.name + " ", h("span", "r", "\u00b7 " + (s.monogram || ""))),
-        add(h("div", "s " + (k === "dropped" && cause(s) ? "clamp3" : "ell")), sub)));
+        add(h("div", "s " + (k === "dropped" && cause(s) ? "clamp3" : "ell")), sub), flagEl(s, "s flg ell", "div")));
     b.addEventListener("click", () => {
       if (effView() === "agent" || phone()) openAgent(s);
       else { ui.agentSel = s.step_id; ui.paneFocus = 0; renderView(); }
@@ -1107,7 +1128,9 @@ function agentPane(s, full, focus){
     else body.appendChild(h("div", "sm mut wrap", noCallsText(s, sc), {style:"padding:6px 12px"}));
     if (sc.calls.length && sc.cut) body.appendChild(h("div", "xs faint wrap", cutText(sc), {style:"padding:6px 12px 0"}));
     const ho = handoff(s);
-    body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") : noHandoffText(s), {style:"padding:12px 12px 6px"}));
+    const fl = ho ? stepFlags(s) : null;
+    body.appendChild(h("div", "sm mut wrap", ho ? "Handoff: " + plural((ho.claims || []).length, "claim") + (ho.disposition ? " \u00b7 " + ho.disposition : "") + (fl ? " \u00b7 " + fl.text : "") : noHandoffText(s),
+      {style:"padding:12px 12px 6px", title:fl ? fl.title : null}));
   }
   pane.appendChild(body);
   return pane;
@@ -1149,7 +1172,8 @@ function paneModel(){
 function renderAgentsMain(){
   const m = $("main"); clear(m);
   const model = paneModel();
-  if (!model.length){ m.appendChild(h("div", "empty", ui.filter ? "No " + ui.filter + " agents." : "No steps: the input could not be read.")); return; }
+  // The rail already says why the list is empty (and on a phone only the rail shows); say it once.
+  if (!model.length) return;
   if (ui.paneFocus >= model.length) ui.paneFocus = 0;
   const grid = h("div", "panes");
   const live = model.find((p) => p.type === "live"), line = !!live && !liveOwner(live.profile) && !browserOf(live.profile);
@@ -1282,7 +1306,9 @@ function renderEvidenceMain(sel, list){
   if (t0 !== null && t0 !== undefined && t1 > t0){
     const span = t1 - t0, steps = [6e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5, 216e5, 432e5, 864e5];
     const stepMs = steps.find((x) => span / x <= (phone() ? 4 : 9)) || steps[steps.length - 1];
-    for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t1; x += stepMs) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16), {style:"left:" + ((x - t0) / span * 100) + "%"}));
+    // Each label centres on its time but stays inside the track, so the first and last times are never cut.
+    for (let x = Math.ceil(t0 / stepMs) * stepMs; x <= t1; x += stepMs) ticks.appendChild(h("span", "mono xs faint", new Date(x).toISOString().slice(11, 16),
+      {style:"left:clamp(0px, calc(" + ((x - t0) / span * 100) + "% - 20px), calc(100% - 40px))"}));
   }
   box.appendChild(add(h("div", "tlx", null, {style:"height:24px;align-items:start"}), h("span", "th", "Host", {style:"padding-left:12px"}), ticks, h("span")));
   const byHost = new Map();
@@ -1393,7 +1419,7 @@ function renderInbox(){
     for (const s of list){
       const text = sub(s), wrap = kindOf(s) === "dropped" && cause(s);
       const b = add(h("button", "li", null, {type:"button", style:"padding:10px 16px;gap:12px"}), glyph(kindOf(s)),
-        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut " + (wrap ? "clamp3" : "ell"), text, {title:text})), timeEl(s, "sm mut"));
+        add(h("div", "grow"), h("div", "ell", s.name, {style:"font-size:14px;line-height:20px"}), h("div", "sm mut " + (wrap ? "clamp3" : "ell"), text, {title:text}), flagEl(s, "sm sec ell", "div")), timeEl(s, "sm mut"));
       b.addEventListener("click", () => openAgent(s));
       l.appendChild(b);
     }
@@ -1402,7 +1428,7 @@ function renderInbox(){
   const lastTool = (s) => { const c = stepCalls(s).calls; return c.length ? c[c.length - 1].tool : null; };
   group("Working", steps.filter((s) => s.state === "working"), (s) => roleOf(s) + (lastTool(s) ? " \u00b7 " + lastTool(s) : ""), false);
   group("Done", steps.filter((s) => s.state === "done").sort((a, b) => ((b.timing || {}).ended_ms || 0) - ((a.timing || {}).ended_ms || 0) || b.index - a.index),
-    (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims parsed"), true);
+    (s) => "wave " + s.wave + " \u00b7 " + (typeof s.claims === "number" ? plural(s.claims, "claim") : "no claims"), true);
   group("Waiting", steps.filter((s) => kindOf(s) === "idle"), (s) => "wave " + s.wave + " \u00b7 " + stateWords(s).replace(/^idle \u00b7 /, ""), true);
   group("Dropped", steps.filter((s) => kindOf(s) === "dropped"), (s) => "wave " + s.wave + " \u00b7 " + s.state + (cause(s) ? " \u00b7 " + cause(s) : ""), true);
   m.appendChild(h("div", "pad-end"));
