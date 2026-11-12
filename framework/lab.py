@@ -14,6 +14,8 @@ import install_desktop
 
 ROOT = Path(__file__).absolute().parent
 PROFILE = 'framework-network-analyst'
+# Written into a Hermes home by the self-updating launcher while it updates and restarts that home's gateway.
+UPDATE_MARKER = '.hermes-update-in-progress'
 # Every authored profile receives the read-only hunt tools; only PROFILE owns the VM.
 AUTHORED_PROFILES = (
     'framework-coordinator', 'framework-researcher', 'framework-builder',
@@ -158,6 +160,28 @@ def reload_gateway(profile, python, runner):
     return 'reloaded'
 
 
+def hermes_executable(explicit=None):
+    """The Hermes CLI to run: --hermes, else LAB_HERMES_EXE, else `hermes` on PATH; never a fallback.
+
+    The `hermes` on PATH may be a self-updating launcher, which drains the lab's gateway mid-hunt;
+    LAB_HERMES_EXE names the lab install's own executable."""
+    configured = os.environ.get('LAB_HERMES_EXE', '').strip()
+    name = str(explicit) if explicit else configured or 'hermes'
+    executable = shutil.which(name)
+    if not executable:
+        source = '--hermes' if explicit else 'LAB_HERMES_EXE' if configured else 'PATH'
+        raise ValueError(f'Hermes CLI not found ({source}: {name}); install the framework Hermes prerequisite')
+    return executable
+
+
+def refuse_during_update(home):
+    """Refuse while a Hermes update holds this home; running the CLI then can stop a hunt's gateway."""
+    marker = Path(home) / UPDATE_MARKER
+    if marker.exists() or marker.is_symlink():
+        raise ValueError(f'A Hermes update is in progress for this home ({marker} exists); '
+                         'retry after it finishes')
+
+
 def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     """Stage both native halves and the existing companion; no VM/download action.
 
@@ -165,15 +189,14 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
     profile so each can load its read-only tools; VM lifecycle stays analyst-only.
     """
     root = resolve_home(home)
+    refuse_during_update(root)
     profiles = {PROFILE: registered_profile(root, PROFILE)}
     for name in AUTHORED_PROFILES:
         if name != PROFILE:
             profile = registered_profile(root, name, required=False)
             if profile is not None:
                 profiles[name] = profile
-    executable = shutil.which(str(hermes) if hermes else 'hermes')
-    if not executable:
-        raise ValueError('Hermes CLI not found; install the framework Hermes prerequisite')
+    executable = hermes_executable(hermes)
     python = hermes_python(executable)
     files = bundle_source(kit_root)
     companion_root = Path(kit_root).absolute() / 'desktop' / install_desktop.PLUGIN
@@ -205,10 +228,9 @@ def install(home=None, hermes=None, kit_root=ROOT, runner=subprocess.run):
 def command(args):
     """Run one explicit native command before ledger access; never fall back."""
     home = resolve_home(args.home)
+    refuse_during_update(home)
     registered_profile(home, PROFILE)
-    executable = shutil.which(str(args.hermes) if args.hermes else 'hermes')
-    if not executable:
-        raise ValueError('Hermes CLI not found; install the framework Hermes prerequisite')
+    executable = hermes_executable(args.hermes)
     if args.lab_operation == 'check':
         # Source and exact registered paths only; no enable, download, or VM RPC.
         bundle_source()

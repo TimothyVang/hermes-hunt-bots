@@ -314,6 +314,64 @@ class LabInstallTests(unittest.TestCase):
                 lab.resolve_home()
         self.assertFalse(missing.exists())
 
+    def lab_args(self, *argv):
+        import bot
+        return bot.parser().parse_args(['lab', *argv, '--home', str(self.home)])
+
+    def fake_cli(self, folder, name):
+        folder = Path(self.temp.name) / folder
+        folder.mkdir()
+        cli = folder / (name + ('.exe' if os.name == 'nt' else ''))
+        cli.write_bytes(b'')
+        cli.chmod(0o755)
+        return cli
+
+    def test_lab_commands_run_lab_hermes_exe_before_path_and_status_only_asks_status(self):
+        # Live: the `hermes` on PATH was a self-updating launcher that drained the lab gateway mid-hunt.
+        self.profile()
+        on_path = self.fake_cli('path-bin', 'hermes')
+        lab_cli = self.fake_cli('lab-bin', 'lab-hermes')
+        run = Mock(return_value=subprocess.CompletedProcess([], 0))
+        environment = {'PATH': str(on_path.parent), 'LAB_HERMES_EXE': str(lab_cli)}
+        with patch.dict(os.environ, environment), patch.object(lab.subprocess, 'run', run), \
+                patch.object(install_desktop, 'sync_bundle', side_effect=AssertionError('plugins re-synced')):
+            self.assertEqual(lab.command(self.lab_args('status')), 0)
+            argv, kwargs = run.call_args
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(Path(argv[0][0]).resolve(), lab_cli.resolve())
+            self.assertEqual(argv[0][1:], ['-p', lab.PROFILE, 'hunt-lab', 'status'])
+            self.assertEqual(kwargs['env']['HERMES_HOME'], str(self.home))
+            # An explicit --hermes still wins.
+            lab.command(self.lab_args('status', '--hermes', str(on_path)))
+            self.assertEqual(Path(run.call_args[0][0][0]).resolve(), on_path.resolve())
+        with patch.dict(os.environ, {'PATH': str(on_path.parent)}), patch.object(lab.subprocess, 'run', run):
+            os.environ.pop('LAB_HERMES_EXE', None)
+            lab.command(self.lab_args('status'))
+            self.assertEqual(Path(run.call_args[0][0][0]).resolve(), on_path.resolve())
+        # A LAB_HERMES_EXE that does not exist is an error, never a silent fallback to PATH.
+        run.reset_mock()
+        missing = str(Path(self.temp.name) / 'gone' / 'hermes.exe')
+        with patch.dict(os.environ, {'PATH': str(on_path.parent), 'LAB_HERMES_EXE': missing}), \
+                patch.object(lab.subprocess, 'run', run):
+            with self.assertRaisesRegex(ValueError, 'LAB_HERMES_EXE'):
+                lab.command(self.lab_args('status'))
+        run.assert_not_called()
+
+    def test_every_lab_command_refuses_while_a_hermes_update_is_in_progress(self):
+        self.profile()
+        marker = self.home / lab.UPDATE_MARKER
+        marker.write_text('')
+        run = Mock(return_value=subprocess.CompletedProcess([], 0))
+        with patch.object(lab.subprocess, 'run', run):
+            for operation in ('check', 'status', 'prepare', 'start', 'stop', 'query'):
+                with self.subTest(operation=operation), self.assertRaises(ValueError) as caught:
+                    lab.command(self.lab_args(operation, '--hermes', sys.executable))
+                self.assertIn(str(marker), str(caught.exception))
+            with self.assertRaisesRegex(ValueError, 'update is in progress'):
+                lab.install(self.home, sys.executable, runner=run)
+        run.assert_not_called()
+        self.assertEqual(sorted(path.name for path in self.home.iterdir()), [lab.UPDATE_MARKER, 'profiles'])
+
 
 if __name__ == '__main__':
     unittest.main()
