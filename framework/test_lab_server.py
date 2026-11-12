@@ -281,10 +281,23 @@ class EndpointTests(ServerCase):
                                  'aggregations': {'values': {'buckets': [
                                      {'key': 1, 'key_as_string': '2026-03-02T00:00:00Z', 'doc_count': 3}]}}}
         status, value = self.request('/es/aggs?field=@timestamp&interval=1h')
-        histogram = self.elastic.calls[1]['body']['aggs']['values']['date_histogram']
-        self.assertEqual(histogram['hard_bounds'], {'min': START_S * 1000, 'max': END_S * 1000 - 1})
+        body = self.elastic.calls[1]['body']
+        histogram = body['aggs']['values']['date_histogram']
+        # Elasticsearch drops every bucket ending after hard_bounds.max: the window's last hour would vanish.
+        self.assertNotIn('hard_bounds', histogram)
+        self.assertEqual(body['query']['bool']['filter'][-1], {'range': {'@timestamp': {
+            'gte': START_S * 1000, 'lt': END_S * 1000, 'format': 'epoch_millis'}}})
         self.assertIn('sample', self.elastic.calls[1]['body']['aggs']['values']['aggs'])
         self.assertEqual(value['buckets'], [{'key': '2026-03-02T00:00:00Z', 'count': 3, 'sample_event_id': None}])
+
+    def test_a_bucket_sample_without_its_source_cites_nothing(self):
+        sample = {'hits': {'hits': [{'_id': 'doc-1'}]}}
+        self.elastic.response = {'hits': {'total': {'value': 4, 'relation': 'eq'}, 'hits': []},
+                                 'aggregations': {'values': {'buckets': [
+                                     {'key': 'ws-01', 'doc_count': 4, 'sample': sample}]}}}
+        status, value = self.request('/es/aggs?field=host.name')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value['buckets'], [{'key': 'ws-01', 'count': 4, 'sample_event_id': None}])
 
     def test_detect_reports_hosts_bounds_and_sample(self):
         response = es_hits([{'@timestamp': '2026-03-02T01:00:00Z', 'event': {'id': 'evt-000003'},
@@ -564,6 +577,88 @@ class DataOriginConsoleTests(ServerCase):
         from hermes_temporal.contracts import DATA_ORIGINS
         self.assertEqual(lab_server.DATA_ORIGINS, DATA_ORIGINS)
 
+
+class CitingSource:
+    """A source whose records carry no event.id: it scopes, orders, pages and cites by itself, as a host service would."""
+
+    def __init__(self):
+        self.calls = []
+
+    def search(self, index, body, ignore_unavailable=False):
+        self.calls.append(dict(index=index, body=body))
+        hits = [{'_id': f'doc-{n}', '_source': {'@timestamp': f'2026-03-02T00:00:0{n}Z', 'host': {'name': 'ws-01'}},
+                 'sort': [n, n + 100]} for n in (1, 2)]
+        sample = {'hits': {'hits': hits[:1]}}
+        return {'hits': {'total': {'value': 2, 'relation': 'eq'}, 'hits': hits},
+                'aggregations': {'values': {'buckets': [{'key': 'ws-01', 'doc_count': 2, 'sample': sample}]},
+                                 'hosts': {'buckets': [{'key': 'ws-01', 'doc_count': 2}]},
+                                 'first': {'value': None}, 'last': {'value': None}}}
+
+    def event_query(self, case, q):
+        return {'bool': {'filter': [{'range': {'@timestamp': {'gte': case['time_range_utc']['start_inclusive']}}},
+                                    {'citing': q}]}}
+
+    def sort(self, order):
+        return [{'@timestamp': order}, {'_shard_doc': order}]
+
+    def document(self, hit):
+        return dict(hit['_source'], event={'id': 'evt-9' + hit['_id'][-1]})
+
+    def encode_after(self, sort):
+        return f'p{sort[1]}'
+
+    def decode_after(self, token):
+        return [0, int(token[1:])]
+
+
+class EventSourceTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.source = CitingSource()
+        self.server = lab_server.make_server('127.0.0.1', 0, CASE, self.source)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def sent(self, path, q):
+        status, value = self.request(path)
+        self.assertEqual(status, 200, value)
+        body = self.source.calls[-1]['body']
+        self.assertEqual((self.source.calls[-1]['index'], body['query']), ('hunt-lab-events', self.source.event_query(CASE, q)))
+        return value, body
+
+    def test_another_source_scopes_orders_pages_and_cites_every_event_read(self):
+        value, body = self.sent('/es/search?q=s&size=2&sort=desc&after=p7', 's')
+        self.assertEqual((body['sort'], body['search_after']), ([{'@timestamp': 'desc'}, {'_shard_doc': 'desc'}], [0, 7]))
+        self.assertEqual(([hit['event.id'] for hit in value['hits']], value['next_after']), (['evt-91', 'evt-92'], 'p102'))
+        value, body = self.sent('/events?q=e', 'e')
+        self.assertEqual(body['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual([record['event']['id'] for record in value['records']], ['evt-91', 'evt-92'])
+        value, body = self.sent('/es/aggs?q=a&field=host.name', 'a')
+        self.assertEqual(body['aggs']['values']['aggs']['sample']['top_hits']['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual(value['buckets'], [{'key': 'ws-01', 'count': 2, 'sample_event_id': 'evt-91'}])
+        value, body = self.sent('/es/detect?name=x&q=d', 'd')
+        self.assertEqual(body['sort'], [{'@timestamp': 'asc'}, {'_shard_doc': 'asc'}])
+        self.assertEqual([row['event.id'] for row in value['sample']], ['evt-91', 'evt-92'])
+        self.assertEqual(self.elastic.calls, [])
+
+    def test_network_sessions_and_health_read_through_the_source_without_event_citations(self):
+        sessions = self.request('/network')[1]['records']
+        self.assertEqual((self.source.calls[-1]['index'], [session.get('event') for session in sessions]),
+                         ('arkime_sessions3-*', [None, None]))
+        with mock.patch.object(lab_server, 'answers', return_value=True), \
+             mock.patch.object(lab_server, 'kibana_case_ready', return_value=True):
+            status, value = self.request('/health')
+        self.assertEqual((status, value['event_count'], value['network_session_count'], value['intel_count']), (200, 2, 2, 2))
+        self.assertEqual(sorted({call['index'] for call in self.source.calls}),
+                         ['arkime_sessions3-*', 'hunt-lab-events', 'hunt-lab-intel'])
+        self.assertEqual(self.elastic.calls, [])
+
+    def test_intel_reads_through_the_source(self):
+        status, value = self.request('/intel?values=x')
+        self.assertEqual(status, 200, value)
+        self.assertEqual(self.source.calls[-1]['index'], 'hunt-lab-intel')
+        self.assertEqual(self.elastic.calls, [])
 
 class FakeTsharkPipe:
     def __init__(self, data, process):

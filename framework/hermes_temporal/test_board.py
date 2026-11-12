@@ -6,6 +6,8 @@ import copy
 import http.client
 import importlib.util
 import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import types
@@ -21,7 +23,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
 from .test_hunt import tool_input  # noqa: E402
-from .test_lab_input import FakeLab  # noqa: E402
+from .test_lab_input import FakeLab, write_connected_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
 
 FIXTURES = Path(__file__).with_name("fixtures") / "board"
@@ -30,6 +32,87 @@ STEP_IDS = ["scope", "evidence", "hypotheses", "network", "intel", "analysis", "
 
 def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+# Runs board_page.html's script in Node with a minimal DOM; its first /state.json poll answers with the given view
+# and the page renders the view named in its URL hash. Prints the text and titles of each region it rendered.
+_PAGE_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+const [pagePath, statePath, view, phone] = process.argv.slice(2);
+const html = fs.readFileSync(pagePath, "utf8");
+const src = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+function el(tag){
+  return {
+    tagName: String(tag).toUpperCase(), nodeType: 1, children: [], parentNode: null, attrs: {}, dataset: {}, _text: "",
+    className: "", style: new Proxy({}, {get: (t, k) => typeof k === "string" && k.endsWith("Property") ? () => "" : (t[k] ?? ""),
+                                          set: (t, k, v) => { t[k] = v; return true; }}),
+    classList: {add(){}, remove(){}, toggle(){}, contains(){ return false; }},
+    get childNodes(){ return this.children; }, get firstChild(){ return this.children[0] || null; },
+    get lastChild(){ return this.children[this.children.length - 1] || null; },
+    appendChild(c){ if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); return c; },
+    removeChild(c){ this.children.splice(this.children.indexOf(c), 1); c.parentNode = null; return c; },
+    insertBefore(c, ref){ if (!ref) return this.appendChild(c); if (c.parentNode) c.parentNode.removeChild(c);
+                          c.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, c); return c; },
+    replaceChildren(...cs){ this.children = []; cs.forEach((c) => this.appendChild(c)); },
+    remove(){ if (this.parentNode) this.parentNode.removeChild(this); },
+    get textContent(){ return this._text + this.children.map((c) => c.textContent).join(""); },
+    set textContent(v){ this.children = []; this._text = String(v); },
+    get title(){ return this.attrs.title || ""; }, set title(v){ this.attrs.title = String(v); },
+    setAttribute(k, v){ this.attrs[k] = String(v); }, getAttribute(k){ return k in this.attrs ? this.attrs[k] : null; },
+    removeAttribute(k){ delete this.attrs[k]; }, hasAttribute(k){ return k in this.attrs; },
+    addEventListener(){}, removeEventListener(){}, querySelector(){ return null; }, querySelectorAll(){ return []; },
+    closest(){ return null; }, contains(){ return false; }, focus(){}, blur(){}, scrollIntoView(){}, scrollTo(){},
+    getBoundingClientRect(){ return {x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0}; },
+    scrollTop: 0, scrollLeft: 0, scrollHeight: 0, scrollWidth: 0, clientHeight: 0, clientWidth: 0, offsetWidth: 0, offsetHeight: 0,
+  };
+}
+const ids = new Map();
+const document = {
+  createElement: el, createElementNS: (ns, tag) => el(tag), createTextNode: (v) => ({nodeType: 3, textContent: String(v), parentNode: null}),
+  getElementById: (id) => { if (!ids.has(id)) ids.set(id, document.body.appendChild(el("div"))); return ids.get(id); },
+  querySelector: () => null, querySelectorAll: () => [], addEventListener(){}, removeEventListener(){},
+  body: el("body"), documentElement: el("html"), activeElement: null, hidden: false, title: "",
+};
+const noop = () => 0;
+const body = fs.readFileSync(statePath, "utf8");
+const ctx = {document, console, URL, URLSearchParams, history: {replaceState(){}},
+  location: {hash: view ? "#view=" + view : "", href: "http://127.0.0.1:8790/"},
+  matchMedia: () => ({matches: phone === "phone", addEventListener(){}, removeEventListener(){}}),
+  addEventListener(){}, removeEventListener(){}, setInterval: noop, clearInterval: noop, setTimeout: noop, clearTimeout: noop,
+  requestAnimationFrame: noop, cancelAnimationFrame: noop, fetch: async () => ({ok: true, status: 200, json: async () => JSON.parse(body)}),
+  getComputedStyle: () => new Proxy({}, {get: () => ""}), innerWidth: phone === "phone" ? 390 : 1920, innerHeight: 1080, navigator: {}};
+ctx.window = ctx;
+vm.createContext(ctx);
+vm.runInContext(src, ctx);
+setTimeout(() => {
+  const titles = (n) => [n.attrs && n.attrs.title].concat(...(n.children || []).map(titles)).filter(Boolean);
+  // poll() catches a render error and only shows "Board unreachable"; surface it as a failure.
+  const health = ids.get("health");
+  if (health && health.textContent.includes("Board unreachable")){
+    process.stderr.write("page render failed: " + titles(health).join("; ") + "\n");
+    process.exit(1);
+  }
+  const out = {};
+  for (const [id, node] of ids) out[id] = {text: node.textContent, titles: titles(node)};
+  process.stdout.write(JSON.stringify(out));
+}, 50);
+"""
+
+
+def _render_page(state: dict, view: str, phone: bool = False) -> dict:
+    """The text and titles board_page.html renders per region id for ``state`` in ``view``."""
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("Node is required to run the board page")
+    with tempfile.TemporaryDirectory() as folder:
+        state_path = Path(folder) / "state.json"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        result = subprocess.run([node, "-", str(Path(__file__).with_name("board_page.html")), str(state_path), view,
+                                 "phone" if phone else "desktop"], input=_PAGE_HARNESS, capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return json.loads(result.stdout)
 
 
 def _mid_run(child: dict, results: int, stage: str, step_id: str, temporal: str = "RUNNING") -> dict:
@@ -823,6 +906,52 @@ class ToolDrivenBoardTests(unittest.TestCase):
         self.assertFalse(down.snapshot()["reachable"])
         self.assertEqual(len(resolved), 2)
 
+    def test_a_connected_lab_is_found_from_the_state_dir_and_must_keep_its_instance(self) -> None:
+        lab = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, events=LAB_EVENTS, activity=ACTIVITY,
+                      instance="a" * 32, refuse_unknown=True)
+        self.addCleanup(lab.close)
+        observer = self.state_dir_observer(lab, "work-conn-001")
+        observer.refresh(["evt-000101", "evt-000102", "evt-009999"])
+        snapshot = observer.snapshot()
+        self.assertTrue(snapshot["reachable"], snapshot)
+        self.assertEqual((sorted(snapshot["events"]), snapshot["missing"]), (["evt-000101", "evt-000102"], ["evt-009999"]))
+        self.assertEqual({path for path, _, _ in self.lab.requests}, {"/case"})
+        lab.instance = "b" * 32
+        observer.refresh(["evt-000103"])
+        self.assertFalse(observer.snapshot()["reachable"])
+
+    def state_dir_observer(self, connected: FakeLab, case_id: str) -> LabObserver:
+        """The board's --lab-state-dir observer, with the VM (self.lab) running and `connected` serving beside it."""
+        from . import board, lab_input
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        state_dir = write_connected_state(Path(temp.name) / "framework-network-analyst", connected,
+                                          connected.case["case_id"])
+        runtime = types.SimpleNamespace(invoke=lambda *_args, **_kwargs: {"profile": "framework-network-analyst",
+                                                                            "state": "running", "lab_url": self.lab.url})
+        patcher = mock.patch.object(lab_input.importlib, "import_module", return_value=runtime)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        args = types.SimpleNamespace(arkime_url=None, activity_after=0, lab_url=None, lab_state_dir=state_dir)
+        return board._lab_observer(args, case_id)
+
+    def test_the_state_dir_lab_names_another_case_or_two_labs_serving_this_one(self) -> None:
+        other = FakeLab(case={**self.lab.case, "case_id": "work-conn-001"}, instance="a" * 32)
+        self.addCleanup(other.close)
+        for connected, case_id, error in ((other, "lab-other-001", "the lab has a different case loaded than this input"),
+                                          (other, "lab-med-001", None)):
+            with self.subTest(case_id=case_id):
+                observer = self.state_dir_observer(connected, case_id)
+                observer.refresh([])
+                self.assertEqual((observer.snapshot()["reachable"], observer.snapshot()["error"]), (True, error))
+        both = FakeLab(case=self.lab.case, instance="a" * 32)
+        self.addCleanup(both.close)
+        observer = self.state_dir_observer(both, "lab-med-001")
+        observer.refresh([])
+        self.assertEqual((observer.snapshot()["reachable"], observer.snapshot()["error"]),
+                         (True, "both the VM and a connected service serve this case (ambiguous_lab)"))
+
     def test_board_server_serves_tool_state(self) -> None:
         board = Board(self.raw, lambda: ({"stage": "running_round"}, _tool_child()), lab=self.observer())
         server = make_server(board, 0)
@@ -944,6 +1073,32 @@ class ParallelBoardTests(unittest.TestCase):
                          [None, None, None, None, cause])
         self.assertEqual({item["step_id"]: item["diagnostic"] for item in state["feed"]},
                          {"scope": None, "evidence": None, "intel": cause})
+
+    def test_the_page_names_a_dropped_steps_diagnostic_where_it_lists_the_step(self) -> None:
+        cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
+        refused = self.result(4, status="unknown", output="", reason_code="native_nonzero", diagnostic=cause)
+        child = _wave_child({"scope": "done", "evidence": "awaiting_review", "intel": ("dropped", "native_nonzero")},
+                            [self.result(0), self.result(1), refused])
+        state = build_state(self.raw, self.parent, child)
+        rail = _render_page(state, "agents")["rail"]
+        self.assertIn("dropped \u00b7 native nonzero: " + cause, rail["text"])
+        self.assertTrue(any(title.endswith("native nonzero: " + cause) for title in rail["titles"]), rail["titles"])
+        inbox = _render_page(state, "", phone=True)["main"]
+        self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero: " + cause, inbox["text"])
+        case = _render_page(state, "case")["main"]
+        self.assertIn("dropped: native nonzero: " + cause, case["text"])
+        self.assertIn("dropped: native nonzero: " + cause, case["titles"])
+
+    def test_an_all_dropped_round_names_each_steps_cause_in_the_agents_rail(self) -> None:
+        cause = "exit code 1: model declined to respond (finish_reason=content_filter, category cyber)"
+        failed = self.result(0, status="unknown", output="", reason_code="native_nonzero", diagnostic=cause)
+        child = _wave_child({step_id: ("dropped", "native_nonzero") for step_id in STEP_IDS}, [failed])
+        state = build_state(self.raw, self.parent, child)
+        # The step's unparsed feed item must not hide its cause behind "handoff not parsed".
+        self.assertIsNone(next(item for item in state["feed"] if item["step_id"] == "scope")["handoff"])
+        rail = _render_page(state, "agents")["rail"]
+        self.assertIn("wave 1 \u00b7 dropped \u00b7 native nonzero: " + cause, rail["text"])
+        self.assertIn("wave 2 \u00b7 dropped \u00b7 native nonzero", rail["text"])
 
     def test_a_wave_gate_id_marks_no_step_current(self) -> None:
         gate = _wave_child({"scope": "done", **dict.fromkeys(STEP_IDS[1:5], "awaiting_approval")}, [self.result(0)],

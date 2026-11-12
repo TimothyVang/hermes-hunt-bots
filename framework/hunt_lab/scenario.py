@@ -487,6 +487,10 @@ class Scenario:
             self.tags.setdefault(tag, []).append(seq)
         return seq
 
+    def logged_bytes(self, seq, direction):
+        """What the gateway record says: web() adds protocol overhead to the body sizes it is given."""
+        return json.loads(self.rows[seq][2])["http"][direction]["bytes"]
+
     def link(self, *seqs):
         """Tie events to the packet session appended last, so the key can list that session's frames."""
         for seq in seqs:
@@ -972,6 +976,7 @@ class Scenario:
                                 241664, PS_UA, profile="schannel")
         self.mark("chain.lookalike_conn", conn)
         self.mark("chain.lookalike_proxy", record)
+        self.chain["download_bytes"] = self.logged_bytes(record, "response")
         self.mark("chain.synchost_file", self.file_create(t0 + 47000, victim, shell, SYNCHOST_PATH))
         implant = self.spawn(t0 + 49000 + rng.randint(0, 999), victim, "synchost.exe", '"%s" --background' % SYNCHOST_PATH,
                              shell, user, executable=SYNCHOST_PATH, sha=SYNCHOST_SHA256)
@@ -1248,7 +1253,7 @@ class Scenario:
                   "domains": [LOOKALIKE]},
                  [("chain.word",), ("chain.powershell",)]),
             fact("attack.delivery.lookalike-download", "attack",
-                 "That powershell.exe resolved %s (one letter off the internal %s) to %s, fetched /s/3f9a1c/viewer_update.bin over HTTPS (241,664 response bytes at the gateway), wrote synchost.exe under the user's AppData\\Roaming\\SyncHelper and started it." % (LOOKALIKE, PORTAL, LOOKALIKE_IP),
+                 "That powershell.exe resolved %s (one letter off the internal %s) to %s, fetched /s/3f9a1c/viewer_update.bin over HTTPS (%s response bytes at the gateway), wrote synchost.exe under the user's AppData\\Roaming\\SyncHelper and started it." % (LOOKALIKE, PORTAL, LOOKALIKE_IP, format(c["download_bytes"], ",")),
                  {"hosts": ["wks-fin-07"], "users": ["r.ashgrove"], "processes": ["powershell.exe", "synchost.exe"],
                   "domains": [LOOKALIKE], "ips": [LOOKALIKE_IP]},
                  [("chain.lookalike_dns",), ("chain.lookalike_conn", "chain.lookalike_proxy"), ("chain.synchost_file", "chain.synchost_proc")]),
@@ -1724,11 +1729,11 @@ class StoryB(Scenario):
         total = 0
         for part in range(1, 9):
             size = rng.randint(1000000, 1400000)
-            total += size
             conn, record = self.web(ms, host, uploader, B_CDN, "https", "PUT", "/v2/assets/launch-teaser-%02d.mp4" % part, 201,
                                     size, rng.randint(150, 400), "FastEdge-Uploader/3.2", profile="schannel")
             self.mark("cdn.conn", conn)
             self.mark("cdn.proxy", record)
+            total += self.logged_bytes(record, "request")
             ms += rng.randint(40000, 90000)
         self.chain.update(cdn_end=ms, cdn_bytes=total)
 
@@ -1850,11 +1855,11 @@ class StoryB(Scenario):
         c["exfil_start"], total = ms, 0
         for part in range(1, 11):
             size = rng.randint(1100000, 1300000)
-            total += size
             conn, record = self.web(ms, db, sender, B_STAGE, "https", "POST", "/u/7c21/part-%02d" % part, 200, size,
                                     rng.randint(120, 300), PS_UA, profile="schannel")
             self.mark("chain.exfil_conn", conn)
             self.mark("chain.exfil_proxy", record)
+            total += self.logged_bytes(record, "request")
             last = ms
             ms += rng.randint(25000, 45000)
         c.update(exfil_end=last, exfil_bytes=total)
@@ -1919,7 +1924,7 @@ class StoryB(Scenario):
                  {"hosts": dba_hosts + ["fs-01"], "users": ["svc_sqlagent"], "processes": ["SQLAGENT.EXE", "robocopy.exe"]},
                  [("dba.job",), ("dba.file",), ("dba.copy",)]),
             fact("decoy.cdn-large-uploads", "decoy",
-                 "From %s UTC feupload.exe run by l.ostrander on pc-mkt-02 PUT eight ~1.2 MB video parts (%d bytes total) to %s (%s). Large outbound HTTPS from a marketing workstation, but it is the CDN uploader." % (clock(c["cdn_start"]), c["cdn_bytes"], B_CDN, B_CDN_IP),
+                 "From %s UTC feupload.exe run by l.ostrander on pc-mkt-02 PUT eight ~1.2 MB video parts (%d request bytes in total at the gateway) to %s (%s). Large outbound HTTPS from a marketing workstation, but it is the CDN uploader." % (clock(c["cdn_start"]), c["cdn_bytes"], B_CDN, B_CDN_IP),
                  {"hosts": ["pc-mkt-02"], "users": ["l.ostrander"], "processes": ["feupload.exe"], "domains": [B_CDN], "ips": [B_CDN_IP]},
                  [("cdn.proc",), ("cdn.conn", "cdn.proxy")]),
             fact("benign.edr-lsass-access", "benign-pattern",

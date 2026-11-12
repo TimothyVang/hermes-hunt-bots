@@ -11,7 +11,8 @@ from pathlib import Path
 from temporalio.client import Client
 from temporalio.common import WorkflowIDReusePolicy
 
-from .contracts import DATA_ORIGINS, HermesStep, WorkflowDecision, WorkflowRequest, validate_loopback_address
+from .contracts import (DATA_ORIGINS, HermesStep, WorkflowDecision, WorkflowRequest, valid_decider,
+                        validate_loopback_address)
 from .workflows import HermesWorkflow
 from .hunt import supplied_evidence_hunt
 
@@ -50,13 +51,23 @@ def _practice_deadline_seconds(request) -> int:
     return request.rounds * per_round
 
 
+class _Refusal(ValueError):
+    """A refusal whose message names only fixed rules and labels, so the CLI shows it in full."""
+
+
 async def _lab_input(args: argparse.Namespace) -> None:
-    from .lab_input import collect_lab_input, collect_tool_input
+    from .lab_input import LabInputError, collect_lab_input, collect_tool_input
 
     if args.data_origin is not None and not args.tool_driven:
-        raise ValueError("--data-origin applies only to --tool-driven")
-    raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin) if args.tool_driven
-           else collect_lab_input(args.state_dir))
+        raise _Refusal("--data-origin applies only to --tool-driven")
+    if args.case_id is not None and not args.tool_driven:
+        raise _Refusal("--case-id applies only to --tool-driven")
+    try:
+        raw = (collect_tool_input(args.state_dir, data_origin=args.data_origin, case_id=args.case_id)
+               if args.tool_driven else collect_lab_input(args.state_dir))
+    except LabInputError as exc:
+        # Its messages are fixed texts, the case's validated origin and the lab's fixed codes.
+        raise _Refusal(str(exc)) from None
     text = json.dumps(raw, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
     with Path(args.output).open("x", encoding="utf-8", newline="\n") as output:
         output.write(text)
@@ -161,10 +172,28 @@ async def _status(args: argparse.Namespace) -> None:
     print(json.dumps(observed, default=lambda value: value.__dict__, ensure_ascii=False, sort_keys=True))
 
 
+_DECIDER_REFUSAL = ("--decided-by needs a name of 1 to 200 printable characters; --via and --slack-user need "
+                    "--decided-by; --via slack needs a --slack-user Slack user ID (U or W, then 2 to 20 capital "
+                    "letters or digits), and no other channel takes one")
+
+
+def _decider(args: argparse.Namespace) -> tuple[str | None, str]:
+    """(normalized name, channel) of a decision's identity; the name is None when the identity is refused."""
+    decided_by = " ".join((args.decided_by or "").split())
+    via = args.via or ("cli" if decided_by else "")
+    if (args.decided_by is not None and not decided_by) or not valid_decider(decided_by, via, args.slack_user):
+        return None, via
+    return decided_by, via
+
+
 async def _decision(args: argparse.Namespace) -> None:
     if args.phase == "reconcile" and not args.evidence_note.strip():
         raise ValueError("reconciliation requires a nonempty --evidence-note")
-    item = WorkflowDecision(args.step_id, args.phase, args.choice, args.decision_id, args.evidence_note)
+    decided_by, via = _decider(args)
+    if decided_by is None:
+        raise ValueError(_DECIDER_REFUSAL)
+    item = WorkflowDecision(args.step_id, args.phase, args.choice, args.decision_id, args.evidence_note,
+                            decided_by, via, args.slack_user)
     client = await _connect(args)
     handle = client.get_workflow_handle(args.workflow_id)
     await handle.signal(HermesWorkflow.decision, item)
@@ -197,6 +226,11 @@ def _parser() -> argparse.ArgumentParser:
     decide.add_argument("--choice", choices=("approve", "deny", "accept", "abort"), required=True)
     decide.add_argument("--decision-id", required=True)
     decide.add_argument("--evidence-note", default="")
+    decide.add_argument("--decided-by",
+                        help="who decides, recorded with the gate in the workflow status")
+    decide.add_argument("--via", choices=("cli", "slack", "automated"),
+                        help="channel of the decision, recorded with --decided-by (default: cli)")
+    decide.add_argument("--slack-user", default="", help="with --via slack: the deciding Slack user ID")
     decide.set_defaults(handler=_decision)
     practice = commands.add_parser("practice", help="start finite serial rounds of a supplied-evidence hunt")
     practice.add_argument("workflow_id", help="stable parent workflow ID; duplicate reuse is rejected")
@@ -220,7 +254,11 @@ def _parser() -> argparse.ArgumentParser:
     lab_input.add_argument("--data-origin", choices=tuple(DATA_ORIGINS),
                            help="with --tool-driven: approve exporting a case whose case.json declares this data_origin "
                                 "(public-dataset: a public research dataset; work-export: the operator's unclassified work "
-                                "log export); it must equal the case's origin, and such a case is refused without it")
+                                "log export; work-connected: a window of the operator's work Elastic served live by "
+                                "hunt_lab.connected); it must equal the case's origin, and such a case is refused without it")
+    lab_input.add_argument("--case-id",
+                           help="with --tool-driven: export this case from whichever lab serves it, the VM or a connected "
+                                "service (default: the one lab serving a case; both serving one is refused as ambiguous)")
     lab_input.set_defaults(handler=_lab_input)
     return parser
 
@@ -228,8 +266,14 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.handler is _decision and _decider(args)[0] is None:
+        # The refusal names only fixed rules, so it is shown in full, before any connection.
+        parser.error(_DECIDER_REFUSAL)
     try:
         asyncio.run(args.handler(args))
+    except _Refusal as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:
         # Avoid emitting SDK/server exception text, which may contain deployment details.
         print(f"error: operation failed ({type(exc).__name__})", file=sys.stderr)

@@ -1,0 +1,686 @@
+"""Behavior tests for the connected lab service (ADR 0005) against a fake Elasticsearch transport.
+
+Run from framework/: python -m unittest -v hunt_lab.test_connected
+The fake plays a secured cluster's point-in-time search on synthetic records; no network connection to any
+cluster is opened. The bot side is the real hunt_lab.query_adapter talking to the service on 127.0.0.1.
+"""
+
+import base64
+import contextlib
+import io
+import json
+from pathlib import Path
+import re
+import tempfile
+import threading
+import time
+import unittest
+from urllib import parse, request
+
+from hunt_lab import connected, query_adapter
+
+
+KEY = 'cmVhZC1vbmx5LWtleS1pZDpyZWFkLW9ubHkta2V5LXZhbHVl'
+URL = 'https://elastic.example.test:9243'
+INDEX = 'logs-windows*'
+START, END = '2026-11-01T10:00:00Z', '2026-11-01T11:00:00Z'
+CASE_ID = 'work-conn-001'
+DATA_STREAM = 'logs-windows.sysmon_operational-default'
+BACKING = '.ds-logs-windows.sysmon_operational-default-2026.11.01-000001'
+
+
+class FakeElastic:
+    """A secured cluster: version, privileges, field caps and point-in-time search over five documents."""
+
+    def __init__(self):
+        self.version = '8.15.3'
+        self.index_grants = {}
+        self.cluster_grants = {}
+        self.omit_cluster = False
+        # Privilege names this cluster does not know (a cluster older than the name).
+        self.unknown = set()
+        self.backing = [BACKING]
+        self.aliases = []
+        self.indices = []
+        # The key's identity and its own role descriptors, as GET /_security/api_key answers them.
+        self.identity = {'username': 'operator', 'api_key': {'id': 'key-1', 'name': 'hunt'}}
+        self.descriptors = {'hunt': {'cluster': ['monitor'], 'indices': [
+            {'names': [INDEX], 'privileges': ['read', 'view_index_metadata'], 'allow_restricted_indices': False}],
+            'applications': [], 'run_as': [], 'metadata': {}, 'transient_metadata': {'enabled': True}}}
+        self.docs = [{'_index': '.ds-logs-windows-000001', '_id': f'AbC{n}x_-', 'sort': [1761991200000000000 + n, n],
+                      '_source': {'@timestamp': f'2026-11-01T10:0{n}:00Z', 'host': {'name': 'ws-01'},
+                                  'event': {'id': 'source-id', 'code': '1'}, 'process': {'name': 'cmd.exe'}}}
+                     for n in range(5)]
+        self.requests = []
+        self.pits = {'pit-0'}
+        self.opened = 0
+        self.fail_search = None
+        self.rotate_pit = False
+        self.lose_shard = False
+        self.headers = []
+
+    def privileges(self, value):
+        asked = {*value.get('cluster', ()), *(name for entry in value.get('index', ()) for name in entry['privileges'])}
+        if asked & self.unknown:
+            return 400, {'error': {'type': 'illegal_argument_exception'}}
+        index = {name: {privilege: self.index_grants.get(name, {}).get(privilege, privilege == 'read')
+                        for privilege in entry['privileges']}
+                 for entry in value.get('index', ()) for name in entry['names']}
+        if self.omit_cluster:
+            return 200, {'index': index}
+        return 200, {'index': index, 'cluster': {name: self.cluster_grants.get(name, False)
+                                                 for name in value.get('cluster', ())}}
+
+    def __call__(self, method, url, headers, body):
+        self.headers.append(headers)
+        path = url[len(URL):]
+        value = json.loads(body) if body else None
+        self.requests.append((method, path, value))
+        if path == '/':
+            return 200, json.dumps({'version': {'number': self.version}}).encode()
+        if path == '/_resolve/index/' + INDEX:
+            return 200, json.dumps({'indices': self.indices, 'aliases': self.aliases, 'data_streams': [
+                {'name': DATA_STREAM, 'backing_indices': self.backing}]}).encode()
+        if path == '/_security/_authenticate':
+            return 200, json.dumps(self.identity).encode()
+        if path == '/_security/api_key?id=key-1':
+            return 200, json.dumps({'api_keys': [{'id': 'key-1', 'name': 'hunt',
+                                                  'role_descriptors': self.descriptors}]}).encode()
+        if path == '/_security/user/_has_privileges':
+            status, granted = self.privileges(value)
+            return status, json.dumps(granted).encode()
+        if path.endswith('/_field_caps?fields=*&include_unmapped=false'):
+            return 200, json.dumps({'fields': {
+                'host.name': {'keyword': {'aggregatable': True}}, 'process.name': {'keyword': {'aggregatable': True}},
+                'message': {'text': {'aggregatable': False}}, '@timestamp': {'date': {'aggregatable': True}}}}).encode()
+        if path.endswith('/_pit?keep_alive=30m'):
+            self.opened += 1
+            pit = f'pit-{self.opened}'
+            self.pits.add(pit)
+            return 200, json.dumps({'id': pit}).encode()
+        if path == '/_pit':
+            self.pits.discard(value['id'])
+            return 200, b'{"succeeded":true}'
+        if path == '/_search?allow_partial_search_results=false':
+            return self.search(value)
+        return 404, b'{}'
+
+    def search(self, value):
+        if self.fail_search:
+            return self.fail_search
+        if value['pit']['id'] not in self.pits:
+            return 404, b'{"error":{"type":"search_phase_execution_exception"}}'
+        if self.lose_shard:
+            self.lose_shard = False
+            return 200, json.dumps({'_shards': {'failed': 1, 'failures': [
+                {'reason': {'type': 'search_context_missing_exception'}}]}, 'hits': {'hits': []}}).encode()
+        pit = value['pit']['id']
+        if self.rotate_pit:
+            pit += '+'
+            self.pits.add(pit)
+        after = value.get('search_after', [0, -1])[1]
+        docs = [doc for doc in self.docs if doc['sort'][1] > after]
+        ids = re.findall(r'_id:"([^"]+)"', json.dumps(value['query']).replace('\\"', '"'))
+        if ids:
+            docs = [doc for doc in docs if doc['_id'] in ids]
+        hits = docs[value.get('from', 0):][:value.get('size', 10)]
+        sample = {'hits': {'hits': [{'_id': self.docs[0]['_id'], '_source': {}}]}}
+        return 200, json.dumps({'pit_id': pit, 'timed_out': False, '_shards': {'failed': 0},
+                                'hits': {'total': {'value': len(docs), 'relation': 'eq'}, 'hits': hits},
+                                'aggregations': {'values': {'buckets': [{'key': 'ws-01', 'doc_count': 5, 'sample': sample}]},
+                                                 'hosts': {'buckets': [{'key': 'ws-01', 'doc_count': 5}]},
+                                                 'first': {'value': None}, 'last': {'value': None}}}).encode()
+
+    def searches(self):
+        return [value for method, path, value in self.requests if path.startswith('/_search')]
+
+
+class Runtime:
+    """The analyst VM is stopped, so the bot tools can reach the connected service only through its state file."""
+
+    @classmethod
+    def invoke(cls, action, **_):
+        return {'profile': query_adapter.LAB_OWNER, 'state': 'stopped'}
+
+
+class ConnectedCase(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.root, ignore_errors=True))
+        self.home = self.root / 'hermes' / 'profiles' / connected.PROFILE
+        self.home.mkdir(parents=True)
+        (self.root / 'hermes' / 'profiles' / 'framework-researcher').mkdir()
+        self.config = self.write('connect.json', {'url': URL, 'index': INDEX})
+        self.case = {'case_id': CASE_ID, 'question': 'What ran on ws-01?', 'data_origin': 'work-connected',
+                     'network_capture': 'none', 'hosts': ['ws-01'], 'schema_version': 1,
+                     'sources': [{'artifact': 'work Elastic', 'coverage': 'Sysmon process events'}],
+                     'time_range_utc': {'start_inclusive': START, 'end_exclusive': END}}
+        self.case_path = self.write('case.json', self.case)
+        self.elastic = FakeElastic()
+
+    def write(self, name, value):
+        path = self.root / name
+        path.write_text(json.dumps(value), encoding='utf-8')
+        return path
+
+    def start(self, environ=None):
+        environ = {'HUNT_ELASTIC_API_KEY': KEY} if environ is None else environ
+        server, source, state = connected.start(self.config, self.case_path, self.home, environ=environ,
+                                                transport=self.elastic)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(connected.stop, server, source, state)
+        self.addCleanup(server.shutdown)
+        self.lab_url = f'http://127.0.0.1:{server.server_address[1]}'
+        return server, source, state, environ
+
+    def tool(self, tool_name, **arguments):
+        return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments}, runtime=Runtime,
+                                      state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
+
+    def get_text(self, path):
+        opener = request.build_opener(request.ProxyHandler({}))
+        try:
+            with opener.open(self.lab_url + path, timeout=10) as response:
+                return response.status, dict(response.headers), response.read().decode('utf-8')
+        except request.HTTPError as failure:
+            with failure:
+                return failure.code, dict(failure.headers), failure.read().decode('utf-8')
+
+    def get(self, path):
+        opener = request.build_opener(request.ProxyHandler({}))
+        try:
+            with opener.open(self.lab_url + path, timeout=10) as response:
+                return response.status, dict(response.headers), json.loads(response.read())
+        except request.HTTPError as failure:
+            with failure:
+                return failure.code, dict(failure.headers), json.loads(failure.read())
+
+
+class RefusalTests(ConnectedCase):
+    def refused(self, *, environ=None, check=False):
+        environ = {'HUNT_ELASTIC_API_KEY': KEY} if environ is None else environ
+        with self.assertRaises(connected.ConnectError) as caught:
+            if check:
+                connected.check(self.config, self.case_path, environ=environ, transport=self.elastic)
+            else:
+                connected.start(self.config, self.case_path, self.home, environ=environ, transport=self.elastic)
+        self.assertNotIn(KEY, str(caught.exception))
+        self.assertFalse((self.home / connected.CONNECTED_STATE / 'state.json').exists())
+        return str(caught.exception)
+
+    def test_a_key_that_can_write_delete_or_manage_is_refused_before_serving(self):
+        for setting, value in (('index_grants', {INDEX: {'write': True}}),
+                               ('index_grants', {DATA_STREAM: {'delete_index': True}}),
+                               ('index_grants', {INDEX: {'read': False}}),
+                               ('cluster_grants', {'manage_security': True}),
+                               ('cluster_grants', {'manage_slm': True}),
+                               ('cluster_grants', {'cancel_task': True}),
+                               ('omit_cluster', True),
+                               ('index_grants', {INDEX: {'indices:admin/delete': True}}),
+                               ('index_grants', {INDEX: {'manage_data_stream_lifecycle': True}}),
+                               ('index_grants', {BACKING: {'delete': True}}),
+                               ('cluster_grants', {'manage_search_synonyms': True}),
+                               ('cluster_grants', {'cluster:admin/ingest/pipeline/put': True}),
+                               ('cluster_grants', {'indices:admin/index_template/put': True}),
+                               ('index_grants', {INDEX: {'cross_cluster_replication': True}})):
+            with self.subTest(setting=setting, value=value):
+                self.elastic = FakeElastic()
+                setattr(self.elastic, setting, value)
+                self.assertIn('key_not_read_only', self.refused(check=True))
+                self.assertFalse(any(path.endswith('/_pit?keep_alive=30m') for _, path, _ in self.elastic.requests))
+        [asked] = [value for _, path, value in self.elastic.requests
+                   if path.endswith('_has_privileges') and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+        self.assertEqual(asked['index'][0]['names'], [INDEX, BACKING, DATA_STREAM])
+
+    def test_privilege_names_a_cluster_does_not_know_are_left_out_of_the_check(self):
+        self.elastic.unknown = {'manage_data_stream_lifecycle', 'manage_search_synonyms'}
+        self.assertEqual(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                         transport=self.elastic)['read_only'], True)
+        [asked] = [value for _, path, value in self.elastic.requests
+                   if path.endswith('_has_privileges') and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+        self.assertNotIn('manage_search_synonyms', asked['cluster'])
+        self.assertNotIn('manage_data_stream_lifecycle', asked['index'][0]['privileges'])
+        self.assertIn('manage_search_application', asked['cluster'])
+        self.assertIn('cluster:admin/ingest/pipeline/put', asked['cluster'])
+        self.assertIn('indices:admin/delete', asked['index'][0]['privileges'])
+        self.elastic = FakeElastic()
+        self.elastic.cluster_grants = {'manage_data_stream_global_retention': True}
+        self.assertEqual(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                         transport=self.elastic)['read_only'], True)
+
+    def test_every_backing_index_and_alias_member_is_asked_in_batches(self):
+        backing = [f'.ds-{DATA_STREAM}-2026.11.01-{n:06d}' for n in range(450)]
+        for setting, value, granted in (('backing', backing, backing[-1]),
+                                        ('aliases', [{'name': 'logs-windows-current', 'indices': ['prod-000123']}],
+                                         'prod-000123')):
+            with self.subTest(setting=setting):
+                self.elastic = FakeElastic()
+                setattr(self.elastic, setting, value)
+                self.elastic.index_grants = {granted: {'delete_index': True}}
+                self.assertIn('key_not_read_only', self.refused(check=True))
+                batches = [asked['index'][0]['names'] for asked in self.privilege_checks()]
+                self.assertIn(granted, [name for batch in batches for name in batch])
+                self.assertTrue(all(len(batch) <= connected.PRIVILEGE_BATCH for batch in batches))
+        self.assertEqual(len(batches), 1)
+        self.elastic = FakeElastic()
+        self.elastic.backing = backing
+        self.assertTrue(connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                        transport=self.elastic)['read_only'])
+        self.assertEqual([('cluster' in asked, len(asked['index'][0]['names'])) for asked in self.privilege_checks()],
+                         [(True, 200), (False, 200), (False, 52)])
+
+    def privilege_checks(self):
+        """The _has_privileges requests of the read-only check, not the one-name probes of newer names."""
+        return [value for _, path, value in self.elastic.requests if path.endswith('_has_privileges')
+                and 'read' in value.get('index', [{}])[0].get('privileges', ())]
+
+    def test_only_a_key_whose_own_descriptors_grant_read_only_rights_passes(self):
+        read = {'names': [INDEX], 'privileges': ['read', 'view_index_metadata']}
+        for change in ({'run_as': ['elastic']},
+                       {'cluster': ['monitor', 'cluster:admin/xpack/security/user/set_enabled']},
+                       {'cluster': ['monitor', 'cluster:admin/ilm/stop']},
+                       {'indices': [read, {'names': ['other-alias'], 'privileges': ['write']}]},
+                       {'indices': [dict(read, allow_restricted_indices=True)]},
+                       {'remote_indices': [dict(read, clusters=['*'])]},
+                       {'applications': [{'application': 'kibana', 'privileges': ['all'], 'resources': ['*']}]},
+                       {'unknown_section': True}):
+            with self.subTest(change=change):
+                self.elastic = FakeElastic()
+                self.elastic.descriptors = {'hunt': {**self.elastic.descriptors['hunt'], **change}}
+                self.assertIn('role descriptors', self.refused(check=True))
+                self.assertFalse(any(path.endswith('_has_privileges') for _, path, _ in self.elastic.requests))
+        for setting, value in (('descriptors', {}), ('identity', {'username': 'operator'})):
+            with self.subTest(setting=setting):
+                self.elastic = FakeElastic()
+                setattr(self.elastic, setting, value)
+                self.assertIn('without role descriptors has its owner', self.refused(check=True))
+        self.elastic = FakeElastic()
+        self.elastic.indices = [{'name': 'logs-windows-old', 'aliases': ['other-alias']}]
+        self.elastic.index_grants = {'other-alias': {'write': True}}
+        self.assertIn('key_not_read_only', self.refused(check=True))
+        self.assertIn('other-alias', self.privilege_checks()[0]['index'][0]['names'])
+
+    def test_a_cluster_older_than_7_12_is_refused(self):
+        self.elastic.version = '7.11.2'
+        self.assertIn('7.12', self.refused(check=True))
+
+    def test_a_key_in_a_bot_profile_or_hermes_home_is_refused(self):
+        for place in ('profiles/framework-researcher/.env', 'profiles/framework-network-analyst/config.yaml', '.env'):
+            with self.subTest(place=place):
+                path = self.root / 'hermes' / place
+                path.write_text('HUNT_ELASTIC_API_KEY=' + KEY + '\n', encoding='utf-8')
+                self.assertIn('key_in_bot_profile', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+                path.unlink()
+
+    def test_a_key_anywhere_in_a_large_profile_file_is_found(self):
+        path = self.root / 'hermes' / 'profiles' / 'framework-researcher' / '.env'
+        for offset in (4 * 1024 * 1024 + 1, 1024 * 1024 - 7):
+            with self.subTest(offset=offset):
+                path.write_bytes(b'#' * offset + KEY.encode('ascii') + b'\n')
+                self.assertIn('key_in_bot_profile', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+
+    def test_a_profile_file_that_cannot_be_read_refuses_the_start(self):
+        for place in ('profiles/framework-researcher/.env', 'config.yaml'):
+            with self.subTest(place=place):
+                path = self.root / 'hermes' / place
+                path.mkdir()
+                self.assertIn('profile_unreadable', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+                path.rmdir()
+
+    def test_only_whole_cluster_names_in_the_operator_texts_are_refused(self):
+        case = dict(self.case, question='Which processes ran on ws-01, and what networking did they do?',
+                    sources=[{'artifact': 'work Elasticsearch', 'coverage': 'Sysmon eventlogs with process metadata'}])
+        self.case_path = self.write('case.json', case)
+        for config in ({'url': 'https://es:9243', 'index': 'logs'}, {'url': 'https://data:9243', 'index': 'network'},
+                       {'url': 'https://elastic:9243', 'index': 'logs-endpoint-*,logs-windows-*'}):
+            with self.subTest(config=config):
+                self.config = self.write('connect.json', config)
+                reached = []
+
+                def unavailable(method, url, headers, body):
+                    reached.append(url)
+                    return 503, b'{}'
+
+                with self.assertRaises(Exception) as caught:
+                    connected.check(self.config, self.case_path, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                                    transport=unavailable)
+                self.assertNotIn('cluster host', str(caught.exception))
+                self.assertTrue(reached)
+        for config, change in (
+                ({'url': 'https://es:9243', 'index': 'logs'}, dict(question='What is in the logs of ws-01?')),
+                ({'url': 'https://es:9243', 'index': 'logs'}, dict(hosts=['ws-01', 'ES'])),
+                ({'url': URL, 'index': 'logs-endpoint-*,logs-windows-*'}, dict(question='What is in logs-windows-* today?')),
+                ({'url': URL, 'index': 'logs-*,-logs-secret'}, dict(sources=[{'artifact': 'x', 'coverage': 'not logs-secret'}])),
+                ({'url': 'https://élastic.example.test:9243', 'index': INDEX},
+                 dict(sources=[{'artifact': 'x', 'coverage': 'events on Élastic.example.test'}])),
+                ({'url': URL, 'index': 'work-logs'}, dict(case_id='work-logs'))):
+            with self.subTest(config=config, change=change):
+                self.config = self.write('connect.json', config)
+                self.case_path = self.write('case.json', {**case, **change})
+                self.assertIn('cluster host', self.refused())
+                self.assertEqual(self.elastic.requests, [])
+
+    def test_cases_and_configs_outside_the_connected_contract_are_refused(self):
+        recent = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 60))
+        for change, expected in ((dict(data_origin='work-export'), 'work-connected'),
+                                 (dict(network_capture=None), 'network_capture'),
+                                 (dict(time_range_utc={'start_inclusive': START, 'end_exclusive': recent}), 'window_not_closed'),
+                                 (dict(time_range_utc={'start_inclusive': START, 'end_exclusive': '2026-11-01T11:00:00'}),
+                                  'UTC offset'),
+                                 (dict(hosts=[]), 'hosts'), (dict(hosts=['ws-01', 'ws-01']), 'hosts'),
+                                 (dict(hosts=[{}]), 'hosts'), (dict(truth='x'), 'must hold exactly'),
+                                 (dict(schema_version=2), 'schema_version'), (dict(schema_version=True), 'schema_version'),
+                                 (dict(time_range_utc={'start_inclusive': START, 'end_exclusive': END,
+                                                       'note': 'from elastic.example.test'}), 'nothing else'),
+                                 (dict(sources=[]), 'sources'), (dict(sources=[{'artifact': 'x'}]), 'sources'),
+                                 (dict(sources=[{'artifact': 'x', 'coverage': ' '}]), 'sources'),
+                                 (dict(sources=[{'artifact': 'x', 'coverage': 'events on ELASTIC.example.test'}]), 'cluster host'),
+                                 (dict(question=f'What is in {INDEX}?'), 'index pattern')):
+            with self.subTest(change=change):
+                self.case_path = self.write('case.json', {**self.case, **change})
+                self.assertIn(expected, self.refused())
+        self.case_path = self.write('case.json', {key: value for key, value in self.case.items() if key != 'sources'})
+        self.assertIn('must hold exactly', self.refused())
+        self.case_path = self.write('case.json', self.case)
+        for config in ({'url': URL, 'index': 'remote:logs-*'}, {'url': 'http://elastic.example.test', 'index': INDEX},
+                       {'url': URL, 'index': INDEX, 'password': 'x'}):
+            with self.subTest(config=config):
+                self.config = self.write('connect.json', config)
+                self.refused()
+        self.config = self.write('connect.json', {'url': URL, 'index': INDEX})
+        self.assertIn('holds no API key', self.refused(environ={}))
+
+    def test_state_dir_must_be_the_analyst_profile_home_without_a_running_service(self):
+        with self.assertRaises(connected.ConnectError):
+            connected.start(self.config, self.case_path, self.root, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                            transport=self.elastic)
+        state = self.home / connected.CONNECTED_STATE / 'state.json'
+        state.parent.mkdir(parents=True)
+        state.write_text('{"instance": "other"}', encoding='utf-8')
+        with self.assertRaises(connected.ConnectError) as caught:
+            connected.start(self.config, self.case_path, self.home, environ={'HUNT_ELASTIC_API_KEY': KEY},
+                            transport=self.elastic)
+        self.assertIn('already serves', str(caught.exception))
+        self.assertEqual(self.elastic.requests, [])
+        self.assertEqual(state.read_text(encoding='utf-8'), '{"instance": "other"}')
+        state.unlink()
+
+    def test_two_services_started_together_cannot_both_claim_the_state_dir(self):
+        gate = threading.Barrier(2)
+        fake = self.elastic
+
+        def slow(method, url, headers, body):
+            if url.endswith('/_has_privileges'):
+                time.sleep(0.3)
+            return fake(method, url, headers, body)
+
+        outcomes = []
+
+        def run():
+            gate.wait()
+            try:
+                outcomes.append(connected.start(self.config, self.case_path, self.home,
+                                                environ={'HUNT_ELASTIC_API_KEY': KEY}, transport=slow))
+            except connected.ConnectError as failure:
+                outcomes.append(str(failure))
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        started = [outcome for outcome in outcomes if isinstance(outcome, tuple)]
+        self.assertEqual(len(started), 1, outcomes)
+        self.assertIn('already serves', next(outcome for outcome in outcomes if isinstance(outcome, str)))
+        connected.stop(*started[0])
+        self.assertFalse((self.home / connected.CONNECTED_STATE / 'state.json').exists())
+
+    def test_a_cluster_error_reports_status_and_type_only(self):
+        original = self.elastic.__call__
+
+        def unauthorized(method, url, headers, body):
+            if url.endswith('/_has_privileges'):
+                return 401, json.dumps({'error': {'type': 'security_exception', 'reason': 'secret detail ' + KEY}}).encode()
+            return original(method, url, headers, body)
+
+        self.elastic = unauthorized
+        message = self.refused(check=True)
+        self.assertIn('HTTP 401 (security_exception)', message)
+        self.assertNotIn('secret detail', message)
+
+    def test_check_reports_a_failed_count_as_an_error_line(self):
+        self.elastic.fail_search = (500, b'{"error":{"type":"internal"}}')
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = connected.main(['check', '--config', str(self.config), '--case', str(self.case_path)],
+                                  transport=self.elastic, environ={'HUNT_ELASTIC_API_KEY': KEY})
+        self.assertEqual((code, json.loads(stdout.getvalue())['error']), (2, 'count the events in scope: backend_not_ready'))
+
+
+class ServiceTests(ConnectedCase):
+    def test_the_bot_tools_page_scope_and_cite_through_the_host_service(self):
+        _server, _source, _state, environ = self.start()
+        self.assertNotIn('HUNT_ELASTIC_API_KEY', environ)
+        first = self.tool('elastic_search', q='process.name:cmd.exe', size=2)
+        self.assertTrue(first['ok'], first)
+        cited = [hit['event.id'] for hit in first['result']['hits']]
+        self.assertEqual(cited, [connected.citation('AbC0x_-'), connected.citation('AbC1x_-')])
+        self.assertTrue(all(re.fullmatch(r'evt-\d{16}', item) for item in cited))
+        body = self.elastic.searches()[-1]
+        self.assertEqual(body['query']['bool']['filter'][:2], [{'range': {'@timestamp': {'gte': START, 'lt': END}}},
+                                                               {'terms': {'host.name': ['ws-01']}}])
+        self.assertEqual(body['sort'], [{'@timestamp': {'order': 'asc', 'numeric_type': 'date_nanos'}}, {'_shard_doc': 'asc'}])
+        self.assertEqual(body['pit'], {'id': 'pit-1', 'keep_alive': '30m'})
+        second = self.tool('elastic_search', q='process.name:cmd.exe', size=2, after=first['result']['next_after'])
+        self.assertEqual(self.elastic.searches()[-1]['search_after'], [1761991200000000001, 1])
+        self.assertFalse(set(cited) & {hit['event.id'] for hit in second['result']['hits']})
+        lookup = self.tool('elastic_search', q=f'event.id:("{cited[0]}" OR "{cited[1]}")', size=10)
+        self.assertEqual(sorted(hit['event.id'] for hit in lookup['result']['hits']), sorted(cited))
+        query = self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query']
+        self.assertEqual(query, '(_id:"AbC0x_-" OR _id:"AbC1x_-")')
+        self.assertEqual([hit['event.id'] for hit in self.tool('elastic_search', q=cited[0])['result']['hits']], [cited[0]])
+        records = self.tool('elastic_aggregate', field='host.name')['result']['buckets']
+        self.assertEqual(records[0]['sample_event_id'], cited[0])
+        detect = self.tool('detection_test', q='process.name:cmd.exe', name='cmd')['result']
+        self.assertEqual(detect['sample'][0]['event.id'], cited[0])
+        lines = (self.home / connected.CONNECTED_STATE / CASE_ID / 'citations.jsonl').read_text(encoding='utf-8').splitlines()
+        self.assertIn({'evt': cited[0], '_id': 'AbC0x_-'}, [json.loads(line) for line in lines])
+
+    def test_refusals_reach_the_bot_as_fixed_codes(self):
+        self.start()
+        for name, arguments, code in (
+                ('elastic_search', {'q': 'event.id:evt-0000000000000001'}, 'unknown_citation'),
+                ('elastic_search', {'q': 'evt-000123'}, 'unknown_citation'),
+                ('elastic_search', {'q': 'process.name:/cm.*/'}, 'regex_not_supported'),
+                ('elastic_search', {'q': '_exists_:event.id'}, 'invalid_query'),
+                ('elastic_aggregate', {'field': 'user.name'}, 'field_unavailable'),
+                ('intel_lookup', {'values': '203.0.113.7'}, 'no_intel_source'),
+                ('arkime_sessions', {}, 'no_network_capture'),
+                ('packet_fields', {}, 'no_network_capture')):
+            with self.subTest(tool=name, arguments=arguments):
+                result = self.tool(name, **arguments)
+                self.assertEqual((result['ok'], result.get('detail')), (False, code), result)
+        self.assertEqual(self.tool('elastic_search', q='url.path:"/a/b" AND x\\/y')['ok'], True)
+        self.elastic.fail_search = (400, b'{"error":{"type":"query_shard_exception"}}')
+        self.assertEqual(self.tool('elastic_search', q='a')['detail'], 'invalid_query')
+        self.elastic.fail_search = (500, b'{"error":{"type":"internal"}}')
+        self.assertEqual(self.tool('elastic_search', q='a')['detail'], 'backend_not_ready')
+
+    def test_citation_rewrites_keep_phrases_and_never_open_a_regex(self):
+        self.start()
+        cited = self.tool('elastic_search', size=1)['result']['hits'][0]['event.id']
+        searches = len(self.elastic.searches())
+        for q, code in ((f'event.id:("{cited}) /.*/ event.id:({cited}")', 'invalid_query'),
+                        (f'{cited} OR /.*/', 'regex_not_supported'), (f'"{cited}" /.*/', 'regex_not_supported')):
+            with self.subTest(q=q):
+                self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
+        self.assertEqual(len(self.elastic.searches()), searches)
+        for q in (f'"{cited} /.*/ {cited}"', f'message:"see {cited} here"'):
+            with self.subTest(q=q):
+                self.assertTrue(self.tool('elastic_search', q=q)['ok'])
+                options = self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']
+                self.assertEqual(options['query'], q)
+        self.assertNotIn('event.id', options['fields'])
+        for q, expected in ((r'a\" event.id:foo "b"', None), (rf'a\" {cited} "b"', r'a\" (_id:"AbC0x_-") "b"')):
+            with self.subTest(q=q):
+                result = self.tool('elastic_search', q=q)
+                if expected is None:
+                    self.assertEqual(result.get('detail'), 'invalid_query')
+                else:
+                    options = self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']
+                    self.assertEqual((result['ok'], options['query']), (True, expected))
+
+    def test_ranges_unclosed_phrases_and_escapes_hide_no_regex_or_event_id_field(self):
+        self.start()
+        searches = len(self.elastic.searches())
+        for q, code in (('host.name:[" TO z] AND host.name:/ws-0[2]/', 'invalid_query'),
+                        ('host.name:[a" TO z] AND host.name:/ws-0[2]/ AND process.name:[a" TO z]', 'invalid_query'),
+                        ('host.name:{a TO /z/}', 'regex_not_supported'),
+                        ('host.name:"ws-01 AND host.name:/ws-0[2]/', 'invalid_query'),
+                        (r'event\.id:source-id', 'invalid_query'), (r'ev\ent.id:source-id', 'invalid_query'),
+                        (r'event.\*:source-id', 'invalid_query'), (r'-event\.i?:source-id', 'invalid_query'),
+                        (r'\*:source-id', 'invalid_query'), (r'\u0065vent.id:source-id', 'invalid_query'),
+                        (r'event.i\u0064:source-id', 'invalid_query'), (r'_exists_:event.i\*', 'invalid_query'),
+                        (r'a!event.\*:source-id', 'invalid_query'), (r'a^2event\.id:source-id', 'invalid_query'),
+                        ('a~2event.id:source-id', 'invalid_query'), (r'\*.keyword:source-id', 'invalid_query'),
+                        (r'event.i\*.keyword:source-id', 'invalid_query'), ('_exists_:"event.id"', 'invalid_query'),
+                        ('_exists_:("event.id")', 'invalid_query'), ('_exists_:(host.name OR "event.id")', 'invalid_query'),
+                        (r'_exists_:(+event.i\*)', 'invalid_query')):
+            with self.subTest(q=q):
+                self.assertEqual(self.tool('elastic_search', q=q).get('detail'), code)
+        self.assertEqual(len(self.elastic.searches()), searches)
+        cited = self.tool('elastic_search', size=1)['result']['hits'][0]['event.id']
+        for q, sent in (('host.name:[a TO z] AND message:"[a TO /b/]"', None), ('srv-evt-0000000000000001', None),
+                        ('host.name:srv-evt-01 OR evt-01-x', None), (r'message:event\.ids', None),
+                        (r'host.name:srv\-evt-0000000000000001 OR evt-0000000000000001\-x', None),
+                        (f'process.name:cmd.exe -{cited}', 'process.name:cmd.exe -(_id:"AbC0x_-")')):
+            with self.subTest(q=q):
+                self.assertTrue(self.tool('elastic_search', q=q)['ok'])
+                self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
+                                 sent or q)
+
+    def test_mapped_event_id_sub_fields_and_rewritten_ids_are_handled(self):
+        _server, source, _state, _environ = self.start()
+        source.fields = source.fields | {'event.id.raw'}
+        self.assertEqual(self.tool('elastic_search', q=r'\*.raw:source-id').get('detail'), 'invalid_query')
+        source.citations['evt-0000000000000009'] = ['event.id:x']
+        self.assertTrue(self.tool('elastic_search', q='evt-0000000000000009')['ok'])
+        self.assertEqual(self.elastic.searches()[-1]['query']['bool']['filter'][-1]['query_string']['query'],
+                         '(_id:"event.id:x")')
+
+    def test_the_clusters_own_event_id_is_never_aggregated(self):
+        _server, source, _state, _environ = self.start()
+        source.aggregatable = source.aggregatable | {'event.id'}
+        searches = len(self.elastic.searches())
+        self.assertEqual(self.tool('elastic_aggregate', field='event.id').get('detail'), 'field_unavailable')
+        self.assertEqual(len(self.elastic.searches()), searches)
+
+    def test_a_query_error_on_some_shards_is_invalid_query(self):
+        self.start()
+        self.tool('elastic_search', size=1)
+        self.assertEqual(self.elastic.requests[-1][1], '/_search?allow_partial_search_results=false')
+        self.elastic.fail_search = (200, json.dumps({'_shards': {'total': 3, 'skipped': 2, 'failed': 1, 'failures': [
+            {'reason': {'type': 'query_shard_exception'}}]}, 'hits': {'hits': []}}).encode())
+        self.assertEqual(self.tool('elastic_search', q='host.name:(')['detail'], 'invalid_query')
+        self.elastic.fail_search = (200, json.dumps({'_shards': {'failed': 1, 'failures': [
+            {'reason': {'type': 'circuit_breaking_exception'}}]}, 'hits': {'hits': []}}).encode())
+        self.assertEqual(self.tool('elastic_search', q='a')['detail'], 'backend_not_ready')
+
+    def test_a_changed_point_in_time_id_is_used_next(self):
+        self.start()
+        self.elastic.rotate_pit = True
+        self.tool('elastic_search', size=1)
+        self.tool('elastic_search', size=1)
+        self.assertEqual([body['pit']['id'] for body in self.elastic.searches()[-2:]], ['pit-1', 'pit-1+'])
+
+    def test_a_node_losing_its_part_of_the_snapshot_reopens_it(self):
+        _server, source, _state, _environ = self.start()
+        generation = source.generation
+        self.elastic.lose_shard = True
+        self.assertTrue(self.tool('elastic_search', size=1)['ok'])
+        self.assertEqual((source.generation, self.elastic.opened), (generation + 1, 2))
+
+    def test_an_expired_snapshot_reopens_and_ends_open_pages_only(self):
+        _server, source, _state, _environ = self.start()
+        generation = source.generation
+        first = self.tool('elastic_search', size=2)
+        self.elastic.pits.clear()
+        result = self.tool('elastic_search', size=2, after=first['result']['next_after'])
+        self.assertEqual(result.get('detail'), 'cursor_expired')
+        self.assertEqual((source.generation, self.elastic.opened), (generation + 1, 2))
+        again = self.tool('elastic_search', size=2)
+        self.assertTrue(again['ok'], again)
+        self.elastic.pits.clear()
+        self.assertTrue(self.tool('elastic_aggregate', field='host.name')['ok'])
+        self.assertEqual(self.tool('elastic_search', size=2, after=first['result']['next_after'])['detail'], 'cursor_expired')
+
+    def test_health_state_instance_header_and_console(self):
+        server, _source, state, _environ = self.start()
+        recorded = json.loads(state.read_text(encoding='utf-8'))
+        self.assertEqual(recorded, {'version': 1, 'pid': recorded['pid'], 'port': server.server_address[1], 'case_id': CASE_ID,
+                                    'instance': server.instance_id, 'api_key_env': 'HUNT_ELASTIC_API_KEY'})
+        status, headers, value = self.get('/health')
+        self.assertEqual((status, value['ready'], value['event_count'], value['backend'], value['network_capture']),
+                         (200, True, 5, 'work-elastic', 'none'))
+        self.assertEqual(headers['X-Hunt-Lab-Instance'], server.instance_id)
+        status, headers, value = self.get('/case')
+        self.assertEqual(value, self.case)
+        self.assertNotIn('elastic.example.test', json.dumps(value))
+        for path in ('/', '/view?q=host.name:ws-01'):
+            with self.subTest(path=path):
+                status, headers, page = self.get_text(path)
+                self.assertEqual((status, headers['X-Hunt-Lab-Instance']), (200, server.instance_id))
+                self.assertIn("Work log connection (live read-only queries of the operator's work Elastic; "
+                              'unclassified work data). Read-only.', page)
+                self.assertIn('5 of 5 events', page)
+                self.assertNotIn('elastic.example.test', page)
+                self.assertNotIn('Synthetic', page)
+        status, _headers, page = self.get_text('/view?q=process.name:/cm.*/')
+        self.assertEqual(status, 400)
+        self.assertIn('Query refused: regex_not_supported', page)
+        self.assertEqual(self.get('/health?x=1')[0], 400)
+
+    def test_stop_removes_the_state_and_closes_the_snapshot_and_citations_survive_a_restart(self):
+        server, source, state, _environ = self.start()
+        first = self.tool('elastic_search', size=1)['result']
+        cited = first['hits'][0]['event.id']
+        server.shutdown()
+        connected.stop(server, source, state)
+        self.assertFalse(state.exists())
+        self.assertIn(('DELETE', '/_pit', {'id': 'pit-1'}), self.elastic.requests)
+        self.start()
+        lookup = self.tool('elastic_search', q='event.id:' + cited)
+        self.assertEqual([hit['event.id'] for hit in lookup['result']['hits']], [cited])
+        self.assertEqual(self.tool('elastic_search', size=1, after=first['next_after']).get('detail'), 'cursor_expired')
+
+    def test_the_key_appears_only_in_the_authorization_header(self):
+        self.start()
+        outputs = [self.tool(name, **arguments) for name, arguments in (
+            ('elastic_search', {}), ('elastic_aggregate', {'field': 'host.name'}), ('intel_lookup', {'values': 'x'}),
+            ('detection_test', {'q': 'a', 'name': 'b'}))]
+        outputs += [self.get(path) for path in ('/health', '/case', '/activity')] + [self.get_text('/')]
+        files = [path.read_text(encoding='utf-8') for path in (self.home / connected.CONNECTED_STATE).rglob('*') if path.is_file()]
+        bodies = [json.dumps(value) for _method, _path, value in self.elastic.requests]
+        self.assertFalse([text for text in [*map(json.dumps, outputs), *files, *bodies] if KEY in text])
+        self.assertEqual({headers['Authorization'] for headers in self.elastic.headers}, {'ApiKey ' + KEY})
+
+    def test_check_reports_version_privileges_coverage_and_count(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = connected.main(['check', '--config', str(self.config), '--case', str(self.case_path)],
+                                  transport=self.elastic, environ={'HUNT_ELASTIC_API_KEY': KEY})
+        self.assertEqual(code, 0)
+        report = json.loads(stdout.getvalue())
+        self.assertEqual((report['version'], report['read_only'], report['in_scope_events']), ('8.15.3', True, 5))
+        self.assertIn('user.name', report['unavailable_fields'])
+        self.assertIn('process.command_line.text', report['unsearched_query_fields'])
+        self.assertNotIn('host.name', report['unsearched_query_fields'])
+        self.assertNotIn(KEY, stdout.getvalue())
+        self.assertEqual(self.elastic.pits, {'pit-0'})
+
+
+if __name__ == '__main__':
+    unittest.main()

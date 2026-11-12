@@ -30,15 +30,18 @@ PROFILES = frozenset({
     "framework-network-analyst",
 })
 # A case is synthetic unless its case.json names one of DATA_ORIGINS (HUNT-BOTS.md rule 1): a public
-# research dataset or the operator's unclassified work export. Each maps to the (name, detail) every
+# research dataset, the operator's unclassified work export, or a window of the operator's work Elastic
+# served live by the host-side connected service (ADR 0005). Each maps to the (name, detail) every
 # bot-visible text uses for that origin, "<name> (<detail>)", instead of calling the data synthetic.
 # The guest console mirrors this table (test_lab_server keeps them equal).
 SYNTHETIC = "synthetic"
 PUBLIC_DATASET = "public-dataset"
 WORK_EXPORT = "work-export"
+WORK_CONNECTED = "work-connected"
 DATA_ORIGINS = {
     PUBLIC_DATASET: ("public research dataset", "real lab telemetry, no customer data"),
     WORK_EXPORT: ("work log export", "real telemetry from the operator's environment; unclassified work data"),
+    WORK_CONNECTED: ("work log connection", "live read-only queries of the operator's work Elastic; unclassified work data"),
 }
 
 
@@ -231,6 +234,24 @@ class ExecutionResult:
             raise ValueError("diagnostic must be at most 640 printable ASCII characters")
 
 
+# Who sent a gate decision and through which channel. All three empty is an unidentified decision
+# (any client from before identity existed); otherwise a name and a channel are required, and a
+# Slack user ID exactly when the channel is slack.
+DECIDER_CHANNELS = frozenset({"cli", "slack", "automated"})
+MAX_DECIDER_CHARS = 200
+SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]{2,20}\Z")
+
+
+def valid_decider(decided_by: object, via: object, slack_user: object) -> bool:
+    if not (isinstance(decided_by, str) and isinstance(via, str) and isinstance(slack_user, str)):
+        return False
+    if not (decided_by or via or slack_user):
+        return True
+    return (0 < len(decided_by) <= MAX_DECIDER_CHARS and decided_by.isprintable()
+            and " ".join(decided_by.split()) == decided_by and via in DECIDER_CHANNELS
+            and (SLACK_USER_ID.match(slack_user) is not None if via == "slack" else not slack_user))
+
+
 @dataclass(frozen=True)
 class WorkflowDecision:
     step_id: str
@@ -238,6 +259,22 @@ class WorkflowDecision:
     decision: str
     decision_id: str
     evidence_note: str = ""
+    decided_by: str = ""
+    via: str = ""
+    slack_user: str = ""
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """One decision a gate took, as the status query reports it: the gate (a step ID, or ``wave-<n>``),
+    phase and choice, the decision ID, and who sent it through which channel (empty when unidentified)."""
+    gate: str
+    phase: str
+    decision: str
+    decision_id: str
+    decided_by: str = ""
+    via: str = ""
+    slack_user: str = ""
 
 
 @dataclass(frozen=True)
@@ -286,3 +323,5 @@ class WorkflowStatus:
     # Parallel workflows only: every step's state. ``step_id`` then holds the open wave's gate
     # ID (``wave-<n>``), or the step awaiting reconciliation.
     steps: list[StepState] = field(default_factory=list)
+    # Every decision a gate took, oldest first; a run whose first gate decision predates the record lists none.
+    decisions: list[GateDecision] = field(default_factory=list)

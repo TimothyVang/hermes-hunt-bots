@@ -3,7 +3,9 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
+import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import threading
@@ -13,7 +15,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import hunt_lab
-from hunt_lab import query_adapter, runtime as lab_runtime, scenario
+from hunt_lab import endpoints, lab_browser, query_adapter, runtime as lab_runtime, scenario
 
 CASE = 'lab-med-001'
 ANALYST = 'framework-network-analyst'
@@ -40,8 +42,9 @@ def guest_lab_server():
 class GuestStub:
     """Loopback stand-in for the guest lab_server; records every request it receives."""
 
-    def __init__(self, case_id=CASE):
+    def __init__(self, case_id=CASE, instance=None):
         self.case_id = case_id
+        self.instance = instance
         self.requests = []
         self.overrides = {}
         stub = self
@@ -55,6 +58,8 @@ class GuestStub:
                 params = {key: values[0] for key, values in parse_qs(url.query, keep_blank_values=True).items()}
                 stub.requests.append((url.path, params, self.headers.get('X-Hermes-Profile')))
                 status, body, headers = stub.overrides.get(url.path) or stub.default(url.path, params)
+                if stub.instance:
+                    headers = {'X-Hunt-Lab-Instance': stub.instance, **headers}
                 data = body if isinstance(body, bytes) else json.dumps(body).encode()
                 self.send_response(status)
                 for key, value in headers.items():
@@ -87,11 +92,11 @@ class GuestStub:
 
 class Runtime:
     def __init__(self, lab_url, state='running'):
-        self.lab_url, self.state, self.calls = lab_url, state, []
+        self.lab_url, self.state, self.calls, self.status_extra = lab_url, state, [], {}
 
     def invoke(self, action, *, state_dir, profile):
         self.calls.append((action, state_dir, profile))
-        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url}
+        return {'profile': ANALYST, 'state': self.state, 'lab_url': self.lab_url, **self.status_extra}
 
 
 class ToolCallTests(unittest.TestCase):
@@ -248,7 +253,7 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual(scenario.cited_ids(intel), {'ioc-00012'})
 
     def test_packet_fields_waits_for_the_guest_field_listing_and_decode(self):
-        with patch.object(query_adapter, '_get', wraps=query_adapter._get) as get:
+        with patch.object(endpoints, 'get', wraps=endpoints.get) as get:
             self.assertTrue(self.call('packet_fields', {'case_id': CASE})['ok'])
             self.assertTrue(self.call('arkime_sessions', {'case_id': CASE})['ok'])
         timeouts = [(call.args[1].split('?')[0], call.args[3] if len(call.args) > 3 else None) for call in get.call_args_list]
@@ -329,6 +334,165 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual(case['evidence']['case_id'], 'dns-lab-001')
         self.assertFalse(self.call('hunt_lab_query', {'case_id': 'dns-lab-001', 'dataset': 'events', 'offset': 5001},
                                    profile=ANALYST)['ok'])
+
+
+INSTANCE = 'a' * 32
+
+
+class ResolverTests(unittest.TestCase):
+    """endpoints.resolve: the VM or the host-side connected service, whichever serves the case (ADR 0005)."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.analyst = Path(temp.name) / 'profiles' / ANALYST
+        self.state_dir = self.analyst / 'hunt-lab-vm'
+        self.vm = GuestStub()
+        self.addCleanup(self.vm.close)
+        self.connected = GuestStub(case_id='work-conn-001', instance=INSTANCE)
+        self.addCleanup(self.connected.close)
+        self.runtime = Runtime(self.vm.url, state='stopped')
+        self.serve()
+        environ = patch.dict('os.environ')
+        environ.start()
+        self.addCleanup(environ.stop)
+        os.environ.pop('HUNT_ELASTIC_API_KEY', None)
+
+    def serve(self, **changes):
+        """Write the connected service's state.json as `hunt_lab.connected serve` does."""
+        state = {'version': 1, 'pid': 4242, 'port': self.connected.server.server_address[1], 'case_id': 'work-conn-001',
+                 'instance': INSTANCE, 'api_key_env': 'HUNT_ELASTIC_API_KEY', **changes}
+        folder = self.analyst / endpoints.CONNECTED_STATE
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+
+    def call(self, name, arguments, case_id='work-conn-001'):
+        return query_adapter.call(name, {'case_id': case_id, **arguments}, runtime=self.runtime,
+                                  state_dir=self.state_dir, profile='framework-researcher')
+
+    def test_bots_reach_a_connected_case_through_its_state_file_with_the_vm_stopped(self):
+        result = self.call('elastic_search', {'q': 'host.name:ws-01'})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual([path for path, _, _ in self.connected.requests], ['/case', '/es/search'])
+        self.assertEqual(self.connected.requests[1][2], 'framework-researcher')
+        self.assertEqual(self.call('hunt_lab_query', {'dataset': 'case'})['evidence']['case_id'], 'work-conn-001')
+        self.assertEqual(self.vm.requests, [])
+
+    def test_each_case_goes_to_the_lab_serving_it(self):
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual([path for path, _, _ in self.vm.endpoint_calls()], ['/es/search'])
+        self.assertEqual([path for path, _, _ in self.connected.endpoint_calls()], ['/es/search'])
+        self.assertEqual(self.call('elastic_search', {}, case_id='other-001')['error'], 'case_mismatch')
+
+    def test_a_case_both_labs_serve_is_ambiguous_and_queries_neither(self):
+        self.runtime.state = 'running'
+        self.vm.case_id = 'work-conn-001'
+        for name, arguments in (('elastic_search', {}), ('hunt_lab_query', {'dataset': 'case'})):
+            with self.subTest(tool=name):
+                self.assertEqual(self.call(name, arguments)['error'], 'ambiguous_lab')
+        self.assertEqual(self.vm.endpoint_calls() + self.connected.endpoint_calls(), [])
+
+    def test_a_port_answering_without_the_state_files_instance_is_refused(self):
+        for instance in (None, 'b' * 32):
+            with self.subTest(instance=instance):
+                self.connected.instance = instance
+                self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
+
+    def test_a_tool_answer_from_another_instance_is_refused_after_case_resolved(self):
+        self.connected.overrides['/es/search'] = (200, {'case_id': 'work-conn-001'}, {'X-Hunt-Lab-Instance': 'c' * 32})
+        self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
+        self.connected.overrides['/es/search'] = (400, {'error': 'unknown_citation'}, {'X-Hunt-Lab-Instance': 'c' * 32})
+        self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
+        self.connected.overrides['/es/search'] = (400, {'error': 'unknown_citation'}, {})
+        self.assertEqual(self.call('elastic_search', {}), {'ok': False, 'profile': 'framework-researcher',
+                                                           'error': 'lab_http_400', 'detail': 'unknown_citation'})
+
+    def test_a_port_that_does_not_speak_http_or_json_fails_only_its_own_lab(self):
+        raw = socket.socket()
+        raw.bind(('127.0.0.1', 0))
+        raw.listen(4)
+        self.addCleanup(raw.close)
+
+        def garble():
+            while True:
+                try:
+                    peer, _ = raw.accept()
+                except OSError:
+                    return
+                with peer:
+                    peer.recv(4096)
+                    peer.sendall(b'NOT HTTP\r\n\r\n')
+
+        threading.Thread(target=garble, daemon=True).start()
+        self.serve(port=raw.getsockname()[1])
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual(self.call('elastic_search', {})['error'], 'lab_instance_mismatch')
+        self.serve()
+        self.vm.overrides['/case'] = (200, b'<html>not json</html>', {})
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'lab_invalid_response')
+
+    def test_a_bot_holding_the_work_key_variable_is_refused_a_connected_case_only(self):
+        os.environ['HUNT_ELASTIC_API_KEY'] = 'not-a-real-key'
+        self.assertEqual(self.call('elastic_search', {})['error'], 'key_in_bot_environment')
+        self.assertEqual(self.connected.endpoint_calls(), [])
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        del os.environ['HUNT_ELASTIC_API_KEY']
+        self.serve(api_key_env='WORK_KEY')
+        os.environ['WORK_KEY'] = 'not-a-real-key'
+        self.assertEqual(self.call('elastic_search', {})['error'], 'key_in_bot_environment')
+
+    def test_state_files_being_written_stale_or_malformed(self):
+        state = self.analyst / endpoints.CONNECTED_STATE / 'state.json'
+        state.write_text('', encoding='utf-8')
+        self.assertEqual(self.call('elastic_search', {})['error'], 'owned_vm_not_running')
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        for bad in ({'version': 2}, {'version': True}, {'version': 1.0}, {'port': 0}, {'port': '80'},
+                    {'instance': 'A' * 32}, {'case_id': 'Work'},
+                    {'api_key_env': 'A B'}, {'extra': 1}):
+            with self.subTest(state=bad):
+                self.serve(**bad)
+                self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'connected_state_invalid')
+        state.write_text('{not json', encoding='utf-8')
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'connected_state_invalid')
+
+    def test_a_crashed_service_s_state_file_leaves_the_vm_its_own_case(self):
+        self.connected.close()
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual(self.call('elastic_search', {})['error'], 'lab_unreachable')
+
+    def test_a_vm_case_never_probes_a_connected_service_serving_another_case(self):
+        self.runtime.state = 'running'
+        self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
+        self.assertEqual(self.connected.requests, [])
+        self.runtime.state = 'stopped'
+        self.assertEqual(self.call('elastic_search', {}, case_id=CASE)['error'], 'owned_vm_not_running')
+        self.assertEqual(self.connected.requests, [])
+        self.assertTrue(self.call('elastic_search', {})['ok'])
+
+    def test_lab_browser_refuses_a_connected_case_before_launching_a_browser(self):
+        with patch.object(lab_browser, '_session') as session:
+            result = lab_browser.call({'case_id': 'work-conn-001', 'action': 'snapshot'}, runtime=self.runtime,
+                                      state_dir=self.state_dir, profile='framework-researcher',
+                                      browser_root=self.analyst / 'browser')
+        self.assertEqual(result, {'ok': False, 'profile': 'framework-researcher', 'error': 'no_lab_browser'})
+        session.assert_not_called()
+
+    def test_lab_browser_still_refuses_a_vm_status_with_a_foreign_kibana_url(self):
+        self.runtime.state = 'running'
+        self.runtime.status_extra = {'arkime_url': self.vm.url, 'kibana_url': 'http://192.0.2.10:5601'}
+        with patch.object(lab_browser, '_session') as session:
+            result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'}, runtime=self.runtime,
+                                      state_dir=self.state_dir, profile='framework-researcher',
+                                      browser_root=self.analyst / 'browser')
+        self.assertEqual(result['error'], 'invalid_owned_endpoint')
+        session.assert_not_called()
 
 
 class RegistrationTests(unittest.TestCase):

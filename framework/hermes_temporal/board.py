@@ -30,7 +30,7 @@ from hunt_lab import screencast
 
 from .contracts import USAGE_KEYS, validate_loopback_address
 from .hunt import supplied_evidence_hunt
-from .lab_input import LabInputError, lab_endpoints, lab_get, loopback_base
+from .lab_input import LabInputError, lab_get, loopback_base, resolve_lab
 from .workflows import _unwrap_single_fence
 
 BIND_HOST = "127.0.0.1"
@@ -1029,6 +1029,12 @@ class _LabRefused(Exception):
     """The lab answered with something the board will not display."""
 
 
+_LAB_UP_NOT_THIS_INPUT = {
+    "case_mismatch": "the lab has a different case loaded than this input",
+    "ambiguous_lab": "both the VM and a connected service serve this case (ambiguous_lab)",
+}
+
+
 class LabObserver:
     """Poll one loopback lab's ``/activity`` ring and look up cited events by ``event.id``.
 
@@ -1043,6 +1049,7 @@ class LabObserver:
         self._get = get
         self._lab_url: str | None = None
         self._arkime_url: str | None = None
+        self._instance: str | None = None
         self._network_scope: str | None = None
         # Entries at or before this /activity sequence (e.g. earlier checks or hunts)
         # are not this run's tool calls and are never shown.
@@ -1061,6 +1068,7 @@ class LabObserver:
             if self._lab_url is None:
                 endpoints = self._resolve()
                 self._lab_url, self._arkime_url = endpoints["lab_url"], endpoints.get("arkime_url")
+                self._instance = endpoints.get("instance")
                 scope = self._call("/health").get("network_scope")
                 self._network_scope = scope if scope in ("tag", "window") else "tag"
             self._poll_activity()
@@ -1082,7 +1090,8 @@ class LabObserver:
                 "lookup_truncated": self._truncated, **self._status}
 
     def _call(self, path: str) -> dict:
-        body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS)
+        body = self._get(self._lab_url, path, profile=BOARD_LAB_PROFILE, timeout=_LAB_TIMEOUT_SECONDS,
+                         instance=self._instance)
         if self._case_id is not None and body.get("case_id") != self._case_id:
             raise _LabRefused("the lab has a different case loaded than this input")
         return body
@@ -1123,15 +1132,28 @@ class LabObserver:
                 self._missing.add(wanted.pop(0))  # an ID too long for any lookup query
                 continue
             wanted = wanted[len(batch):]
-            query = "event.id:(" + " OR ".join(f'"{item}"' for item in batch) + ")"
-            body = self._call("/es/search?" + parse.urlencode({"q": query, "size": 200, "fields": _LOOKUP_FIELDS}))
-            if not isinstance(body.get("hits"), list):
-                raise _LabRefused("lab search response is malformed")
-            for hit in body["hits"]:
+            for hit in self._search(batch):
                 row = _nest(hit) if isinstance(hit, dict) else {}
                 if _get(row, "event", "id") in batch:
                     self._events[row["event"]["id"]] = row
             self._missing.update(event_id for event_id in batch if event_id not in self._events)
+
+    def _search(self, batch: list[str]) -> list:
+        """The lab's hits for ``event.id:(batch)``.
+
+        A connected service refuses a query naming any citation it never served (``unknown_citation``)
+        rather than answer no hits, so such a batch is looked up one ID at a time.
+        """
+        query = "event.id:(" + " OR ".join(f'"{item}"' for item in batch) + ")"
+        try:
+            body = self._call("/es/search?" + parse.urlencode({"q": query, "size": 200, "fields": _LOOKUP_FIELDS}))
+        except LabInputError as exc:
+            if exc.code != "unknown_citation":
+                raise
+            return [] if len(batch) == 1 else [hit for event_id in batch for hit in self._search([event_id])]
+        if not isinstance(body.get("hits"), list):
+            raise _LabRefused("lab search response is malformed")
+        return body["hits"]
 
 
 class Board:
@@ -1417,7 +1439,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="loopback port to serve on")
     lab = parser.add_mutually_exclusive_group()
     lab.add_argument("--lab-state-dir",
-                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; its URLs are read from status")
+                     help="tool-driven input: the Network Analyst's hunt-lab-vm state dir; the lab serving the input's case "
+                          "is found from it (the VM's status, or a connected service's state)")
     lab.add_argument("--lab-url", type=_lab_url, help="tool-driven input: the lab API, http://127.0.0.1:<port>")
     parser.add_argument("--arkime-url", type=_lab_url,
                         help="Arkime viewer for copyable session links, http://127.0.0.1:<port> (default: from status)")
@@ -1437,7 +1460,21 @@ def _lab_observer(args: argparse.Namespace, case_id: str | None) -> LabObserver:
     if args.lab_url:
         endpoints = {"lab_url": args.lab_url, "arkime_url": None, **override}
         return LabObserver(lambda: endpoints, case_id, activity_after=after)
-    return LabObserver(lambda: {**lab_endpoints(args.lab_state_dir), **override}, case_id, activity_after=after)
+
+    def resolve() -> dict:
+        try:
+            served = resolve_lab(args.lab_state_dir, case_id)
+        except LabInputError as exc:
+            if exc.code in _LAB_UP_NOT_THIS_INPUT:
+                raise _LabRefused(_LAB_UP_NOT_THIS_INPUT[exc.code]) from None
+            raise
+        try:
+            arkime = loopback_base(served.arkime_url)
+        except LabInputError:
+            arkime = None
+        return {"lab_url": served.lab_url, "arkime_url": arkime, "instance": served.instance, **override}
+
+    return LabObserver(resolve, case_id, activity_after=after)
 
 
 def main(argv: list[str] | None = None) -> int:
