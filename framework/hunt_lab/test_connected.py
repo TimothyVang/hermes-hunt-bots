@@ -155,6 +155,15 @@ class ConnectedCase(unittest.TestCase):
         return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments}, runtime=Runtime,
                                       state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
 
+    def get_text(self, path):
+        opener = request.build_opener(request.ProxyHandler({}))
+        try:
+            with opener.open(self.lab_url + path, timeout=10) as response:
+                return response.status, dict(response.headers), response.read().decode('utf-8')
+        except request.HTTPError as failure:
+            with failure:
+                return failure.code, dict(failure.headers), failure.read().decode('utf-8')
+
     def get(self, path):
         opener = request.build_opener(request.ProxyHandler({}))
         try:
@@ -400,7 +409,7 @@ class ServiceTests(ConnectedCase):
         self.assertTrue(self.tool('elastic_aggregate', field='host.name')['ok'])
         self.assertEqual(self.tool('elastic_search', size=2, after=first['result']['next_after'])['detail'], 'cursor_expired')
 
-    def test_health_state_instance_header_and_no_console(self):
+    def test_health_state_instance_header_and_console(self):
         server, _source, state, _environ = self.start()
         recorded = json.loads(state.read_text(encoding='utf-8'))
         self.assertEqual(recorded, {'version': 1, 'pid': recorded['pid'], 'port': server.server_address[1], 'case_id': CASE_ID,
@@ -412,8 +421,18 @@ class ServiceTests(ConnectedCase):
         status, headers, value = self.get('/case')
         self.assertEqual(value, self.case)
         self.assertNotIn('elastic.example.test', json.dumps(value))
-        self.assertEqual(self.get('/')[::2], (404, {'error': 'not_found'}))
-        self.assertEqual(self.get('/view?q=a')[0], 404)
+        for path in ('/', '/view?q=host.name:ws-01'):
+            with self.subTest(path=path):
+                status, headers, page = self.get_text(path)
+                self.assertEqual((status, headers['X-Hunt-Lab-Instance']), (200, server.instance_id))
+                self.assertIn("Work log connection (live read-only queries of the operator's work Elastic; "
+                              'unclassified work data). Read-only.', page)
+                self.assertIn('5 of 5 events', page)
+                self.assertNotIn('elastic.example.test', page)
+                self.assertNotIn('Synthetic', page)
+        status, _headers, page = self.get_text('/view?q=process.name:/cm.*/')
+        self.assertEqual(status, 400)
+        self.assertIn('Query refused: regex_not_supported', page)
         self.assertEqual(self.get('/health?x=1')[0], 400)
 
     def test_stop_removes_the_state_and_closes_the_snapshot_and_citations_survive_a_restart(self):
@@ -434,7 +453,7 @@ class ServiceTests(ConnectedCase):
         outputs = [self.tool(name, **arguments) for name, arguments in (
             ('elastic_search', {}), ('elastic_aggregate', {'field': 'host.name'}), ('intel_lookup', {'values': 'x'}),
             ('detection_test', {'q': 'a', 'name': 'b'}))]
-        outputs += [self.get(path) for path in ('/health', '/case', '/activity', '/')]
+        outputs += [self.get(path) for path in ('/health', '/case', '/activity')] + [self.get_text('/')]
         files = [path.read_text(encoding='utf-8') for path in (self.home / connected.CONNECTED_STATE).rglob('*') if path.is_file()]
         bodies = [json.dumps(value) for _method, _path, value in self.elastic.requests]
         self.assertFalse([text for text in [*map(json.dumps, outputs), *files, *bodies] if KEY in text])

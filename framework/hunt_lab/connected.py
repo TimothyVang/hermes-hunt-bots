@@ -28,8 +28,9 @@ Every query is scoped to the case window on @timestamp and, when listed, its hos
 the key's role bound the rest. All reads run in one point in time (a frozen snapshot), sorted on @timestamp
 and _shard_doc. A returned record's event.id is its citation, evt- and 16 digits from the SHA-256 of its
 _id; event.id and bare evt- terms in a query resolve back to those documents, and the citations are kept in
-<state-dir>/hunt-lab-connected/<case_id>/citations.jsonl (document IDs only) across restarts. Intel, Arkime,
-packets and the console page are off; /health waits only for events. While serving,
+<state-dir>/hunt-lab-connected/<case_id>/citations.jsonl (document IDs only) across restarts. Intel, Arkime and
+packets are off; the console page (/ and /view) names the work-connected origin; /health waits only for events.
+While serving,
 <state-dir>/hunt-lab-connected/state.json names the port and an instance token that every response carries in
 X-Hunt-Lab-Instance.
 """
@@ -472,7 +473,7 @@ def health(server):
 
 
 class ConnectedHandler(lab_server.Handler):
-    """The lab service's routes, each answer naming this service's instance; its own /health and no console page."""
+    """The lab service's routes, each answer naming this service's instance, with its own /health."""
 
     def end_headers(self):
         self.send_header(INSTANCE_HEADER, self.server.instance_id)
@@ -480,9 +481,7 @@ class ConnectedHandler(lab_server.Handler):
 
     def do_GET(self):
         target = parse.urlsplit(self.path)
-        if target.path in ('/', '/view'):
-            self.send(404, {'error': 'not_found'})
-        elif target.path == '/health':
+        if target.path == '/health':
             if target.query:
                 self.send(400, {'error': 'invalid_query'})
                 return
