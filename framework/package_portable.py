@@ -195,6 +195,7 @@ FILES = (
     'hermes_temporal/fixtures/board/lab-input.json',
     'hermes_temporal/fixtures/board/parent-status.json',
     'hermes_temporal/fixtures/board/child-status.json',
+    'hermes_temporal/fixtures/replay/handoff-rejected-before-retry.json',
     'lab.py', 'test_hunt_lab_case.py', 'test_hunt_lab_runtime.py',
     'test_hunt_lab_managed.py', 'test_hunt_lab_install.py',
     'test_hunt_lab_tools.py', 'test_lab_server.py', 'test_lab_browser.py', 'test_humanize.py',

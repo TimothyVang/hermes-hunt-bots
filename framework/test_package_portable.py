@@ -200,6 +200,7 @@ APPROVED_FILES = frozenset({
     'hermes_temporal/fixtures/board/lab-input.json',
     'hermes_temporal/fixtures/board/parent-status.json',
     'hermes_temporal/fixtures/board/child-status.json',
+    'hermes_temporal/fixtures/replay/handoff-rejected-before-retry.json',
     'lab.py',
     'test_hunt_lab_case.py',
     'test_hunt_lab_runtime.py',
