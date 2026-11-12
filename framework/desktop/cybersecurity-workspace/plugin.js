@@ -269,7 +269,7 @@ function workspace(ctx) {
             'Pets are optional status mascots, never evidence or approval. Choose reviewed assets in native Appearance settings; no catalog asset or image-generation backend is installed by this plugin.'
           ]),
           notes('Model routes and known failures', [
-            'Required native routes, provider anthropic: Incident Response Lead and Purple Team Analyst on claude-opus-5-5; Threat Hunter, Detection Engineer, Threat Intelligence Analyst and Network Analyst on claude-sonnet-5.',
+            'Required native routes, provider anthropic: Incident Response Lead and Purple Team Analyst on claude-opus-5-5; Threat Hunter, Detection Engineer, Threat Intelligence Analyst and Network Analyst on claude-sonnet-5-5.',
             'These are requirements, NOT live verification. No fallback or model substitution is authorized.',
             'Known completion-role-label inconsistency: a delegating coordinator completion may display leaf despite nested delegation.',
             'Child-reported identity limits: leaf route reports are not independent attestation of upstream model internals. Require actual route/status evidence for each new run.',

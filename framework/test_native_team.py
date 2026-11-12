@@ -13,15 +13,15 @@ class NativeTeamPolicyTests(unittest.TestCase):
     def test_models_turn_caps_tool_allowlists_and_routes_are_exact(self):
         expected = {
             'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation', 'hunt_lab'], ['delegate_task']),
-            'framework-researcher': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
+            'framework-researcher': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                      ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields']),
-            'framework-builder': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
+            'framework-builder': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                   ['detection_test', 'elastic_aggregate']),
             'framework-reviewer': ('claude-opus-5-5', 6, ['no_mcp', 'hunt_lab'],
                                    ['elastic_search', 'arkime_sessions', 'detection_test']),
-            'framework-librarian': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
+            'framework-librarian': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                     ['intel_lookup', 'elastic_aggregate']),
-            'framework-network-analyst': ('claude-sonnet-5', 6, ['no_mcp', 'hunt_lab'],
+            'framework-network-analyst': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                           ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser',
                                            'packet_fields']),
         }
@@ -302,7 +302,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
                     run.assert_not_called()
     def test_checked_native_calls_are_home_bound_bounded_and_leaf_only(self):
         completed = type('Result', (), {
-            'returncode': 0, 'stderr': '', 'stdout': '"claude-sonnet-5"'
+            'returncode': 0, 'stderr': '', 'stdout': '"claude-sonnet-5-5"'
         })()
         with unittest.mock.patch.object(native_team.os, 'environ', {'HERMES_HOME': 'wrong-home'}):
             with unittest.mock.patch.object(native_team.subprocess, 'run', return_value=completed) as run:
@@ -442,7 +442,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
             profile_dir = self._registered_profile(root)
             native_team.initialize('framework-builder', root)
             config = json.loads((profile_dir / 'config.yaml').read_text(encoding='utf-8'))
-            self.assertEqual(config['model']['default'], 'claude-sonnet-5')
+            self.assertEqual(config['model']['default'], 'claude-sonnet-5-5')
             self.assertEqual(config['model']['provider'], 'anthropic')
             self.assertEqual(config['fallback_providers'], [])
             self.assertEqual(config['fallback_model'], [])
@@ -520,7 +520,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
             def fail_publication(staged, destination):
                 self.assertFalse(path.exists())
                 config = json.loads(Path(staged).read_text(encoding='utf-8'))
-                self.assertEqual(config['model']['default'], 'claude-sonnet-5')
+                self.assertEqual(config['model']['default'], 'claude-sonnet-5-5')
                 self.assertIn('desktop_ui', config['agent']['disabled_toolsets'])
                 raise OSError('synthetic publication failure')
 
