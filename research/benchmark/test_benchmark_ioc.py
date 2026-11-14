@@ -123,10 +123,16 @@ class BenchmarkIocTests(unittest.TestCase):
         known_manifest = attach_ioc_feed(known_dir, regime='known_ioc_pivot', seed=42)
         self.assertEqual(known_manifest['ioc_regime'], 'known_ioc_pivot')
         self.assertGreaterEqual(known_manifest['active_truth_matches'], 1)
+        self.assertEqual(load_json(known_dir / 'scenario.json')['ioc_regime'], 'known_ioc_pivot')
 
         novel_manifest = attach_ioc_feed(novel_dir, regime='novel_apt_zero_ioc', seed=42)
         self.assertEqual(novel_manifest['ioc_regime'], 'novel_apt_zero_ioc')
         self.assertEqual(novel_manifest['active_truth_matches'], 0)
+        self.assertEqual(load_json(novel_dir / 'scenario.json')['ioc_regime'], 'novel_apt_zero_ioc')
+
+        known_feed = validate_ioc_feed_bytes((known_dir / 'public' / IOC_FILE_NAME).read_bytes())
+        self.assertTrue(any(item['source_feed'] == 'scenario-ti-feed' for item in known_feed))
+        self.assertFalse(any(item['source_feed'] == 'public-cti-community-feed' for item in known_feed))
 
         coverage = load_json(FIXTURES / 'coverage.json')
         for cdir in (known_dir, novel_dir):
@@ -161,6 +167,56 @@ class BenchmarkIocTests(unittest.TestCase):
         items = extract_mitre_software_indicators(stix_path, limit=10)
         self.assertEqual(len(items), 2)
         validate_ioc_feed_bytes(encode_ioc_feed(items))
+
+    def test_known_ioc_pivot_rejects_empty_entry_indicators_and_host_fqdn_pseudonyms_join(self):
+        from benchmark_case_writer import CasePseudonymizer, write_curated_case
+        from benchmark_ioc import build_case_ioc_feed
+        pseudo = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        tok_fqdn = pseudo.pseudonymize('host', 'UTICA.dmevals.local')
+        tok_short = pseudo.pseudonymize('host', 'UTICA')
+        self.assertEqual(tok_fqdn, tok_short)
+        cleaned = pseudo.clean_content('Session from UTICA to UTICA.dmevals.local')
+        self.assertEqual(cleaned.count(tok_fqdn), 2)
+
+        # known_ioc_pivot fails when truth steps contain zero extractable non-benign indicators
+        empty_ev = {
+            'case_id': 'case-deadbeef',
+            'window_utc': {'start_inclusive': '2026-01-01T00:00:00Z', 'end_exclusive': '2026-01-01T01:00:00Z'},
+            'events': [{'event_id': 'e1', 'fields': {'timestamp_original': '2026-01-01T00:00:01Z', 'Image': 'cmd.exe'}}],
+        }
+        empty_tr = {'steps': [{
+            'step_id': 's1',
+            'window_utc': {'start_inclusive': '2026-01-01T00:00:01Z', 'end_exclusive': '2026-01-01T00:00:02Z'},
+            'support_sets': [['e1']],
+        }]}
+        with self.assertRaises(BenchmarkError) as ctx:
+            build_case_ioc_feed(empty_ev, empty_tr, regime='known_ioc_pivot')
+        self.assertEqual(ctx.exception.code, 'missing_known_ioc_pivot')
+
+        # Rejected case_dir is cleaned up on leak failure
+        bad_out = self.root / 'leak_out'
+        bad_out.mkdir()
+        base_cov_tags = load_json(FIXTURES / 'fixtures' / 'case-8b42' / 'scenario.json')['coverage']
+        base_cov_tags = dict(base_cov_tags, os=['linux'])
+        with self.assertRaises(BenchmarkError) as leak_ctx:
+            write_curated_case(
+                bad_out, case_seed='leak-seed', family_id='fam-leak', split='development',
+                provenance='public_replay',
+                coverage_tags=base_cov_tags,
+                difficulty_factors={k: {'score': 0, 'rationale': 'r'} for k in ('noise', 'joins', 'time_span', 'gaps', 'ambiguity')},
+                sophistication={'band': 'S0', 'boundaries': []},
+                source_references=['https://example.com/ref'],
+                assets=[{'asset_id': 'h1', 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'}],
+                sources=[{'source_id': 'src1', 'asset_ids': ['h1'], 'telemetry': None, 'clock_offset_seconds': 0,
+                          'clock_uncertainty_seconds': 1, 'sensor_version': '1', 'config_version': '1',
+                          'completeness': 'complete', 'source_sha256': 'a' * 64}],
+                raw_events=[{'tag': 't1', 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
+                             'asset_id': 'h1', 'event_type': 'syslog', 'record_id': '1',
+                             'fields': {'timestamp_original': '2026-01-01T00:00:05Z', 'msg': 'stratus-red-team marker'}}],
+                step_specs=[], edges=[], pseudonymizer=pseudo, control_case=True,
+            )
+        self.assertEqual(leak_ctx.exception.code, 'forbidden_public_metadata')
+        self.assertEqual(list(bad_out.iterdir()), [])
 
 
 if __name__ == '__main__':

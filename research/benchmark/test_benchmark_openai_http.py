@@ -7,6 +7,9 @@ import tempfile
 import threading
 import unittest
 
+import subprocess
+from unittest.mock import patch
+
 import urllib.error
 import urllib.request
 
@@ -17,12 +20,13 @@ from benchmark_contracts import (
     digest_bytes, load_json, validate_benchmark_workflow,
 )
 import benchmark_models as models
-from benchmark_openai_http import AdapterProblem, _validate_http_loopback_or_https
+from benchmark_openai_http import AdapterProblem, _merge_usage, _validate_http_loopback_or_https
 from benchmark_query import build_query_store
 import benchmark_runner as runner
 from benchmark_store import BenchmarkStore, STAGE_ROLES
 from benchmark_subscription_proxy import (
-    STRIPPED_API_ENV_VARS, clean_subscription_env, start_background_server,
+    STRIPPED_API_ENV_VARS, _enforce_output_budget, clean_subscription_env,
+    invoke_claude_subscription, invoke_codex_subscription, start_background_server,
 )
 from test_benchmark_runner import FIXTURES, response_fixture
 
@@ -289,6 +293,97 @@ class BenchmarkOpenAiHttpTests(unittest.TestCase):
         with self.assertRaises(BenchmarkError) as ctx:
             validate_benchmark_workflow({'tasks': [{'key': 'scope', 'depends_on': [], 'role': 'coordinator'}]})
         self.assertEqual(ctx.exception.code, 'invalid_workflow')
+
+    def test_release_gate_and_subscription_proxy_reject_unreleased_private_evidence(self):
+        priv_scenario = {'provenance': 'lab_export'}
+        sub_model = {
+            'adapter': 'openai_http', 'provider': 'openai',
+            'model_requested': 'codex-subscription/gpt-6-luna',
+            'base_url': 'http://127.0.0.1:18941/v1',
+        }
+        self.assertTrue(runner.release_required(priv_scenario, sub_model))
+        hybrid_team = {'deployment': 'hybrid'}
+        bare_loopback = dict(sub_model, model_requested='local-or-bridge')
+        self.assertTrue(runner.release_required(priv_scenario, bare_loopback, hybrid_team))
+        self.assertFalse(runner.release_required(priv_scenario, bare_loopback, {'deployment': 'local'}))
+
+        token = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+        proxy = start_background_server('127.0.0.1', 0, timeout_seconds=10, auth_token=token)
+        self.addCleanup(proxy.server_close)
+        self.addCleanup(proxy.shutdown)
+        t = threading.Thread(target=proxy.serve_forever, daemon=True)
+        t.start()
+        base = f'http://127.0.0.1:{proxy.server_address[1]}'
+
+        # Private provenance header or benchmark prompt without public provenance is rejected 403
+        priv_payload = json.dumps({
+            'model': 'codex-subscription/gpt-6-luna',
+            'messages': [{'role': 'user', 'content': '{"untrusted_public_evidence":{}}'}],
+            'temperature': 0,
+        }).encode('utf-8')
+        req_priv = urllib.request.Request(
+            f'{base}/v1/chat/completions', data=priv_payload, method='POST',
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'X-Benchmark-Provenance': 'lab_export',
+            },
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx403:
+            urllib.request.urlopen(req_priv, timeout=5)
+        self.assertEqual(ctx403.exception.code, 403)
+        ctx403.exception.close()
+
+        # Nonzero temperature or non-null seed rejected 400
+        for bad_param in ({'temperature': 0.7}, {'seed': 42}):
+            bad_body = json.dumps(dict({
+                'model': 'codex-subscription/gpt-6-luna',
+                'messages': [{'role': 'user', 'content': 'ping'}],
+            }, **bad_param)).encode('utf-8')
+            req_bad = urllib.request.Request(
+                f'{base}/v1/chat/completions', data=bad_body, method='POST',
+                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx400:
+                urllib.request.urlopen(req_bad, timeout=5)
+            self.assertEqual(ctx400.exception.code, 400)
+            ctx400.exception.close()
+
+    def test_partial_round_usage_returns_none_and_unreported_cli_models_stay_none(self):
+        # Missing usage on any multi-round turn yields None instead of partial sum
+        u0 = _merge_usage({'input_tokens': 0, 'output_tokens': 0}, {'input_tokens': 100, 'output_tokens': 25})
+        self.assertEqual(u0, {'input_tokens': 100, 'output_tokens': 25})
+        self.assertIsNone(_merge_usage(u0, None))
+        self.assertIsNone(_merge_usage(u0, {'input_tokens': 50, 'output_tokens': None}))
+
+        # Output budget sets finish_reason='length' when exceeded
+        capped = _enforce_output_budget({
+            'model': None, 'content': 'x' * 100, 'finish_reason': 'stop',
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 30, 'total_tokens': 40},
+        }, max_tokens=10)
+        self.assertEqual(capped['finish_reason'], 'length')
+        self.assertLessEqual(len(capped['content'].encode('utf-8')), 40)
+
+        # Codex and Claude return model=None when CLI output omits model metadata
+        fake_codex_out = (
+            json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': '{"ok":true}'}}) + '\n'
+            + json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 12, 'output_tokens': 4}}) + '\n'
+        ).encode('utf-8')
+        with patch('benchmark_subscription_proxy.resolve_cli_command', return_value=['codex']), \
+             patch('benchmark_subscription_proxy.subprocess.run',
+                   return_value=subprocess.CompletedProcess(['codex'], 0, stdout=fake_codex_out, stderr=b'')):
+            res_c = invoke_codex_subscription('codex-subscription/gpt-6-luna', [{'role': 'user', 'content': 'hi'}])
+        self.assertIsNone(res_c['model'])
+
+        fake_claude_out = json.dumps({
+            'is_error': False, 'result': '{"ok":true}', 'modelUsage': {},
+            'usage': {'input_tokens': 10, 'output_tokens': 3}, 'stop_reason': 'end_turn',
+        }).encode('utf-8')
+        with patch('benchmark_subscription_proxy.resolve_cli_command', return_value=['claude']), \
+             patch('benchmark_subscription_proxy.subprocess.run',
+                   return_value=subprocess.CompletedProcess(['claude'], 0, stdout=fake_claude_out, stderr=b'')):
+            res_a = invoke_claude_subscription('claude-subscription/claude-sonnet-5-5', [{'role': 'user', 'content': 'hi'}])
+        self.assertIsNone(res_a['model'])
 
 
 if __name__ == '__main__':

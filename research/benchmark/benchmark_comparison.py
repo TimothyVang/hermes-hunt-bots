@@ -27,7 +27,7 @@ SETTLED_STATUS = {'human': 'final', 'mechanical': 'mechanical'}
 BOOTSTRAP_SAMPLES = 2000
 BOOTSTRAP_SEED = 1729
 AXES = ('os', 'network', 'identity_domain', 'operational_domain', 'dns_domain',
-        'difficulty', 'sophistication')
+        'difficulty', 'sophistication', 'ioc_regime')
 RATE_NAMES = {'precision', 'recall', 'f1', 'support_rate', 'contradicted_rate',
               'invalid_rate', 'false_alarm_rate', 'correct_disposition_rate',
               'decision_coverage', 'brier'}
@@ -183,10 +183,11 @@ def _labels(case):
     actual_os = sorted({asset.get('os_family') for asset in evidence.get('assets', [])
                         if asset.get('os_family') is not None})
     labels = {axis: sorted(coverage.get(axis, [])) for axis in AXES
-              if axis not in ('os', 'difficulty', 'sophistication')}
+              if axis not in ('os', 'difficulty', 'sophistication', 'ioc_regime')}
     labels['os'] = actual_os
     labels['difficulty'] = [scenario.get('difficulty', {}).get('band')]
     labels['sophistication'] = [scenario.get('sophistication', {}).get('band')]
+    labels['ioc_regime'] = [scenario['ioc_regime']] if scenario.get('ioc_regime') else []
     mismatch = set(actual_os) != set(coverage.get('os', []))
     return labels, mismatch
 
@@ -458,6 +459,7 @@ def build_comparison(snapshot):
                         truth_frozen=score['truth_frozen'] if score else None,
                         timing_contended=timing_contended,
                         split=scenario.get('split'), provenance=scenario.get('provenance'),
+                        ioc_regime=scenario.get('ioc_regime'),
                         detector_condition=_condition(case), budgets=experiment.get('budgets'))
         for key in ('workflow_sha256', 'prompt_contract_sha256', 'coverage_sha256', 'rubric_version'):
             controls[key] = experiment.get(key)

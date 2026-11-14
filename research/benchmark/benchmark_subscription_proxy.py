@@ -143,7 +143,7 @@ def resolve_cli_binary(name):
     return cmd[0] if cmd else None
 
 
-def _render_messages(messages, response_format=None):
+def _render_messages(messages, response_format=None, max_tokens=None):
     system_parts = []
     convo_parts = []
     for msg in messages:
@@ -171,6 +171,10 @@ def _render_messages(messages, response_format=None):
                 'Your output MUST be a single raw JSON object conforming to this JSON Schema '
                 '(no markdown fences, no commentary):\n' + json.dumps(schema, separators=(',', ':'))
             )
+    if type(max_tokens) is int and max_tokens > 0:
+        system_parts.append(
+            'Keep your response concise and strictly within {} output tokens.'.format(max_tokens)
+        )
     system_prompt = '\n\n'.join(p for p in system_parts if p.strip()) or (
         'Follow the user prompt exactly and output raw JSON without markdown fences.'
     )
@@ -178,12 +182,29 @@ def _render_messages(messages, response_format=None):
     return system_prompt, user_prompt
 
 
-def invoke_claude_subscription(model_requested, messages, response_format=None, timeout_seconds=180):
+def _enforce_output_budget(result, max_tokens):
+    """Enforce `max_tokens` on subscription CLI responses that have no native token flag."""
+    if type(max_tokens) is not int or max_tokens <= 0:
+        return result
+    content = str(result.get('content') or '')
+    usage = result.get('usage') or {}
+    out_tok = int(usage.get('completion_tokens') or 0)
+    max_utf8_bytes = max_tokens * 4
+    encoded = content.encode('utf-8')
+    if out_tok > max_tokens or len(encoded) > max_utf8_bytes:
+        result = dict(result, finish_reason='length')
+        if len(encoded) > max_utf8_bytes:
+            result['content'] = encoded[:max_utf8_bytes].decode('utf-8', 'ignore')
+    return result
+
+
+def invoke_claude_subscription(model_requested, messages, response_format=None, timeout_seconds=180,
+                               max_tokens=None):
     """Run one stateless prompt through `claude -p` using OAuth subscription auth."""
     cmd_prefix = resolve_cli_command('claude')
     if not cmd_prefix:
         raise RuntimeError('claude CLI not found')
-    system_prompt, user_prompt = _render_messages(messages, response_format)
+    system_prompt, user_prompt = _render_messages(messages, response_format, max_tokens=max_tokens)
     cli_model = model_requested
     if cli_model.startswith('claude-subscription/'):
         cli_model = cli_model.split('/', 1)[1]
@@ -223,14 +244,14 @@ def invoke_claude_subscription(model_requested, messages, response_format=None, 
         raise RuntimeError('claude CLI reported error')
     result_text = str(payload.get('result') or '')
     model_usage = payload.get('modelUsage') or {}
-    actual_model = next(iter(model_usage.keys()), cli_model)
+    actual_model = next(iter(model_usage.keys()), None)
     usage = payload.get('usage') or {}
     cached_in = int(usage.get('cache_read_input_tokens') or 0)
     direct_in = int(usage.get('input_tokens') or 0) + int(usage.get('cache_creation_input_tokens') or 0)
     total_in = direct_in + cached_in
     out_tok = int(usage.get('output_tokens') or 0)
     stop_reason = 'length' if payload.get('stop_reason') == 'max_tokens' else 'stop'
-    return {
+    return _enforce_output_budget({
         'model': actual_model,
         'content': result_text,
         'finish_reason': stop_reason,
@@ -240,7 +261,7 @@ def invoke_claude_subscription(model_requested, messages, response_format=None, 
             'total_tokens': total_in + out_tok,
             'prompt_tokens_details': {'cached_tokens': cached_in},
         },
-    }
+    }, max_tokens)
 
 
 def _default_codex_model():
@@ -255,12 +276,13 @@ def _default_codex_model():
     return 'codex-subscription'
 
 
-def invoke_codex_subscription(model_requested, messages, response_format=None, timeout_seconds=180):
+def invoke_codex_subscription(model_requested, messages, response_format=None, timeout_seconds=180,
+                              max_tokens=None):
     """Run one stateless tool-disabled prompt through `codex exec --json` using OAuth."""
     cmd_prefix = resolve_cli_command('codex')
     if not cmd_prefix:
         raise RuntimeError('codex CLI not found')
-    system_prompt, user_prompt = _render_messages(messages, response_format)
+    system_prompt, user_prompt = _render_messages(messages, response_format, max_tokens=max_tokens)
     combined_prompt = (
         '<system_instructions>\n' + system_prompt + '\n</system_instructions>\n\n' + user_prompt
     )
@@ -308,7 +330,7 @@ def invoke_codex_subscription(model_requested, messages, response_format=None, t
 
     last_text = ''
     in_tok = cached_tok = out_tok = 0
-    reported_model = cli_model if (cli_model and cli_model not in ('codex-default', 'default')) else _default_codex_model()
+    reported_model = None
     for line in proc.stdout.decode('utf-8', 'replace').splitlines():
         line = line.strip()
         if not line.startswith('{'):
@@ -342,7 +364,7 @@ def invoke_codex_subscription(model_requested, messages, response_format=None, t
 
     if not last_text.strip():
         raise RuntimeError('codex CLI returned empty agent_message')
-    return {
+    return _enforce_output_budget({
         'model': reported_model,
         'content': last_text,
         'finish_reason': 'stop',
@@ -352,23 +374,49 @@ def invoke_codex_subscription(model_requested, messages, response_format=None, t
             'total_tokens': in_tok + out_tok,
             'prompt_tokens_details': {'cached_tokens': min(cached_tok, in_tok)},
         },
-    }
+    }, max_tokens)
 
 
-def dispatch_subscription_model(model_requested, messages, response_format=None, timeout_seconds=180):
+PUBLIC_PROVENANCE = ('synthetic', 'public_replay')
+
+
+def _validate_generation_params(req):
+    """Validate OpenAI Chat Completions generation parameters for CLI subscription dispatch."""
+    temp = req.get('temperature')
+    if temp is not None:
+        if type(temp) not in (int, float) or type(temp) is bool or float(temp) != 0.0:
+            raise ValueError('subscription proxy supports only default deterministic temperature (0 or null)')
+    seed = req.get('seed')
+    if seed is not None:
+        raise ValueError('subscription proxy does not support sampling seed')
+    raw_max = req.get('max_tokens') if req.get('max_tokens') is not None else req.get('max_completion_tokens')
+    if raw_max is not None:
+        if type(raw_max) is not int or type(raw_max) is bool or raw_max < 1:
+            raise ValueError('invalid max_tokens')
+    return raw_max
+
+
+def dispatch_subscription_model(model_requested, messages, response_format=None, timeout_seconds=180,
+                                max_tokens=None):
     if not isinstance(model_requested, str) or not model_requested.strip():
         raise ValueError('missing model identifier')
     lower = model_requested.lower()
     if lower.startswith(('claude', 'sonnet', 'opus', 'haiku')):
-        return invoke_claude_subscription(model_requested, messages, response_format, timeout_seconds)
-    return invoke_codex_subscription(model_requested, messages, response_format, timeout_seconds)
+        return invoke_claude_subscription(
+            model_requested, messages, response_format, timeout_seconds, max_tokens=max_tokens
+        )
+    return invoke_codex_subscription(
+        model_requested, messages, response_format, timeout_seconds, max_tokens=max_tokens
+    )
 
 
 class SubscriptionThreadingHTTPServer(ThreadingHTTPServer):
-    def __init__(self, server_address, handler_class, auth_token, default_timeout=240):
+    def __init__(self, server_address, handler_class, auth_token, default_timeout=240,
+                 allow_private_evidence=False):
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.default_timeout = int(default_timeout)
+        self.allow_private_evidence = bool(allow_private_evidence)
 
 
 class SubscriptionProxyHandler(BaseHTTPRequestHandler):
@@ -440,10 +488,24 @@ class SubscriptionProxyHandler(BaseHTTPRequestHandler):
                 return
             model = str(req.get('model') or '')
             messages = req.get('messages') or []
+            if type(messages) is not list:
+                self._send_json(400, {'error': 'invalid_messages'})
+                return
+            prov = (self.headers.get('X-Benchmark-Provenance') or '').strip()
+            has_benchmark_evidence = any(
+                type(m) is dict and '"untrusted_public_evidence"' in str(m.get('content') or '')
+                for m in messages
+            )
+            if ((prov and prov not in PUBLIC_PROVENANCE) or (has_benchmark_evidence and prov not in PUBLIC_PROVENANCE)):
+                if not getattr(self.server, 'allow_private_evidence', False):
+                    self._send_json(403, {'error': 'private_evidence_release_required'})
+                    return
+            max_tokens = _validate_generation_params(req)
             response_format = req.get('response_format')
             timeout_s = getattr(self.server, 'default_timeout', 240)
             result = dispatch_subscription_model(
-                model, messages, response_format=response_format, timeout_seconds=timeout_s
+                model, messages, response_format=response_format, timeout_seconds=timeout_s,
+                max_tokens=max_tokens,
             )
             self._send_json(200, {
                 'id': 'subproxy-' + str(int(time.time() * 1000)),
@@ -463,11 +525,15 @@ class SubscriptionProxyHandler(BaseHTTPRequestHandler):
             self._send_json(502, {'error': type(exc).__name__})
 
 
-def start_background_server(host='127.0.0.1', port=0, timeout_seconds=240, auth_token=None):
+def start_background_server(host='127.0.0.1', port=0, timeout_seconds=240, auth_token=None,
+                            allow_private_evidence=False):
     if host != '127.0.0.1':
         raise ValueError('Subscription proxy binds only to 127.0.0.1')
     token = auth_token if (isinstance(auth_token, str) and len(auth_token) >= 16) else secrets.token_hex(32)
-    return SubscriptionThreadingHTTPServer((host, port), SubscriptionProxyHandler, token, timeout_seconds)
+    return SubscriptionThreadingHTTPServer(
+        (host, port), SubscriptionProxyHandler, token, timeout_seconds,
+        allow_private_evidence=allow_private_evidence,
+    )
 
 
 def main(argv=None):
@@ -479,6 +545,11 @@ def main(argv=None):
         default='BENCH_MODEL_SUBSCRIPTION_TOKEN',
         help='Environment variable holding the required Bearer token (>=16 chars); generates a fresh token if unset',
     )
+    ap.add_argument(
+        '--allow-released-private-evidence',
+        action='store_true',
+        help='Allow benchmark prompts with non-public provenance after runner release verification',
+    )
     args = ap.parse_args(argv)
     env_tok = os.environ.get(args.token_env, '') if args.token_env else ''
     generated = False
@@ -487,7 +558,10 @@ def main(argv=None):
     else:
         token = secrets.token_hex(32)
         generated = True
-    server = start_background_server('127.0.0.1', args.port, timeout_seconds=args.timeout, auth_token=token)
+    server = start_background_server(
+        '127.0.0.1', args.port, timeout_seconds=args.timeout, auth_token=token,
+        allow_private_evidence=args.allow_released_private_evidence,
+    )
     actual_port = server.server_address[1]
     info = {
         'status': 'listening',

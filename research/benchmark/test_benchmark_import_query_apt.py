@@ -82,6 +82,15 @@ class QueryAptImporterTests(unittest.TestCase):
                 ]
                 zf.writestr('system_labels/clients_1_and_2/malicious_events_class_1.jsonl', '\n'.join(json.dumps(x) for x in win_lines) + '\n')
                 zf.writestr('system_labels/internal_server/malicious_events_class_1.jsonl', '\n'.join(json.dumps(x) for x in lin_lines) + '\n')
+            with zipfile.ZipFile(ded_dir / 'system_logs_auditbeat.zip', 'w') as lzf:
+                bg_lin = {
+                    '@timestamp': '2025-01-10T11:35:00Z',
+                    'agent': {'hostname': 'internalserver'},
+                    'event': {'action': 'executed'},
+                    'process': {'executable': '/usr/bin/ls', 'args': ['ls', '-la']},
+                    'user': {'name': 'sysop'},
+                }
+                lzf.writestr('auditbeat-2025-01-10.jsonl', json.dumps(bg_lin) + '\n')
 
             rep_d = import_dedale_query_case(ded_dir, root / 'out_ded', ioc_regime='known_ioc_pivot')
             self.assertEqual(rep_d['sophistication_band'], 'S4')
@@ -89,9 +98,15 @@ class QueryAptImporterTests(unittest.TestCase):
             dconn = sqlite3.connect(str(Path(rep_d['case_dir']) / 'public' / 'events.sqlite3'))
             try:
                 rids = [r[0] for r in dconn.execute('SELECT record_id FROM events').fetchall()]
+                lin_fsets = [
+                    frozenset(json.loads(r[0]).keys())
+                    for r in dconn.execute("SELECT fields_json FROM events WHERE source_id = 'linux-auditbeat'").fetchall()
+                ]
             finally:
                 dconn.close()
             self.assertTrue(all(':a' not in rid and ':b' not in rid for rid in rids))
+            self.assertGreaterEqual(len(lin_fsets), 3)
+            self.assertEqual(len(set(lin_fsets)), 1)
 
             # 2. FullAPT-2025 fixture
             tgz = root / 'apt-1-labeled-datasets.tar.gz'

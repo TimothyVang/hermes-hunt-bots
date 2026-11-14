@@ -278,7 +278,7 @@ def _context(call_spec, prompt):
         prompt = prompt.encode('utf-8')
     if type(prompt) is not bytes or prompt != canonical or store.read_artifact(trial['trial_id'], spec['prompt_artifact']) != canonical:
         _fail('fingerprint_conflict', 'call.prompt')
-    if runner.release_required(runner._case(frozen, trial)['scenario'], spec['model']):
+    if runner.release_required(runner._case(frozen, trial)['scenario'], spec['model'], team):
         _current_authorization(store, trial, spec['model'], human_only=True)
     return store, spec, trial, frozen, team, canonical
 
@@ -437,7 +437,9 @@ def execute_call(call_spec, prompt):
                             model['base_url'], model['timeout_seconds'],
                             expected_model_ids=model['expected_model_ids'],
                             max_response_bytes=receipt['max_output_bytes'],
-                            query_executor=qexec, stage_key=spec['stage_key'], **options)
+                            query_executor=qexec, stage_key=spec['stage_key'],
+                            provenance=runner._case(frozen, trial)['scenario']['provenance'],
+                            **options)
                     finally:
                         if qexec is not None:
                             query_summary = qexec.summary()

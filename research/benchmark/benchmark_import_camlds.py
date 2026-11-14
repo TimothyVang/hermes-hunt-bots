@@ -510,8 +510,11 @@ def import_camlds_case(
             cmd_tokens = [
                 tok.lower()
                 for tok in re.split(r'[^A-Za-z0-9_.-]+', cmd_str)
-                if len(tok) >= 4 and tok.lower() not in ('sudo', 'bash', 'echo', 'export')
+                if len(tok) >= 4 and tok.lower() not in ('bash', 'echo', 'export')
             ]
+            if len(cmd_tokens) > 1 and 'sudo' in cmd_tokens:
+                cmd_tokens = [tok for tok in cmd_tokens if tok != 'sudo']
+            action_type = str(am.get('type') or '').lower()
 
             matched = []
             for ev in collected:
@@ -523,7 +526,9 @@ def import_camlds_case(
                 txt_l = ev['raw_match_text'].lower()
                 if cmd_tokens and any(tok in txt_l for tok in cmd_tokens):
                     matched.append((0, ev))
-                elif ev['priority'] >= 3:
+                elif (not cmd_tokens and primary_tech.startswith('T1078')
+                      and action_type in ('ssh', 'vnc')
+                      and ('accepted ' in txt_l or 'sshd' in txt_l and 'session opened' in txt_l)):
                     matched.append((1, ev))
 
             if not matched:

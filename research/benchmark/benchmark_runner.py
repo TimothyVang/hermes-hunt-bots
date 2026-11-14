@@ -31,7 +31,8 @@ from benchmark_contracts import (REVIEW_POLICY, WORKFLOW_DEPENDENCIES as DEPENDE
                                  WORKFLOW_LEDGER_ROLES as LEDGER_ROLES, BenchmarkError,  # noqa: F401
                                  call_cost_bound, canonical_bytes, confined_file, decode_json,
                                  digest_bytes, max_concurrent_calls, parse_utc, route_is_paid,
-                                 validate_benchmark_workflow, validate_public_bundle, validate_state_root)
+                                 route_leaves_machine, validate_benchmark_workflow,
+                                 validate_public_bundle, validate_state_root)
 from benchmark_store import BenchmarkStore, STAGE_ROLES, _frozen, automatic_retry, call_timing
 from benchmark_decisions import (WORKFLOW_TITLE, WORKFLOW_SCOPE, WORKFLOW_ACCEPTANCE,
                                  advanced_output, auto_advance, auto_reconciled, auto_recover, auto_recovery,
@@ -676,9 +677,9 @@ def _source_identity():
 PUBLIC_PROVENANCE = ('synthetic', 'public_replay')
 
 
-def release_required(scenario, model):
+def release_required(scenario, model, team=None):
     """Private evidence needs a recorded release before reaching a non-local route."""
-    return scenario['provenance'] not in PUBLIC_PROVENANCE and route_is_paid(model)
+    return scenario['provenance'] not in PUBLIC_PROVENANCE and route_leaves_machine(model, team)
 
 
 def _authorize(store, frozen, trial, model, preceding_seconds=0):
@@ -687,7 +688,7 @@ def _authorize(store, frozen, trial, model, preceding_seconds=0):
     # before it may leave this machine; local loopback routes and public or
     # synthetic evidence need none.
     model_sha = digest_bytes(canonical_bytes(model))
-    if release_required(_case(frozen, trial)['scenario'], model):
+    if release_required(_case(frozen, trial)['scenario'], model, _team(frozen, trial)):
         authorizations = store.trial_authorizations(trial['trial_id'])
         with store.connection() as db:
             authorized = False

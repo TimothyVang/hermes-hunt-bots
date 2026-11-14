@@ -88,6 +88,32 @@ def _plane_for_source(event_source):
     return 'compute'
 
 
+_CLOUDTRAIL_SECRET_KEYS = frozenset({
+    'password', 'newpassword', 'oldpassword', 'masteruserpassword', 'secretaccesskey',
+    'sessiontoken', 'privatekey', 'certificatebody', 'certificatechain', 'secretstring',
+    'secretbinary', 'clientsecret', 'plaintext', 'keymaterial', 'accesstoken',
+    'refreshtoken', 'authtoken', 'apikey', 'credentials',
+})
+
+
+def _redact_cloudtrail_struct(value, depth=0):
+    """Recursively redact structured CloudTrail secret keys before JSON serialization."""
+    if depth > 24:
+        return '[REDACTED:depth]'
+    if isinstance(value, dict):
+        cleaned = {}
+        for k, v in value.items():
+            key_norm = str(k).casefold().replace('-', '').replace('_', '')
+            if key_norm in _CLOUDTRAIL_SECRET_KEYS:
+                cleaned[str(k)] = '[REDACTED:secret]'
+            else:
+                cleaned[str(k)] = _redact_cloudtrail_struct(v, depth + 1)
+        return cleaned
+    if isinstance(value, list):
+        return [_redact_cloudtrail_struct(item, depth + 1) for item in value]
+    return value
+
+
 def _scrub_aws_text(text, pseudo):
     if not text:
         return ''
@@ -252,11 +278,13 @@ def import_invictus_case(
         raw_ua = str(rec.get('userAgent') or '')
         clean_ua = _scrub_aws_text(raw_ua, pseudo)
         req_params = _scrub_aws_text(
-            json.dumps(rec.get('requestParameters'), sort_keys=True) if rec.get('requestParameters') else '',
+            json.dumps(_redact_cloudtrail_struct(rec.get('requestParameters')), sort_keys=True)
+            if rec.get('requestParameters') else '',
             pseudo,
         )
         resp_elems = _scrub_aws_text(
-            json.dumps(rec.get('responseElements'), sort_keys=True) if rec.get('responseElements') else '',
+            json.dumps(_redact_cloudtrail_struct(rec.get('responseElements')), sort_keys=True)
+            if rec.get('responseElements') else '',
             pseudo,
         )
         principal_str = _scrub_aws_text(

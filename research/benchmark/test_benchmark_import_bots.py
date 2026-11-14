@@ -415,6 +415,17 @@ class CliTest(BotsTestBase):
                                                               str(self.root / 'x')])
         self.assertEqual((code, err.strip()), (2, 'error: invalid_identifier: incident'))
 
+    def test_v1_json_records_bounds_single_readline_allocation(self):
+        import gzip
+        gz_path = self.root / 'oversized.json.gz'
+        with gzip.open(gz_path, 'wb') as handle:
+            handle.write(b'{' + (b'a' * (bots.MAX_RECORD_BYTES + 128)))
+        item = {'path': gz_path, 'name': 'oversized.json.gz'}
+        win = (otrf.parse_utc(START, 'start'), otrf.parse_utc(END, 'end'))
+        with self.assertRaises(bots.BenchmarkError) as ctx:
+            list(bots._json_records(item, 1, win, {}))
+        self.assertEqual(ctx.exception.code, 'line_too_large')
+
 
 if __name__ == '__main__':
     unittest.main()

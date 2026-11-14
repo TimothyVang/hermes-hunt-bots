@@ -313,12 +313,21 @@ def extract_event_indicators(events):
         svc = fields.get('ServiceName') or fields.get('service_name')
         if isinstance(svc, str) and svc.strip() and svc.strip() != '-':
             found.append(('service_name', svc.strip()))
-        for fkey in ('OriginalFileName', 'Image', 'image', 'executable', 'NewProcessName', 'exe', '_EXE'):
+        for fkey in ('OriginalFileName', 'Image', 'image', 'executable', 'NewProcessName',
+                     'exe', '_EXE', 'initiating_process', 'InitiatingProcessFileName',
+                     'process_name', 'FileName'):
             fval = fields.get(fkey)
             if isinstance(fval, str) and fval.strip() and fval.strip() not in ('-', '?'):
                 base_name = posixpath.basename(ntpath.basename(fval.strip()))
                 if base_name and base_name not in ('-', '?', '.', '..'):
                     found.append(('file_name', base_name))
+        for cmd_key in ('CommandLine', 'command_line', 'initiating_cmdline', 'process_cmdline', 'cmd'):
+            cmd_val = fields.get(cmd_key)
+            if isinstance(cmd_val, str) and cmd_val.strip():
+                for url_match in re.findall(r'https?://[^\s"\'<>]{4,240}', cmd_val):
+                    found.append(('url', url_match.rstrip('.,;)')))
+                for bin_match in re.findall(r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{3,64}\.(?:exe|dll|ps1|bat|vbs|sh|py|elf))(?![A-Za-z0-9_.-])', cmd_val, flags=re.IGNORECASE):
+                    found.append(('file_name', bin_match))
         # 3. Network addresses and DNS names (including salted pseudonyms, enabling feed joins!)
         for ip_key in ('DestinationIp', 'dest_ip', 'id.resp_h', 'sourceIPAddress', 'source_ip',
                        'Client_IPAddress', 'client_ip', 'IpAddress', 'ip_address', 'src_ip', 'SourceIp'):
@@ -360,12 +369,17 @@ def extract_event_indicators(events):
 
 
 # High-signal indicator types preferred for realistic entry-step IOC pivoting
-_HIGH_SIGNAL_TYPES = ('sha256', 'imphash', 'md5', 'named_pipe', 'ja3', 'ipv4', 'domain', 'user_agent', 'service_name')
+_HIGH_SIGNAL_TYPES = ('sha256', 'imphash', 'md5', 'named_pipe', 'ja3', 'url', 'ipv4', 'domain', 'user_agent', 'service_name')
 _COMMON_BENIGN_BINARIES = frozenset({
     'svchost.exe', 'lsass.exe', 'services.exe', 'explorer.exe', 'cmd.exe',
     'powershell.exe', 'pwsh.exe', 'conhost.exe', 'bash', 'sh', 'sshd',
     'sudo', 'systemd', 'python', 'python3', 'auditd', 'cron', 'whoami.exe',
 })
+_SCENARIO_TI_FEED = 'scenario-ti-feed'
+_SCENARIO_TI_NOTE = (
+    'Scenario threat-intel feed indicator seeded for benchmark evaluation; '
+    'corroborate host process lineage and identity context in telemetry before attributing.'
+)
 
 
 def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729, extra_iocs=(),
@@ -426,33 +440,37 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
         entries_by_id[ioc_id] = record
         return True
 
-    # 1. In `known_ioc_pivot`, publish at most 2 high-signal indicators from ONLY the earliest
-    #    entry step, withholding all later steps so hunters must pivot behaviorally!
+    case_first_seen = (evidence.get('window_utc') or {}).get('start_inclusive') or '2024-01-01T00:00:00Z'
+
+    # 1. In `known_ioc_pivot`, publish at most 2 high-signal indicators from the earliest
+    #    entry step with extractable indicators, withholding later steps so hunters must pivot behaviorally!
     if regime == 'known_ioc_pivot' and truth_steps:
-        entry_step = truth_steps[0]
-        entry_eids = sorted({eid for group in entry_step['support_sets'] for eid in group})
-        candidates = []
-        for eid in entry_eids:
-            for itype, ival in extracted.get(eid, ()):
-                if itype == 'file_name' and ival.lower() in _COMMON_BENIGN_BINARIES:
-                    continue
-                if itype in _HIGH_SIGNAL_TYPES:
-                    rank = _HIGH_SIGNAL_TYPES.index(itype)
-                else:
-                    rank = len(_HIGH_SIGNAL_TYPES)
-                candidates.append((rank, itype, ival))
-        candidates.sort()
-        for _, itype, ival in candidates:
-            if len(active_truth_indicators) >= 2:
+        for candidate_step in truth_steps:
+            step_eids = sorted({eid for group in candidate_step['support_sets'] for eid in group})
+            candidates = []
+            for eid in step_eids:
+                for itype, ival in extracted.get(eid, ()):
+                    if itype == 'file_name' and ival.lower() in _COMMON_BENIGN_BINARIES:
+                        continue
+                    if itype in _HIGH_SIGNAL_TYPES:
+                        rank = _HIGH_SIGNAL_TYPES.index(itype)
+                    else:
+                        rank = len(_HIGH_SIGNAL_TYPES)
+                    candidates.append((rank, itype, ival))
+            candidates.sort()
+            for _, itype, ival in candidates:
+                if len(active_truth_indicators) >= 2:
+                    break
+                if add_entry(
+                    itype, ival, 'c2_framework_implant' if itype in ('ipv4', 'ipv6', 'domain', 'url', 'named_pipe', 'ja3')
+                    else 'credential_access_tool',
+                    0.89, 'active', _SCENARIO_TI_FEED, case_first_seen, _SCENARIO_TI_NOTE,
+                ):
+                    active_truth_indicators.append({'indicator_type': itype, 'indicator_value': ival})
+            if active_truth_indicators:
                 break
-            if add_entry(
-                itype, ival, 'c2_framework_implant' if itype in ('ipv4', 'ipv6', 'domain', 'named_pipe', 'ja3')
-                else 'credential_access_tool',
-                0.89, 'active', 'public-cti-community-feed', '2024-01-15T00:00:00Z',
-                'Public CTI indicator reported in external telemetry; corroborate host process '
-                'lineage and identity context before attributing.',
-            ):
-                active_truth_indicators.append({'indicator_type': itype, 'indicator_value': ival})
+        if not active_truth_indicators:
+            _fail('missing_known_ioc_pivot', 'ioc_feed')
 
     for itype, ival in sorted(truth_indicator_pool):
         if not any(x['indicator_type'] == itype and x['indicator_value'] == ival for x in active_truth_indicators):
@@ -467,7 +485,7 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
                 continue
             if itype == 'file_name' and ival.lower() in _COMMON_BENIGN_BINARIES:
                 continue
-            if itype in ('ipv4', 'ipv6', 'domain', 'user_agent', 'sha256', 'md5', 'service_name', 'file_name'):
+            if itype in ('ipv4', 'ipv6', 'domain', 'url', 'user_agent', 'sha256', 'md5', 'service_name', 'file_name'):
                 decoy_candidates.append((itype, ival))
     dedup_decoys = sorted(set(decoy_candidates))
     rng.shuffle(dedup_decoys)
@@ -475,12 +493,10 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
         is_stale = len(benign_decoy_indicators) == 0
         status = 'historical_rotated' if is_stale else 'known_false_positive'
         conf = 0.41 if is_stale else 0.28
-        category = 'scanner_shared_infra' if itype in ('ipv4', 'ipv6', 'domain') else 'dual_use_admin_tool'
+        category = 'scanner_shared_infra' if itype in ('ipv4', 'ipv6', 'domain', 'url') else 'dual_use_admin_tool'
         if add_entry(
-            itype, ival, category, conf, status, 'public-cti-community-feed',
-            '2022-06-01T00:00:00Z',
-            'Public CTI indicator observed on shared infrastructure or dual-use tooling; '
-            'corroborate host process lineage and identity context before attributing.',
+            itype, ival, category, conf, status, _SCENARIO_TI_FEED,
+            case_first_seen, _SCENARIO_TI_NOTE,
         ):
             benign_decoy_indicators.append({'indicator_type': itype, 'indicator_value': ival, 'status': status})
 
@@ -600,7 +616,7 @@ def attach_ioc_feed(case_dir, *, regime='known_ioc_pivot', seed=1729, extra_iocs
     evidence_bytes = canonical_bytes(updated_evidence)
     evidence_sha = digest_bytes(evidence_bytes)
 
-    updated_scenario = dict(scenario, evidence_manifest_sha256=evidence_sha)
+    updated_scenario = dict(scenario, evidence_manifest_sha256=evidence_sha, ioc_regime=regime)
     validate_scenario(updated_scenario, coverage)
 
     updated_truth = dict(truth, evidence_manifest_sha256=evidence_sha)

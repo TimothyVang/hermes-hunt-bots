@@ -853,7 +853,12 @@ def _json_records(item, number, window, state):
     previous = None
     try:
         with gzip.open(item['path'], 'rb') as handle:
-            for ordinal, line in enumerate(handle, 1):
+            ordinal = 0
+            while True:
+                line = handle.readline(MAX_RECORD_BYTES + 1)
+                if not line:
+                    break
+                ordinal += 1
                 if ordinal >= LINE_STRIDE:
                     _fail('too_many_records', 'data.' + item['name'])
                 field = 'data.%s.%d' % (item['name'], ordinal)

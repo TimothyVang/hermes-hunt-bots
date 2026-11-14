@@ -467,11 +467,11 @@ def import_dedale_query_case(
 
                 fields = pseudo.clean_fields({
                     'timestamp_original': ts_raw,
-                    'event_code': ev_meta.get('code'),
-                    'provider': ev_meta.get('provider'),
-                    'executable': exe,
-                    'command_line': cmd,
-                    'message': str(obj.get('message') or '')[:1024],
+                    'event_code': ev_meta.get('code') if ev_meta.get('code') is not None else 0,
+                    'provider': str(ev_meta.get('provider') or 'Windows'),
+                    'executable': exe or '-',
+                    'command_line': cmd or '-',
+                    'message': str(obj.get('message') or '-')[:1024],
                 })
                 fields['timestamp_original'] = ts_raw
                 mal_events.append({
@@ -525,10 +525,10 @@ def import_dedale_query_case(
 
                 fields = pseudo.clean_fields({
                     'timestamp_original': ts_raw,
-                    'action': ev_meta.get('action'),
-                    'executable': exe,
-                    'command_line': cmd,
-                    'user': pseudo.pseudonymize('user', str((obj.get('user') or {}).get('name') or '')),
+                    'action': str(ev_meta.get('action') or 'event'),
+                    'executable': exe or '-',
+                    'command_line': cmd or '-',
+                    'user': pseudo.pseudonymize('user', str((obj.get('user') or {}).get('name') or '')) or 'unknown',
                 })
                 fields['timestamp_original'] = ts_raw
                 mal_events.append({
@@ -593,10 +593,11 @@ def import_dedale_query_case(
                             continue
                         fields = pseudo.clean_fields({
                             'timestamp_original': ts_raw,
-                            'event_code': ev_meta.get('code'),
-                            'provider': ev_meta.get('provider'),
-                            'executable': proc.get('executable'),
-                            'command_line': cmd,
+                            'event_code': ev_meta.get('code') if ev_meta.get('code') is not None else 0,
+                            'provider': str(ev_meta.get('provider') or 'Windows'),
+                            'executable': str(proc.get('executable') or '-'),
+                            'command_line': cmd or '-',
+                            'message': str(obj.get('message') or '-')[:1024],
                         })
                         fields['timestamp_original'] = ts_raw
                         bg_events.append({
@@ -639,14 +640,18 @@ def import_dedale_query_case(
                             continue
                         proc = obj.get('process') or {}
                         exe = str(proc.get('executable') or '')
+                        args_list = proc.get('args')
+                        cmd = ' '.join(str(x) for x in args_list) if isinstance(args_list, list) else str(proc.get('command_line') or exe)
                         ev_meta = obj.get('event') or {}
-                        sig = (ts_raw, 'internalserver', str(ev_meta.get('action') or ''), exe[:80])
+                        sig = (ts_raw, 'internalserver', str(ev_meta.get('action') or ''), cmd[:80])
                         if sig in seen_sigs:
                             continue
                         fields = pseudo.clean_fields({
                             'timestamp_original': ts_raw,
-                            'action': ev_meta.get('action'),
-                            'executable': exe,
+                            'action': str(ev_meta.get('action') or 'event'),
+                            'executable': exe or '-',
+                            'command_line': cmd or '-',
+                            'user': pseudo.pseudonymize('user', str((obj.get('user') or {}).get('name') or '')) or 'unknown',
                         })
                         fields['timestamp_original'] = ts_raw
                         bg_events.append({

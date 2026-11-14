@@ -96,6 +96,11 @@ class GoldenSamlImporterTests(unittest.TestCase):
             validate_scenario(load_json(case_dir / 'scenario.json'), cov)
             validate_truth(load_json(case_dir / 'evaluator' / 'truth.json'), ev)
 
+            known_report = import_goldensaml_case(
+                ds, root / 'cases_known', split='development', ioc_regime='known_ioc_pivot'
+            )
+            self.assertGreaterEqual(known_report['ioc_feed']['active_truth_matches'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

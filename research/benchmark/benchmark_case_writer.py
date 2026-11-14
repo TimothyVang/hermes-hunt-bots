@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 
 import benchmark_paths  # noqa: F401
@@ -259,6 +260,7 @@ class CasePseudonymizer:
         self._forward = {}
         self._reverse = {}
         self._by_kind = {}
+        self._short_host_fqdn = {}
         self._known_dirty = True
         self._known = KnownIdentities({})
         self.sanitize_totals = new_totals()
@@ -284,6 +286,9 @@ class CasePseudonymizer:
         folded = raw.casefold()
         if kind == 'user' and folded in _SYSTEM_USERS:
             return raw
+        existing = self._forward.get((kind, folded))
+        if existing is not None:
+            return existing
         if kind in ('ip', 'ipv4', 'ipv6'):
             try:
                 addr = ipaddress.ip_address(raw)
@@ -297,11 +302,13 @@ class CasePseudonymizer:
         else:
             prefix = _KIND_PREFIX.get(kind, 'value')
             norm = folded
-            if kind == 'host' and '.' in norm:
+            if kind == 'host' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
                 short = norm.split('.', 1)[0]
-                if len(short) >= 4:
-                    short_tok = self._token('host', short)
-                    self._record('host', short, short_tok)
+                if len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
+                    token = self._token('host', short)
+                    self._record('host', short, token)
+                    self._record('host', raw, token)
+                    return token
 
         token = self._token(prefix, norm)
         self._record(kind, raw, token)
@@ -554,6 +561,83 @@ def write_curated_case(
     eval_dir = case_dir / 'evaluator'
     public_dir.mkdir(parents=True, exist_ok=False)
     eval_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        return _populate_curated_case(
+            case_id=case_id,
+            case_hash=case_hash,
+            case_dir=case_dir,
+            public_dir=public_dir,
+            eval_dir=eval_dir,
+            family_id=family_id,
+            split=split,
+            provenance=provenance,
+            coverage=coverage,
+            coverage_tags=coverage_tags,
+            difficulty_factors=difficulty_factors,
+            sophistication=sophistication,
+            source_references=source_references,
+            assets=assets,
+            source_list=source_list,
+            outer_start=outer_start,
+            outer_end=outer_end,
+            outer_window=outer_window,
+            decorated=decorated,
+            step_specs=step_specs,
+            edges=edges,
+            pseudonymizer=pseudonymizer,
+            known_gaps=known_gaps,
+            unassessed_asset_ids=unassessed_asset_ids,
+            lookalike_tags=lookalike_tags,
+            control_case=control_case,
+            attestation=attestation,
+            num_windows=num_windows,
+            track=track,
+            ioc_regime=ioc_regime,
+            extra_iocs=extra_iocs,
+            import_notes=import_notes,
+            coverage_path=coverage_path,
+        )
+    except BaseException:
+        shutil.rmtree(str(case_dir), ignore_errors=True)
+        raise
+
+
+def _populate_curated_case(
+    *,
+    case_id,
+    case_hash,
+    case_dir,
+    public_dir,
+    eval_dir,
+    family_id,
+    split,
+    provenance,
+    coverage,
+    coverage_tags,
+    difficulty_factors,
+    sophistication,
+    source_references,
+    assets,
+    source_list,
+    outer_start,
+    outer_end,
+    outer_window,
+    decorated,
+    step_specs,
+    edges,
+    pseudonymizer,
+    known_gaps,
+    unassessed_asset_ids,
+    lookalike_tags,
+    control_case,
+    attestation,
+    num_windows,
+    track,
+    ioc_regime,
+    extra_iocs,
+    import_notes,
+    coverage_path,
+):
 
     tag_to_eid = {}
     eid_to_stamp = {}

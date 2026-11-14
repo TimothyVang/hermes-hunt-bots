@@ -262,6 +262,33 @@ class BenchmarkQueryTests(unittest.TestCase):
         self.assertEqual(metrics['chain_edges']['f1'], 1.0)
         self.assertEqual(metrics['citations']['invalid_rate'], 0.0)
 
+    def test_oversized_first_row_is_shrunk_within_max_bytes_and_huge_offset_is_safe(self):
+        huge_events = [{
+            'event_id': 'e000001',
+            'timestamp_utc': '2026-02-01T00:00:01Z',
+            'source_id': 'sysmon',
+            'asset_id': 'ws01',
+            'event_type': 'sysmon_1',
+            'fields': {
+                'timestamp_original': '2026-02-01T00:00:01Z',
+                'CommandLine': 'powershell.exe -enc ' + ('A' * 6000),
+            },
+            'locator': {'file_sha256': 'a' * 64, 'record_id': 1},
+        }]
+        db_path = self.root / 'huge.sqlite3'
+        spec = build_query_store(db_path, huge_events, (), prefix='e', width=6)
+        with QueryExecutor(db_path, spec['sha256'], max_bytes=320) as qexec:
+            r = qexec.execute('get_events', {'event_ids': ['e000001']})
+            self.assertTrue(r['ok'])
+            self.assertTrue(r['truncated'])
+            self.assertEqual(r['row_count'], 1)
+            self.assertLessEqual(len(canonical_bytes(r['rows'][0])), 320)
+            self.assertLessEqual(qexec.summary()['bytes_returned_total'], 320)
+
+            r_off = qexec.execute('search_events', {'offset': 10 ** 30})
+            self.assertTrue(r_off['ok'])
+            self.assertEqual(r_off['row_count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

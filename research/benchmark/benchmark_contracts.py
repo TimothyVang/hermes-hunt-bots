@@ -99,8 +99,9 @@ _PUBLIC_FORBIDDEN = frozenset(_key_form(key) for key in (
     'observability', 'evidence_manifest_sha256', 'recipe_id', 'recipe_name',
     'difficulty', 'sophistication', 'answer_key', 'answer_key_path',
     'group_ids', 'campaign_receipts', 'scorer_output', 'technique_id',
-    'technique_ids', 'lookalike_event_ids', 'disputed_event_ids',
+    'technique_ids', 'lookalike_event_ids', 'disputed_event_ids', 'ioc_regime',
 ))
+IOC_REGIMES = ('known_ioc_pivot', 'novel_apt_zero_ioc')
 DETECTOR_ATTACK_KEY = 'detector_attack_ids'
 
 
@@ -647,13 +648,15 @@ def _sophistication(value, difficulty):
 
 def validate_scenario(value, coverage):
     validate_coverage(coverage)
-    _fields(value, {'schema_version', 'scenario_id', 'family_id', 'revision', 'split', 'provenance', 'coverage', 'difficulty', 'sophistication', 'attack_release', 'source_references', 'evidence_manifest_sha256'}, 'scenario')
+    _fields(value, {'schema_version', 'scenario_id', 'family_id', 'revision', 'split', 'provenance', 'coverage', 'difficulty', 'sophistication', 'attack_release', 'source_references', 'evidence_manifest_sha256'}, 'scenario', {'ioc_regime'})
     _version(value['schema_version'], 'scenario.schema_version')
     for key in ('scenario_id', 'family_id'):
         _id(value[key], 'scenario.' + key)
     _integer(value['revision'], 'scenario.revision', 1)
     _enum(value['split'], ('development', 'holdout'), 'scenario.split')
     _enum(value['provenance'], ('synthetic', 'lab_export', 'derived_replay', 'public_replay'), 'scenario.provenance')
+    if 'ioc_regime' in value:
+        _enum(value['ioc_regime'], IOC_REGIMES, 'scenario.ioc_regime')
     _coverage_tags(value['coverage'], coverage['axes'], 'scenario.coverage')
     _difficulty(value['difficulty'])
     _sophistication(value['sophistication'], value['difficulty'])
@@ -1009,6 +1012,21 @@ def route_is_paid(spec):
         return url.scheme != 'http' or not ipaddress.ip_address(url.hostname or '').is_loopback
     except ValueError:
         return True
+
+
+def route_leaves_machine(spec, team=None):
+    """Whether dispatching `spec` sends prompt bytes outside a local-only server.
+
+    Cloud subscription bridges (`claude-subscription/*`, `codex-subscription/*`)
+    and non-`local` team deployments forward prompts to remote model backends
+    even when addressed via a loopback HTTP proxy.
+    """
+    if route_is_paid(spec):
+        return True
+    if team is not None and team.get('deployment') != 'local':
+        return True
+    requested = str(spec.get('model_requested') or '').lower()
+    return requested.startswith(('claude-subscription/', 'codex-subscription/'))
 
 
 def call_cost_bound(budget, spec, rates):

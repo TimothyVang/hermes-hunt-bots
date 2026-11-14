@@ -82,7 +82,7 @@ def _endpoint_url(base_url):
     return trimmed + '/chat/completions'
 
 
-def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_bytes):
+def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_bytes, provenance=None):
     raw_req = canonical_bytes(payload)
     headers = {
         'Content-Type': 'application/json',
@@ -90,6 +90,8 @@ def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_byte
     }
     if api_key:
         headers['Authorization'] = 'Bearer ' + api_key
+    if isinstance(provenance, str) and provenance:
+        headers['X-Benchmark-Provenance'] = provenance
     request = urllib.request.Request(url, data=raw_req, headers=headers, method='POST')
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
@@ -103,7 +105,10 @@ def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_byte
             body = resp.read(max_wire_bytes + 1)
     except urllib.error.HTTPError as exc:
         status = exc.code
-        body = b''
+        try:
+            body = exc.read(4096)
+        finally:
+            exc.close()
     except (TimeoutError, socket.timeout) as exc:
         raise TimeoutError('openai_http request timed out') from exc
     except urllib.error.URLError as exc:
@@ -114,6 +119,8 @@ def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_byte
     except OSError:
         raise BenchmarkError('upstream_unreachable', 'model.base_url') from None
 
+    if status == 403 and b'private_evidence_release_required' in body:
+        raise BenchmarkError('release_required', 'authorization')
     if status in (401, 403):
         raise BenchmarkError('authentication_failed', 'model.credential_env')
     if status is None or status < 200 or status >= 300:
@@ -180,25 +187,28 @@ def _extract_turn(wire):
 
 
 def _merge_usage(accumulated, turn_usage):
-    if turn_usage is None:
-        return accumulated
-    if accumulated is None:
-        accumulated = {
-            'input_tokens': 0,
-            'output_tokens': 0,
-        }
-    for key in ('input_tokens', 'output_tokens'):
-        if type(turn_usage.get(key)) is int:
-            accumulated[key] = (accumulated.get(key) or 0) + turn_usage[key]
+    """Aggregate usage across query-track rounds; any missing round makes total usage unknown."""
+    if accumulated is None or turn_usage is None:
+        return None
+    if type(turn_usage.get('input_tokens')) is not int or type(turn_usage.get('output_tokens')) is not int:
+        return None
+    merged = {
+        'input_tokens': accumulated['input_tokens'] + turn_usage['input_tokens'],
+        'output_tokens': accumulated['output_tokens'] + turn_usage['output_tokens'],
+    }
+    if 'input_token_details' in accumulated:
+        merged['input_token_details'] = dict(accumulated['input_token_details'])
+    if 'output_token_details' in accumulated:
+        merged['output_token_details'] = dict(accumulated['output_token_details'])
     in_det = turn_usage.get('input_token_details', {})
     if type(in_det.get('cache_read')) is int:
-        cur = accumulated.setdefault('input_token_details', {'cache_read': 0})
+        cur = merged.setdefault('input_token_details', {'cache_read': 0})
         cur['cache_read'] += in_det['cache_read']
     out_det = turn_usage.get('output_token_details', {})
     if type(out_det.get('reasoning')) is int:
-        cur = accumulated.setdefault('output_token_details', {'reasoning': 0})
+        cur = merged.setdefault('output_token_details', {'reasoning': 0})
         cur['reasoning'] += out_det['reasoning']
-    return accumulated
+    return merged
 
 
 def _strip_optional_json_fence(text):
@@ -245,7 +255,7 @@ def _parse_query_action(turn):
 
 def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
                        expected_model_ids=None, max_response_bytes=65536,
-                       query_executor=None, stage_key=None,
+                       query_executor=None, stage_key=None, provenance=None,
                        max_output_tokens=None, temperature=None, seed=None, response_schema=None):
     """Invoke an OpenAI-compatible Chat Completions endpoint (single-shot or bounded query loop)."""
     validate_parameters(provider, max_output_tokens, temperature, seed, response_schema is not None)
@@ -283,7 +293,10 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
             {'role': 'system', 'content': 'Return ONLY the raw JSON object required by prompt_contract. Never wrap JSON in markdown fences.'},
             {'role': 'user', 'content': prompt},
         ]
-        wire = _post_chat_completions(url, api_key, build_payload(messages, True), request_timeout, max_wire_bytes)
+        wire = _post_chat_completions(
+            url, api_key, build_payload(messages, True), request_timeout, max_wire_bytes,
+            provenance=provenance,
+        )
         turn = _extract_turn(wire)
         final_text = _strip_optional_json_fence(turn['text'])
         return SimpleNamespace(
@@ -298,7 +311,7 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
         {'role': 'system', 'content': QUERY_SYSTEM_INSTRUCTIONS},
         {'role': 'user', 'content': prompt},
     ]
-    total_usage = None
+    total_usage = {'input_tokens': 0, 'output_tokens': 0}
     last_turn = None
     for round_idx in range(MAX_QUERY_ROUNDS):
         remaining_time = deadline - time.monotonic()
@@ -306,7 +319,8 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
             raise TimeoutError('openai_http query-track budget timed out')
         is_last_round = (round_idx == MAX_QUERY_ROUNDS - 1) or (query_executor.calls_remaining == 0)
         wire = _post_chat_completions(
-            url, api_key, build_payload(messages, is_last_round), remaining_time, max_wire_bytes
+            url, api_key, build_payload(messages, is_last_round), remaining_time, max_wire_bytes,
+            provenance=provenance,
         )
         turn = _extract_turn(wire)
         last_turn = turn

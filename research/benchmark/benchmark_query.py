@@ -377,6 +377,46 @@ def _opt_int(args, key, default, lo, hi=None):
     return val
 
 
+def _shrink_row_to_budget(item, max_bytes):
+    """Shrink an oversized first row so its canonical UTF-8 JSON never exceeds `max_bytes`."""
+    encoded = canonical_bytes(item)
+    if len(encoded) <= max_bytes:
+        return item, encoded
+    if type(item) is dict and type(item.get('fields')) is dict:
+        base = dict(item, fields={'fields_truncated': True})
+        base_bytes = canonical_bytes(base)
+        if len(base_bytes) <= max_bytes:
+            budget = max(0, max_bytes - len(base_bytes) - 32)
+            trimmed_fields = {'fields_truncated': True}
+            n_keys = max(1, len(item['fields']))
+            for k in sorted(item['fields']):
+                v = item['fields'][k]
+                if isinstance(v, str):
+                    cap = max(16, budget // n_keys)
+                    raw_v = v.encode('utf-8')
+                    if len(raw_v) > cap:
+                        v = raw_v[:cap].decode('utf-8', 'ignore') + '...[truncated]'
+                cand_fields = dict(trimmed_fields)
+                cand_fields[k] = v
+                cand = dict(item, fields=cand_fields)
+                if len(canonical_bytes(cand)) <= max_bytes:
+                    trimmed_fields = cand_fields
+            shrunk = dict(item, fields=trimmed_fields)
+            shrunk_bytes = canonical_bytes(shrunk)
+            if len(shrunk_bytes) <= max_bytes:
+                return shrunk, shrunk_bytes
+            return base, base_bytes
+    fallback = {'truncated_row': True}
+    if type(item) is dict and isinstance(item.get('event_id'), str):
+        cand = {'event_id': item['event_id'], 'truncated_row': True}
+        if len(canonical_bytes(cand)) <= max_bytes:
+            fallback = cand
+    fb_bytes = canonical_bytes(fallback)
+    if len(fb_bytes) <= max_bytes:
+        return fallback, fb_bytes
+    return None, b''
+
+
 class QueryExecutor:
     """Bounded read-only hunting tool executor over `events.sqlite3` + `intel.jsonl`."""
 
@@ -439,7 +479,7 @@ class QueryExecutor:
             else:
                 rows, note = result
                 row_cap = self._max_rows
-        except (BenchmarkError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+        except (BenchmarkError, sqlite3.Error, ValueError, TypeError, KeyError, OverflowError) as exc:
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
             code = exc.code if isinstance(exc, BenchmarkError) else 'invalid_query_parameters'
             self.audit.append({'tool': tool, 'ok': False, 'error': code, 'rows_returned': 0,
@@ -451,8 +491,13 @@ class QueryExecutor:
         used_bytes = 0
         for item in rows[:effective_cap]:
             encoded = canonical_bytes(item)
-            if used_bytes + len(encoded) > self._max_bytes and capped:
+            if used_bytes + len(encoded) > self._max_bytes:
                 truncated = True
+                if not capped:
+                    shrunk, shrunk_bytes = _shrink_row_to_budget(item, self._max_bytes)
+                    if shrunk is not None:
+                        capped.append(shrunk)
+                        used_bytes += len(shrunk_bytes)
                 break
             capped.append(item)
             used_bytes += len(encoded)
@@ -529,7 +574,7 @@ class QueryExecutor:
 
     def _tool_search_events(self, args):
         limit = _opt_int(args, 'limit', 20, 1, self._max_rows)
-        offset = _opt_int(args, 'offset', 0, 0)
+        offset = _opt_int(args, 'offset', 0, 0, 1_000_000)
         where, params = self._where_filters(args)
         sql = (f'SELECT e.* FROM events e{where} ORDER BY e.epoch_us ASC, e.seq ASC LIMIT ? OFFSET ?')
         rows = [self._format_event(r) for r in self._conn.execute(sql, params + [limit + 1, offset])]

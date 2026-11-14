@@ -103,7 +103,11 @@ class InvictusImporterTests(unittest.TestCase):
                         'sourceIPAddress': '203.0.113.50',
                         'userAgent': 'stratus-red-team_99999999-aaaa-bbbb-cccc-1234567890ab',
                         'userIdentity': {'type': 'AssumedRole', 'arn': 'arn:aws:sts::218007301253:assumed-role/admin/s1'},
-                        'requestParameters': {'secretId': 'stratus-red-team-retrieve-secret-0'},
+                        'requestParameters': {'secretId': 'stratus-red-team-retrieve-secret-0', 'password': 'ADMIN_PASS_7733'},
+                        'responseElements': {
+                            'secretString': 'SUPER_SECRET_DB_PWD_9911',
+                            'credentials': {'sessionToken': 'SESSION_TOK_8822'},
+                        },
                     },
                     {
                         'eventID': 'ev-4',
@@ -127,6 +131,10 @@ class InvictusImporterTests(unittest.TestCase):
             pub_text = (Path(rep_a['case_dir']) / 'public' / 'evidence.json').read_text(encoding='utf-8')
             self.assertNotIn('stratus', pub_text.lower())
             self.assertNotIn('218007301253', pub_text)
+            self.assertNotIn('SUPER_SECRET_DB_PWD_9911', pub_text)
+            self.assertNotIn('SESSION_TOK_8822', pub_text)
+            self.assertNotIn('ADMIN_PASS_7733', pub_text)
+            self.assertIn('[REDACTED:secret]', pub_text)
 
             benign_file = raw_dir / 'benign.json'
             benign_file.write_text(json.dumps({
