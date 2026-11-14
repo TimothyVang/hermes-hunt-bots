@@ -13,6 +13,7 @@ import tempfile
 import threading
 import types
 import unittest
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, board_registry_dir, browser_root, build_state, main, make_server,
                     newest_browser_action, parse_handoff)
+from .contracts import GateDecision  # noqa: E402
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import LAB_SECRET, FakeLab, write_connected_state, write_container_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
@@ -1367,12 +1369,16 @@ class ParallelBoardTests(unittest.TestCase):
         self.assertEqual(history.reads, 3)
 
     def test_run_summary_surfaces_recorded_gate_decisions_and_hunt_command_label(self) -> None:
-        decisions = [{"step_id": "wave-1", "phase": "review", "decision": "approve", "decision_id": "d-1",
-                      "decided_by": "Alice Operator", "via": "cli", "slack_user": ""}]
-        child = _wave_child({"scope": "awaiting_review"}, [self.result(0)], workflow_id=ROUND, decisions=decisions)
+        raw_decisions = [asdict(GateDecision(
+            gate="wave-1", phase="review", decision="approve", decision_id="d-1",
+            decided_by="Alice Operator", via="cli", slack_user="",
+        ))]
+        expected = [{"step_id": "wave-1", "phase": "review", "decision": "approve", "decision_id": "d-1",
+                     "decided_by": "Alice Operator", "via": "cli", "slack_user": ""}]
+        child = _wave_child({"scope": "awaiting_review"}, [self.result(0)], workflow_id=ROUND, decisions=raw_decisions)
         state = build_state(self.raw, self.parent, child)
         self.assertEqual(state["run"]["child"]["workflow_id"], ROUND)
-        self.assertEqual(state["run"]["child"]["decisions"], decisions)
+        self.assertEqual(state["run"]["child"]["decisions"], expected)
         case = _render_page(state, "case")["main"]
         self.assertIn("Decide in Hunt Command \u2192 Human gates", case["text"])
         self.assertNotIn("Decide in Hermes", case["text"])

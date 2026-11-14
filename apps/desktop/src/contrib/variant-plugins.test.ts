@@ -634,7 +634,20 @@ describe('variant-bundled plugins', () => {
       )
       .mockResolvedValueOnce({
         ok: true,
-        status: makeOpenStatus('wf-2', '127.0.0.1:17233', 'active-case-2')
+        status: {
+          ...makeOpenStatus('wf-2', '127.0.0.1:17233', 'active-case-2'),
+          decisions: [
+            {
+              decidedBy: '',
+              decision: 'approve',
+              decisionId: 'dec-legacy-unidentified',
+              phase: 'execute',
+              slackUser: '',
+              stepId: 'scope',
+              via: ''
+            }
+          ]
+        }
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -771,9 +784,11 @@ describe('variant-bundled plugins', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/active-case-2 · origin=synthetic/)).toBeTruthy()
+      expect(screen.getByText(/decided_by=unknown · via=unknown/)).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
     })
 
+    fireEvent.change(screen.getByLabelText('What did you check?'), { target: { value: 'wf-2 stale note' } })
     fireEvent.change(screen.getByLabelText('Temporal loopback address'), { target: { value: '127.0.0.1:27233' } })
     expect(screen.queryByRole('button', { name: 'Approve gate' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Load gate status' })).toBeTruthy()
@@ -784,6 +799,7 @@ describe('variant-bundled plugins', () => {
     await waitFor(() => {
       expect(screen.getByText(/active-case-3 · origin=synthetic/)).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
+      expect((screen.getByLabelText('What did you check?') as HTMLTextAreaElement).value).toBe('')
     })
 
     fireEvent.change(screen.getByLabelText('Operator name'), { target: { value: 'Alice Analyst' } })

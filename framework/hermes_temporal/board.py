@@ -479,8 +479,15 @@ def _step_track(step_ids: list[str], child: dict | None) -> list[tuple[str, str,
 
 def _gate_decisions(child: dict | None) -> list[dict]:
     items = child.get("decisions") if isinstance(child, dict) and isinstance(child.get("decisions"), list) else []
-    keys = ("step_id", "phase", "decision", "decision_id", "decided_by", "via", "slack_user")
-    return [{key: (_text(item.get(key)) or "") for key in keys} for item in items if isinstance(item, dict)]
+    keys = ("phase", "decision", "decision_id", "decided_by", "via", "slack_user")
+    return [
+        {
+            "step_id": _text(item.get("gate")) or _text(item.get("step_id")) or "",
+            **{key: (_text(item.get(key)) or "") for key in keys},
+        }
+        for item in items
+        if isinstance(item, dict)
+    ]
 
 
 def _run_summary(parent: dict | None, child: dict | None, step_views: list[dict]) -> dict:

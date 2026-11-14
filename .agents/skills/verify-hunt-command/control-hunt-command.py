@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -130,8 +131,29 @@ def _probe_board(port: int) -> dict | None:
         return None
 
 
+def _check_lock_python_ready(lock_py: Path | None) -> bool:
+    if not lock_py:
+        return False
+    try:
+        probe = subprocess.run(
+            [str(lock_py), "-c", "import temporalio, websockets, hermes_temporal.cli, hermes_temporal.board"],
+            cwd=str(FRAMEWORK_DIR),
+            env={**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
+    lock_ready = _check_lock_python_ready(lock_py)
     binary = _packed_binary()
     plugin_workspace = FRAMEWORK_DIR / "desktop" / "cybersecurity-workspace" / "plugin.js"
     plugin_lab = FRAMEWORK_DIR / "hunt_lab" / "desktop" / "plugin.js"
@@ -165,6 +187,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     checks = {
         "lock_python_found": lock_py is not None,
+        "lock_python_ready": lock_ready,
         "lock_python": str(lock_py) if lock_py else None,
         "workspace_plugin_exists": plugin_workspace.is_file(),
         "hunt_lab_plugin_exists": plugin_lab.is_file(),
@@ -175,6 +198,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     }
     ok = (
         checks["lock_python_found"]
+        and checks["lock_python_ready"]
         and checks["workspace_plugin_exists"]
         and checks["hunt_lab_plugin_exists"]
         and checks["desktop_assets_clean"]
@@ -183,6 +207,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     remediation = None
     if not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a venv with framework/requirements-hunt.lock installed."
+    elif not checks["lock_python_ready"]:
+        remediation = "Selected --python cannot import temporalio/websockets; install framework/requirements-hunt.lock."
     elif not checks["workspace_plugin_exists"] or not checks["hunt_lab_plugin_exists"]:
         remediation = "Confirm framework/desktop/cybersecurity-workspace/plugin.js and framework/hunt_lab/desktop/plugin.js exist."
     elif not checks["desktop_assets_clean"]:
@@ -508,6 +534,44 @@ def cmd_board_probe(args: argparse.Namespace) -> int:
     return _emit({"ok": ok, "board": info, "live_stream": live_check}, 0 if ok else 1)
 
 
+def _valid_phase_choice(phase: str, choice: str) -> bool:
+    if phase == "reconcile":
+        return choice in ("accept", "abort")
+    return phase in ("execute", "review") and choice in ("approve", "deny")
+
+
+def _verify_recorded_decision(lock_py: Path, address: str, workflow_id: str, decision_id: str) -> tuple[bool, str | None]:
+    status_argv = [str(lock_py), "-m", "hermes_temporal.cli", "--address", address, "status", workflow_id]
+    last_err: str | None = None
+    for attempt in range(6):
+        res = subprocess.run(
+            status_argv,
+            cwd=str(FRAMEWORK_DIR),
+            env={**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        if res.returncode == 0:
+            try:
+                parsed = json.loads(res.stdout.strip())
+                decisions = parsed.get("decisions") if isinstance(parsed, dict) else None
+                if isinstance(decisions, list) and any(
+                    isinstance(d, dict) and d.get("decision_id") == decision_id for d in decisions
+                ):
+                    return True, None
+            except ValueError as exc:
+                last_err = f"Invalid workflow status JSON: {exc}"
+        else:
+            last_err = res.stderr.strip() or f"status exited {res.returncode}"
+        if attempt < 5:
+            time.sleep(0.4)
+    return False, last_err
+
+
 def cmd_gate_decide(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
@@ -515,6 +579,11 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
     address = _strict_loopback_address(args.address)
     if not address:
         return _emit({"ok": False, "error": "Temporal address must use 127.0.0.1:<1..65535> (Rule 2)."}, 1)
+    if not _valid_phase_choice(args.phase, args.choice):
+        return _emit({
+            "ok": False,
+            "error": f"Invalid choice {args.choice!r} for {args.phase} gate (review/execute: approve|deny; reconcile: accept|abort).",
+        }, 1)
     operator = args.operator.strip()
     note = args.note.strip()
     if not operator or len(operator) > 200:
@@ -548,12 +617,29 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
         timeout=30,
         check=False,
     )
+    if res.returncode != 0:
+        return _emit({
+            "ok": False,
+            "exit_code": res.returncode,
+            "stdout": res.stdout.strip(),
+            "stderr": res.stderr.strip(),
+        }, 1)
+    recorded, status_err = _verify_recorded_decision(lock_py, address, args.workflow_id, args.decision_id)
+    if not recorded:
+        return _emit({
+            "ok": False,
+            "exit_code": 0,
+            "decision_recorded": False,
+            "stdout": res.stdout.strip(),
+            "error": status_err or f"Decision signal sent, but workflow {args.workflow_id} did not record {args.decision_id}.",
+        }, 1)
     return _emit({
-        "ok": res.returncode == 0,
-        "exit_code": res.returncode,
+        "ok": True,
+        "exit_code": 0,
+        "decision_recorded": True,
         "stdout": res.stdout.strip(),
         "stderr": res.stderr.strip(),
-    }, 0 if res.returncode == 0 else 1)
+    }, 0)
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:

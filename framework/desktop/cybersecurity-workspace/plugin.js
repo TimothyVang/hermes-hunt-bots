@@ -297,6 +297,7 @@ function applyHandoffTarget(nextWorkflowId, nextAddress) {
     ...latest,
     workflowId,
     address,
+    checkNote: '',
     busy: false,
     status: null,
     message: workflowId
@@ -350,6 +351,7 @@ function HumanGatesPanel() {
     const latest = gateState.get();
     const nextAddress = Object.prototype.hasOwnProperty.call(patch, 'address') ? patch.address : latest.address;
     const nextWorkflowId = Object.prototype.hasOwnProperty.call(patch, 'workflowId') ? patch.workflowId : latest.workflowId;
+    const targetChanged = nextAddress !== latest.address || nextWorkflowId !== latest.workflowId;
     const matchesLoaded = Boolean(
       latest.status
       && exactLoopback(nextAddress) === latest.status.address
@@ -360,6 +362,7 @@ function HumanGatesPanel() {
       ...latest,
       address: nextAddress,
       workflowId: nextWorkflowId,
+      checkNote: matchesLoaded || !targetChanged ? latest.checkNote : '',
       busy: false,
       status: matchesLoaded ? latest.status : null,
       message: matchesLoaded ? latest.message : INITIAL_GATE_MESSAGE
@@ -568,7 +571,7 @@ function HumanGatesPanel() {
       jsx('div', {className:'hw-label', children:'Recorded gate decisions'}, 'dlabel'),
       jsx('ul', {className:'hw-decisions', children:status.decisions.map((item, idx) => jsx('li', {
         className:'hw-mono',
-        children:`${item.stepId} (${item.phase}): ${item.decision} · decided_by=${item.decidedBy || 'unknown'} · via=${item.via || 'cli'}`
+        children:`${item.stepId} (${item.phase}): ${item.decision} · decided_by=${item.decidedBy || 'unknown'} · via=${item.via || 'unknown'}`
       }, item.decisionId || `${item.stepId}-${idx}`))}, 'dlist')
     ]}, 'decisions') : null
   ]});

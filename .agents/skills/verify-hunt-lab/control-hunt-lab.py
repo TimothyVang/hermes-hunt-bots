@@ -71,8 +71,19 @@ def _run_py(python_exe: Path, argv: list[str], env_extra: dict[str, str] | None 
     )
 
 
+def _check_lock_python_ready(lock_py: Path | None) -> bool:
+    if not lock_py:
+        return False
+    try:
+        probe = _run_py(lock_py, ["-c", "import temporalio, websockets, hermes_temporal.cli"])
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
+    lock_ready = _check_lock_python_ready(lock_py)
     docker_bin = shutil.which("docker")
     docker_ready = False
     if docker_bin:
@@ -91,6 +102,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     analyst_vm = hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-vm" if hermes_home else None
     checks = {
         "lock_python_found": lock_py is not None,
+        "lock_python_ready": lock_ready,
         "lock_python": str(lock_py) if lock_py else None,
         "docker_cli_found": docker_bin is not None,
         "docker_daemon_ready": docker_ready,
@@ -98,10 +110,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "hermes_home": str(hermes_home) if hermes_home else None,
         "analyst_vm_dir_exists": bool(analyst_vm and analyst_vm.is_dir()),
     }
-    ok = checks["lock_python_found"] and checks["fixture_case_exists"]
+    ok = checks["lock_python_found"] and checks["lock_python_ready"] and checks["fixture_case_exists"]
     remediation = None
     if not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a Python with framework/requirements-hunt.lock installed."
+    elif not checks["lock_python_ready"]:
+        remediation = "Selected --python cannot import temporalio/websockets; install framework/requirements-hunt.lock."
     elif not docker_ready:
         remediation = "Start Docker Desktop before running live container lifecycle journeys (`launch` / `cleanup`)."
     return _emit({"ok": ok, "checks": checks, "remediation": remediation}, 0 if ok else 1)
