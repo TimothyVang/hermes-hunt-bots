@@ -5,6 +5,7 @@ import asyncio
 from contextlib import closing
 from dataclasses import replace
 import hashlib
+import http
 import importlib.util
 import json
 import os
@@ -39,7 +40,9 @@ class _MockGatewayServer:
         self.on_submit: Any = None
         self.delta_burst = 0
         self.complete_text = '{"claims": []}'
+        self.complete_payload: dict[str, Any] | None = None
         self.receipt_text = '{"claims": []}'
+        self.fail_receipt = False
         self.main_usage = {
             "input_tokens": 1000,
             "output_tokens": 200,
@@ -69,14 +72,20 @@ class _MockGatewayServer:
                     return None
             return transport_module.GATEWAY_SUBPROTOCOL
 
+        def process_request(connection: Any, request: Any) -> Any:
+            if request.path != "/api/ws":
+                return connection.respond(http.HTTPStatus.NOT_FOUND, "not found\n")
+            return None
+
         self._server = await ws_serve(
             self._handle_client,
             "127.0.0.1",
             0,
+            process_request=process_request,
             select_subprotocol=select_subprotocol,
         )
         port = self._server.sockets[0].getsockname()[1]
-        self.ws_url = f"ws://127.0.0.1:{port}/ws"
+        self.ws_url = f"ws://127.0.0.1:{port}/api/ws"
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -130,11 +139,12 @@ class _MockGatewayServer:
                 {**self.main_usage, **({"auxiliary_usage": self.aux_usage} if self.aux_usage else {})},
                 admission_id=admission_id, gen=2,
             )
-            await self._send_event(
-                ws, session_id, "message.complete",
-                {"outcome": "completed", "text": self.complete_text, "admission_id": admission_id},
-                admission_id=admission_id, gen=2,
+            comp = (
+                {**self.complete_payload, "admission_id": admission_id}
+                if self.complete_payload is not None
+                else {"outcome": "completed", "text": self.complete_text, "admission_id": admission_id}
             )
+            await self._send_event(ws, session_id, "message.complete", comp, admission_id=admission_id, gen=2)
 
         async def on_resume(req_id: Any, _params: dict[str, Any]) -> None:
             snap = {"stored_session_id": state["session_id"], "subscription_id": "sub-resumed", "execution_generation": 2, "pending": []}
@@ -152,6 +162,10 @@ class _MockGatewayServer:
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"interrupted": True}}))
 
         async def on_receipt(req_id: Any, _params: dict[str, Any]) -> None:
+            if self.fail_receipt:
+                err = {"code": -32603, "message": "receipt unavailable", "data": {"reason": "receipt_unavailable"}}
+                await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "error": err}))
+                return
             receipt = {
                 "status": "terminal",
                 "outcome": "cancelled" if self.hang_submit else "completed",
@@ -427,7 +441,7 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         profile_home = (self.hermes_home / "profiles" / "framework-researcher").resolve()
         received: list[dict[str, Any]] = []
         async with _MockGatewayServer(valid_ticket="pipe-minted-ticket-99") as server:
-            origin = server.ws_url.replace("ws://", "http://")[:-3]
+            origin = server.ws_url.replace("ws://", "http://").removesuffix("/api/ws")
             responses = [
                 {
                     "ok": True,
@@ -437,7 +451,9 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
                         "capabilities": ["session-authority-v1"],
                         "api_origin": origin,
                         "instance_id": "inst-mux-1",
-                        "served_profiles": [{"id": "framework-researcher", "home": str(profile_home)}],
+                        "served_profiles": [
+                            {"profile_id": "framework-researcher", "id": "ignored-alias", "home": str(profile_home)}
+                        ],
                     },
                 },
                 {"ok": False, "error": "PermissionError: invalid bootstrap parameters"},
@@ -460,8 +476,63 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
             pipe_thread.join(timeout=5)
         self.assertEqual(res.status, "completed")
         self.assertEqual([r["verb"] for r in received], ["identify", "session-ticket", "session-ticket"])
+        self.assertEqual(received[1]["params"]["profile_id"], "framework-researcher")
         self.assertEqual(received[1]["params"]["restart_wait"], "refuse")
         self.assertNotIn("restart_wait", received[2]["params"])
+
+    async def test_api_ws_path_completion_status_without_outcome_and_identify_matching(self) -> None:
+        self.assertEqual(transport_module.MAX_CONTROL_RESPONSE_BYTES, 524288)
+        self.assertEqual(transport_module._ws_url_from_origin("http://127.0.0.1:8642"), "ws://127.0.0.1:8642/api/ws")
+        self.assertEqual(transport_module._ws_url_from_origin("https://localhost:9000"), "wss://localhost:9000/api/ws")
+
+        profile_home = (self.hermes_home / "profiles" / "framework-researcher").resolve()
+        other_home = (self.hermes_home / "profiles" / "framework-coordinator").resolve()
+        no_match = transport_module._match_identify(
+            {
+                "runtime_protocol": 1,
+                "state": "ready",
+                "capabilities": ["session-authority-v1"],
+                "api_origin": "http://127.0.0.1:8642",
+                "instance_id": "inst-1",
+                "profile_id": str(profile_home),
+                "served_profiles": [{"profile_id": "framework-coordinator", "home": str(other_home)}],
+            },
+            profile_home,
+        )
+        self.assertIsNone(no_match)
+
+        async with _MockGatewayServer() as server:
+            wrong_path = server.ws_url.removesuffix("/api/ws") + "/ws"
+            explicit_wrong = await asyncio.to_thread(
+                transport_module.invoke_gateway,
+                replace(self.config, gateway_ws_url=wrong_path, gateway_ticket="test-ticket-abc123"),
+                ExecutionRequest("hunt-wrong-ws:0", HermesStep("scope", "Wrong path.")),
+            )
+            self.assertEqual((explicit_wrong.status, explicit_wrong.reason_code), ("failed", "launch_failed"))
+            wrong_ep = transport_module.GatewayEndpoint(
+                wrong_path, "test-ticket-abc123", profile_home, None, "framework-researcher", "inst-1"
+            )
+            with self.assertRaises(transport_module.GatewayNotAvailable):
+                await transport_module._open_ws(wrong_ep, False)
+
+            server.fail_receipt = True
+            server.complete_payload = {"status": "error", "error": "provider_503", "text": "partial"}
+            err_res = await asyncio.to_thread(
+                execute,
+                replace(self.config, gateway_ws_url=server.ws_url, gateway_ticket="test-ticket-abc123"),
+                ExecutionRequest("hunt-status-err:0", HermesStep("scope", "Error status.")),
+            )
+            self.assertEqual((err_res.status, err_res.reason_code), ("unknown", "native_nonzero"))
+            self.assertIn("provider_503", err_res.diagnostic)
+
+            server.complete_payload = {"status": "interrupted", "text": "cut short"}
+            int_res = await asyncio.to_thread(
+                execute,
+                replace(self.config, gateway_ws_url=server.ws_url, gateway_ticket="test-ticket-abc123"),
+                ExecutionRequest("hunt-status-int:0", HermesStep("scope", "Interrupted status.")),
+            )
+            self.assertEqual((int_res.status, int_res.reason_code), ("unknown", "native_nonzero"))
+            self.assertIn("cancelled", int_res.diagnostic)
 
     def test_missing_gateway_falls_back_cleanly_to_cli_subprocess(self) -> None:
         cli_res = ExecutionResult("completed", "hunt-fallback:0", "CLI-OK", "completed", "cli-sess")

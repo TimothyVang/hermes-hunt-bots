@@ -27,7 +27,7 @@ GATEWAY_SUBPROTOCOL = "hermes-gateway-v1"
 TICKET_SUBPROTOCOL_PREFIX = "hermes-gateway-ticket."
 DEFAULT_RPC_TIMEOUT = 30.0
 CLEANUP_RPC_TIMEOUT = 5.0
-MAX_CONTROL_RESPONSE_BYTES = 65536
+MAX_CONTROL_RESPONSE_BYTES = 524288
 MAX_WS_FRAME_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = MAX_PROMPT_BYTES
 _UNKNOWN_TICKET_PARAMS = "PermissionError: invalid bootstrap parameters"
@@ -130,7 +130,7 @@ def _ws_url_from_origin(api_origin: object) -> str | None:
             or host not in _LOOPBACK_HOSTS or port is None or not 1 <= port <= 65535):
         return None
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    return f"{scheme}://{parsed.netloc}/ws"
+    return f"{scheme}://{parsed.netloc}/api/ws"
 
 
 def _current_windows_sid() -> str:
@@ -349,13 +349,17 @@ def _match_identify(result: dict[str, Any], profile_home: Path) -> tuple[str, st
     wanted = _norm_home(profile_home)
     served = result.get("served_profiles")
     if isinstance(served, list):
+        matches: list[str] = []
         for entry in served:
             if not isinstance(entry, dict):
                 continue
             entry_home = entry.get("home") or entry.get("profile_id")
-            entry_id = entry.get("id") or entry.get("profile_id") or entry_home
-            if isinstance(entry_home, str) and isinstance(entry_id, str) and _norm_home(Path(entry_home)) == wanted:
-                return ws_url, entry_id, instance_id
+            entry_id = entry.get("profile_id") or entry.get("id") or entry_home
+            if isinstance(entry_home, str) and isinstance(entry_id, str) and entry_id and _norm_home(Path(entry_home)) == wanted:
+                matches.append(entry_id)
+        if len(matches) != 1:
+            return None
+        return ws_url, matches[0], instance_id
     direct_id = result.get("profile_id")
     if isinstance(direct_id, str) and direct_id and _norm_home(Path(direct_id)) == wanted:
         return ws_url, direct_id, instance_id
@@ -869,6 +873,22 @@ async def _await_turn(conn: _GatewayWSConnection, timeout_seconds: int) -> None:
                 await conn.state_changed.wait()
 
 
+def _resolve_completion_outcome(completion: dict[str, Any], receipt: dict[str, Any]) -> tuple[str, bool, bool]:
+    raw_status = completion.get("status")
+    raw_outcome = completion.get("outcome") or receipt.get("outcome")
+    if raw_outcome:
+        outcome = str(raw_outcome)
+    elif raw_status in ("interrupted", "cancelled"):
+        outcome = "cancelled"
+    elif raw_status in ("error", "failed"):
+        outcome = "native_nonzero"
+    else:
+        outcome = str(raw_status or "completed")
+    interrupted = outcome in ("cancelled", "interrupted") or raw_status in ("interrupted", "cancelled")
+    failed = interrupted or raw_status in ("error", "failed") or outcome != "completed"
+    return outcome, interrupted, failed
+
+
 def _finalize_settled_turn(
     request: ExecutionRequest,
     conn: _GatewayWSConnection,
@@ -878,17 +898,18 @@ def _finalize_settled_turn(
 ) -> ExecutionResult:
     completion = conn.completion or {}
     result_body = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
-    outcome = str(completion.get("outcome") or receipt.get("outcome") or "completed")
-    interrupted = bool(result_body.get("interrupted")) or outcome in ("cancelled", "interrupted")
+    outcome, comp_interrupted, comp_failed = _resolve_completion_outcome(completion, receipt)
+    interrupted = bool(result_body.get("interrupted")) or comp_interrupted
     failed = (
         interrupted
+        or comp_failed
         or bool(result_body.get("failed"))
         or bool(result_body.get("partial"))
         or result_body.get("completed") is False
-        or outcome != "completed"
     )
     if failed:
-        cause = str(result_body.get("error") or result_body.get("turn_exit_reason") or outcome)
+        fallback = "cancelled" if interrupted else outcome
+        cause = str(result_body.get("error") or completion.get("error") or result_body.get("turn_exit_reason") or fallback)
         diag = _sanitize_ws_diagnostic("gateway turn failed", cause, redact_fn)
         return ExecutionResult(
             "unknown", request.execution_id, "", "native_nonzero",
