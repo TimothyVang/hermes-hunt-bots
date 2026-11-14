@@ -485,8 +485,34 @@ def _stop_up_launcher(case_dir):
             time.sleep(0.5)
 
 
+def _unlink_ignoring_readonly(path):
+    """Delete one NTFS hard link without clearing the read-only attribute it shares with the operator's source file."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                   wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    # DELETE access, share read/write/delete, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT.
+    handle = kernel.CreateFileW(str(path), 0x00010000, 0x7, None, 3, 0x00200000, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # FileDispositionInfoEx: DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE.
+        flags = wintypes.DWORD(0x1 | 0x2 | 0x10)
+        if not kernel.SetFileInformationByHandle(handle, 21, ctypes.byref(flags), ctypes.sizeof(flags)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _chmod_retry(func, path, *_):
     with contextlib.suppress(OSError):
+        if func in (os.unlink, os.remove) and os.lstat(path).st_nlink > 1:
+            # chmod on a hard link edits the mode every link shares, the operator's source evidence included.
+            if os.name == 'nt':
+                _unlink_ignoring_readonly(path)
+            return
         os.chmod(path, 0o700)
         func(path)
 
@@ -507,6 +533,9 @@ def _prepare_warm_switch(warm_dir, compose_proj, loaded, meta):
                           _PURGE_ARKIME_CASE, loaded])
         if purged.returncode:
             raise StackFailure('arkime_purge_failed')
+
+
+def _reset_warm_services(compose_proj):
     # Stop and remove case-bound containers before touching warm_dir so bind mounts release and _status sees loading_case.
     removed = _docker(['compose', '-p', compose_proj, 'rm', '-f', '-s', 'lab', 'arkime', *ONE_SHOTS], DOWN_SECONDS)
     if removed.returncode:
@@ -536,6 +565,12 @@ def _compose_variables(case_dir, case_id, compose_proj, lab_port, kibana_port, a
 
 
 def _restore_warm_stack(warm_dir, warm_state, compose_proj):
+    """Bring the previous case back after a failed switch; on failure leave warm_dir for `status` and `stop`."""
+    if (warm_dir / 'evidence' / 'traffic.pcap').is_file():
+        # pcap-import runs again on `up`; drop the sessions it already wrote so they are not doubled.
+        with contextlib.suppress(StackFailure):
+            _docker(['compose', '-p', compose_proj, 'exec', '-T', 'netns', 'python3', '-B', '-c',
+                     _PURGE_ARKIME_CASE, warm_state['case_id']])
     variables = _compose_variables(warm_dir, warm_state['case_id'], compose_proj,
                                    warm_state['lab_port'], warm_state['kibana_port'], warm_state['arkime_port'])
     try:
@@ -543,7 +578,8 @@ def _restore_warm_stack(warm_dir, warm_state, compose_proj):
                             '-p', compose_proj, 'up', '-d'], variables, warm_dir / 'compose.log')
         _write_json(warm_dir / 'up.json', {'pid': restored, 'identity': _identity(restored)})
     except OSError:
-        _retire_warm_dir(warm_dir)
+        with contextlib.suppress(OSError):
+            (warm_dir / 'up.json').unlink(missing_ok=True)
 
 
 def _project_shared_by_other_case(root, case_dir, compose_proj):
@@ -610,7 +646,9 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
         _write_new(case_dir / 'state.json', json.dumps(state, sort_keys=True).encode('ascii'))
         if warm is not None:
             _prepare_warm_switch(warm_dir, compose_proj, loaded, meta)
+            # A partly applied `rm` has already dismantled the previous case, so restore it on any failure from here.
             warm_reset = True
+            _reset_warm_services(compose_proj)
         variables = _compose_variables(case_dir, loaded, compose_proj, lab_port, kibana_port, arkime_port)
         pid = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
                        '-p', compose_proj, 'up', '-d'], variables, case_dir / 'compose.log')

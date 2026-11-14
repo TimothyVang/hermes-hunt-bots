@@ -984,7 +984,8 @@ class ParallelStepIsolationTests(unittest.TestCase):
         fake_case_a = FakeBrowser(text='case-a confidential telemetry')
         fake_case_b = FakeBrowser(text='about:blank clean browser')
         launched = []
-        browsers = iter([fake_case_a, fake_case_b, FakeBrowser(text='reattached clean browser')])
+        browsers = iter([fake_case_a, fake_case_b, FakeBrowser(text='reattached clean browser'),
+                         FakeBrowser(text='rotated secret clean browser')])
 
         def launch_stub(root, sc, demo):
             launched.append(sc.case_id)
@@ -1031,6 +1032,25 @@ class ParallelStepIsolationTests(unittest.TestCase):
                                       browser_root=self.profile_root)
             self.assertTrue(res_b2['ok'], res_b2)
             self.assertEqual(launched, [CASE, 'case-two-002', 'case-two-002'])
+
+            # 3. After a host restart the same case and secret reattach; a same-case restart under a new secret never does.
+            lab_browser._SESSIONS.clear()
+            res_b3 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b3['ok'], res_b3)
+            self.assertEqual(len(launched), 3)
+            self.assertNotIn(new_secret, (self.profile_root / 'session.json').read_text(encoding='utf-8'))
+            rotated = 'ef' * 32
+            self.lab.secret = rotated
+            old_state['secret'] = rotated
+            state_path.write_text(json.dumps(old_state), encoding='utf-8')
+            lab_browser._SESSIONS.clear()
+            res_b4 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b4['ok'], res_b4)
+            self.assertEqual(launched, [CASE, 'case-two-002', 'case-two-002', 'case-two-002'])
 
     def test_non_owner_profiles_are_refused_before_any_browser_starts(self):
         for profile in ('framework-reviewer', 'framework-builder', 'framework-librarian', 'framework-coordinator', None):

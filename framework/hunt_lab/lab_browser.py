@@ -742,7 +742,7 @@ class BrowserSession:
     def state(self):
         lab, arkime, kibana = self.origins()
         return {'pid': self.pid, 'ws_url': self.ws_url, 'case_id': self.scope.case_id,
-                'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
+                'secret_sha256': _secret_digest(self.scope.lab_secret), 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
                 'pointer': list(self.pointer), 'last_used': self.last_used, **_shape(self.window, self.demo)}
 
@@ -912,6 +912,11 @@ def _demo_path(root):
     return base / DEMO_FILE
 
 
+def _secret_digest(secret):
+    """Fingerprint of the lab secret a browser was launched under; session.json never holds the secret itself."""
+    return hashlib.sha256(('lab-browser:' + (secret or '')).encode()).hexdigest()
+
+
 def _step_folder_name(run_id, step_id):
     slug = re.sub(r'[^A-Za-z0-9_-]+', '-', step_id).strip('-')[:24] or 'step'
     digest = hashlib.sha256(f'{run_id}\0{step_id}'.encode()).hexdigest()[:12]
@@ -942,6 +947,7 @@ def _start(root, scope):
         wanted = _shape(window, demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
                  and state.get('case_id') == scope.case_id
+                 and state.get('secret_sha256') == _secret_digest(scope.lab_secret)
                  and (state.get('lab_origin'), state.get('arkime_origin'), state.get('kibana_origin')) == scope.origins
                  and {key: state.get(key) for key in wanted} == wanted)
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],

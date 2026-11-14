@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -342,14 +343,16 @@ class StackTests(unittest.TestCase):
 
     def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
         first_ev = self.evidence()
+        # A read-only source file: the hard link staged from it must never be what makes it writable again.
+        source = first_ev / 'case.json'
+        os.chmod(source, 0o444)
+        self.addCleanup(lambda: os.chmod(source, 0o600))
         self.invoke('start', evidence_dir=str(first_ev))
+        self.assertEqual(os.stat(source).st_nlink, 2)
         self.running()
         self.docker.services['lab'] = ('exited', 0)
         self.docker.services['arkime'] = ('exited', 1)
         self.docker.services['kibana-setup'] = ('exited', 2)
-        ro_evidence = self.root / 'dns-lab-001' / 'evidence' / 'case.json'
-        os.chmod(ro_evidence, 0o444)
-        self.addCleanup(lambda: os.chmod(ro_evidence, 0o600) if ro_evidence.exists() else None)
         first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
         first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
 
@@ -365,11 +368,23 @@ class StackTests(unittest.TestCase):
         self.assertFalse((self.root / 'team-med-902').exists())
         self.docker.exec_code = 0
 
+        # A failed `rm` may have removed some of dns-lab-001's containers: it is brought back, its Arkime sessions
+        # purged first so the re-run pcap-import does not double them.
         self.docker.rm_code = 1
+        launched_before = len(self.launched)
         self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'warm_reset_failed')
+        self.assertEqual([env['CASE_ID'] for _argv, env, _log in self.launched[launched_before:]], ['dns-lab-001'])
+        self.assertEqual([call[-1] for call in self.docker.calls if 'exec' in call][-2:], ['team-med-902', 'dns-lab-001'])
         self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
         self.assertFalse((self.root / 'team-med-902').exists())
         self.docker.rm_code = 0
+
+        # A restore that cannot spawn leaves dns-lab-001 in place, so status reports it and stop can still tear it down.
+        with patch.object(lab_stack, '_launch', side_effect=OSError('spawn failed')):
+            self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'dns-lab-001' / 'up.json').exists())
+        self.assertFalse((self.root / 'team-med-902').exists())
 
         calls_seen = []
 
@@ -394,6 +409,9 @@ class StackTests(unittest.TestCase):
                          ('starting', 'loading_case', 'team-med-902'))
         self.assertFalse((self.root / 'dns-lab-001').exists())
         self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith('.retired-')], [])
+        # Retiring dns-lab-001 deleted its read-only hard link and left the source file read-only.
+        self.assertFalse(os.stat(source).st_mode & stat.S_IWRITE)
+        self.assertEqual(os.stat(source).st_nlink, 1)
         second_state = endpoints.container_state(self.root / 'team-med-902' / 'state.json')
         self.assertEqual((second_state['lab_port'], second_state['kibana_port'], second_state['arkime_port']),
                          first_ports)
