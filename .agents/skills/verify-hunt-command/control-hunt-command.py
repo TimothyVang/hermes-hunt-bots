@@ -531,10 +531,38 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return _emit({"ok": True, "stopped": outcome == "stopped", "pid": pid, "evidence_preserved": True})
 
 
-def _terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
-    if os.name == "nt":
-        outcome = _windows_terminate_verified(pid, expected_binary, expected_create)
-        return "error:TerminateProcess failed" if outcome == "failed" else outcome
+def _posix_terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send = getattr(signal, "pidfd_send_signal", None)
+    if callable(pidfd_open) and callable(pidfd_send):
+        try:
+            pidfd = pidfd_open(pid, 0)
+        except ProcessLookupError:
+            return "dead"
+        except PermissionError:
+            return "mismatch"
+        except OSError:
+            pidfd = None
+        if pidfd is not None:
+            try:
+                alive, ident = _posix_process_identity(pid)
+                if alive == "dead":
+                    return "dead"
+                if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
+                    return "mismatch"
+                pidfd_send(pidfd, signal.SIGTERM)
+                return "stopped"
+            except ProcessLookupError:
+                return "dead"
+            except OSError as exc:
+                return f"error:{exc}"
+            finally:
+                os.close(pidfd)
+    alive, ident = _posix_process_identity(pid)
+    if alive == "dead":
+        return "dead"
+    if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
+        return "mismatch"
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -542,6 +570,13 @@ def _terminate_verified(pid: int, expected_binary: str, expected_create: str) ->
     except OSError as exc:
         return f"error:{exc}"
     return "stopped"
+
+
+def _terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
+    if os.name == "nt":
+        outcome = _windows_terminate_verified(pid, expected_binary, expected_create)
+        return "error:TerminateProcess failed" if outcome == "failed" else outcome
+    return _posix_terminate_verified(pid, expected_binary, expected_create)
 
 
 def build_parser() -> argparse.ArgumentParser:

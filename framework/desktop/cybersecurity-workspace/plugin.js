@@ -240,7 +240,7 @@ function ScreenSelector() {
   ]});
 }
 const SAFE_LOOPBACK = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
-const SAFE_WORKFLOW = /^[A-Za-z0-9._:-]{1,128}$/;
+const SAFE_WORKFLOW = /^[A-Za-z0-9._:-]{1,160}$/;
 function validLoopback(raw) {
   const value = String(raw || '127.0.0.1:7233').trim();
   const match = SAFE_LOOPBACK.exec(value);

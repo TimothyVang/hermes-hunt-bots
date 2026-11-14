@@ -160,6 +160,8 @@ describe('hunt-workbench', () => {
     )
     const staleFile = path.join(regDir, 'board-59998.json')
     fs.writeFileSync(staleFile, JSON.stringify({ port: 59998, workflow_id: 'dead' }))
+    const busyOtherFile = path.join(regDir, `board-${otherPort}.json`)
+    fs.writeFileSync(busyOtherFile, JSON.stringify({ port: otherPort, workflow_id: 'transient-busy' }))
 
     const wb = createHuntWorkbench({
       hermesHome: () => home,
@@ -183,6 +185,7 @@ describe('hunt-workbench', () => {
       workflowId: 'practice-1'
     })
     expect(fs.existsSync(staleFile)).toBe(false)
+    expect(fs.existsSync(busyOtherFile)).toBe(true)
   })
 
   it('starts Hunt Board with --lab-state-dir and --hermes-home for tool-driven inputs and omits --lab-state-dir for inline', async () => {

@@ -566,8 +566,11 @@ describe('variant-bundled plugins', () => {
       expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59333')
     })
 
+    fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-unattached' } })
+    fireEvent.change(screen.getByLabelText('Temporal address'), { target: { value: '127.0.0.1:59999' } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Human gates' })[0])
     expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-attached')
+    expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59333')
   })
 
   it('guards HumanGatesPanel against target edits, stale gateStatus responses, and unrecorded or failed refreshes', async () => {

@@ -169,6 +169,7 @@ export interface HuntWorkbenchDeps {
 const DEFAULT_TEMPORAL_ADDRESS = '127.0.0.1:7233'
 const DEFAULT_BOARD_PORT = 8790
 const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const SAFE_ROUND_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,160}$/
 const SAFE_STEP_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const SAFE_CASE_ID = /^[a-z0-9-]{3,64}$/
 const ALLOWED_DATA_ORIGINS = new Set(['public-dataset', 'work-export', 'work-connected'])
@@ -391,7 +392,7 @@ async def _inspect(address, workflow_id):
     for dec in (c_plain.get("decisions") or []):
         if isinstance(dec, dict):
             decisions_out.append({
-                "stepId": str(dec.get("step_id") or ""),
+                "stepId": str(dec.get("gate") or dec.get("step_id") or ""),
                 "phase": str(dec.get("phase") or ""),
                 "decision": str(dec.get("decision") or ""),
                 "decisionId": str(dec.get("decision_id") or ""),
@@ -1095,12 +1096,8 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
         const descriptor = await probePort(port, managedPort)
         const reg = registryEntries.get(port)
 
-        if (!descriptor && reg) {
-          try {
-            fs.unlinkSync(reg.filePath)
-          } catch {
-            void 0
-          }
+        if (!descriptor && reg && (await checkPortBindable(port))) {
+          unlinkQuietly(reg.filePath)
         }
 
         if (descriptor) {
@@ -1607,8 +1604,8 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
     const workflowId = String(request?.workflowId || '').trim()
 
-    if (!SAFE_WORKFLOW_ID.test(workflowId)) {
-      return { error: 'Enter a valid workflow ID (1-128 letters, digits, ., _, :, -).', ok: false }
+    if (!SAFE_ROUND_WORKFLOW_ID.test(workflowId)) {
+      return { error: 'Enter a valid workflow ID (1-160 letters, digits, ., _, :, -).', ok: false }
     }
 
     const address = validateLoopbackAddress(request?.address)
@@ -1664,7 +1661,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
     const childWorkflowId = String(request?.childWorkflowId || '').trim()
 
-    if (!SAFE_WORKFLOW_ID.test(childWorkflowId)) {
+    if (!SAFE_ROUND_WORKFLOW_ID.test(childWorkflowId)) {
       return { error: 'Valid target round workflow ID is required.', ok: false }
     }
 

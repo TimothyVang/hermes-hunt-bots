@@ -458,6 +458,8 @@ const INITIAL_BOARD_STATE = Object.freeze({
   boards: [],
   workflowId: '',
   address: '127.0.0.1:7233',
+  attachedWorkflowId: '',
+  attachedAddress: '',
   inputPath: '',
   port: '',
   busy: false,
@@ -497,7 +499,11 @@ function publishWorkflowHandoff(workflowId, address) {
 
 function openHumanGatesForBoard() {
   const current = board.get();
-  publishWorkflowHandoff(current.workflowId, current.address);
+  const useAttached = current.shown && Boolean(current.attachedWorkflowId || current.attachedAddress);
+  publishWorkflowHandoff(
+    useAttached ? (current.attachedWorkflowId || current.workflowId) : current.workflowId,
+    useAttached ? (current.attachedAddress || current.address) : current.address
+  );
   host.navigate('/cybersecurity-workspace');
 }
 
@@ -542,7 +548,8 @@ async function attachActiveBoard({ reveal = true } = {}) {
       || found[0];
     const validUrl = loopbackUrl(picked.url) || BOARD_URL;
     const nextAddress = validLoopbackAddress(picked.address) || board.get().address;
-    publishWorkflowHandoff(picked.workflowId || wanted, nextAddress);
+    const attachedWorkflowId = picked.workflowId || wanted || '';
+    publishWorkflowHandoff(attachedWorkflowId, nextAddress);
     board.set({
       ...board.get(),
       busy: false,
@@ -551,6 +558,8 @@ async function attachActiveBoard({ reveal = true } = {}) {
       managed: Boolean(picked.managed),
       workflowId: picked.workflowId || board.get().workflowId || '',
       address: nextAddress,
+      attachedWorkflowId,
+      attachedAddress: nextAddress,
       port: String(picked.port || parsedPort || 8790),
       shown: reveal ? true : board.get().shown,
       nonce: reveal ? board.get().nonce + 1 : board.get().nonce + 1,
@@ -604,6 +613,8 @@ async function startManagedBoard() {
       managed: true,
       boards: [reply.board],
       address: nextAddress,
+      attachedWorkflowId: workflowId,
+      attachedAddress: nextAddress,
       port: String(reply.board.port),
       shown: true,
       nonce: board.get().nonce + 1,
@@ -620,7 +631,16 @@ async function stopManagedBoard() {
   board.set({ ...current, busy: true, message: 'Stopping Desktop-managed Hunt Board…' });
   try {
     await host.huntWorkbench?.stopBoard?.();
-    board.set({ ...board.get(), busy: false, managed: false, port: '', shown: false, message: 'Stopped Desktop-managed Hunt Board.' });
+    board.set({
+      ...board.get(),
+      busy: false,
+      managed: false,
+      attachedWorkflowId: '',
+      attachedAddress: '',
+      port: '',
+      shown: false,
+      message: 'Stopped Desktop-managed Hunt Board.'
+    });
   } catch {
     board.set({ ...board.get(), busy: false, message: 'Failed to stop Hunt Board.' });
   }
@@ -638,7 +658,11 @@ function HuntBoard() {
       if (!frame || !frame.contentWindow || event.source !== frame.contentWindow) return;
       const payload = event?.data;
       if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
-      publishWorkflowHandoff(payload.workflowId || board.get().workflowId, board.get().address);
+      const latest = board.get();
+      publishWorkflowHandoff(
+        payload.workflowId || latest.attachedWorkflowId || latest.workflowId,
+        latest.attachedAddress || latest.address
+      );
       host.navigate('/cybersecurity-workspace');
     };
     window.addEventListener('message', onMessage);
