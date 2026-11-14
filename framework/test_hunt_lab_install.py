@@ -198,6 +198,35 @@ class LabInstallTests(unittest.TestCase):
         self.assertEqual(asked, [(profile, None), (root, profile)])
         self.assertEqual(json.loads(output.getvalue()), {'reloaded': True, 'plugins': ['hunt-lab']})
 
+    def test_reload_probe_checks_gateway_code_sha_parity_and_refuses_stale_gateway(self):
+        root = self.home
+        profile = self.profile()
+        control = types.ModuleType('gateway.control_socket')
+        control.reload_gateway_plugins = lambda home, *, profile_home=None: (
+            None if profile_home is None else {'reloaded': True, 'plugins': ['hunt-lab']}
+        )
+        control.identify_gateway = lambda home, timeout=5.0: (
+            None if Path(home) == profile else {'code_sha': 'aaaa1111'}
+        )
+        status_mod = types.ModuleType('gateway.status')
+        status_mod._get_code_identity_fields = lambda: {'code_sha': 'bbbb2222'}
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: profile
+        constants.get_default_hermes_root = lambda: root
+        gw_pkg = types.ModuleType('gateway')
+        gw_pkg.control_socket = control
+        gw_pkg.status = status_mod
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'gateway': gw_pkg, 'gateway.control_socket': control,
+                                      'gateway.status': status_mod, 'hermes_constants': constants}), redirect_stdout(output):
+            exec(compile(lab.GATEWAY_RELOAD, 'gateway-reload', 'exec'), {})
+        probe_answer = json.loads(output.getvalue())
+        self.assertEqual((probe_answer['gateway_code_sha'], probe_answer['local_code_sha']), ('aaaa1111', 'bbbb2222'))
+        with self.assertRaisesRegex(ValueError, 'at commit aaaa1111, not bbbb2222'):
+            lab.reload_gateway(profile, sys.executable, gateway_answer(probe_answer))
+        matching = dict(probe_answer, gateway_code_sha='bbbb2222')
+        self.assertEqual(lab.reload_gateway(profile, sys.executable, gateway_answer(matching)), 'reloaded')
+
     def test_hermes_interpreter_is_the_cli_environment_sibling(self):
         folder = Path(self.temp.name) / 'venv-bin'
         folder.mkdir()

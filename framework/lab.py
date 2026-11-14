@@ -40,12 +40,24 @@ BUNDLE_FILES = BACKEND_FILES + tuple('desktop/' + name for name in DESKTOP_FILES
 GATEWAY_RELOAD = '\n'.join((
     'import json',
     'from pathlib import Path',
-    'from gateway.control_socket import reload_gateway_plugins',
+    'import gateway.control_socket as control',
     'from hermes_constants import get_default_hermes_root, get_hermes_home',
     'home, root = Path(get_hermes_home()), Path(get_default_hermes_root())',
-    'answer = reload_gateway_plugins(home)',
+    'owner = home',
+    'answer = control.reload_gateway_plugins(home)',
     'if answer is None and root.resolve() != home.resolve():',
-    '    answer = reload_gateway_plugins(root, profile_home=home)',
+    '    owner = root',
+    '    answer = control.reload_gateway_plugins(root, profile_home=home)',
+    'identify = getattr(control, "identify_gateway", None)',
+    'if isinstance(answer, dict) and identify is not None:',
+    '    info = identify(owner) or {}',
+    '    try:',
+    '        from gateway.status import _get_code_identity_fields',
+    '        local_sha = (_get_code_identity_fields() or {}).get("code_sha")',
+    '    except Exception:',
+    '        local_sha = None',
+    '    if info.get("code_sha") or local_sha:',
+    '        answer = {**answer, "gateway_code_sha": info.get("code_sha"), "local_code_sha": local_sha}',
     'print(json.dumps(answer))',
 ))
 
@@ -134,6 +146,19 @@ def hermes_python(executable):
     raise ValueError('Hermes interpreter not found beside the CLI; cannot refresh a running gateway')
 
 
+def check_gateway_parity(answer, profile_name):
+    """Refuse an active gateway whose running commit differs from the local Hermes checkout."""
+    if not isinstance(answer, dict):
+        return
+    gateway_sha = answer.get('gateway_code_sha')
+    local_sha = answer.get('local_code_sha')
+    if isinstance(gateway_sha, str) and gateway_sha and isinstance(local_sha, str) and local_sha and gateway_sha != local_sha:
+        raise ValueError(
+            f'The running Hermes gateway for {profile_name} is at commit {gateway_sha}, not {local_sha}; '
+            'restart it when no hunt is running (hermes gateway restart), then rerun install'
+        )
+
+
 def reload_gateway(profile, python, runner):
     """Make a running gateway serve the installed bundle now; 'not_running' when none answered."""
     result = runner([str(python), '-I', '-c', GATEWAY_RELOAD], env=dict(os.environ, HERMES_HOME=str(profile)),
@@ -151,6 +176,7 @@ def reload_gateway(profile, python, runner):
     if not (isinstance(answer, dict) and answer.get('reloaded') is True
             and 'hunt-lab' in (answer.get('plugins') or ())):
         raise refused
+    check_gateway_parity(answer, profile.name)
     return 'reloaded'
 
 

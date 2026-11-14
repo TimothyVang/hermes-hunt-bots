@@ -79,7 +79,9 @@ hermes_temporal/test_hunt.py
 hermes_temporal/test_lab_input.py
 hermes_temporal/test_ontology.py
 hermes_temporal/test_practice.py
+hermes_temporal/test_transport.py
 hermes_temporal/test_workflows.py
+hermes_temporal/transport.py
 hermes_temporal/worker.py
 hermes_temporal/workflows.py
 hunt_lab/actionability.py

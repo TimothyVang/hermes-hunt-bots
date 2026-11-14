@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, replace
+import hashlib
 import importlib.util
 import io
 import json
@@ -501,8 +502,69 @@ class ExecutionReceiptTests(unittest.TestCase):
             result = _invoke(self.config, request())
         self.assertEqual(popen.call_args.args[0], [
             self.config.executable, '-p', 'framework-coordinator', 'chat', '--oneshot', '--quiet',
-            '--query-file', '-', '--source', 'tool', '--max-turns', '32'])
+            '--query-file', '-', '--source', 'tool', '--max-turns', '8'])
         self.assertEqual(result, ExecutionResult('completed', 'workflow/0', raw.decode('utf-8'), 'completed'))
+
+    def test_request_record_usage_enables_stream_json_with_default_config_and_keeps_fingerprint(self):
+        for bad in ('true', 1, None):
+            with self.assertRaises(ValueError):
+                ExecutionRequest('workflow/0', HermesStep('scope', 'Confirm scope.'), record_usage=bad)  # type: ignore[arg-type]
+        plain_req = ExecutionRequest('workflow/0', HermesStep('evidence', 'Search logs.', 'framework-researcher'))
+        usage_req = ExecutionRequest(
+            'workflow/0', HermesStep('evidence', 'Search logs.', 'framework-researcher'), record_usage=True
+        )
+        self.assertEqual(execution_module._fingerprint(plain_req), execution_module._fingerprint(usage_req))
+        raw = stream(INIT, RESULT)
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            result = _invoke(self.config, usage_req)
+        self.assertIn('--format', popen.call_args.args[0])
+        self.assertEqual(result, ExecutionResult('completed', 'workflow/0', 'READY', 'completed', 'local-synthetic', USAGE))
+
+    def test_profile_turn_budgets_scope_no_mcp_and_hunt_env_reach_cli_fallback(self):
+        raw = stream(INIT, RESULT)
+        scope_req = ExecutionRequest(
+            'hunt-wf:0:retry', HermesStep('scope', 'Confirm scope.', 'framework-coordinator', toolsets=('no_mcp',))
+        )
+        raw_scope_req = ExecutionRequest('hunt-wf:0:raw', HermesStep('scope', 'Confirm scope.', 'framework-coordinator'))
+        hunter_req = ExecutionRequest('hunt-wf:1', HermesStep('evidence', 'Search logs.', 'framework-researcher'))
+        legacy_fp = hashlib.sha256(
+            json.dumps(['scope', 'Confirm scope.', 'framework-coordinator', 300],
+                       ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')
+        ).hexdigest()
+        self.assertEqual(execution_module._fingerprint(raw_scope_req), legacy_fp)
+        self.assertNotEqual(execution_module._fingerprint(scope_req), legacy_fp)
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            _invoke(self.config, scope_req)
+            scope_cmd, scope_env = popen.call_args.args[0], popen.call_args.kwargs['env']
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            _invoke(self.config, raw_scope_req)
+            raw_scope_cmd = popen.call_args.args[0]
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            _invoke(self.config, hunter_req)
+            hunter_cmd, hunter_env = popen.call_args.args[0], popen.call_args.kwargs['env']
+        self.assertEqual(scope_cmd[-4:], ['--max-turns', '8', '--toolsets', 'no_mcp'])
+        self.assertEqual((scope_env['HUNT_RUN_ID'], scope_env['HUNT_STEP_ID']), ('hunt-wf', 'scope'))
+        self.assertEqual(raw_scope_cmd[-2:], ['--max-turns', '8'])
+        self.assertNotIn('--toolsets', raw_scope_cmd)
+        self.assertEqual(hunter_cmd[-2:], ['--max-turns', '6'])
+        self.assertNotIn('--toolsets', hunter_cmd)
+        self.assertEqual((hunter_env['HUNT_RUN_ID'], hunter_env['HUNT_STEP_ID']), ('hunt-wf', 'evidence'))
+
+    def test_receipt_store_uses_wal_and_preserves_pre_submit_session_checkpoint(self):
+        req = request()
+        store = execution_module.ReceiptStore(self.path)
+        self.assertIsNone(store.reserve(req))
+        store.checkpoint_session(req.execution_id, 'sess-ephemeral-1', 'inp-sha256-1')
+        self.assertEqual(store.checkpointed(req.execution_id), ('sess-ephemeral-1', 'inp-sha256-1'))
+        store.finish(ExecutionResult('unknown', req.execution_id, '', 'subprocess_timeout'))
+        with closing(store._connect()) as db:
+            mode = db.execute('PRAGMA journal_mode').fetchone()[0]
+            sync_level = db.execute('PRAGMA synchronous').fetchone()[0]
+            row = db.execute('SELECT session_id, input_id FROM receipts WHERE execution_id = ?',
+                             (req.execution_id,)).fetchone()
+        self.assertEqual(mode.lower(), 'wal')
+        self.assertEqual(sync_level, 2)
+        self.assertEqual(row, ('sess-ephemeral-1', 'inp-sha256-1'))
 
     def test_receipt_returns_usage_and_session_on_repeat(self):
         req = request()
@@ -544,7 +606,7 @@ class ExecutionReceiptTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db:
             columns = [row[1] for row in db.execute('PRAGMA table_info(receipts)')]
         self.assertEqual(columns, ['execution_id', 'fingerprint', 'status', 'reason', 'output', 'usage', 'session_id',
-                                   'diagnostic'])
+                                   'diagnostic', 'input_id'])
 
     def test_seven_column_receipt_database_gains_the_diagnostic_and_keeps_old_receipts(self):
         old = request()
@@ -564,7 +626,7 @@ class ExecutionReceiptTests(unittest.TestCase):
         invoke.assert_not_called()
         with closing(sqlite3.connect(self.path)) as db:
             self.assertEqual([row[1] for row in db.execute('PRAGMA table_info(receipts)')][5:],
-                             ['usage', 'session_id', 'diagnostic'])
+                             ['usage', 'session_id', 'diagnostic', 'input_id'])
 
     def test_invoke_step_dispatches_every_call_without_a_receipt(self):
         completed = ExecutionResult('completed', 'workflow/0', 'READY', 'completed', 'local-synthetic', USAGE)
@@ -594,9 +656,9 @@ class WorkerOptionTests(unittest.TestCase):
             self.assertEqual(worker.main(list(argv)), 0)
         return pool.call_args.kwargs, temporal_worker.call_args.kwargs, activities.call_args.args[0]
 
-    def test_defaults_keep_four_activity_threads_and_no_usage_recording(self):
+    def test_defaults_keep_twelve_activity_threads_and_no_usage_recording(self):
         pool, options, config = self.start_worker()
-        self.assertEqual((pool, options['max_concurrent_activities']), ({'max_workers': 4}, 4))
+        self.assertEqual((pool, options['max_concurrent_activities']), ({'max_workers': 12}, 12))
         self.assertIs(config.record_usage, False)
 
     def test_team_options_reach_the_pool_the_worker_and_the_execution_config(self):
