@@ -24,13 +24,26 @@ CASE = 'lab-med-001'
 ANALYST = 'framework-network-analyst'
 HOST_TOOLS = {'elastic_search', 'elastic_aggregate', 'detection_test', 'intel_lookup',
               'arkime_sessions', 'arkime_unique', 'packet_fields'}
-PLUGIN_TOOLS = HOST_TOOLS | {'hunt_lab_query', 'lab_browser'}
+PLUGIN_TOOLS = HOST_TOOLS | {'hunt_lab_query', 'lab_browser', 'hunt_lab_batch'}
 # Minimal valid arguments: each call passes local validation and stops at the lab resolver.
 MINIMAL_ARGS = {
     'elastic_search': {}, 'elastic_aggregate': {'field': 'host.name'}, 'detection_test': {'q': 'a', 'name': 'b'},
     'intel_lookup': {'values': 'a'}, 'arkime_sessions': {}, 'arkime_unique': {'field': 'ip.src'},
     'packet_fields': {}, 'lab_browser': {'action': 'snapshot'},
 }
+
+
+def minimal_args_for(name, owner):
+    if name == 'hunt_lab_batch':
+        sub = 'arkime_sessions' if owner == ANALYST else 'elastic_search'
+        return {'queries': [{'tool': sub}]}
+    if name == 'hunt_lab_query':
+        return {'dataset': 'events'}
+    return MINIMAL_ARGS[name]
+
+
+def owner_of(name):
+    return next(profile for profile, tools in query_adapter.TOOL_OWNERSHIP.items() if name in tools)
 
 
 def guest_lab_server():
@@ -79,6 +92,7 @@ class GuestStub:
         self.secret = secret
         self.requests = []
         self.secrets = []
+        self.run_ids = []
         self.overrides = {}
         stub = self
 
@@ -89,11 +103,14 @@ class GuestStub:
             def do_GET(self):
                 url = urlsplit(self.path)
                 params = {key: values[0] for key, values in parse_qs(url.query, keep_blank_values=True).items()}
+                profile = self.headers.get('X-Hermes-Profile')
+                expected = endpoints.caller_secret(stub.secret, profile)
                 stub.secrets.append(self.headers.get(endpoints.SECRET_HEADER))
-                if self.headers.get(endpoints.SECRET_HEADER) != stub.secret:
+                stub.run_ids.append(self.headers.get(endpoints.RUN_ID_HEADER))
+                if expected is None or self.headers.get(endpoints.SECRET_HEADER) != expected:
                     status, body, headers = 401, {'error': 'caller_not_authorized'}, {}
                 else:
-                    stub.requests.append((url.path, params, self.headers.get('X-Hermes-Profile')))
+                    stub.requests.append((url.path, params, profile))
                     status, body, headers = stub.overrides.get(url.path) or stub.default(url.path, params)
                 if stub.instance:
                     headers = {'X-Hunt-Lab-Instance': stub.instance, **headers}
@@ -137,9 +154,10 @@ class ToolCallTests(unittest.TestCase):
         self.addCleanup(self.guest.close)
         stack_guest(self.analyst, self.guest)
 
-    def call(self, name, arguments, profile='framework-researcher', state_dir=True):
+    def call(self, name, arguments, profile=..., state_dir=True):
         state_dir = self.state_dir if state_dir is True else state_dir
-        return query_adapter.call(name, arguments, state_dir=state_dir, profile=profile)
+        chosen = owner_of(name) if profile is ... else profile
+        return query_adapter.call(name, arguments, state_dir=state_dir, profile=chosen)
 
     def test_each_tool_reaches_only_its_guest_endpoint_with_caller_identity(self):
         cases = {
@@ -161,18 +179,123 @@ class ToolCallTests(unittest.TestCase):
                                            'filter': 'dns.qry.name == "a.test"'}),
         }
         self.assertEqual(set(cases), HOST_TOOLS)
+        expected_secrets = set()
         for name, (arguments, path, params) in cases.items():
+            owner = owner_of(name)
+            expected_secrets.add(endpoints.profile_secret(GUEST_SECRET, owner))
             with self.subTest(tool=name):
                 self.guest.requests.clear()
-                result = self.call(name, {'case_id': CASE, **arguments}, profile='framework-reviewer')
+                result = self.call(name, {'case_id': CASE, **arguments}, profile=owner)
                 self.assertTrue(result['ok'], result)
                 self.assertEqual((result['tool'], result['case_id'], result['profile']),
-                                 (name, CASE, 'framework-reviewer'))
+                                 (name, CASE, owner))
                 self.assertEqual(result['result']['path'], path)
-                self.assertEqual(self.guest.endpoint_calls(), [(path, params, 'framework-reviewer')])
+                self.assertEqual(self.guest.endpoint_calls(), [(path, params, owner)])
                 # The loaded case is confirmed before the scoped query.
                 self.assertEqual(self.guest.requests[0][0], '/case')
-        self.assertEqual(set(self.guest.secrets), {GUEST_SECRET})
+        self.assertEqual(set(self.guest.secrets), expected_secrets)
+        self.assertNotIn(GUEST_SECRET, self.guest.secrets)
+
+    def test_non_owners_are_refused_before_any_guest_request(self):
+        self.guest.requests.clear()
+        for name, bad_profile in (
+                ('arkime_sessions', 'framework-researcher'),
+                ('intel_lookup', 'framework-researcher'),
+                ('detection_test', 'framework-researcher'),
+                ('hunt_lab_query', 'framework-researcher'),
+                ('elastic_search', 'framework-builder'),
+                ('elastic_search', 'framework-coordinator'),
+                ('elastic_search', None),
+                ('hunt_lab_batch', 'framework-builder'),
+                ('hunt_lab_batch', 'framework-reviewer'),
+        ):
+            with self.subTest(tool=name, profile=bad_profile):
+                extra = minimal_args_for(name, 'framework-researcher')
+                res = self.call(name, {'case_id': CASE, **extra}, profile=bad_profile)
+                self.assertEqual((res['ok'], res['error']), (False, 'tool_not_owned'))
+        self.assertEqual(self.guest.requests, [])
+
+    def test_hunt_lab_batch_enforces_bounds_ownership_exclusions_and_byte_cap(self):
+        self.guest.requests.clear()
+        batch_ok = self.call('hunt_lab_batch', {
+            'case_id': CASE,
+            'queries': [
+                {'tool': 'elastic_search', 'arguments': {'q': 'host.name:ws-01'}},
+                {'tool': 'elastic_aggregate', 'arguments': {'field': 'host.name', 'size': 25}},
+            ],
+        }, profile='framework-researcher')
+        self.assertTrue(batch_ok['ok'], batch_ok)
+        self.assertEqual(len(batch_ok['results']), 2)
+        # /case is probed once for the entire batch, followed by the two item GETs.
+        self.assertEqual([r[0] for r in self.guest.requests], ['/case', '/es/search', '/es/aggs'])
+        self.assertEqual(self.guest.requests[1][1]['size'], '25')
+
+        analyst_ok = self.call('hunt_lab_batch', {
+            'case_id': CASE,
+            'queries': [
+                {'tool': 'arkime_sessions', 'arguments': {'expression': 'port == 53'}},
+                {'tool': 'arkime_unique', 'arguments': {'field': 'ip.dst'}},
+                {'tool': 'hunt_lab_query', 'arguments': {'dataset': 'events', 'limit': 25}},
+            ],
+        }, profile=ANALYST)
+        self.assertTrue(analyst_ok['ok'], analyst_ok)
+        self.assertEqual(len(analyst_ok['results']), 3)
+
+        self.guest.requests.clear()
+        for bad_args, expected_err in (
+                ({'case_id': CASE, 'queries': []}, 'invalid_batch_size'),
+                ({'case_id': CASE, 'queries': [{'tool': 'elastic_search'}] * 6}, 'invalid_batch_size'),
+                ({'case_id': CASE, 'queries': [{'tool': 'packet_fields'}]}, 'tool_not_batchable'),
+                ({'case_id': CASE, 'queries': [{'tool': 'lab_browser', 'arguments': {'action': 'snapshot'}}]}, 'tool_not_batchable'),
+                ({'case_id': CASE, 'queries': [{'tool': 'hunt_lab_batch', 'arguments': {'queries': []}}]}, 'tool_not_batchable'),
+                ({'case_id': CASE, 'queries': [{'tool': 'arkime_sessions'}]}, 'tool_not_owned'),
+                ({'case_id': CASE, 'queries': [{'tool': 'intel_lookup', 'arguments': {'values': '1.1.1.1'}}]}, 'tool_not_owned'),
+                ({'case_id': CASE, 'queries': [{'tool': 'elastic_search', 'arguments': {'size': 26}}]}, 'invalid_size'),
+        ):
+            with self.subTest(bad_args=bad_args):
+                res = self.call('hunt_lab_batch', bad_args, profile='framework-researcher')
+                self.assertEqual((res['ok'], res['error']), (False, expected_err), res)
+        self.assertEqual(self.guest.requests, [])
+
+        # Oversized aggregate response (>96 KiB) fails closed with batch_response_too_large.
+        self.guest.overrides['/es/search'] = (200, {'case_id': CASE, 'pad': 'x' * (50 * 1024)}, {})
+        big = self.call('hunt_lab_batch', {
+            'case_id': CASE,
+            'queries': [
+                {'tool': 'elastic_search', 'arguments': {'q': 'a'}},
+                {'tool': 'elastic_search', 'arguments': {'q': 'b'}},
+            ],
+        }, profile='framework-researcher')
+        self.assertEqual((big['ok'], big['error']), (False, 'batch_response_too_large'))
+        self.guest.overrides.pop('/es/search', None)
+
+        # Per-item lab_http_400 or lab_response_too_large (>512 KiB single response) is isolated per item without aborting siblings.
+        for bad_override, expected_item_err in (
+                ((400, {'error': 'invalid_query'}, {}), 'lab_http_400'),
+                ((200, b'{"case_id":"' + CASE.encode('ascii') + b'","x":"' + b'a' * (512 * 1024) + b'"}', {}),
+                 'lab_response_too_large'),
+        ):
+            with self.subTest(expected_item_err=expected_item_err):
+                self.guest.overrides['/es/search'] = bad_override
+                partial = self.call('hunt_lab_batch', {
+                    'case_id': CASE,
+                    'queries': [
+                        {'tool': 'elastic_search', 'arguments': {'q': 'bad'}},
+                        {'tool': 'elastic_aggregate', 'arguments': {'field': 'host.name', 'size': 10}},
+                    ],
+                }, profile='framework-researcher')
+                self.assertTrue(partial['ok'], partial)
+                self.assertEqual((partial['results'][0]['ok'], partial['results'][0]['error']),
+                                 (False, expected_item_err))
+                self.assertTrue(partial['results'][1]['ok'], partial['results'])
+                self.guest.overrides.pop('/es/search', None)
+
+    def test_hunt_run_id_environment_is_forwarded_to_guest(self):
+        self.guest.run_ids.clear()
+        with patch.dict(os.environ, {'HUNT_RUN_ID': 'wf-42:round:001'}, clear=False):
+            res = self.call('elastic_search', {'case_id': CASE}, profile='framework-researcher')
+        self.assertTrue(res['ok'], res)
+        self.assertEqual(self.guest.run_ids, ['wf-42:round:001', 'wf-42:round:001'])
 
     def test_a_case_with_no_lab_up_stops_before_any_scoped_query(self):
         result = self.call('elastic_search', {'case_id': 'dns-lab-001'})
@@ -410,9 +533,10 @@ class ResolverTests(unittest.TestCase):
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'state.json').write_text(json.dumps(state), encoding='utf-8')
 
-    def call(self, name, arguments, case_id='work-conn-001'):
+    def call(self, name, arguments, case_id='work-conn-001', profile=...):
+        chosen = owner_of(name) if profile is ... else profile
         return query_adapter.call(name, {'case_id': case_id, **arguments}, state_dir=self.state_dir,
-                                  profile='framework-researcher')
+                                  profile=chosen)
 
     def test_bots_reach_a_connected_case_through_its_state_file_with_no_container_lab(self):
         result = self.call('elastic_search', {'q': 'host.name:ws-01'})
@@ -532,7 +656,9 @@ class ResolverTests(unittest.TestCase):
         self.up()
         self.assertTrue(self.call('elastic_search', {})['ok'])
         self.assertTrue(self.call('elastic_search', {}, case_id=CASE)['ok'])
-        self.assertEqual((set(self.lab.secrets), set(self.connected.secrets)), ({GUEST_SECRET}, {CONNECTED_SECRET}))
+        self.assertEqual((set(self.lab.secrets), set(self.connected.secrets)),
+                         ({endpoints.profile_secret(GUEST_SECRET, 'framework-researcher')},
+                          {endpoints.profile_secret(CONNECTED_SECRET, 'framework-researcher')}))
         served = endpoints.resolve(self.state_dir, CASE)
         self.assertEqual((served.instance, served.secret), (GUEST_INSTANCE, GUEST_SECRET))
         self.assertNotIn(GUEST_SECRET, repr(served))
@@ -567,7 +693,8 @@ class ResolverTests(unittest.TestCase):
                          ('container', f'http://127.0.0.1:{port}', f'http://127.0.0.1:{port ^ 2}',
                           f'http://127.0.0.1:{port ^ 1}', 'd' * 32))
         self.assertEqual(served.secret, CONTAINER_SECRET)
-        self.assertEqual(set(guest.secrets), {CONTAINER_SECRET})
+        self.assertEqual(set(guest.secrets),
+                         {CONTAINER_SECRET, endpoints.profile_secret(CONTAINER_SECRET, 'framework-researcher')})
         # The connected service serves another case, so it is never asked.
         self.assertEqual((self.lab.requests, self.connected.requests), ([], []))
         self.assertEqual(self.call('elastic_search', {}, case_id='other-001')['error'], 'lab_not_running')
@@ -626,7 +753,7 @@ class ResolverTests(unittest.TestCase):
         [scope] = opened
         self.assertEqual(scope.origins, (f'http://127.0.0.1:{port}', f'http://127.0.0.1:{port ^ 2}',
                                          f'http://127.0.0.1:{port ^ 1}'))
-        self.assertEqual(scope.lab_secret, CONTAINER_SECRET)
+        self.assertEqual(scope.lab_secret, endpoints.profile_secret(CONTAINER_SECRET, 'framework-researcher'))
 
     def test_resolver_has_no_vm_origin(self):
         # A VM's leftover deployment.json and seed caller file name no lab: only container and connected labs resolve.
@@ -653,12 +780,15 @@ class RegistrationTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
 
-    def register(self, home, owner):
+    def hermes_env(self, home, owner):
         constants = types.SimpleNamespace(get_hermes_home=lambda: home, profile_name_for_home=lambda _home: owner)
+        return patch.dict(sys.modules, {'hermes_constants': constants})
+
+    def register(self, home, owner):
         ctx = types.SimpleNamespace(tools={}, commands=[])
         ctx.register_cli_command = lambda **kwargs: ctx.commands.append(kwargs['name'])
         ctx.register_tool = lambda name, toolset, schema, handler: ctx.tools.__setitem__(name, (toolset, schema, handler))
-        with patch.dict(sys.modules, {'hermes_constants': constants}):
+        with self.hermes_env(home, owner):
             hunt_lab.register(ctx)
         return ctx
 
@@ -678,12 +808,56 @@ class RegistrationTests(unittest.TestCase):
                     self.assertFalse(schema['parameters']['additionalProperties'])
                 calls = []
                 observed = lambda state_dir: calls.append(Path(state_dir))
-                wired = sorted(set(ctx.tools) & set(MINIMAL_ARGS))
-                with patch.object(endpoints, 'connected_state', side_effect=observed):
-                    outputs = [ctx.tools[name][2]({'case_id': CASE, **MINIMAL_ARGS[name]}) for name in wired]
+                wired = sorted(ctx.tools)
+                with self.hermes_env(self.root / 'profiles' / owner, owner), patch.object(
+                        endpoints, 'connected_state', side_effect=observed):
+                    outputs = [ctx.tools[name][2]({'case_id': CASE, **minimal_args_for(name, owner)}) for name in wired]
                 self.assertEqual([json.loads(output)['error'] for output in outputs],
                                  ['lab_not_running'] * len(wired))
                 self.assertEqual(calls, [analyst_state] * len(wired))
+
+    def test_registered_tool_handlers_resolve_hermes_home_dynamically_per_call(self):
+        # HX002/PS-P05: handlers must read get_hermes_home() at call time rather than pinning a boot-time closure.
+        ctx = self.register(self.root / 'boot' / 'profiles' / 'framework-researcher', 'framework-researcher')
+        observed = []
+        active_home = self.root / 'active' / 'profiles' / 'framework-researcher'
+        with self.hermes_env(active_home, 'framework-researcher'), patch.object(
+                endpoints, 'connected_state', side_effect=lambda state_dir: observed.append(Path(state_dir))):
+            out = json.loads(ctx.tools['elastic_search'][2]({'case_id': CASE}))
+        self.assertEqual(out['error'], 'lab_not_running')
+        self.assertEqual(observed, [self.root / 'active' / 'profiles' / ANALYST / 'hunt-lab-vm'])
+        # If the active turn belongs to a profile that does not own elastic_search, call-time ownership fails closed.
+        with self.hermes_env(self.root / 'active' / 'profiles' / 'framework-builder', 'framework-builder'), patch.object(
+                endpoints, 'connected_state', side_effect=AssertionError('must refuse before endpoint lookup')):
+            denied = json.loads(ctx.tools['elastic_search'][2]({'case_id': CASE}))
+        self.assertEqual(denied, {'ok': False, 'profile': 'framework-builder', 'error': 'tool_not_owned'})
+
+    def test_gateway_bound_client_env_supplies_hunt_run_id_without_os_environ(self):
+        repo_root = str(Path(query_adapter.__file__).resolve().parents[2])
+        added = repo_root not in sys.path
+        if added:
+            sys.path.insert(0, repo_root)
+            self.addCleanup(lambda: sys.path.remove(repo_root) if repo_root in sys.path else None)
+        from agent.session_client_env import accept_client_env, client_env_scope
+        import native_team
+        cfg = {'terminal': {'client_env_passthrough': native_team.expected_settings('framework-researcher')
+                            ['terminal.client_env_passthrough']}}
+        accepted = accept_client_env({'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1',
+                                      'UNLISTED_EXTRA': 'dropped'}, cfg, local=True)
+        self.assertEqual(accepted, {'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1'})
+        guest = GuestStub()
+        self.addCleanup(guest.close)
+        analyst = self.root / 'profiles' / ANALYST
+        stack_guest(analyst, guest)
+        clean_env = {k: v for k, v in os.environ.items() if k not in ('HUNT_RUN_ID', 'HUNT_STEP_ID')}
+        with patch.dict(os.environ, clean_env, clear=True), client_env_scope(accepted, local=True):
+            result = query_adapter.call('elastic_search', {'case_id': CASE, 'q': 'host.name:ws01'},
+                                        state_dir=analyst / 'hunt-lab-vm', profile='framework-researcher')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(guest.run_ids, ['wf-gw:round:001', 'wf-gw:round:001'])
+        # A non-local client session must not spoof host toolchain passthrough variables.
+        with patch.dict(os.environ, clean_env, clear=True), client_env_scope(accepted, local=False):
+            self.assertEqual(endpoints.caller_env(), {})
 
     def test_every_plugin_tool_has_an_owner_and_the_coordinator_registers_none(self):
         owned = {tool for tools in query_adapter.TOOL_OWNERSHIP.values() for tool in tools}
@@ -717,7 +891,8 @@ class RegistrationTests(unittest.TestCase):
     def test_non_framework_or_unanchored_homes_get_no_working_lab(self):
         self.assertEqual(self.register(self.root / 'profiles' / 'default', 'default').tools, {})
         ctx = self.register(self.root / 'elsewhere', 'framework-builder')
-        with patch.object(endpoints, 'connected_state', side_effect=AssertionError('no lookup without analyst state')):
+        with self.hermes_env(self.root / 'elsewhere', 'framework-builder'), patch.object(
+                endpoints, 'connected_state', side_effect=AssertionError('no lookup without analyst state')):
             output = ctx.tools['detection_test'][2]({'case_id': CASE, 'q': 'a', 'name': 'b'})
         self.assertEqual(json.loads(output)['error'], 'lab_state_unavailable')
 

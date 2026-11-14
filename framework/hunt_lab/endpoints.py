@@ -14,6 +14,8 @@ The operator's `hunt-lab` status, start and stop replies show it in `lab_console
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -23,10 +25,16 @@ import time
 from urllib import error, parse, request
 
 LAB_OWNER = 'framework-network-analyst'
+BOARD_PROFILE = 'hunt-board'
+FRAMEWORK_PROFILES = frozenset({
+    'framework-coordinator', 'framework-researcher', LAB_OWNER,
+    'framework-librarian', 'framework-builder', 'framework-reviewer',
+})
 CONNECTED_STATE = 'hunt-lab-connected'
 STATE_VERSION = 2
 INSTANCE_HEADER = 'X-Hunt-Lab-Instance'
 SECRET_HEADER = 'X-Hunt-Lab-Secret'
+RUN_ID_HEADER = 'X-Hunt-Run-Id'
 MAX_RESPONSE = 512 * 1024
 MAX_ERROR_BODY = 4096
 MAX_STATE = 4096
@@ -35,6 +43,7 @@ ERROR_CODE = re.compile(r'[a-z0-9_]{1,64}')
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 INSTANCE = re.compile(r'[0-9a-f]{32}')
 SECRET = re.compile(r'[0-9a-f]{64}')
+RUN_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
 ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}')
 STATE_KEYS = frozenset({'version', 'pid', 'port', 'case_id', 'instance', 'secret', 'api_key_env'})
 CONTAINER_STATE = 'hunt-lab-container'
@@ -75,9 +84,34 @@ class LabEndpoint:
     api_key_env: str | None = None
     secret: str | None = field(default=None, repr=False)
 
-    def get(self, path, profile=None, timeout=DEFAULT_TIMEOUT):
+    def get(self, path, profile=None, timeout=DEFAULT_TIMEOUT, *, run_id=None):
         """One bounded GET from this service, sending its secret; the answer must still name this instance."""
-        return get(self.lab_url, path, profile, timeout, instance=self.instance, secret=self.secret)
+        return get(self.lab_url, path, profile, timeout, instance=self.instance, secret=self.secret, run_id=run_id)
+
+
+def profile_secret(secret, profile):
+    """Stateless per-profile caller subkey derived from a 64-hex master lab secret."""
+    if not isinstance(secret, str) or not SECRET.fullmatch(secret):
+        raise QueryFailure('invalid_lab_secret')
+    if not isinstance(profile, str) or not profile:
+        raise QueryFailure('invalid_profile')
+    return hmac.new(secret.encode('ascii'), profile.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def caller_secret(secret, profile):
+    """Caller token for `profile`: bot profiles hold only their HMAC subkey; operator/board keep the lab secret."""
+    if profile in FRAMEWORK_PROFILES:
+        return profile_secret(secret, profile)
+    return secret
+
+
+def valid_run_id(run_id):
+    """Normalized run_id for X-Hunt-Run-Id / activity scoping, or None when unset."""
+    if run_id is None or run_id == '':
+        return None
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        raise QueryFailure('invalid_run_id')
+    return run_id
 
 
 def endpoint(value):
@@ -103,7 +137,19 @@ def _guest_error(exc):
     return code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else None
 
 
-def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None, secret=None):
+def caller_env(environ=None):
+    """Active turn environment: explicit `environ` when given, else a local gateway session's
+    bound client toolchain env, else `os.environ`."""
+    if environ is not None:
+        return environ
+    try:
+        from agent.session_client_env import bound_client_env, tool_env
+    except ImportError:
+        return os.environ
+    return os.environ if bound_client_env() is None else tool_env()
+
+
+def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None, secret=None, run_id=None):
     """One bounded GET of a JSON object from a loopback lab; no proxies or redirects.
 
     With `secret`, it is sent in X-Hunt-Lab-Secret (a lab service answers nothing else; without it the
@@ -117,6 +163,11 @@ def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None, sec
     headers = {'X-Hermes-Profile': profile} if profile else {}
     if secret is not None:
         headers[SECRET_HEADER] = secret
+    if run_id is None and profile in FRAMEWORK_PROFILES:
+        run_id = caller_env().get('HUNT_RUN_ID')
+    scoped_run_id = valid_run_id(run_id)
+    if scoped_run_id is not None:
+        headers[RUN_ID_HEADER] = scoped_run_id
     req = request.Request(base + path, headers=headers, method='GET')
     try:
         with opener.open(req, timeout=timeout) as response:
@@ -289,17 +340,19 @@ def container_states(state_dir, case_id=None):
 
 def _connected(state, profile):
     base = f"http://127.0.0.1:{state['port']}"
-    case = get(base, '/case', profile, instance=state['instance'], secret=state['secret'])
+    secret = caller_secret(state['secret'], profile)
+    case = get(base, '/case', profile, instance=state['instance'], secret=secret)
     return LabEndpoint(base, 'connected', case, instance=state['instance'], api_key_env=state['api_key_env'],
-                       secret=state['secret'])
+                       secret=secret)
 
 
 def _container(state, profile):
     base = f"http://127.0.0.1:{state['lab_port']}"
-    case = get(base, '/case', profile, instance=state['instance'], secret=state['secret'])
+    secret = caller_secret(state['secret'], profile)
+    case = get(base, '/case', profile, instance=state['instance'], secret=secret)
     return LabEndpoint(base, 'container', case, instance=state['instance'],
                        arkime_url=f"http://127.0.0.1:{state['arkime_port']}",
-                       kibana_url=f"http://127.0.0.1:{state['kibana_port']}", secret=state['secret'])
+                       kibana_url=f"http://127.0.0.1:{state['kibana_port']}", secret=secret)
 
 
 def resolve(state_dir, case_id=None, *, profile=None, environ=None):

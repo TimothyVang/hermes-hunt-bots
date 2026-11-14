@@ -20,11 +20,15 @@ import time
 from pathlib import Path
 from urllib import parse
 
-from .lab_browser import PAGES, STATE_FILE, Cdp, _WebSocket
+from .lab_browser import PAGES, RUNS_DIR, STATE_FILE, Cdp, _WebSocket
 
 READ_ONLY = frozenset({'Target.getTargets', 'Target.attachToTarget', 'Target.detachFromTarget', 'Page.startScreencast',
                        'Page.stopScreencast', 'Page.screencastFrameAck'})
 SCREENCAST = {'format': 'jpeg', 'quality': 70, 'maxWidth': 1280, 'maxHeight': 1080, 'everyNthFrame': 1}
+STALE_PORT_SECONDS = 120.0
+STALE_RUN_STATE_SECONDS = 900.0
+RETRY_BACKOFF_INITIAL = 2.0
+RETRY_BACKOFF_MAX = 10.0
 _LOG = logging.getLogger(__name__)
 
 
@@ -32,13 +36,19 @@ def websocket(ws_url):
     return _WebSocket(ws_url)
 
 
-def shown_page(root, profile):
-    """The page an owner's browser shows, from its session.json: the lab_browser page name, else the URL path
-    of a loopback http URL; None when unknown. Nothing else in the file (refs, origins) is read out."""
+def candidate_session_dirs(root, profile):
+    """Profile browser directory plus any parallel `(run_id, step_id)` subdirectories under `<profile>/runs/`."""
+    base = Path(root) / profile
+    dirs = [base]
+    runs = base / RUNS_DIR
     try:
-        state = json.loads((Path(root) / profile / STATE_FILE).read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return None
+        children = sorted(child for child in runs.iterdir() if child.is_dir())
+    except OSError:
+        children = []
+    return dirs + children
+
+
+def _page_from_state(state):
     if not isinstance(state, dict):
         return None
     page = state.get('page')
@@ -54,6 +64,27 @@ def shown_page(root, profile):
         if loopback:
             return parts.path or '/'
     return None
+
+
+def shown_page(root, profile):
+    """The page an owner's browser shows, from its newest session.json (across `<profile>/` and `<profile>/runs/*`):
+    the lab_browser page name, else the URL path of a loopback http URL; None when unknown."""
+    found = []
+    for folder in candidate_session_dirs(root, profile):
+        path = folder / STATE_FILE
+        try:
+            mtime = path.stat().st_mtime
+            state = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        page = _page_from_state(state)
+        if page is not None:
+            last_used = state.get('last_used') if isinstance(state, dict) else None
+            rank = float(last_used) if isinstance(last_used, (int, float)) else mtime
+            found.append((rank, mtime, page))
+    if not found:
+        return None
+    return max(found)[2]
 
 
 class ReadOnlyCdp:
@@ -75,6 +106,17 @@ class ReadOnlyCdp:
         self._cdp.close()
 
 
+def _read_port_ws(port_file):
+    try:
+        mtime = port_file.stat().st_mtime
+        lines = port_file.read_text(encoding='ascii').split()
+    except FileNotFoundError:
+        return None, None
+    if len(lines) < 2 or not lines[0].isdigit():
+        raise ValueError('partial DevToolsActivePort')
+    return f'ws://127.0.0.1:{lines[0]}{lines[1]}', mtime
+
+
 class Stream:
     """One owner's browser, attached from the moment Chromium writes its DevToolsActivePort.
 
@@ -83,14 +125,20 @@ class Stream:
     live browser at launch; until session.json names that browser's main target, the first page
     target is watched (the one lab_browser keeps)."""
 
-    def __init__(self, profile, root, sink, connect, log=_LOG.info):
+    def __init__(self, profile, root, sink, connect, log=_LOG.info, *, session_dir=None):
         self.profile, self.sink, self.connect, self.log = profile, sink, connect, log
-        self.state_file = Path(root) / profile / STATE_FILE
-        self.port_file = Path(root) / profile / 'user-data' / 'DevToolsActivePort'
+        base = Path(root) / profile
+        folder = Path(session_dir) if session_dir is not None else base
+        self.session_dir = folder
+        self.is_run_dir = folder != base
+        self.state_file = folder / STATE_FILE
+        self.port_file = folder / 'user-data' / 'DevToolsActivePort'
         self.key = self.client = self.session = None
         self.lost = threading.Event()
         self.failed_key = None
         self.failed_logged = 0.0
+        self.failed_until = 0.0
+        self.failed_delay = RETRY_BACKOFF_INITIAL
 
     @property
     def attached(self):
@@ -100,25 +148,32 @@ class Stream:
         """(ws_url, main_target or None for any page) of the live browser; None when there is none. A read that
         races a writer keeps the current attachment."""
         try:
-            lines = self.port_file.read_text(encoding='ascii').split()
-        except FileNotFoundError:
-            live = None
-        except OSError:
+            live, port_mtime = _read_port_ws(self.port_file)
+        except (OSError, ValueError):
             return self.key
-        else:
-            if len(lines) < 2 or not lines[0].isdigit():
-                return self.key
-            live = f'ws://127.0.0.1:{lines[0]}{lines[1]}'
+        state_mtime = None
         try:
+            state_mtime = self.state_file.stat().st_mtime
             state = json.loads(self.state_file.read_text(encoding='utf-8'))
         except FileNotFoundError:
             state = {}
         except (OSError, ValueError):
             return self.key
+        live_client = (self.client is not None and self.key is not None
+                       and not self.lost.is_set() and not self.client.closed.is_set())
+        now_wall = time.time()
         ws, target = (state.get('ws_url'), state.get('main_target')) if isinstance(state, dict) else (None, None)
-        named = isinstance(ws, str) and ws and isinstance(target, str) and target
+        named = isinstance(ws, str) and bool(ws) and isinstance(target, str) and bool(target)
+        if (named and self.is_run_dir and state_mtime is not None
+                and now_wall - state_mtime > STALE_RUN_STATE_SECONDS
+                and not (live_client and (ws, target) == self.key)):
+            named = False
         if live and (not named or ws != live):
-            return live, None
+            if (port_mtime is not None and now_wall - port_mtime > STALE_PORT_SECONDS
+                    and not (live_client and live == self.key[0])):
+                live = None
+            else:
+                return live, None
         return (ws, target) if named else None
 
     def _serves(self, want):
@@ -128,7 +183,10 @@ class Stream:
         want = self._wanted()
         if self.client and (not self._serves(want) or self.lost.is_set() or self.client.closed.is_set()):
             self.detach()
-        if want and not self.client:
+        if want != self.failed_key:
+            self.failed_until = 0.0
+            self.failed_delay = RETRY_BACKOFF_INITIAL
+        if want and not self.client and time.monotonic() >= self.failed_until:
             self.attach(want)
 
     def attach(self, want):
@@ -149,17 +207,23 @@ class Stream:
         except Exception as exc:
             # Log the first failure for a browser, then every 30 s while it keeps failing, with its detail.
             now = time.monotonic()
-            if self.failed_key != want or now - self.failed_logged >= 30:
+            same_fail = self.failed_key == want
+            if not same_fail or now - self.failed_logged >= 30:
                 cause = exc.__cause__ or exc.__context__
                 self.log(f'screencast {self.profile}: cannot attach ({type(exc).__name__}: {exc}'
                          + (f' <- {type(cause).__name__}: {cause}' if cause else '') + '); retrying')
                 self.failed_logged = now
+            delay = min(self.failed_delay * 2, RETRY_BACKOFF_MAX) if same_fail else RETRY_BACKOFF_INITIAL
             self.failed_key = want
+            self.failed_delay = delay
+            self.failed_until = now + delay
             if client:
                 client.close()
             self.key = self.client = self.session = None
             return
         self.failed_key = None
+        self.failed_until = 0.0
+        self.failed_delay = RETRY_BACKOFF_INITIAL
         self.log(f'screencast {self.profile}: attached to {target[:12]}')
 
     def _event(self, message):
@@ -189,21 +253,41 @@ class Stream:
 
 
 class Watcher:
-    """Polls each profile's browser files under root in a thread until stop(); frames go to sink."""
+    """Polls each profile's browser files (including `<profile>/runs/*` step subdirs) in a thread until stop()."""
 
     def __init__(self, root, sink, profiles, connect=websocket, poll=0.25, log=_LOG.info, name='lab-screencast'):
-        self.streams = [Stream(p, root, sink, connect, log) for p in profiles]
+        self.root = Path(root)
+        self.sink = sink
+        self.profiles = tuple(profiles)
+        self.connect = connect
         self.poll = poll
         self.log = log
+        self._stream_map = {(p, self.root / p): Stream(p, self.root, sink, connect, log) for p in self.profiles}
+        self.streams = list(self._stream_map.values())
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name=name)
+
+    def _sync_streams(self):
+        wanted = set()
+        for profile in self.profiles:
+            for folder in candidate_session_dirs(self.root, profile):
+                key = (profile, folder)
+                wanted.add(key)
+                if key not in self._stream_map:
+                    self._stream_map[key] = Stream(profile, self.root, self.sink, self.connect, self.log,
+                                                   session_dir=folder)
+        for key in list(self._stream_map):
+            if key not in wanted:
+                self._stream_map.pop(key).detach()
+        self.streams = list(self._stream_map.values())
 
     def attached(self, profile):
         return any(s.attached for s in self.streams if s.profile == profile)
 
     def _run(self):
         while True:
-            for s in self.streams:
+            self._sync_streams()
+            for s in list(self.streams):
                 try:
                     s.poll()
                 except Exception as exc:
@@ -218,5 +302,5 @@ class Watcher:
     def stop(self):
         self._stop.set()
         self._thread.join(timeout=10)
-        for s in self.streams:
+        for s in list(self.streams):
             s.detach()

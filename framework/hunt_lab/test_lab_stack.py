@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -107,13 +108,21 @@ class FakeDocker:
     """Stands in for the Docker CLI: records each call and answers `compose ps` with `services`."""
 
     def __init__(self):
-        self.calls, self.services, self.remaining, self.down_code = [], {}, '', 0
+        self.calls, self.services, self.remaining = [], {}, ''
+        self.down_code = self.exec_code = self.rm_code = 0
 
     def __call__(self, arguments, timeout=lab_stack.DOCKER_SECONDS):
         self.calls.append(list(arguments))
         if arguments[:1] == ['compose'] and 'ps' in arguments:
             rows = [{'Service': name, 'State': state, 'ExitCode': code} for name, (state, code) in self.services.items()]
             return subprocess.CompletedProcess(arguments, 0, '\n'.join(json.dumps(row) for row in rows), '')
+        if arguments[:1] == ['compose'] and 'exec' in arguments:
+            return subprocess.CompletedProcess(arguments, self.exec_code, '', '')
+        if arguments[:1] == ['compose'] and 'rm' in arguments:
+            if self.rm_code == 0 and '-s' in arguments:
+                for svc in arguments[arguments.index('-s') + 1:]:
+                    self.services.pop(svc, None)
+            return subprocess.CompletedProcess(arguments, self.rm_code, '', '')
         if arguments[:1] == ['compose'] and 'down' in arguments:
             self.services = {}
             return subprocess.CompletedProcess(arguments, self.down_code, '', '')
@@ -331,6 +340,112 @@ class StackTests(unittest.TestCase):
         ports = {state['lab_port'], state['kibana_port'], state['arkime_port']}
         self.assertFalse(ports & {19340, 19341, 19342}, ports)
         self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
+
+    def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
+        first_ev = self.evidence()
+        # A read-only source file: the hard link staged from it must never be what makes it writable again.
+        source = first_ev / 'case.json'
+        os.chmod(source, 0o444)
+        self.addCleanup(lambda: os.chmod(source, 0o600))
+        self.invoke('start', evidence_dir=str(first_ev))
+        self.assertEqual(os.stat(source).st_nlink, 2)
+        self.running()
+        self.docker.services['lab'] = ('exited', 0)
+        self.docker.services['arkime'] = ('exited', 1)
+        self.docker.services['kibana-setup'] = ('exited', 2)
+        first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
+
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+
+        self.docker.exec_code = 1
+        res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((res['state'], res['reason']), ('error', 'arkime_purge_failed'))
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.docker.exec_code = 0
+
+        # A failed `rm` may have removed some of dns-lab-001's containers: it is brought back, its Arkime sessions
+        # purged first so the re-run pcap-import does not double them.
+        self.docker.rm_code = 1
+        launched_before = len(self.launched)
+        self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'warm_reset_failed')
+        self.assertEqual([env['CASE_ID'] for _argv, env, _log in self.launched[launched_before:]], ['dns-lab-001'])
+        self.assertEqual([call[-1] for call in self.docker.calls if 'exec' in call][-2:], ['team-med-902', 'dns-lab-001'])
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.docker.rm_code = 0
+
+        # A restore that cannot spawn leaves dns-lab-001 in place, so status reports it and stop can still tear it down.
+        with patch.object(lab_stack, '_launch', side_effect=OSError('spawn failed')):
+            self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'dns-lab-001' / 'up.json').exists())
+        self.assertFalse((self.root / 'team-med-902').exists())
+
+        calls_seen = []
+
+        def fail_once_then_restore(argv, variables, log_path):
+            calls_seen.append(lab_stack._child_env(variables)['CASE_ID'])
+            if len(calls_seen) == 1:
+                raise OSError('spawn failed')
+            return 7777
+
+        with patch.object(lab_stack, '_launch', side_effect=fail_once_then_restore):
+            self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertEqual(calls_seen, ['team-med-902', 'dns-lab-001'])
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertEqual(json.loads((self.root / 'dns-lab-001' / 'up.json').read_text(encoding='utf-8'))['pid'], 7777)
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'dns-lab-001')
+
+        self.running()
+        self.docker.services['arkime'] = ('exited', 1)
+        switched = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((switched['state'], switched['reason'], switched['case_id']),
+                         ('starting', 'loading_case', 'team-med-902'))
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith('.retired-')], [])
+        # Retiring dns-lab-001 deleted its read-only hard link and left the source file read-only.
+        self.assertFalse(os.stat(source).st_mode & stat.S_IWRITE)
+        self.assertEqual(os.stat(source).st_nlink, 1)
+        second_state = endpoints.container_state(self.root / 'team-med-902' / 'state.json')
+        self.assertEqual((second_state['lab_port'], second_state['kibana_port'], second_state['arkime_port']),
+                         first_ports)
+        self.assertEqual(second_state['project'], 'hunt-lab-team-med-902')
+        self.assertEqual((self.root / 'team-med-902' / 'compose-project').read_text(encoding='ascii').strip(),
+                         'hunt-lab-dns-lab-001')
+        argv_two, env_two, _log_two = self.launched[-1]
+        self.assertEqual(argv_two[-4:], ['-p', 'hunt-lab-dns-lab-001', 'up', '-d'])
+        self.assertEqual((env_two['PROJECT'], env_two['CASE_ID']), ('hunt-lab-dns-lab-001', 'team-med-902'))
+        self.assertTrue(any(call[:8] == ['compose', '-p', 'hunt-lab-dns-lab-001', 'exec', '-T', 'netns', 'python3', '-B']
+                            for call in self.docker.calls))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'rm', '-f', '-s', 'lab', 'arkime', *lab_stack.ONE_SHOTS],
+                      self.docker.calls)
+
+        # Stopping a retired/stale case folder whose compose project is actively shared by team-med-902 never runs compose down.
+        (self.root / 'dns-lab-001').mkdir()
+        downs_before = [c for c in self.docker.calls if 'down' in c]
+        stopped_old = self.invoke('stop', case_id='dns-lab-001')
+        self.assertEqual((stopped_old['state'], stopped_old['reason']), ('stopped', 'stopped'))
+        self.assertEqual([c for c in self.docker.calls if 'down' in c], downs_before)
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+
+        # A real-data case (data_origin) or cold=True never reuses the warm synthetic stack.
+        real_ev = self.evidence()
+        case_real = json.loads((real_ev / 'case.json').read_text(encoding='utf-8'))
+        case_real['case_id'] = 'work-med-001'
+        case_real['data_origin'] = 'work-export'
+        (real_ev / 'case.json').write_text(json.dumps(case_real), encoding='utf-8')
+        self.invoke('start', evidence_dir=str(real_ev))
+        real_state = endpoints.container_state(self.root / 'work-med-001' / 'state.json')
+        self.assertNotEqual((real_state['lab_port'], real_state['kibana_port'], real_state['arkime_port']),
+                            first_ports)
+        self.assertTrue((self.root / 'team-med-902').exists())
 
     def test_stop_removes_the_project_and_its_state_and_ends_a_start_in_progress(self):
         self.invoke('start')

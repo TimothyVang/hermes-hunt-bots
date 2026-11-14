@@ -1,6 +1,7 @@
 """Bounded GET-only evidence access; never starts a lab or accepts arbitrary URLs."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -17,12 +18,16 @@ FRAMEWORK_PROFILES = frozenset({
 # lists as agent.allowed_tool_names. delegate_task is a core Hermes tool, not a plugin tool.
 TOOL_OWNERSHIP = {
     'framework-coordinator': ('delegate_task',),
-    'framework-researcher': ('elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields'),
+    'framework-researcher': ('elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields', 'hunt_lab_batch'),
     'framework-builder': ('detection_test', 'elastic_aggregate'),
     'framework-reviewer': ('elastic_search', 'arkime_sessions', 'detection_test'),
     'framework-librarian': ('intel_lookup', 'elastic_aggregate'),
-    LAB_OWNER: ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'),
+    LAB_OWNER: ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields', 'hunt_lab_batch'),
 }
+BATCH_MAX_ITEMS = 5
+BATCH_MAX_ITEM_SIZE = 25
+BATCH_MAX_BYTES = 96 * 1024
+BATCH_EXCLUDED_TOOLS = frozenset({'packet_fields', 'lab_browser', 'hunt_lab_batch'})
 TEXT = re.compile(r'[^\x00-\x1f\x7f]*')
 TOKEN = re.compile(r'[\x21-\x7e]{1,2048}')
 FIELD = re.compile(r'@timestamp|[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
@@ -58,9 +63,15 @@ def _failure(profile, exc):
     return result
 
 
+def _require_owner(profile, name):
+    if profile not in FRAMEWORK_PROFILES or name not in TOOL_OWNERSHIP.get(profile, ()):
+        raise QueryFailure('tool_not_owned')
+
+
 def query_lab(arguments, *, state_dir, profile):
     """Returns evidence or a fixed error code; all lifecycle authority stays human-only."""
     try:
+        _require_owner(profile, 'hunt_lab_query')
         allowed = {'case_id', 'dataset', 'q', 'host', 'limit', 'offset'}
         if not isinstance(arguments, dict) or set(arguments) - allowed:
             raise QueryFailure('invalid_arguments')
@@ -363,8 +374,13 @@ TOOLS = {
 
 def run_tool(name, arguments, *, state_dir, profile):
     """Validate one host tool call, query the matching guest endpoint, return compact JSON data."""
+    if name == 'hunt_lab_batch':
+        return batch_lab(arguments, state_dir=state_dir, profile=profile)
     try:
-        builder, allowed, _schema_ = TOOLS[name]
+        if name not in TOOLS:
+            raise QueryFailure('invalid_tool')
+        _require_owner(profile, name)
+        builder, allowed, _ = TOOLS[name]
         if not isinstance(arguments, dict) or set(arguments) - allowed - {'case_id'}:
             raise QueryFailure('invalid_arguments')
         case_id = _case_id(arguments)
@@ -378,7 +394,106 @@ def run_tool(name, arguments, *, state_dir, profile):
         return _failure(profile, exc)
     except (ValueError, TypeError, KeyError):
         return {'ok': False, 'profile': profile, 'error': 'invalid_arguments_or_lab_response'}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- model tool boundary returns fixed error code without leaking exception details
+        return {'ok': False, 'profile': profile, 'error': 'lab_query_failed'}
+
+
+def _prepare_batch_item(item, *, case_id, profile):
+    if not isinstance(item, dict) or set(item) - {'tool', 'arguments'} or 'tool' not in item:
+        raise QueryFailure('invalid_arguments')
+    tool_name = item['tool']
+    if not isinstance(tool_name, str):
+        raise QueryFailure('invalid_tool')
+    if tool_name in BATCH_EXCLUDED_TOOLS:
+        raise QueryFailure('tool_not_batchable')
+    if tool_name != 'hunt_lab_query' and tool_name not in TOOLS:
+        raise QueryFailure('invalid_tool')
+    _require_owner(profile, tool_name)
+    raw_args = item.get('arguments')
+    if raw_args is None:
+        raw_args = {}
+    if not isinstance(raw_args, dict):
+        raise QueryFailure('invalid_arguments')
+    sub_args = dict(raw_args)
+    if 'case_id' in sub_args and sub_args.pop('case_id') != case_id:
+        raise QueryFailure('case_mismatch')
+    if tool_name == 'hunt_lab_query':
+        if set(sub_args) - {'dataset', 'q', 'host', 'limit', 'offset'}:
+            raise QueryFailure('invalid_arguments')
+        dataset = sub_args.get('dataset')
+        if dataset not in {'case', 'events', 'network'}:
+            raise QueryFailure('invalid_dataset')
+        q, host = sub_args.get('q', ''), sub_args.get('host', '')
+        if not isinstance(q, str) or len(q) > 300 or not isinstance(host, str) or len(host) > 100:
+            raise QueryFailure('invalid_query')
+        limit = _integer(sub_args, 'limit', 1, BATCH_MAX_ITEM_SIZE, BATCH_MAX_ITEM_SIZE)
+        offset = _integer(sub_args, 'offset', 0, 5000, 0)
+        return ('hunt_lab_query', dataset, {'q': q, 'host': host, 'limit': limit, 'offset': offset})
+    builder, allowed, _ = TOOLS[tool_name]
+    if set(sub_args) - allowed:
+        raise QueryFailure('invalid_arguments')
+    if tool_name in ('elastic_search', 'elastic_aggregate'):
+        default_size = 20 if tool_name == 'elastic_aggregate' else BATCH_MAX_ITEM_SIZE
+        sub_args['size'] = _integer(sub_args, 'size', 1, BATCH_MAX_ITEM_SIZE, default_size)
+    elif tool_name == 'arkime_sessions':
+        sub_args['length'] = _integer(sub_args, 'length', 1, BATCH_MAX_ITEM_SIZE, BATCH_MAX_ITEM_SIZE)
+    elif tool_name == 'intel_lookup':
+        values = _text(sub_args, 'values', BATCH_MAX_ITEM_SIZE * 201)
+        if len(values.split(',')) > BATCH_MAX_ITEM_SIZE:
+            raise QueryFailure('invalid_values')
+    path, params = builder(sub_args)
+    return (tool_name, path, params)
+
+
+def _serialized_size(payload):
+    return len(json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(',', ':')).encode('ascii'))
+
+
+def batch_lab(arguments, *, state_dir, profile):
+    """Execute up to 5 read-only, caller-owned sub-queries against one resolved case with a 96 KiB cap."""
+    try:
+        _require_owner(profile, 'hunt_lab_batch')
+        if not isinstance(arguments, dict) or set(arguments) - {'case_id', 'queries'}:
+            raise QueryFailure('invalid_arguments')
+        case_id = _case_id(arguments)
+        queries = arguments.get('queries')
+        if not isinstance(queries, list) or not 1 <= len(queries) <= BATCH_MAX_ITEMS:
+            raise QueryFailure('invalid_batch_size')
+        prepared = [_prepare_batch_item(item, case_id=case_id, profile=profile) for item in queries]
+        served = serving_lab(state_dir, profile, case_id)
+        results = []
+        payload = {'ok': True, 'profile': profile, 'tool': 'hunt_lab_batch', 'case_id': case_id, 'results': results}
+        for tool_name, target, params in prepared:
+            try:
+                if tool_name == 'hunt_lab_query':
+                    if target == 'case':
+                        evidence = served.case
+                    else:
+                        evidence = served.get('/' + target + '?' + parse.urlencode(params), _caller(profile))
+                        if evidence.get('case_id') != case_id or evidence.get('read_only') is not True:
+                            raise QueryFailure('lab_invalid_response')
+                    entry = {'tool': tool_name, 'ok': True, 'evidence': evidence}
+                else:
+                    result = served.get(target + '?' + parse.urlencode(params), _caller(profile),
+                                        TOOL_TIMEOUTS.get(tool_name, DEFAULT_TIMEOUT))
+                    if result.pop('case_id', None) != case_id:
+                        raise QueryFailure('lab_invalid_response')
+                    entry = {'tool': tool_name, 'ok': True, 'result': result}
+            except QueryFailure as exc:
+                if str(exc) not in ('lab_http_400', 'lab_http_503', 'lab_response_too_large'):
+                    raise
+                entry = {'tool': tool_name, 'ok': False, 'error': str(exc)}
+                if exc.detail:
+                    entry['detail'] = exc.detail
+            results.append(entry)
+            if _serialized_size(payload) > BATCH_MAX_BYTES:
+                raise QueryFailure('batch_response_too_large')
+        return payload
+    except QueryFailure as exc:
+        return _failure(profile, exc)
+    except (ValueError, TypeError, KeyError):
+        return {'ok': False, 'profile': profile, 'error': 'invalid_arguments_or_lab_response'}
+    except Exception:  # health: allow BLE001 -- model tool boundary returns fixed error code without leaking exception details
         return {'ok': False, 'profile': profile, 'error': 'lab_query_failed'}
 
 
@@ -406,10 +521,49 @@ SCHEMA = {
     },
 }
 
-SCHEMAS = {'hunt_lab_query': SCHEMA, **{name: spec[2] for name, spec in TOOLS.items()}}
+BATCH_SCHEMA = _schema(
+    'hunt_lab_batch',
+    'Run up to 5 independent read-only lab queries in one turn against the loaded case. '
+    'Each item names a read-only tool owned by your profile (excluding packet_fields and lab_browser) '
+    'with size, length or limit capped at 25 per item and total output capped at 96 KiB. '
+    'Use this to fan out independent aggregations, pivot searches or session checks in a single step.',
+    {
+        'queries': {
+            'type': 'array',
+            'minItems': 1,
+            'maxItems': BATCH_MAX_ITEMS,
+            'description': '1 to 5 read-only sub-queries owned by your profile (excluding packet_fields and lab_browser).',
+            'items': {
+                'type': 'object',
+                'additionalProperties': False,
+                'required': ['tool'],
+                'properties': {
+                    'tool': {
+                        'type': 'string',
+                        'enum': ['elastic_search', 'elastic_aggregate', 'arkime_sessions', 'arkime_unique', 'hunt_lab_query'],
+                        'description': 'Owned read-only tool to execute.',
+                    },
+                    'arguments': {
+                        'type': 'object',
+                        'description': 'Tool arguments (without case_id, or matching case_id); size/length/limit must be <= 25.',
+                    },
+                },
+            },
+        },
+    },
+    ('queries',),
+)
+
+SCHEMAS = {
+    'hunt_lab_query': SCHEMA,
+    **{name: spec[2] for name, spec in TOOLS.items()},
+    'hunt_lab_batch': BATCH_SCHEMA,
+}
 
 
 def call(name, arguments, *, state_dir, profile):
     if name == 'hunt_lab_query':
         return query_lab(arguments, state_dir=state_dir, profile=profile)
+    if name == 'hunt_lab_batch':
+        return batch_lab(arguments, state_dir=state_dir, profile=profile)
     return run_tool(name, arguments, state_dir=state_dir, profile=profile)

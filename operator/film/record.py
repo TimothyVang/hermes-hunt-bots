@@ -289,18 +289,25 @@ def browser_problem():
 
 
 def copy_audit(dest, browser_root, start, end):
-    lines = []
+    seen = set()
+    entries = []
     for profile in OWNERS:
-        p = browser_root / profile / 'audit.jsonl'
-        if not p.exists():
-            continue
-        for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
-            try:
-                t = json.loads(line)['t'] / 1000
-            except (ValueError, KeyError, TypeError):
+        for folder in core.candidate_session_dirs(browser_root, profile):
+            p = folder / 'audit.jsonl'
+            if not p.exists():
                 continue
-            if start <= t <= end:
-                lines.append(line)
+            for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
+                if line in seen:
+                    continue
+                try:
+                    t = json.loads(line)['t'] / 1000
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if start <= t <= end:
+                    seen.add(line)
+                    entries.append((t, len(entries), line))
+    entries.sort()
+    lines = [line for _t, _order, line in entries]
     dest.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
 
 
@@ -320,7 +327,8 @@ def film(d, name, base, brief, guidance, case_id, truth, lane=DEFAULT_LANE):
     clear(d)
     workflow = tl.workflow_id(name, case_id, lane)
     # The board reads the round's input before run_config starts it; run_config rewrites the same file.
-    (d / 'input.json').write_text(json.dumps(tl.build_input(base, brief, guidance, case_id), indent=2), encoding='utf-8')
+    board_input = {**tl.build_input(base, brief, guidance, case_id), 'parallel': True}
+    (d / 'input.json').write_text(json.dumps(board_input, indent=2), encoding='utf-8')
     after = tl.last_seq(tl.serving_lab(lane, case_id))
     port = free_port()
     url = f'http://127.0.0.1:{port}/'
