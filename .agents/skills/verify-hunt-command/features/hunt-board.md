@@ -31,4 +31,4 @@ Preconditions: Temporal workflow running on `127.0.0.1:7233` (or active `hermes_
 ## Gotchas
 
 - `hermes_temporal.board` requires `--port` in `1..65535` (never `0`) and requires `--lab-state-dir` iff the input JSON has `"mode": "tool_driven"`.
-- `/live/<profile>.mjpg` returns `200` only after `<hermes-home>/profiles/framework-network-analyst/hunt-lab-browser/<profile>/latest.jpg` exists from a real or synthetic screencast frame.
+- When `--hermes-home` is passed, `/live/<profile>.mjpg` returns `200` (`multipart/x-mixed-replace`, up to 4 concurrent streams) and streams in-memory CDP screencast frames from `hunt_lab.screencast.Watcher` as they arrive (`/live/<profile>.jpg` returns `404` until the first frame arrives, then `200 image/jpeg`).

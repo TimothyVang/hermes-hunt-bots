@@ -330,10 +330,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("--state-dir", help="Explicit analyst hunt-lab-vm state directory.")
     p_query.add_argument("--case-id", help="Optional case ID when resolving from --hermes-home or --state-dir.")
     p_query.add_argument("--lab-url", help="Optional loopback lab URL (http://127.0.0.1:<port>) validated via hunt_lab.endpoints.")
-    p_query.add_argument("--secret", help="Optional X-Hunt-Lab-Secret when querying --lab-url without state resolution.")
+    p_query.add_argument(
+        "--secret",
+        help="Optional caller X-Hunt-Lab-Secret when querying --lab-url directly (hunt-board accepts master or subkey).",
+    )
     p_query.add_argument("--instance", help="Optional expected X-Hunt-Lab-Instance header.")
     p_query.add_argument("--endpoint", default="/health", help="Endpoint path (e.g. /health, /activity, /es/search?q=*).")
-    p_query.add_argument("--profile", default="framework-network-analyst")
+    p_query.add_argument("--profile", default="hunt-board")
     p_query.add_argument("--out", help="Optional artifact path to write JSON response.")
     p_query.set_defaults(func=cmd_query)
 

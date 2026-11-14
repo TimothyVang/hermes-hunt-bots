@@ -1,6 +1,6 @@
 # Read-Only Evidence Queries
 
-The Hunting Lab service exposes bounded, case-scoped, read-only endpoints (`/health`, `/es/search`, `/arkime/sessions`, `/arkime/spi`, `/activity`) on `127.0.0.1` and records specialist tool activity while excluding `hunt-board` observer polls from `/activity`.
+The Hunting Lab service exposes bounded, case-scoped, read-only endpoints (`/health`, `/es/search`, `/events`, `/network`, `/arkime/sessions`, `/arkime/unique`, `/activity`) on `127.0.0.1` and records specialist tool activity while excluding `hunt-board` observer polls from `/activity`.
 
 ## Sub-features
 
@@ -19,9 +19,9 @@ Preconditions: Lab running under `<isolated-hermes-home>` (resolved via `hunt_la
 1. Action: Capture `/health` to an evidence file.
    Command: `python .agents/skills/verify-hunt-lab/control-hunt-lab.py snapshot --hermes-home <isolated-hermes-home> --out <evidence-dir>/lab-health.json`
    Observable result: `"ok": true` and `<evidence-dir>/lab-health.json` contains `case_id` and `event_count`.
-2. Action: Query `/es/search?q=*` as `framework-network-analyst`, then inspect `/activity`.
-   Command: `python .agents/skills/verify-hunt-lab/control-hunt-lab.py query --hermes-home <isolated-hermes-home> --endpoint "/es/search?q=*" --profile framework-network-analyst` followed by `python .agents/skills/verify-hunt-lab/control-hunt-lab.py query --hermes-home <isolated-hermes-home> --endpoint "/activity" --profile hunt-board --out <evidence-dir>/lab-activity.json`
-   Observable result: `/activity` records the `framework-network-analyst` search and omits the `hunt-board` read.
+2. Action: Query `/es/search?q=*` as `framework-researcher`, then inspect `/activity`.
+   Command: `python .agents/skills/verify-hunt-lab/control-hunt-lab.py query --hermes-home <isolated-hermes-home> --endpoint "/es/search?q=*" --profile framework-researcher` followed by `python .agents/skills/verify-hunt-lab/control-hunt-lab.py query --hermes-home <isolated-hermes-home> --endpoint "/activity" --profile hunt-board --out <evidence-dir>/lab-activity.json`
+   Observable result: `/activity` records the `framework-researcher` search and omits the `hunt-board` read (whereas unowned bot routes return `403 tool_not_owned`).
 
 ## Gotchas
 

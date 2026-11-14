@@ -1,6 +1,6 @@
 # Lab Stack Lifecycle
 
-The local Hunting Lab starts one Docker Compose project per case under `framework-network-analyst`, binds the lab service, Kibana, and Arkime exclusively to `127.0.0.1`, never publishes Elasticsearch, and leaves no files behind on read-only `status` checks.
+The local Hunting Lab manages a warm reusable Docker Compose stack across synthetic case switches under `framework-network-analyst` (`start --cold` or `hunt-lab stop` performs a full `docker compose down -v` cold teardown, while `data_origin` cases run in their own isolated project), binds the lab service, Kibana, and Arkime exclusively to `127.0.0.1`, never publishes Elasticsearch, and leaves no files behind on read-only `status` checks.
 
 ## Sub-features
 

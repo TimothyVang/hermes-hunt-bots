@@ -285,7 +285,7 @@ def _windows_terminate_verified(pid: int, expected_binary: str, expected_create:
 
 def _posix_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok
     except ProcessLookupError:
         return ("dead", None)
     except PermissionError:
@@ -295,7 +295,7 @@ def _posix_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
     exe_path = Path(f"/proc/{pid}/exe")
     if stat_path.is_file():
         try:
-            raw_stat = stat_path.read_text(encoding="utf-8", errors="replace")
+            raw_stat = stat_path.read_text(encoding="utf-8-sig", errors="replace")
             after_comm = raw_stat.rsplit(")", 1)[1].split()
             if after_comm[0] == "Z":
                 return ("dead", None)

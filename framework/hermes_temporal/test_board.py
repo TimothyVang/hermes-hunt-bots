@@ -1391,7 +1391,7 @@ class ParallelBoardTests(unittest.TestCase):
 
             def stop_after_entry(server_obj):
                 entry = Path(home) / "hunt-board" / f"board-{server_obj.server_address[1]}.json"
-                raw_entry = entry.read_text(encoding="utf-8")
+                raw_entry = entry.read_text(encoding="utf-8-sig")
                 self.assertNotIn(server_obj.token, raw_entry)
                 captured.append(json.loads(raw_entry))
 

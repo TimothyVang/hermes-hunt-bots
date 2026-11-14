@@ -45,7 +45,7 @@ Follow the target journey in `features/README.md`:
 
 - `features/lab-lifecycle.md` — `doctor`, read-only `status`, `launch`, and `cleanup` on `127.0.0.1`.
 - `features/evidence-queries.md` — read-only `/health`, `/es/search`, `/arkime/sessions`, and `/activity` probes with profile attribution.
-- `features/live-browser-feed.md` — `lab_browser` screencast frames (`latest.jpg`) and `Hunt Board` `/live/<profile>.mjpg` streaming.
+- `features/live-browser-feed.md` — `lab_browser` in-memory CDP screencast streaming (`hunt_lab.screencast`) and `Hunt Board` `/live/<profile>.mjpg` delivery.
 - `features/temporal-lab-input.md` — `hermes_temporal.cli lab-input --tool-driven` export and `board.py` verification.
 
 ## Evidence
