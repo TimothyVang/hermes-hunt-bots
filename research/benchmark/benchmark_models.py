@@ -278,9 +278,11 @@ def _context(call_spec, prompt):
         prompt = prompt.encode('utf-8')
     if type(prompt) is not bytes or prompt != canonical or store.read_artifact(trial['trial_id'], spec['prompt_artifact']) != canonical:
         _fail('fingerprint_conflict', 'call.prompt')
+    release_authorized = False
     if runner.release_required(runner._case(frozen, trial)['scenario'], spec['model'], team):
         _current_authorization(store, trial, spec['model'], human_only=True)
-    return store, spec, trial, frozen, team, canonical
+        release_authorized = True
+    return store, spec, trial, frozen, team, canonical, release_authorized
 
 
 def _current_authorization(store, trial, model, human_only=False):
@@ -374,13 +376,27 @@ def _checker(store, spec, trial, frozen, team, output, narrative_receipt, reused
     return appendix
 
 
+def _langchain_base_url(model, provenance, release_authorized):
+    base_url = model.get('base_url')
+    if not base_url:
+        return base_url
+    requested = str(model.get('model_requested') or '').lower()
+    if not requested.startswith(('claude-subscription/', 'codex-subscription/')):
+        return base_url
+    trimmed = base_url.rstrip('/')
+    suffix = '/v1' if trimmed.endswith('/v1') else ''
+    prefix = trimmed[:-3] if suffix else trimmed
+    rel_part = '/released' if release_authorized else ''
+    return '{}/provenance/{}{}{}'.format(prefix, provenance, rel_part, suffix or '/v1')
+
+
 def execute_call(call_spec, prompt):
     """Execute an explicitly frozen call, returning receipt/output/checker objects.
 
     A repeated terminal call reuses only immutable stored responses. Reserved or
     unknown calls never redispatch; persistence errors leave reservations intact.
     """
-    store, spec, trial, frozen, team, canonical = _context(call_spec, prompt)
+    store, spec, trial, frozen, team, canonical, release_authorized = _context(call_spec, prompt)
     call_id = call_spec['call_id']
     model = spec['model']
     structured = model['parameters'].get('structured_output', False)
@@ -429,6 +445,7 @@ def execute_call(call_spec, prompt):
         rejected = {}
         try:
             with _isolated(model):
+                provenance = runner._case(frozen, trial)['scenario']['provenance']
                 if model['adapter'] == 'openai_http':
                     from benchmark_openai_http import invoke_openai_http
                     try:
@@ -438,15 +455,16 @@ def execute_call(call_spec, prompt):
                             expected_model_ids=model['expected_model_ids'],
                             max_response_bytes=receipt['max_output_bytes'],
                             query_executor=qexec, stage_key=spec['stage_key'],
-                            provenance=runner._case(frozen, trial)['scenario']['provenance'],
+                            provenance=provenance, release_authorized=release_authorized,
                             **options)
                     finally:
                         if qexec is not None:
                             query_summary = qexec.summary()
                 else:
                     from langchain_adapter import invoke_response
+                    lc_url = _langchain_base_url(model, provenance, release_authorized)
                     response = invoke_response(canonical.decode('utf-8'), model['provider'], model['model_requested'],
-                                               model['base_url'], model['timeout_seconds'], **options)
+                                               lc_url, model['timeout_seconds'], **options)
                 receipt.update(_metadata(response, model))
                 # Identity first: a wrong model's output is never validated or retained.
                 if receipt['identity_status'] == 'reported_mismatch':

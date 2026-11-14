@@ -319,7 +319,7 @@ class BenchmarkOpenAiHttpTests(unittest.TestCase):
         priv_payload = json.dumps({
             'model': 'codex-subscription/gpt-6-luna',
             'messages': [{'role': 'user', 'content': '{"untrusted_public_evidence":{}}'}],
-            'temperature': 0,
+            'temperature': None,
         }).encode('utf-8')
         req_priv = urllib.request.Request(
             f'{base}/v1/chat/completions', data=priv_payload, method='POST',
@@ -334,12 +334,46 @@ class BenchmarkOpenAiHttpTests(unittest.TestCase):
         self.assertEqual(ctx403.exception.code, 403)
         ctx403.exception.close()
 
-        # Nonzero temperature or non-null seed rejected 400
-        for bad_param in ({'temperature': 0.7}, {'seed': 42}):
-            bad_body = json.dumps(dict({
-                'model': 'codex-subscription/gpt-6-luna',
-                'messages': [{'role': 'user', 'content': 'ping'}],
-            }, **bad_param)).encode('utf-8')
+        # Even with allow_private_evidence=True on the server, missing X-Benchmark-Release-Authorized is rejected 403
+        proxy_priv = start_background_server('127.0.0.1', 0, timeout_seconds=10, auth_token=token,
+                                             allow_private_evidence=True)
+        self.addCleanup(proxy_priv.server_close)
+        self.addCleanup(proxy_priv.shutdown)
+        threading.Thread(target=proxy_priv.serve_forever, daemon=True).start()
+        base_priv = f'http://127.0.0.1:{proxy_priv.server_address[1]}'
+        req_unrel = urllib.request.Request(
+            f'{base_priv}/v1/chat/completions', data=priv_payload, method='POST',
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'X-Benchmark-Provenance': 'lab_export',
+            },
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx403_unrel:
+            urllib.request.urlopen(req_unrel, timeout=5)
+        self.assertEqual(ctx403_unrel.exception.code, 403)
+        ctx403_unrel.exception.close()
+
+        # LangChain path-encoded public provenance succeeds (400 only on bare model, 200 on prefixed model)
+        lc_url = models._langchain_base_url(sub_model, 'public_replay', False)
+        self.assertIn('/provenance/public_replay/v1', lc_url)
+        with patch('benchmark_subscription_proxy.invoke_codex_subscription',
+                   return_value={'model': 'gpt-6-luna', 'content': '{"ok":true}', 'finish_reason': 'stop', 'usage': None}):
+            req_lc_pub = urllib.request.Request(
+                f'{base}/provenance/public_replay/v1/chat/completions', data=priv_payload, method='POST',
+                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            )
+            with urllib.request.urlopen(req_lc_pub, timeout=5) as resp_lc:
+                self.assertEqual(resp_lc.status, 200)
+
+        # Bare model IDs, non-null temperature (including 0), and non-null seed are rejected 400
+        for bad_body_dict in (
+            {'model': 'gpt-6-luna', 'messages': [{'role': 'user', 'content': 'ping'}]},
+            {'model': 'codex-subscription/gpt-6-luna', 'messages': [{'role': 'user', 'content': 'ping'}], 'temperature': 0.0},
+            {'model': 'codex-subscription/gpt-6-luna', 'messages': [{'role': 'user', 'content': 'ping'}], 'temperature': 0.7},
+            {'model': 'codex-subscription/gpt-6-luna', 'messages': [{'role': 'user', 'content': 'ping'}], 'seed': 42},
+        ):
+            bad_body = json.dumps(bad_body_dict).encode('utf-8')
             req_bad = urllib.request.Request(
                 f'{base}/v1/chat/completions', data=bad_body, method='POST',
                 headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
@@ -350,19 +384,39 @@ class BenchmarkOpenAiHttpTests(unittest.TestCase):
             ctx400.exception.close()
 
     def test_partial_round_usage_returns_none_and_unreported_cli_models_stay_none(self):
-        # Missing usage on any multi-round turn yields None instead of partial sum
-        u0 = _merge_usage({'input_tokens': 0, 'output_tokens': 0}, {'input_tokens': 100, 'output_tokens': 25})
-        self.assertEqual(u0, {'input_tokens': 100, 'output_tokens': 25})
-        self.assertIsNone(_merge_usage(u0, None))
-        self.assertIsNone(_merge_usage(u0, {'input_tokens': 50, 'output_tokens': None}))
+        from benchmark_openai_http import _USAGE_UNSET
+        # Missing usage on any multi-round turn yields None; partial detail counters are dropped rather than partially summed
+        u1 = _merge_usage(_USAGE_UNSET, {
+            'input_tokens': 100, 'output_tokens': 25,
+            'input_token_details': {'cache_read': 40},
+            'output_token_details': {'reasoning': 10},
+        })
+        self.assertEqual(u1['input_token_details'], {'cache_read': 40})
+        u2_partial = _merge_usage(u1, {'input_tokens': 50, 'output_tokens': 15})
+        self.assertEqual(u2_partial, {'input_tokens': 150, 'output_tokens': 40})
+        self.assertNotIn('input_token_details', u2_partial)
+        self.assertNotIn('output_token_details', u2_partial)
+        u2_complete = _merge_usage(u1, {
+            'input_tokens': 50, 'output_tokens': 15,
+            'input_token_details': {'cache_read': 20},
+            'output_token_details': {'reasoning': 5},
+        })
+        self.assertEqual(u2_complete['input_token_details'], {'cache_read': 60})
+        self.assertEqual(u2_complete['output_token_details'], {'reasoning': 15})
+        self.assertIsNone(_merge_usage(u1, None))
+        self.assertIsNone(_merge_usage(u1, {'input_tokens': 50, 'output_tokens': None}))
 
-        # Output budget sets finish_reason='length' when exceeded
+        # Output budget trusts reported completion_tokens (never falsely failing >4-byte tokens) and sets length when exceeded
+        within_tok = _enforce_output_budget({
+            'model': None, 'content': 'x' * 80, 'finish_reason': 'stop',
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 8, 'total_tokens': 18},
+        }, max_tokens=10)
+        self.assertEqual(within_tok['finish_reason'], 'stop')
         capped = _enforce_output_budget({
             'model': None, 'content': 'x' * 100, 'finish_reason': 'stop',
             'usage': {'prompt_tokens': 10, 'completion_tokens': 30, 'total_tokens': 40},
         }, max_tokens=10)
         self.assertEqual(capped['finish_reason'], 'length')
-        self.assertLessEqual(len(capped['content'].encode('utf-8')), 40)
 
         # Codex and Claude return model=None when CLI output omits model metadata
         fake_codex_out = (

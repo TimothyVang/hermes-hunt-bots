@@ -82,7 +82,8 @@ def _endpoint_url(base_url):
     return trimmed + '/chat/completions'
 
 
-def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_bytes, provenance=None):
+def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_bytes,
+                           provenance=None, release_authorized=False):
     raw_req = canonical_bytes(payload)
     headers = {
         'Content-Type': 'application/json',
@@ -92,6 +93,8 @@ def _post_chat_completions(url, api_key, payload, timeout_seconds, max_wire_byte
         headers['Authorization'] = 'Bearer ' + api_key
     if isinstance(provenance, str) and provenance:
         headers['X-Benchmark-Provenance'] = provenance
+    if release_authorized:
+        headers['X-Benchmark-Release-Authorized'] = 'true'
     request = urllib.request.Request(url, data=raw_req, headers=headers, method='POST')
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
@@ -186,28 +189,45 @@ def _extract_turn(wire):
     }
 
 
+_USAGE_UNSET = object()
+
+
 def _merge_usage(accumulated, turn_usage):
-    """Aggregate usage across query-track rounds; any missing round makes total usage unknown."""
-    if accumulated is None or turn_usage is None:
+    """Aggregate usage across query-track rounds; any missing round makes total or detail usage unknown."""
+    if turn_usage is None:
         return None
     if type(turn_usage.get('input_tokens')) is not int or type(turn_usage.get('output_tokens')) is not int:
+        return None
+    if accumulated is _USAGE_UNSET:
+        first = {
+            'input_tokens': turn_usage['input_tokens'],
+            'output_tokens': turn_usage['output_tokens'],
+        }
+        in_det = turn_usage.get('input_token_details')
+        if type(in_det) is dict and type(in_det.get('cache_read')) is int:
+            first['input_token_details'] = {'cache_read': in_det['cache_read']}
+        out_det = turn_usage.get('output_token_details')
+        if type(out_det) is dict and type(out_det.get('reasoning')) is int:
+            first['output_token_details'] = {'reasoning': out_det['reasoning']}
+        return first
+    if accumulated is None:
+        return None
+    if type(accumulated.get('input_tokens')) is not int or type(accumulated.get('output_tokens')) is not int:
         return None
     merged = {
         'input_tokens': accumulated['input_tokens'] + turn_usage['input_tokens'],
         'output_tokens': accumulated['output_tokens'] + turn_usage['output_tokens'],
     }
-    if 'input_token_details' in accumulated:
-        merged['input_token_details'] = dict(accumulated['input_token_details'])
-    if 'output_token_details' in accumulated:
-        merged['output_token_details'] = dict(accumulated['output_token_details'])
-    in_det = turn_usage.get('input_token_details', {})
-    if type(in_det.get('cache_read')) is int:
-        cur = merged.setdefault('input_token_details', {'cache_read': 0})
-        cur['cache_read'] += in_det['cache_read']
-    out_det = turn_usage.get('output_token_details', {})
-    if type(out_det.get('reasoning')) is int:
-        cur = merged.setdefault('output_token_details', {'reasoning': 0})
-        cur['reasoning'] += out_det['reasoning']
+    acc_in = accumulated.get('input_token_details')
+    turn_in = turn_usage.get('input_token_details')
+    if (type(acc_in) is dict and type(acc_in.get('cache_read')) is int
+            and type(turn_in) is dict and type(turn_in.get('cache_read')) is int):
+        merged['input_token_details'] = {'cache_read': acc_in['cache_read'] + turn_in['cache_read']}
+    acc_out = accumulated.get('output_token_details')
+    turn_out = turn_usage.get('output_token_details')
+    if (type(acc_out) is dict and type(acc_out.get('reasoning')) is int
+            and type(turn_out) is dict and type(turn_out.get('reasoning')) is int):
+        merged['output_token_details'] = {'reasoning': acc_out['reasoning'] + turn_out['reasoning']}
     return merged
 
 
@@ -256,6 +276,7 @@ def _parse_query_action(turn):
 def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
                        expected_model_ids=None, max_response_bytes=65536,
                        query_executor=None, stage_key=None, provenance=None,
+                       release_authorized=False,
                        max_output_tokens=None, temperature=None, seed=None, response_schema=None):
     """Invoke an OpenAI-compatible Chat Completions endpoint (single-shot or bounded query loop)."""
     validate_parameters(provider, max_output_tokens, temperature, seed, response_schema is not None)
@@ -295,7 +316,7 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
         ]
         wire = _post_chat_completions(
             url, api_key, build_payload(messages, True), request_timeout, max_wire_bytes,
-            provenance=provenance,
+            provenance=provenance, release_authorized=release_authorized,
         )
         turn = _extract_turn(wire)
         final_text = _strip_optional_json_fence(turn['text'])
@@ -311,7 +332,7 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
         {'role': 'system', 'content': QUERY_SYSTEM_INSTRUCTIONS},
         {'role': 'user', 'content': prompt},
     ]
-    total_usage = {'input_tokens': 0, 'output_tokens': 0}
+    total_usage = _USAGE_UNSET
     last_turn = None
     for round_idx in range(MAX_QUERY_ROUNDS):
         remaining_time = deadline - time.monotonic()
@@ -320,7 +341,7 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
         is_last_round = (round_idx == MAX_QUERY_ROUNDS - 1) or (query_executor.calls_remaining == 0)
         wire = _post_chat_completions(
             url, api_key, build_payload(messages, is_last_round), remaining_time, max_wire_bytes,
-            provenance=provenance,
+            provenance=provenance, release_authorized=release_authorized,
         )
         turn = _extract_turn(wire)
         last_turn = turn
@@ -367,6 +388,9 @@ def invoke_openai_http(prompt, provider, model, base_url, request_timeout, *,
             results.append(query_executor.execute(tool_name, tool_args))
 
         assistant_echo = turn['text'].strip() or canonical_bytes({'action': 'query', 'queries': payload}).decode('utf-8')
+        echo_bytes = assistant_echo.encode('utf-8')
+        if len(echo_bytes) > max_response_bytes:
+            assistant_echo = echo_bytes[:max_response_bytes].decode('utf-8', 'ignore')
         messages.append({'role': 'assistant', 'content': assistant_echo})
         next_is_last = (round_idx + 1 == MAX_QUERY_ROUNDS - 1) or (query_executor.calls_remaining == 0)
         instruction = (

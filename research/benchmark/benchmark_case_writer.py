@@ -305,10 +305,18 @@ class CasePseudonymizer:
             if kind == 'host' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
                 short = norm.split('.', 1)[0]
                 if len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
-                    token = self._token('host', short)
+                    token = self._forward.get(('host', short)) or self._token('host', short)
                     self._record('host', short, token)
                     self._record('host', raw, token)
+                    self._record('dns', raw, token)
                     return token
+            if kind == 'dns' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
+                short = norm.split('.', 1)[0]
+                host_token = self._forward.get(('host', short))
+                if host_token is not None and len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
+                    self._record('host', raw, host_token)
+                    self._record('dns', raw, host_token)
+                    return host_token
 
         token = self._token(prefix, norm)
         self._record(kind, raw, token)
@@ -759,7 +767,7 @@ def _populate_curated_case(
         step_stamps = []
         for entry in spec.get('support_tags', ()):
             if isinstance(entry, (list, tuple)):
-                eids = [tag_to_eid[t] for t in entry if t in tag_to_eid]
+                eids = [tag_to_eid[t] for t in entry] if (entry and all(t in tag_to_eid for t in entry)) else []
             else:
                 eids = [tag_to_eid[entry]] if entry in tag_to_eid else []
             if not eids:

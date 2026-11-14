@@ -187,14 +187,19 @@ def _enforce_output_budget(result, max_tokens):
     if type(max_tokens) is not int or max_tokens <= 0:
         return result
     content = str(result.get('content') or '')
-    usage = result.get('usage') or {}
-    out_tok = int(usage.get('completion_tokens') or 0)
-    max_utf8_bytes = max_tokens * 4
+    usage = result.get('usage')
+    if type(usage) is dict and type(usage.get('completion_tokens')) is int:
+        if usage['completion_tokens'] > max_tokens:
+            return dict(result, finish_reason='length')
+        return result
+    # When the CLI omits token usage altogether, UTF-8 byte count is a strict upper bound on tokens.
     encoded = content.encode('utf-8')
-    if out_tok > max_tokens or len(encoded) > max_utf8_bytes:
-        result = dict(result, finish_reason='length')
-        if len(encoded) > max_utf8_bytes:
-            result['content'] = encoded[:max_utf8_bytes].decode('utf-8', 'ignore')
+    if len(encoded) > max_tokens:
+        return dict(
+            result,
+            finish_reason='length',
+            content=encoded[:max_tokens].decode('utf-8', 'ignore'),
+        )
     return result
 
 
@@ -245,22 +250,25 @@ def invoke_claude_subscription(model_requested, messages, response_format=None, 
     result_text = str(payload.get('result') or '')
     model_usage = payload.get('modelUsage') or {}
     actual_model = next(iter(model_usage.keys()), None)
-    usage = payload.get('usage') or {}
-    cached_in = int(usage.get('cache_read_input_tokens') or 0)
-    direct_in = int(usage.get('input_tokens') or 0) + int(usage.get('cache_creation_input_tokens') or 0)
-    total_in = direct_in + cached_in
-    out_tok = int(usage.get('output_tokens') or 0)
+    raw_usage = payload.get('usage')
+    usage_obj = None
+    if type(raw_usage) is dict and type(raw_usage.get('input_tokens')) is int and type(raw_usage.get('output_tokens')) is int:
+        cached_in = int(raw_usage.get('cache_read_input_tokens') or 0)
+        direct_in = int(raw_usage.get('input_tokens') or 0) + int(raw_usage.get('cache_creation_input_tokens') or 0)
+        total_in = direct_in + cached_in
+        out_tok = int(raw_usage.get('output_tokens') or 0)
+        usage_obj = {
+            'prompt_tokens': total_in,
+            'completion_tokens': out_tok,
+            'total_tokens': total_in + out_tok,
+            'prompt_tokens_details': {'cached_tokens': cached_in},
+        }
     stop_reason = 'length' if payload.get('stop_reason') == 'max_tokens' else 'stop'
     return _enforce_output_budget({
         'model': actual_model,
         'content': result_text,
         'finish_reason': stop_reason,
-        'usage': {
-            'prompt_tokens': total_in,
-            'completion_tokens': out_tok,
-            'total_tokens': total_in + out_tok,
-            'prompt_tokens_details': {'cached_tokens': cached_in},
-        },
+        'usage': usage_obj,
     }, max_tokens)
 
 
@@ -330,6 +338,7 @@ def invoke_codex_subscription(model_requested, messages, response_format=None, t
 
     last_text = ''
     in_tok = cached_tok = out_tok = 0
+    saw_usage = False
     reported_model = None
     for line in proc.stdout.decode('utf-8', 'replace').splitlines():
         line = line.strip()
@@ -358,22 +367,27 @@ def invoke_codex_subscription(model_requested, messages, response_format=None, t
                         last_text = joined
         if etype == 'turn.completed' and type(event.get('usage')) is dict:
             u = event['usage']
-            in_tok += int(u.get('input_tokens') or 0)
-            cached_tok += int(u.get('cached_input_tokens') or 0)
-            out_tok += int(u.get('output_tokens') or 0)
+            if type(u.get('input_tokens')) is int and type(u.get('output_tokens')) is int:
+                saw_usage = True
+                in_tok += u['input_tokens']
+                cached_tok += int(u.get('cached_input_tokens') or 0)
+                out_tok += u['output_tokens']
 
     if not last_text.strip():
         raise RuntimeError('codex CLI returned empty agent_message')
-    return _enforce_output_budget({
-        'model': reported_model,
-        'content': last_text,
-        'finish_reason': 'stop',
-        'usage': {
+    usage_obj = None
+    if saw_usage:
+        usage_obj = {
             'prompt_tokens': in_tok,
             'completion_tokens': out_tok,
             'total_tokens': in_tok + out_tok,
             'prompt_tokens_details': {'cached_tokens': min(cached_tok, in_tok)},
-        },
+        }
+    return _enforce_output_budget({
+        'model': reported_model,
+        'content': last_text,
+        'finish_reason': 'stop',
+        'usage': usage_obj,
     }, max_tokens)
 
 
@@ -384,8 +398,7 @@ def _validate_generation_params(req):
     """Validate OpenAI Chat Completions generation parameters for CLI subscription dispatch."""
     temp = req.get('temperature')
     if temp is not None:
-        if type(temp) not in (int, float) or type(temp) is bool or float(temp) != 0.0:
-            raise ValueError('subscription proxy supports only default deterministic temperature (0 or null)')
+        raise ValueError('subscription proxy requires temperature null (CLI harnesses do not accept sampling temperature)')
     seed = req.get('seed')
     if seed is not None:
         raise ValueError('subscription proxy does not support sampling seed')
@@ -401,13 +414,18 @@ def dispatch_subscription_model(model_requested, messages, response_format=None,
     if not isinstance(model_requested, str) or not model_requested.strip():
         raise ValueError('missing model identifier')
     lower = model_requested.lower()
-    if lower.startswith(('claude', 'sonnet', 'opus', 'haiku')):
+    if lower.startswith('claude-subscription/'):
         return invoke_claude_subscription(
             model_requested, messages, response_format, timeout_seconds, max_tokens=max_tokens
         )
-    return invoke_codex_subscription(
-        model_requested, messages, response_format, timeout_seconds, max_tokens=max_tokens
-    )
+    if lower.startswith('codex-subscription/'):
+        return invoke_codex_subscription(
+            model_requested, messages, response_format, timeout_seconds, max_tokens=max_tokens
+        )
+    raise ValueError('subscription proxy requires explicit claude-subscription/ or codex-subscription/ model prefix')
+
+
+_PATH_PROVENANCE_RE = re.compile(r'^/provenance/([a-z_]+)(/released)?/v1/chat/completions$')
 
 
 class SubscriptionThreadingHTTPServer(ThreadingHTTPServer):
@@ -467,7 +485,8 @@ class SubscriptionProxyHandler(BaseHTTPRequestHandler):
         self._send_json(404, {'error': 'not_found'})
 
     def do_POST(self):
-        if not self.path.rstrip('/').endswith('/chat/completions'):
+        clean_path = self.path.rstrip('/')
+        if not clean_path.endswith('/chat/completions'):
             self._send_json(404, {'error': 'not_found'})
             return
         if not self._check_request_guards():
@@ -491,13 +510,20 @@ class SubscriptionProxyHandler(BaseHTTPRequestHandler):
             if type(messages) is not list:
                 self._send_json(400, {'error': 'invalid_messages'})
                 return
+            path_match = _PATH_PROVENANCE_RE.match(clean_path)
             prov = (self.headers.get('X-Benchmark-Provenance') or '').strip()
+            if not prov and path_match is not None:
+                prov = path_match.group(1)
+            rel_auth = (
+                (self.headers.get('X-Benchmark-Release-Authorized') or '').strip().lower() == 'true'
+                or (path_match is not None and bool(path_match.group(2)))
+            )
             has_benchmark_evidence = any(
                 type(m) is dict and '"untrusted_public_evidence"' in str(m.get('content') or '')
                 for m in messages
             )
             if ((prov and prov not in PUBLIC_PROVENANCE) or (has_benchmark_evidence and prov not in PUBLIC_PROVENANCE)):
-                if not getattr(self.server, 'allow_private_evidence', False):
+                if not (getattr(self.server, 'allow_private_evidence', False) and rel_auth):
                     self._send_json(403, {'error': 'private_evidence_release_required'})
                     return
             max_tokens = _validate_generation_params(req)

@@ -282,12 +282,13 @@ class BenchmarkQueryTests(unittest.TestCase):
             self.assertTrue(r['ok'])
             self.assertTrue(r['truncated'])
             self.assertEqual(r['row_count'], 1)
-            self.assertLessEqual(len(canonical_bytes(r['rows'][0])), 320)
+            self.assertLessEqual(len(canonical_bytes(r)), 320)
             self.assertLessEqual(qexec.summary()['bytes_returned_total'], 320)
 
             r_off = qexec.execute('search_events', {'offset': 10 ** 30})
             self.assertTrue(r_off['ok'])
             self.assertEqual(r_off['row_count'], 0)
+            self.assertLessEqual(len(canonical_bytes(r_off)), 320)
 
 
 if __name__ == '__main__':

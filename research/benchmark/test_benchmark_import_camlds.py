@@ -65,8 +65,11 @@ class CamLdsImporterTests(unittest.TestCase):
                 'Dec 12 10:20:05 puppet cron[101]: session opened for user root\n'
                 'Dec 12 10:28:44 puppet sshd[202]: Accepted password for admin from 10.12.0.223 port 44112 ssh2\n',
             )
+            sudo_unrelated_hex = binascii.hexlify(b'sudo\x00/usr/bin/id').decode('ascii').upper()
             zf.writestr(
                 'scenario_3_ssh_apt/reposerver/logs/log/audit/audit.log',
+                'type=SYSCALL msg=audit(1765535390.500:100): exe="/usr/bin/sudo" UID="backup"\n'
+                'type=PROCTITLE msg=audit(1765535390.500:100): proctitle=' + sudo_unrelated_hex + '\n'
                 'type=SYSCALL msg=audit(1765535391.100:101): exe="/usr/bin/sudo" UID="admin"\n'
                 'type=PROCTITLE msg=audit(1765535391.100:101): proctitle=' + sudo_hex + '\n',
             )
@@ -91,6 +94,9 @@ class CamLdsImporterTests(unittest.TestCase):
             self.assertGreaterEqual(rep_apt['steps'], 3)
             apt_truth = load_json(Path(rep_apt['case_dir']) / 'evaluator' / 'truth.json')
             self.assertNotIn('T1059.004', {s['technique_id'] for s in apt_truth['steps']})
+            sudo_steps = [s for s in apt_truth['steps'] if s['technique_id'] == 'T1078.003']
+            self.assertEqual(len(sudo_steps), 1)
+            self.assertEqual(len(sudo_steps[0]['support_sets']), 1)
             pub_text = (Path(rep_apt['case_dir']) / 'public' / 'evidence.json').read_text(encoding='utf-8')
             self.assertNotIn('SECRET_KEY_MATERIAL', pub_text)
             self.assertNotIn('OPENSSH PRIVATE KEY', pub_text)

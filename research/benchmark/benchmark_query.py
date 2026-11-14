@@ -465,13 +465,14 @@ class QueryExecutor:
             return {'ok': False, 'error': 'query_budget_exhausted', 'calls_remaining': 0}
         if tool not in TOOL_NAMES or type(args) is not dict:
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
+            err_resp = {'ok': False, 'error': 'invalid_tool_or_args', 'allowed_tools': list(TOOL_NAMES),
+                        'calls_remaining': self.calls_remaining}
             self.audit.append({
                 'tool': str(tool) if isinstance(tool, str) else 'invalid',
                 'ok': False, 'error': 'invalid_tool_or_args', 'rows_returned': 0,
-                'bytes_returned': 0, 'truncated': False, 'elapsed_ms': elapsed,
+                'bytes_returned': len(canonical_bytes(err_resp)), 'truncated': False, 'elapsed_ms': elapsed,
             })
-            return {'ok': False, 'error': 'invalid_tool_or_args', 'allowed_tools': list(TOOL_NAMES),
-                    'calls_remaining': self.calls_remaining}
+            return err_resp
         try:
             result = getattr(self, '_tool_' + tool)(args)
             if len(result) == 3:
@@ -482,36 +483,53 @@ class QueryExecutor:
         except (BenchmarkError, sqlite3.Error, ValueError, TypeError, KeyError, OverflowError) as exc:
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
             code = exc.code if isinstance(exc, BenchmarkError) else 'invalid_query_parameters'
+            err_resp = {'ok': False, 'error': code, 'calls_remaining': self.calls_remaining}
             self.audit.append({'tool': tool, 'ok': False, 'error': code, 'rows_returned': 0,
-                               'bytes_returned': 0, 'truncated': False, 'elapsed_ms': elapsed})
-            return {'ok': False, 'error': code, 'calls_remaining': self.calls_remaining}
+                               'bytes_returned': len(canonical_bytes(err_resp)), 'truncated': False, 'elapsed_ms': elapsed})
+            return err_resp
 
         effective_cap = min(max(1, int(row_cap)), self._max_rows)
+        note_str = str(note or '')
+        if len(note_str.encode('utf-8')) > max(32, self._max_bytes // 4):
+            note_str = note_str.encode('utf-8')[:max(32, self._max_bytes // 4)].decode('utf-8', 'ignore')
+        envelope_bytes = len(canonical_bytes({
+            'ok': True, 'tool': tool, 'rows': [], 'row_count': effective_cap,
+            'truncated': True, 'note': note_str, 'calls_remaining': self.calls_remaining,
+        }))
+        row_budget = max(0, self._max_bytes - envelope_bytes)
         capped, truncated = [], False
-        used_bytes = 0
+        used_row_bytes = 0
         for item in rows[:effective_cap]:
             encoded = canonical_bytes(item)
-            if used_bytes + len(encoded) > self._max_bytes:
+            comma_cost = 1 if capped else 0
+            if used_row_bytes + comma_cost + len(encoded) > row_budget:
                 truncated = True
-                if not capped:
-                    shrunk, shrunk_bytes = _shrink_row_to_budget(item, self._max_bytes)
+                if not capped and row_budget > 0:
+                    shrunk, shrunk_bytes = _shrink_row_to_budget(item, row_budget)
                     if shrunk is not None:
                         capped.append(shrunk)
-                        used_bytes += len(shrunk_bytes)
+                        used_row_bytes += len(shrunk_bytes)
                 break
             capped.append(item)
-            used_bytes += len(encoded)
+            used_row_bytes += comma_cost + len(encoded)
         if len(rows) > len(capped):
             truncated = True
+        resp = {
+            'ok': True, 'tool': tool, 'rows': capped, 'row_count': len(capped),
+            'truncated': truncated, 'note': note_str, 'calls_remaining': self.calls_remaining,
+        }
+        resp_bytes = canonical_bytes(resp)
+        if len(resp_bytes) > self._max_bytes:
+            truncated = True
+            resp = {'ok': True, 'tool': tool, 'rows': [], 'row_count': 0,
+                    'truncated': True, 'note': '', 'calls_remaining': self.calls_remaining}
+            resp_bytes = canonical_bytes(resp)
         elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
         self.audit.append({
-            'tool': tool, 'ok': True, 'rows_returned': len(capped),
-            'bytes_returned': used_bytes, 'truncated': truncated, 'elapsed_ms': elapsed,
+            'tool': tool, 'ok': True, 'rows_returned': len(resp['rows']),
+            'bytes_returned': len(resp_bytes), 'truncated': resp['truncated'], 'elapsed_ms': elapsed,
         })
-        return {
-            'ok': True, 'tool': tool, 'rows': capped, 'row_count': len(capped),
-            'truncated': truncated, 'note': note, 'calls_remaining': self.calls_remaining,
-        }
+        return resp
 
     def summary(self):
         return {

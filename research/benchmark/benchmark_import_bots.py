@@ -32,7 +32,6 @@ import csv
 import gzip
 import hashlib
 import hmac
-import io
 import ipaddress
 import json
 import math
@@ -811,14 +810,27 @@ def _clean_text(value):
     return value, False
 
 
+MAX_CSV_PHYSICAL_LINE_BYTES = MAX_RECORD_BYTES + 65536
+
+
+def _bounded_csv_lines(binary_handle, field_name):
+    """Yield UTF-8 CSV lines with a hard per-line decompressed byte ceiling before allocation."""
+    while True:
+        chunk = binary_handle.readline(MAX_CSV_PHYSICAL_LINE_BYTES + 1)
+        if not chunk:
+            break
+        if len(chunk) > MAX_CSV_PHYSICAL_LINE_BYTES:
+            _fail('invalid_csv', field_name)
+        yield chunk.decode('utf-8', errors='surrogateescape')
+
+
 def _csv_records(item, number, window):
     """(ordinal, time, host, sourcetype, raw, digest) of one exporttool bucket's rows inside `window`."""
     # One `_raw` may legitimately hold up to MAX_RECORD_BYTES (lsof/ps snapshots are ~1 MB); larger is refused.
     old_limit = csv.field_size_limit(MAX_RECORD_BYTES)
     try:
         with gzip.open(item['path'], 'rb') as compressed:
-            handle = io.TextIOWrapper(compressed, encoding='utf-8', errors='surrogateescape', newline='')
-            reader = csv.reader(handle)
+            reader = csv.reader(_bounded_csv_lines(compressed, 'data.' + item['name']))
             header = next(reader, None)
             if header != CSV_HEADER:
                 _fail('unsupported_dataset_layout', 'data.' + item['name'])

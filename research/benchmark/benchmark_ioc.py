@@ -28,6 +28,7 @@ import random
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import benchmark_paths  # noqa: F401
 from benchmark_contracts import (
@@ -325,7 +326,27 @@ def extract_event_indicators(events):
             cmd_val = fields.get(cmd_key)
             if isinstance(cmd_val, str) and cmd_val.strip():
                 for url_match in re.findall(r'https?://[^\s"\'<>]{4,240}', cmd_val):
-                    found.append(('url', url_match.rstrip('.,;)')))
+                    cleaned_url = url_match.rstrip('.,;)')
+                    try:
+                        parsed_u = urlsplit(cleaned_url)
+                    except ValueError:
+                        parsed_u = None
+                    if parsed_u is not None:
+                        u_host = (parsed_u.hostname or '').strip('[]')
+                        if u_host and u_host not in ('localhost', '127.0.0.1', '::1', '0.0.0.0'):
+                            if u_host.startswith('ipv6-'):
+                                found.append(('ipv6', u_host))
+                            elif u_host.startswith(('ipv4-', 'addr-', 'address-')):
+                                found.append(('ipv4', u_host))
+                            else:
+                                try:
+                                    u_ip = ipaddress.ip_address(u_host)
+                                    if not (u_ip.is_loopback or u_ip.is_unspecified):
+                                        found.append(('ipv6' if u_ip.version == 6 else 'ipv4', u_ip.compressed))
+                                except ValueError:
+                                    found.append(('domain', u_host))
+                        if parsed_u.path and parsed_u.path != '/':
+                            found.append(('url_path', parsed_u.path[:200]))
                 for bin_match in re.findall(r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{3,64}\.(?:exe|dll|ps1|bat|vbs|sh|py|elf))(?![A-Za-z0-9_.-])', cmd_val, flags=re.IGNORECASE):
                     found.append(('file_name', bin_match))
         # 3. Network addresses and DNS names (including salted pseudonyms, enabling feed joins!)
@@ -369,7 +390,7 @@ def extract_event_indicators(events):
 
 
 # High-signal indicator types preferred for realistic entry-step IOC pivoting
-_HIGH_SIGNAL_TYPES = ('sha256', 'imphash', 'md5', 'named_pipe', 'ja3', 'url', 'ipv4', 'domain', 'user_agent', 'service_name')
+_HIGH_SIGNAL_TYPES = ('sha256', 'imphash', 'md5', 'named_pipe', 'ja3', 'url_path', 'ipv4', 'domain', 'user_agent', 'service_name')
 _COMMON_BENIGN_BINARIES = frozenset({
     'svchost.exe', 'lsass.exe', 'services.exe', 'explorer.exe', 'cmd.exe',
     'powershell.exe', 'pwsh.exe', 'conhost.exe', 'bash', 'sh', 'sshd',
@@ -462,7 +483,7 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
                 if len(active_truth_indicators) >= 2:
                     break
                 if add_entry(
-                    itype, ival, 'c2_framework_implant' if itype in ('ipv4', 'ipv6', 'domain', 'url', 'named_pipe', 'ja3')
+                    itype, ival, 'c2_framework_implant' if itype in ('ipv4', 'ipv6', 'domain', 'url_path', 'named_pipe', 'ja3')
                     else 'credential_access_tool',
                     0.89, 'active', _SCENARIO_TI_FEED, case_first_seen, _SCENARIO_TI_NOTE,
                 ):
@@ -485,7 +506,7 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
                 continue
             if itype == 'file_name' and ival.lower() in _COMMON_BENIGN_BINARIES:
                 continue
-            if itype in ('ipv4', 'ipv6', 'domain', 'url', 'user_agent', 'sha256', 'md5', 'service_name', 'file_name'):
+            if itype in ('ipv4', 'ipv6', 'domain', 'url_path', 'user_agent', 'sha256', 'md5', 'service_name', 'file_name'):
                 decoy_candidates.append((itype, ival))
     dedup_decoys = sorted(set(decoy_candidates))
     rng.shuffle(dedup_decoys)
@@ -493,20 +514,25 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
         is_stale = len(benign_decoy_indicators) == 0
         status = 'historical_rotated' if is_stale else 'known_false_positive'
         conf = 0.41 if is_stale else 0.28
-        category = 'scanner_shared_infra' if itype in ('ipv4', 'ipv6', 'domain', 'url') else 'dual_use_admin_tool'
+        category = 'scanner_shared_infra' if itype in ('ipv4', 'ipv6', 'domain', 'url_path') else 'dual_use_admin_tool'
         if add_entry(
             itype, ival, category, conf, status, _SCENARIO_TI_FEED,
             case_first_seen, _SCENARIO_TI_NOTE,
         ):
             benign_decoy_indicators.append({'indicator_type': itype, 'indicator_value': ival, 'status': status})
 
-    # 3. Add real public CTI background catalog indicators (filtering out any accidental collision
-    #    with truth indicators or truth event substrings when `regime == 'novel_apt_zero_ioc'`).
+    # 3. Add real public CTI background catalog indicators, excluding any active indicator
+    #    that collides with truth events unless it was explicitly selected in `active_truth_indicators`
+    #    (preserving withheld downstream truth steps in `known_ioc_pivot` and all truth steps in `novel_apt_zero_ioc`).
+    active_entry_folded = {
+        (x['indicator_type'], x['indicator_value'].casefold())
+        for x in active_truth_indicators
+    }
     for seed_item in list(PUBLIC_CTI_SEED_CATALOG) + list(extra_iocs):
         if (
-            regime == 'novel_apt_zero_ioc'
-            and seed_item['status'] == 'active'
+            seed_item['status'] == 'active'
             and _matches_any_truth(seed_item['indicator_type'], seed_item['indicator_value'])
+            and (seed_item['indicator_type'], seed_item['indicator_value'].casefold()) not in active_entry_folded
         ):
             continue
         add_entry(

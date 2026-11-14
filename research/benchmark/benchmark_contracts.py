@@ -1049,9 +1049,11 @@ def call_cost_bound(budget, spec, rates):
         return None
     output = spec['max_output_tokens'] if spec['max_output_tokens'] is not None else budget['max_response_bytes']
     if spec.get('adapter') == 'openai_http':
-        # 4 rounds max; cumulative prompt history + up to 12 * 24 KiB tool replies + prior outputs.
+        # 4 rounds max; cumulative prompt history + up to 12 * 24 KiB tool replies + prior assistant echoes + framing.
         max_query_bytes = 12 * 24576
-        worst_input = 4 * (budget['max_prompt_bytes'] + max_query_bytes + 3 * output)
+        assistant_bound = max(output, budget['max_response_bytes'])
+        framing_bytes = 8192
+        worst_input = 4 * (budget['max_prompt_bytes'] + max_query_bytes + 3 * assistant_bound + framing_bytes)
         worst_output = 4 * output
         return (matches[0]['input_per_million'] * worst_input
                 + matches[0]['output_per_million'] * worst_output) / 1000000
@@ -1088,6 +1090,9 @@ def _model(value, field, checker=False):
         if value['provider'] != 'openai':
             _fail('unsupported_parameter', field + '.parameters.seed')
         _integer(seed, field + '.parameters.seed')
+    if value['model_requested'].lower().startswith(('claude-subscription/', 'codex-subscription/')):
+        if temperature is not None or seed is not None:
+            _fail('unsupported_parameter', field + '.parameters')
     # Optional schema-constrained decoding (`stage_output_schema`), a treatment
     # attribute of the narrative route. Only the OpenAI-compatible transport has
     # a verified request path; the typed checker never takes it.

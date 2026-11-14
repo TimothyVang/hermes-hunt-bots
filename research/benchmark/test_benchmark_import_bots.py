@@ -415,7 +415,7 @@ class CliTest(BotsTestBase):
                                                               str(self.root / 'x')])
         self.assertEqual((code, err.strip()), (2, 'error: invalid_identifier: incident'))
 
-    def test_v1_json_records_bounds_single_readline_allocation(self):
+    def test_v1_json_records_and_csv_records_bound_single_readline_allocation(self):
         import gzip
         gz_path = self.root / 'oversized.json.gz'
         with gzip.open(gz_path, 'wb') as handle:
@@ -425,6 +425,15 @@ class CliTest(BotsTestBase):
         with self.assertRaises(bots.BenchmarkError) as ctx:
             list(bots._json_records(item, 1, win, {}))
         self.assertEqual(ctx.exception.code, 'line_too_large')
+
+        csv_gz_path = self.root / 'oversized.csv.gz'
+        with gzip.open(csv_gz_path, 'wb') as handle:
+            handle.write(b','.join(s.encode('ascii') for s in bots.CSV_HEADER) + b'\n')
+            handle.write(b'1534785720,h,s,c,' + (b'x' * (bots.MAX_CSV_PHYSICAL_LINE_BYTES + 128)))
+        csv_item = {'path': csv_gz_path, 'name': 'oversized.csv.gz', 'earliest': 0, 'latest': 2000000000}
+        with self.assertRaises(bots.BenchmarkError) as csv_ctx:
+            list(bots._csv_records(csv_item, 1, win))
+        self.assertEqual(csv_ctx.exception.code, 'invalid_csv')
 
 
 if __name__ == '__main__':

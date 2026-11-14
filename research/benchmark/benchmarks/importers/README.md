@@ -1105,7 +1105,7 @@ in `public/intel.jsonl`) and `benchmark_query.py` (`events.sqlite3` FTS5 query s
 
 Every case written through `benchmark_case_writer.py` seals `public/intel.jsonl` (`schema_version: 1` per line, specification `ioc-feed-1`):
 
-1. Extracts technical indicators observed in sanitized events (SHA-256/MD5/IMPHASH hashes, named pipes, JA3 digests, User-Agents, SSH client banners, URLs, process/script names, and pseudonymized C2/IPv4/domain indicators), emitting case-derived indicators with `source_feed: "scenario-ti-feed"`.
+1. Extracts technical indicators observed in sanitized events (SHA-256/MD5/IMPHASH hashes, named pipes, JA3 digests, User-Agents, SSH client banners, URL paths (`url_path`), process/script names, and pseudonymized C2/IPv4/domain indicators), emitting case-derived indicators with `source_feed: "scenario-ti-feed"`.
 2. Merges real public CTI software/group tool indicators derived from the pinned MITRE ATT&CK v20 STIX bundle plus public MalwareBazaar/ThreatFox/Feodo-class tool and infrastructure artifacts, scrubbing all `Txxxx` technique strings so `intel.jsonl` never leaks ATT&CK answers.
 3. Enforces two explicit evaluation regimes recorded in evaluator-only `scenario.json` (`ioc_regime`, cohort control, forbidden in public bundles) and `evaluator/import-report.json` (`ioc_feed.ioc_regime`):
    - `known_ioc_pivot`: requires at least one active entry-pivot indicator matching a truth event (`missing_known_ioc_pivot` if none can be extracted on a non-control case) alongside `known_false_positive` and `historical_rotated` benign decoy indicators.
