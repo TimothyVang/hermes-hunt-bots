@@ -35,6 +35,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _TICKET_SAFE = re.compile(r"[A-Za-z0-9._~+/=-]{1,512}\Z")
 _ENV_SAFE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _PIPE_CLIENT_SQOS = 0x00100000 | 0x00010000
+_ASYNC_TIMEOUT_ERRORS = tuple({TimeoutError, asyncio.TimeoutError})
 
 # Aligned with framework/native_team.py per-profile turn budgets.
 PROFILE_MAX_TURNS: dict[str, int] = {
@@ -514,7 +515,7 @@ def _build_usage(
     profile_home: Path,
     session_id: str | None,
     elapsed_ms: int,
-    include_zero_on_timeout: bool = False,
+    allow_zero: bool = True,
 ) -> dict[str, int] | None:
     if not record_usage:
         return None
@@ -531,7 +532,7 @@ def _build_usage(
     )
     aux = _sum_auxiliary(aux_source if isinstance(aux_source, dict) else {})
     has_aux = any(v > 0 for v in aux.values())
-    if not (has_main or has_aux or include_zero_on_timeout):
+    if not (has_main or has_aux or allow_zero):
         return None
     duration = _strict_nonneg_int(result_body.get("duration_ms"))
     usage = {
@@ -561,6 +562,7 @@ class _GatewayWSConnection:
         self.session_id: str | None = None
         self.subscription_id: str | None = None
         self.generation: int = 0
+        self.input_id: str | None = None
         self.admission_id: str | None = None
         self.pending_rows: list[dict[str, Any]] = []
         self.buffered_completions: list[tuple[str | None, dict[str, Any]]] = []
@@ -624,6 +626,8 @@ class _GatewayWSConnection:
                     else:
                         result = frame.get("result")
                         future.set_result(result if isinstance(result, dict) else {})
+                elif isinstance(req_id, str) and req_id.startswith("srq-") and isinstance(frame.get("method"), str):
+                    await self._reply_server_request(req_id, frame["method"])
                 elif "method" in frame:
                     self._handle_event(frame)
         except Exception as exc:  # health: allow BLE001 -- WS reader boundary; wakes waiters on disconnect
@@ -636,6 +640,11 @@ class _GatewayWSConnection:
                 if not future.done():
                     future.set_exception(err)
             self.state_changed.set()
+
+    async def _reply_server_request(self, req_id: str, method: str) -> None:
+        result: dict[str, Any] = {"outcome": "cancelled"} if method == "clarify" else {"value": ""}
+        with suppress(Exception):
+            await self.ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}))
 
     def _handle_event(self, frame: dict[str, Any]) -> None:
         self.drained_events += 1
@@ -774,10 +783,15 @@ async def _recover_replay_gap(conn: _GatewayWSConnection) -> None:
         "prompt.receipt", session_id=conn.session_id, admission_id=conn.admission_id, include_result=True
     )
     if receipt.get("status") == "terminal":
-        result_body = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
         conn.completion = {
             "outcome": receipt.get("outcome") or "completed",
-            "text": result_body.get("final_response") or "",
+            "_from_receipt": True,
+            "_receipt": receipt,
+        }
+    else:
+        conn.completion = {
+            "outcome": "unknown",
+            "_from_receipt": True,
             "_receipt": receipt,
         }
 
@@ -820,8 +834,34 @@ async def _detach_session(conn: _GatewayWSConnection) -> None:
         )
 
 
+async def _recover_admission_for_cancel(conn: _GatewayWSConnection) -> None:
+    if conn.admission_id is not None or conn.session_id is None:
+        return
+    with suppress(Exception):
+        snapshot = await conn.rpc(
+            "session.resume",
+            _timeout=CLEANUP_RPC_TIMEOUT,
+            session_id=conn.session_id,
+            omit_messages=True,
+        )
+        if isinstance(snapshot.get("subscription_id"), str):
+            conn.subscription_id = snapshot["subscription_id"]
+        if type(snapshot.get("execution_generation")) is int:
+            conn.generation = snapshot["execution_generation"]
+        if isinstance(snapshot.get("pending"), list):
+            conn.pending_rows = snapshot["pending"]
+    if not conn.input_id:
+        return
+    for row in conn.pending_rows:
+        adm = row.get("admission_id") if isinstance(row, dict) else None
+        if isinstance(row, dict) and row.get("input_id") == conn.input_id and isinstance(adm, str) and adm:
+            conn.bind_admission(adm)
+            return
+
+
 async def _cancel_interrupt_and_detach(conn: _GatewayWSConnection) -> dict[str, Any]:
     """Cancel queued/running prompt, fenced-interrupt child delegation trees, read receipt, and detach."""
+    await _recover_admission_for_cancel(conn)
     if conn.session_id is not None and conn.admission_id is not None:
         with suppress(Exception):
             cancel_res = await conn.rpc(
@@ -858,19 +898,22 @@ def _sanitize_ws_diagnostic(prefix: str, detail: str, redact_fn: Callable[[str],
     return text[:MAX_DIAGNOSTIC_CHARS]
 
 
-async def _await_turn(conn: _GatewayWSConnection, timeout_seconds: int) -> None:
-    async with asyncio.timeout(timeout_seconds):
-        while conn.completion is None:
-            conn.state_changed.clear()
-            if conn.replay_gap:
-                conn.replay_gap = False
-                await _recover_replay_gap(conn)
-                if conn.completion is not None:
-                    return
-            if conn.blocked_reason is not None or conn.disconnect_error is not None:
+async def _wait_turn_loop(conn: _GatewayWSConnection) -> None:
+    while conn.completion is None:
+        conn.state_changed.clear()
+        if conn.replay_gap:
+            conn.replay_gap = False
+            await _recover_replay_gap(conn)
+            if conn.completion is not None:
                 return
-            if conn.completion is None:
-                await conn.state_changed.wait()
+        if conn.blocked_reason is not None or conn.disconnect_error is not None:
+            return
+        if conn.completion is None:
+            await conn.state_changed.wait()
+
+
+async def _await_turn(conn: _GatewayWSConnection, timeout_seconds: int) -> None:
+    await asyncio.wait_for(_wait_turn_loop(conn), timeout=timeout_seconds)
 
 
 def _resolve_completion_outcome(completion: dict[str, Any], receipt: dict[str, Any]) -> tuple[str, bool, bool]:
@@ -915,6 +958,16 @@ def _finalize_settled_turn(
             "unknown", request.execution_id, "", "native_nonzero",
             session_id=conn.session_id, usage=usage, diagnostic=diag,
         )
+    if completion.get("_from_receipt"):
+        diag = _sanitize_ws_diagnostic(
+            "gateway replay gap",
+            "live unredacted completion missed; receipt text is storage-redacted",
+            redact_fn,
+        )
+        return ExecutionResult(
+            "unknown", request.execution_id, "", "output_unavailable",
+            session_id=conn.session_id, usage=usage, diagnostic=diag,
+        )
     # Prefer live message.complete text from the event drainer so SHA-256 hashes and IOCs
     # are never mangled by state.db's storage-boundary redact_sensitive_text().
     live_text = completion.get("text")
@@ -944,7 +997,7 @@ def _usage_from_receipt(
     *,
     record_usage: bool,
     started_at: float,
-    include_zero_on_timeout: bool = False,
+    allow_zero: bool = True,
 ) -> dict[str, int] | None:
     res_body = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
     rec_usage = receipt.get("usage") if isinstance(receipt.get("usage"), dict) else {}
@@ -958,7 +1011,7 @@ def _usage_from_receipt(
         profile_home=endpoint.profile_home,
         session_id=conn.session_id,
         elapsed_ms=int((time.monotonic() - started_at) * 1000),
-        include_zero_on_timeout=include_zero_on_timeout,
+        allow_zero=allow_zero,
     )
 
 
@@ -1013,20 +1066,24 @@ async def _run_admitted_ws_turn(
     )
     admission_id = ack.get("admission_id")
     if not isinstance(admission_id, str) or not admission_id:
-        await _detach_session(conn)
+        receipt = await _cancel_interrupt_and_detach(conn)
+        usage = await asyncio.to_thread(
+            _usage_from_receipt,
+            conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=True,
+        )
         return ExecutionResult(
             "unknown", request.execution_id, "", "output_unavailable",
-            session_id=session_id,
+            session_id=session_id, usage=usage,
             diagnostic=_sanitize_ws_diagnostic("gateway submit", "missing admission_id", redact_fn),
         )
     conn.bind_admission(admission_id, ack.get("execution_generation"))
     try:
         await _await_turn(conn, request.step.timeout_seconds)
-    except TimeoutError:
+    except _ASYNC_TIMEOUT_ERRORS:
         receipt = await asyncio.shield(_cancel_interrupt_and_detach(conn))
         usage = await asyncio.to_thread(
             _usage_from_receipt,
-            conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, include_zero_on_timeout=True,
+            conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=True,
         )
         diag = _sanitize_ws_diagnostic(
             "gateway timeout", f"exceeded {request.step.timeout_seconds}s; cancelled and interrupted", redact_fn
@@ -1043,7 +1100,7 @@ async def _run_admitted_ws_turn(
         why = conn.blocked_reason or conn.disconnect_error or "gateway_disconnected"
         receipt = await _cancel_interrupt_and_detach(conn)
         usage = await asyncio.to_thread(
-            _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at
+            _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=True
         )
         diag = _sanitize_ws_diagnostic("gateway interrupted", why, redact_fn)
         return ExecutionResult(
@@ -1061,7 +1118,7 @@ async def _run_admitted_ws_turn(
             )
     await _detach_session(conn)
     usage = await asyncio.to_thread(
-        _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at
+        _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=True
     )
     return _finalize_settled_turn(request, conn, receipt, usage, redact_fn)
 
@@ -1120,6 +1177,7 @@ async def _execute_over_ws(
                 await _detach_session(conn)
                 return ExecutionResult("failed", request.execution_id, "", "receipt_unavailable")
         started_at = time.monotonic()
+        conn.input_id = input_id
         admitted = True
         return await _run_admitted_ws_turn(
             conn, endpoint, request,
@@ -1134,17 +1192,27 @@ async def _execute_over_ws(
         usage = await asyncio.to_thread(
             _usage_from_receipt,
             conn, endpoint, conn.last_receipt, record_usage=record_usage,
-            started_at=started_at, include_zero_on_timeout=admitted,
+            started_at=started_at, allow_zero=admitted,
         )
         return ExecutionResult("unknown", request.execution_id, "", "cancelled", session_id=conn.session_id, usage=usage)
     except Exception as exc:  # health: allow BLE001 -- pre-submit refuses cleanly; post-submit settles unknown
-        await _detach_session(conn)
         if not admitted:
+            await _detach_session(conn)
             if not explicit_ws_url:
                 raise GatewayNotAvailable(f"gateway pre-submit failure: {exc}") from exc
             return ExecutionResult("failed", request.execution_id, "", "launch_failed")
+        if not conn.cleaned_up:
+            await asyncio.shield(_cancel_interrupt_and_detach(conn))
+        usage = await asyncio.to_thread(
+            _usage_from_receipt,
+            conn, endpoint, conn.last_receipt, record_usage=record_usage,
+            started_at=started_at, allow_zero=True,
+        )
         diag = _sanitize_ws_diagnostic("gateway rpc error", f"{type(exc).__name__}: {exc}", redact_fn)
-        return ExecutionResult("unknown", request.execution_id, "", "native_nonzero", session_id=conn.session_id, diagnostic=diag)
+        return ExecutionResult(
+            "unknown", request.execution_id, "", "native_nonzero",
+            session_id=conn.session_id, usage=usage, diagnostic=diag,
+        )
     finally:
         await conn.stop_drainer()
         with suppress(Exception):
@@ -1173,7 +1241,7 @@ def invoke_gateway(
             request,
             working_directory=config.working_directory,
             visible_sessions=config.visible_sessions is True,
-            record_usage=config.record_usage is True,
+            record_usage=config.record_usage is True or request.record_usage is True,
             explicit_ws_url=gateway_ws_url is not None,
             checkpoint=checkpoint,
             redact_fn=redact_fn,

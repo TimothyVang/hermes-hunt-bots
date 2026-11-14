@@ -132,6 +132,7 @@ def _valid_request(request: ExecutionRequest) -> bool:
         step = request.step
         return (isinstance(request.execution_id, str) and bool(request.execution_id)
                 and len(request.execution_id.encode('utf-8')) <= 512
+                and type(request.record_usage) is bool
                 and isinstance(step.step_id, str) and _STEP_ID.fullmatch(step.step_id) is not None
                 and isinstance(step.prompt, str) and bool(step.prompt.strip())
                 and len(step.prompt.encode('utf-8')) <= MAX_PROMPT_BYTES
@@ -453,7 +454,7 @@ def _invoke_cli(config: ExecutionConfig, request: ExecutionRequest) -> Execution
         command += ['--toolsets', ','.join(toolsets)]
     stream = None
     limit = MAX_OUTPUT_BYTES
-    if config.record_usage is True:
+    if config.record_usage is True or request.record_usage is True:
         command += ['--format', 'stream-json']
         stream = _ResultStream()
         limit = MAX_STREAM_BYTES

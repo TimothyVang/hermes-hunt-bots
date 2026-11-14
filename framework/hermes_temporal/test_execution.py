@@ -504,6 +504,21 @@ class ExecutionReceiptTests(unittest.TestCase):
             '--query-file', '-', '--source', 'tool', '--max-turns', '8'])
         self.assertEqual(result, ExecutionResult('completed', 'workflow/0', raw.decode('utf-8'), 'completed'))
 
+    def test_request_record_usage_enables_stream_json_with_default_config_and_keeps_fingerprint(self):
+        for bad in ('true', 1, None):
+            with self.assertRaises(ValueError):
+                ExecutionRequest('workflow/0', HermesStep('scope', 'Confirm scope.'), record_usage=bad)  # type: ignore[arg-type]
+        plain_req = ExecutionRequest('workflow/0', HermesStep('evidence', 'Search logs.', 'framework-researcher'))
+        usage_req = ExecutionRequest(
+            'workflow/0', HermesStep('evidence', 'Search logs.', 'framework-researcher'), record_usage=True
+        )
+        self.assertEqual(execution_module._fingerprint(plain_req), execution_module._fingerprint(usage_req))
+        raw = stream(INIT, RESULT)
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            result = _invoke(self.config, usage_req)
+        self.assertIn('--format', popen.call_args.args[0])
+        self.assertEqual(result, ExecutionResult('completed', 'workflow/0', 'READY', 'completed', 'local-synthetic', USAGE))
+
     def test_profile_turn_budgets_scope_no_mcp_and_hunt_env_reach_cli_fallback(self):
         raw = stream(INIT, RESULT)
         scope_req = ExecutionRequest('hunt-wf:0:retry', HermesStep('scope', 'Confirm scope.', 'framework-coordinator'))

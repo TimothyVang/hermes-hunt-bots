@@ -188,11 +188,14 @@ def _validate_execution_id(value: str) -> None:
 class ExecutionRequest:
     execution_id: str
     step: HermesStep
+    record_usage: bool = False
 
     def __post_init__(self) -> None:
         _validate_execution_id(self.execution_id)
         if not isinstance(self.step, HermesStep):
             raise ValueError("step must be a HermesStep")
+        if type(self.record_usage) is not bool:
+            raise ValueError("record_usage must be a boolean")
 
 
 @dataclass(frozen=True)

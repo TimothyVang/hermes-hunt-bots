@@ -53,7 +53,11 @@ class _MockGatewayServer:
         }
         self.aux_usage: dict[str, dict[str, int]] = {}
         self.emit_replay_gap = False
+        self.receipt_status = "terminal"
         self.hang_submit = False
+        self.drop_submit_reply = False
+        self.server_requests: list[tuple[str, str, dict[str, Any]]] = []
+        self.srq_responses: list[dict[str, Any]] = []
         self.stale_interrupt_once = False
         self._stale_sent = False
         self.turn_started = asyncio.Event()
@@ -107,7 +111,13 @@ class _MockGatewayServer:
         await ws.send(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": params}))
 
     async def _handle_client(self, ws: Any) -> None:
-        state = {"session_id": "gw-sess-001", "admission_id": "adm-001"}
+        state: dict[str, Any] = {
+            "session_id": "gw-sess-001",
+            "admission_id": "adm-001",
+            "pending": [],
+        }
+        srq_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        bg_tasks: set[asyncio.Task[None]] = set()
 
         async def on_describe(req_id: Any, _params: dict[str, Any]) -> None:
             res = {"session_create": {"sources": ["cli", "tool", "oneshot"], "parameters": ["cwd", "max_turns", "toolsets", "client_env"]}}
@@ -119,10 +129,37 @@ class _MockGatewayServer:
             snap = {"stored_session_id": state["session_id"], "subscription_id": f"sub-{req_digest}", "execution_generation": 1}
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": snap}))
 
+        async def _finish_turn(session_id: str, admission_id: str) -> None:
+            for srq_id, srq_method, srq_params in self.server_requests:
+                fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+                srq_waiters[srq_id] = fut
+                await ws.send(json.dumps({"jsonrpc": "2.0", "id": srq_id, "method": srq_method, "params": srq_params}))
+                reply = await asyncio.wait_for(fut, timeout=5)
+                self.srq_responses.append(reply)
+            if self.main_usage or self.aux_usage:
+                await self._send_event(
+                    ws, session_id, "session.usage",
+                    {**self.main_usage, **({"auxiliary_usage": self.aux_usage} if self.aux_usage else {})},
+                    admission_id=admission_id, gen=2,
+                )
+            comp = (
+                {**self.complete_payload, "admission_id": admission_id}
+                if self.complete_payload is not None
+                else {"outcome": "completed", "text": self.complete_text, "admission_id": admission_id}
+            )
+            await self._send_event(ws, session_id, "message.complete", comp, admission_id=admission_id, gen=2)
+
         async def on_submit(req_id: Any, params: dict[str, Any]) -> None:
             session_id, admission_id = state["session_id"], state["admission_id"]
             if self.on_submit is not None:
                 self.on_submit(params)
+            if self.drop_submit_reply:
+                state["admission_id"] = "adm-orphan-1"
+                state["pending"] = [{"admission_id": "adm-orphan-1", "input_id": params.get("input_id"), "status": "running"}]
+                usage = {"input_tokens": 300, "output_tokens": 40, "cache_read_tokens": 0, "cache_write_tokens": 0, "total_tokens": 340}
+                await self._send_event(ws, session_id, "session.usage", usage, admission_id="adm-orphan-1", gen=2)
+                self.turn_started.set()
+                return
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"admission_id": admission_id, "execution_generation": 2}}))
             self.turn_started.set()
             if self.hang_submit:
@@ -134,23 +171,21 @@ class _MockGatewayServer:
             if self.emit_replay_gap:
                 await self._send_event(ws, session_id, "session.replay_gap", {}, admission_id=admission_id, gen=2)
                 return
-            await self._send_event(
-                ws, session_id, "session.usage",
-                {**self.main_usage, **({"auxiliary_usage": self.aux_usage} if self.aux_usage else {})},
-                admission_id=admission_id, gen=2,
-            )
-            comp = (
-                {**self.complete_payload, "admission_id": admission_id}
-                if self.complete_payload is not None
-                else {"outcome": "completed", "text": self.complete_text, "admission_id": admission_id}
-            )
-            await self._send_event(ws, session_id, "message.complete", comp, admission_id=admission_id, gen=2)
+            finish_task = asyncio.create_task(_finish_turn(session_id, admission_id))
+            bg_tasks.add(finish_task)
+            finish_task.add_done_callback(bg_tasks.discard)
 
         async def on_resume(req_id: Any, _params: dict[str, Any]) -> None:
-            snap = {"stored_session_id": state["session_id"], "subscription_id": "sub-resumed", "execution_generation": 2, "pending": []}
+            snap = {
+                "stored_session_id": state["session_id"],
+                "subscription_id": "sub-resumed",
+                "execution_generation": 2,
+                "pending": list(state["pending"]),
+            }
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": snap}))
 
         async def on_cancel(req_id: Any, _params: dict[str, Any]) -> None:
+            state["pending"] = []
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"cancelled": True, "execution_generation": 3}}))
 
         async def on_interrupt(req_id: Any, _params: dict[str, Any]) -> None:
@@ -166,15 +201,16 @@ class _MockGatewayServer:
                 err = {"code": -32603, "message": "receipt unavailable", "data": {"reason": "receipt_unavailable"}}
                 await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "error": err}))
                 return
+            aborted = self.hang_submit or self.drop_submit_reply
             receipt = {
-                "status": "terminal",
-                "outcome": "cancelled" if self.hang_submit else "completed",
+                "status": self.receipt_status,
+                "outcome": "cancelled" if aborted else "completed",
                 "result": {
                     "final_response": self.receipt_text,
-                    "completed": not self.hang_submit,
-                    "interrupted": self.hang_submit,
-                    **(self.main_usage if not self.hang_submit else {}),
-                    **({"auxiliary_usage": self.aux_usage} if self.aux_usage and not self.hang_submit else {}),
+                    "completed": not aborted,
+                    "interrupted": aborted,
+                    **(self.main_usage if not aborted else {}),
+                    **({"auxiliary_usage": self.aux_usage} if self.aux_usage and not aborted else {}),
                 },
             }
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": receipt}))
@@ -195,6 +231,11 @@ class _MockGatewayServer:
         }
         async for raw in ws:
             frame = json.loads(raw)
+            if "method" not in frame and isinstance(frame.get("id"), str):
+                waiter = srq_waiters.pop(frame["id"], None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(frame)
+                continue
             method = frame["method"]
             params = frame.get("params") or {}
             self.calls.append((method, params))
@@ -426,15 +467,83 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
 
         async with _MockGatewayServer() as gap_server:
             gap_server.emit_replay_gap = True
-            gap_server.receipt_text = '{"recovered": true}'
+            gap_server.receipt_text = '{"ioc": "[REDACTED]"}'
             cfg = replace(self.config, gateway_ws_url=gap_server.ws_url, gateway_ticket="test-ticket-abc123")
             recovered = await asyncio.to_thread(
                 execute,
                 cfg,
-                ExecutionRequest("hunt-gap:0", HermesStep("evidence", "Recover.", "framework-researcher")),
+                ExecutionRequest("hunt-gap:0", HermesStep("evidence", "Recover.", "framework-researcher", timeout_seconds=60)),
             )
-        self.assertEqual((recovered.status, recovered.output), ("completed", '{"recovered": true}'))
+            gap_server.receipt_status = "pending"
+            nonterminal = await asyncio.wait_for(
+                asyncio.to_thread(
+                    execute,
+                    cfg,
+                    ExecutionRequest("hunt-gap:1", HermesStep("evidence", "Nonterminal.", "framework-researcher", timeout_seconds=60)),
+                ),
+                timeout=5,
+            )
+        self.assertEqual((recovered.status, recovered.reason_code, recovered.output), ("unknown", "output_unavailable", ""))
+        self.assertIn("gateway replay gap", recovered.diagnostic or "")
+        self.assertEqual(recovered.usage["total_tokens"], 1200)
+        self.assertEqual(nonterminal.status, "unknown")
         self.assertIn("session.resume", [m for m, _ in gap_server.calls])
+
+    async def test_post_admitted_submit_timeout_srq_auto_reply_and_request_record_usage(self) -> None:
+        async with _MockGatewayServer() as orphan_server:
+            orphan_server.drop_submit_reply = True
+            cfg = replace(self.config, record_usage=False, gateway_ws_url=orphan_server.ws_url, gateway_ticket="test-ticket-abc123")
+            req = ExecutionRequest(
+                "hunt-orphan:0",
+                HermesStep("evidence", "Submit timeout.", "framework-researcher", timeout_seconds=30),
+                record_usage=True,
+            )
+            with patch.object(transport_module, "DEFAULT_RPC_TIMEOUT", 0.2):
+                orphan_res = await asyncio.to_thread(execute, cfg, req)
+        self.assertEqual((orphan_res.status, orphan_res.reason_code), ("unknown", "native_nonzero"))
+        assert orphan_res.usage is not None
+        self.assertEqual(orphan_res.usage["total_tokens"], 340)
+        orphan_methods = [m for m, _ in orphan_server.calls]
+        self.assertEqual(
+            orphan_methods,
+            [
+                "runtime.describe", "session.create", "prompt.submit",
+                "session.resume", "prompt.cancel", "session.interrupt",
+                "prompt.receipt", "session.detach",
+            ],
+        )
+        cancel_params = next(p for m, p in orphan_server.calls if m == "prompt.cancel")
+        self.assertEqual(cancel_params["admission_id"], "adm-orphan-1")
+
+        async with _MockGatewayServer() as srq_server:
+            srq_server.main_usage = {}
+            srq_server.server_requests = [
+                ("srq-sudo-1", "sudo", {"prompt": "sudo password"}),
+                ("srq-clarify-1", "clarify", {"question": "which host?"}),
+            ]
+            cfg = replace(self.config, record_usage=False, gateway_ws_url=srq_server.ws_url, gateway_ticket="test-ticket-abc123")
+            srq_res = await asyncio.wait_for(
+                asyncio.to_thread(
+                    execute,
+                    cfg,
+                    ExecutionRequest(
+                        "hunt-srq:0",
+                        HermesStep("evidence", "Unattended srq.", "framework-researcher", timeout_seconds=30),
+                        record_usage=True,
+                    ),
+                ),
+                timeout=5,
+            )
+        self.assertEqual((srq_res.status, srq_res.output), ("completed", '{"claims": []}'))
+        assert srq_res.usage is not None
+        self.assertEqual(srq_res.usage["total_tokens"], 0)
+        self.assertEqual(
+            srq_server.srq_responses,
+            [
+                {"jsonrpc": "2.0", "id": "srq-sudo-1", "result": {"value": ""}},
+                {"jsonrpc": "2.0", "id": "srq-clarify-1", "result": {"outcome": "cancelled"}},
+            ],
+        )
 
     @unittest.skipUnless(os.name == "nt", "Windows named-pipe control socket test")
     async def test_windows_control_pipe_multiplexer_discovery_and_legacy_ticket_fallback(self) -> None:

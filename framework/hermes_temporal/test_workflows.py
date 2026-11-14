@@ -2116,11 +2116,11 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
         real_patched = temporal_workflow.patched
         for mode in ("new", "recorded-before"):
             with self.subTest(kind="serial", mode=mode):
-                dispatched: list[str] = []
+                dispatched: list[tuple[str, bool]] = []
 
                 @activity.defn(name="execute_hermes_step")
                 async def serial_exec(req: ExecutionRequest) -> ExecutionResult:
-                    dispatched.append(req.step.step_id)
+                    dispatched.append((req.step.step_id, req.record_usage))
                     tokens = 600 if req.step.step_id == "first" else 500
                     return ExecutionResult("completed", req.execution_id, "ok", "completed", "s1", _usage(tokens))
 
@@ -2144,11 +2144,26 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
                 if mode == "new":
                     self.assertEqual(outcome, "token_cap_exceeded")
-                    self.assertEqual(dispatched, ["first", "second"])
+                    self.assertEqual(dispatched, [("first", True), ("second", True)])
                     self.assertEqual([r.usage["total_tokens"] for r in state.results if r.usage], [600, 500])
                 else:
                     self.assertEqual(outcome, "completed")
-                    self.assertEqual(dispatched, ["first", "second", "third"])
+                    self.assertEqual(dispatched, [("first", False), ("second", False), ("third", False)])
+
+        no_usage_steps: list[str] = []
+
+        @activity.defn(name="execute_hermes_step")
+        async def missing_usage_exec(req: ExecutionRequest) -> ExecutionResult:
+            no_usage_steps.append(req.step.step_id)
+            return ExecutionResult("completed", req.execution_id, "ok", "completed", "s1", None)
+
+        no_usage_req = WorkflowRequest([
+            HermesStep("first", "synthetic"), HermesStep("second", "synthetic", depends_on=("first",)),
+        ], max_total_tokens=1000)
+        async with self._started("test-token-cap-missing-usage", no_usage_req, missing_usage_exec) as (_, handle):
+            self.assertEqual(await self._approve_every_gate(handle), "token_cap_exceeded")
+            await Replayer(workflows=[HermesWorkflow]).replay_workflow(await handle.fetch_history())
+        self.assertEqual(no_usage_steps, ["first"])
 
         dispatched_wave: list[str] = []
 

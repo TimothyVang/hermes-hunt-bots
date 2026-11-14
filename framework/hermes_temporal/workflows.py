@@ -375,6 +375,15 @@ class HermesWorkflow:
     def _token_cap_exceeded(self, request: WorkflowRequest) -> bool:
         if request.max_total_tokens is None or not workflow.patched(_CUMULATIVE_TOKEN_CAP_PATCH):
             return False
+        seen: set[str] = set()
+        for result in (*self._results, *(item.result for item in self._handoff_rejections)):
+            if result.execution_id in seen:
+                continue
+            seen.add(result.execution_id)
+            if result.status == "completed" and not (
+                isinstance(result.usage, dict) and type(result.usage.get("total_tokens")) is int
+            ):
+                return True
         return self._cumulative_tokens() > request.max_total_tokens
 
     @workflow.run
@@ -414,7 +423,7 @@ class HermesWorkflow:
 
                 self._phase = None
                 self._stage = "executing"
-                result = await self._execute(self._execution_id, step, attempt_prompt)
+                result = await self._execute(self._execution_id, step, attempt_prompt, request)
                 self._results.append(result)
                 if self._token_cap_exceeded(request):
                     return self._end("token_cap_exceeded")
@@ -790,7 +799,7 @@ class HermesWorkflow:
             for (index, _, _, _), execution_id in zip(entries, execution_ids):
                 self._mark(index, "working", execution_id=execution_id)
             results = await asyncio.gather(*(
-                self._execute(execution_id, step, prompt)
+                self._execute(execution_id, step, prompt, request)
                 for (_, step, prompt, _), execution_id in zip(entries, execution_ids)
             ))
             retries: list[_WaveEntry] = []
@@ -838,11 +847,18 @@ class HermesWorkflow:
             self._mark(index, "done")
         return None
 
-    async def _execute(self, execution_id: str, step: HermesStep, prompt: str) -> ExecutionResult:
+    async def _execute(
+        self, execution_id: str, step: HermesStep, prompt: str, request: WorkflowRequest | None = None
+    ) -> ExecutionResult:
+        need_usage = bool(
+            request is not None
+            and request.max_total_tokens is not None
+            and workflow.patched(_CUMULATIVE_TOKEN_CAP_PATCH)
+        )
         try:
             result = await workflow.execute_activity(
                 _ACTIVITY_NAME,
-                ExecutionRequest(execution_id, replace(step, prompt=prompt)),
+                ExecutionRequest(execution_id, replace(step, prompt=prompt), record_usage=need_usage),
                 result_type=ExecutionResult,
                 start_to_close_timeout=timedelta(seconds=step.timeout_seconds + 70),
                 schedule_to_close_timeout=timedelta(seconds=step.timeout_seconds + 140),

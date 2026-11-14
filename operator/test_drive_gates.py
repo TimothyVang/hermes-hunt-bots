@@ -1,11 +1,13 @@
 """drive_gates behavior that an unattended loop round depends on."""
 import argparse
+import asyncio
 import copy
 import hashlib
 import io
 import json
 import re
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -702,6 +704,65 @@ class CliRetryTest(unittest.TestCase):
                 fallback = dg.cli('practice-status', 'loop-wf')
         self.assertEqual(fallback['stage'], 'completed')
         self.assertEqual(sub_run.call_count, 1)
+
+        timeout_attempts = []
+
+        class TimeoutThenOkClient:
+            @staticmethod
+            async def connect(address):
+                timeout_attempts.append(('connect', threading.current_thread().name, address))
+                return TimeoutThenOkClient()
+
+            def get_workflow_handle(self, _wid):
+                class H:
+                    async def query(self, _fn):
+                        timeout_attempts.append(('query', threading.current_thread().name))
+                        if sum(1 for item in timeout_attempts if item[0] == 'query') == 1:
+                            await asyncio.sleep(5)
+                        return SimpleNamespace(stage='running_round', child_workflow_id=CHILD)
+
+                    async def describe(self):
+                        return SimpleNamespace(status=SimpleNamespace(name='RUNNING'))
+                return H()
+
+        timeout_sdk = SimpleNamespace(
+            Client=TimeoutThenOkClient, RPCError=FakeRPCError, DEFAULT_ADDRESS='127.0.0.1:7233',
+            validate_loopback_address=lambda addr: addr,
+            PracticeWorkflow=SimpleNamespace(status='practice_status_q'),
+        )
+        with patch.object(dg._PersistentTemporalSession, '_rpc_timeout', 0.05), \
+                patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            session = dg._PersistentTemporalSession(timeout_sdk)
+            try:
+                recovered = session.call('practice-status', 'loop-wf')
+            finally:
+                session.close()
+                session.close()
+        self.assertEqual(recovered['child_workflow_id'], CHILD)
+        self.assertEqual([item[0] for item in timeout_attempts], ['connect', 'query', 'connect', 'query'])
+        self.assertTrue(all(item[1] == 'drive-gates-temporal' for item in timeout_attempts))
+
+        cancelled_futures = []
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                raise dg.concurrent.futures.TimeoutError()
+
+            def cancel(self):
+                cancelled_futures.append(True)
+
+        session2 = dg._PersistentTemporalSession(timeout_sdk)
+        try:
+            with patch.object(dg.asyncio, 'run_coroutine_threadsafe', side_effect=lambda coro, _loop: (coro.close(), FakeFuture())[1]), \
+                    patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+                with self.assertRaises(RuntimeError):
+                    session2.call('practice-status', 'loop-wf')
+            self.assertEqual(len(cancelled_futures), 3)
+            with patch.object(session2._thread, 'join'), patch.object(session2._thread, 'is_alive', return_value=True):
+                session2.close()
+                self.assertFalse(session2._loop.is_closed())
+        finally:
+            session2.close()
 
 
 if __name__ == '__main__':

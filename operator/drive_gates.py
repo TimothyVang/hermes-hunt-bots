@@ -43,7 +43,8 @@ Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<pe
 """
 import argparse
 import asyncio
-from contextlib import contextmanager
+import concurrent.futures
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 import hashlib
 import json
@@ -291,34 +292,50 @@ def _parse_decision_cli_args(workflow_id, rest):
     return ns
 
 
+_ASYNC_TIMEOUT_ERRORS = tuple({TimeoutError, asyncio.TimeoutError})
+_CALL_TIMEOUT_ERRORS = tuple({TimeoutError, asyncio.TimeoutError, concurrent.futures.TimeoutError})
+
+
 class _PersistentTemporalSession:
     """Reuses one persistent Temporal gRPC client across polling/signalling instead of spawning Python per RPC."""
+
+    _rpc_timeout = 120
+    _result_timeout = 125
+    _join_timeout = 5
 
     def __init__(self, sdk):
         self._sdk = sdk
         self._address = _lane_address(sdk)
         self._loop = asyncio.new_event_loop()
         self._client = None
+        self._ready = threading.Event()
+        self._loop.call_soon(self._ready.set)
         self._thread = threading.Thread(target=self._run_loop, name='drive-gates-temporal', daemon=True)
         self._thread.start()
+        self._ready.wait(timeout=5)
 
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
+    def _reset_client(self):
+        self._client = None
+
     def close(self):
-        if not self._loop.is_running():
-            return
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5)
-        self._loop.close()
+        if not self._loop.is_closed():
+            with suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread.ident is not None:
+            self._thread.join(timeout=self._join_timeout)
+        if not self._thread.is_alive() and not self._loop.is_closed():
+            self._loop.close()
 
     async def _ensure_client(self):
         if self._client is None:
             self._client = await self._sdk.Client.connect(self._address)
         return self._client
 
-    async def _dispatch_once(self, args):
+    async def _dispatch_rpc(self, args):
         client = await self._ensure_client()
         verb = args[0]
         if verb == 'practice-status':
@@ -351,20 +368,30 @@ class _PersistentTemporalSession:
             return {'workflow_id': ns.workflow_id, 'decision_id': ns.decision_id, 'signal_sent': True}
         raise ValueError(f'unsupported Temporal command: {verb}')
 
+    async def _dispatch_once(self, args):
+        try:
+            return await asyncio.wait_for(self._dispatch_rpc(args), timeout=self._rpc_timeout)
+        except _ASYNC_TIMEOUT_ERRORS:
+            self._client = None
+            raise
+        except (self._sdk.RPCError, asyncio.CancelledError):
+            self._client = None
+            raise
+
     def call(self, *args):
         for attempt in range(3):
             if attempt:
                 time.sleep(RPC_BACKOFF_SECONDS * attempt)
-            future = asyncio.run_coroutine_threadsafe(
-                asyncio.wait_for(self._dispatch_once(args), timeout=120), self._loop
-            )
+            future = asyncio.run_coroutine_threadsafe(self._dispatch_once(args), self._loop)
             try:
-                return future.result(timeout=125)
-            except TimeoutError:
-                self._client = None
+                return future.result(timeout=self._result_timeout)
+            except _CALL_TIMEOUT_ERRORS:
+                future.cancel()
+                if not self._loop.is_closed():
+                    with suppress(RuntimeError):
+                        self._loop.call_soon_threadsafe(self._reset_client)
                 log(f'{args[0]} timed out (attempt {attempt + 1}/3)')
             except self._sdk.RPCError:
-                self._client = None
                 log(f'{args[0]} transient RPCError (attempt {attempt + 1}/3)')
         raise RuntimeError(f'{args[0]} failed three times (timeout or RPCError)')
 
