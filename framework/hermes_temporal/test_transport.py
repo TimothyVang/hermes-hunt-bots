@@ -486,8 +486,12 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((recovered.status, recovered.reason_code, recovered.output), ("unknown", "output_unavailable", ""))
         self.assertIn("gateway replay gap", recovered.diagnostic or "")
         self.assertEqual(recovered.usage["total_tokens"], 1200)
-        self.assertEqual(nonterminal.status, "unknown")
-        self.assertIn("session.resume", [m for m, _ in gap_server.calls])
+        self.assertEqual((nonterminal.status, nonterminal.reason_code), ("unknown", "native_nonzero"))
+        self.assertIn("replay_gap_nonterminal", nonterminal.diagnostic or "")
+        gap_methods = [m for m, _ in gap_server.calls]
+        self.assertIn("session.resume", gap_methods)
+        self.assertIn("prompt.cancel", gap_methods)
+        self.assertIn("session.interrupt", gap_methods)
 
     async def test_post_admitted_submit_timeout_srq_auto_reply_and_request_record_usage(self) -> None:
         async with _MockGatewayServer() as orphan_server:
@@ -516,7 +520,9 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancel_params["admission_id"], "adm-orphan-1")
 
         async with _MockGatewayServer() as srq_server:
-            srq_server.main_usage = {}
+            srq_server.main_usage = {
+                k: 0 for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")
+            }
             srq_server.server_requests = [
                 ("srq-sudo-1", "sudo", {"prompt": "sudo password"}),
                 ("srq-clarify-1", "clarify", {"question": "which host?"}),
@@ -534,9 +540,23 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 timeout=5,
             )
+            srq_server.server_requests = []
+            srq_server.main_usage = {}
+            srq_server.fail_receipt = True
+            unmeasured_res = await asyncio.to_thread(
+                execute,
+                cfg,
+                ExecutionRequest(
+                    "hunt-srq:1",
+                    HermesStep("evidence", "Missing usage.", "framework-researcher", timeout_seconds=30),
+                    record_usage=True,
+                ),
+            )
         self.assertEqual((srq_res.status, srq_res.output), ("completed", '{"claims": []}'))
         assert srq_res.usage is not None
         self.assertEqual(srq_res.usage["total_tokens"], 0)
+        self.assertEqual(unmeasured_res.status, "completed")
+        self.assertIsNone(unmeasured_res.usage)
         self.assertEqual(
             srq_server.srq_responses,
             [

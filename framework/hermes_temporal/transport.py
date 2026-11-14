@@ -515,7 +515,7 @@ def _build_usage(
     profile_home: Path,
     session_id: str | None,
     elapsed_ms: int,
-    allow_zero: bool = True,
+    allow_zero: bool = False,
 ) -> dict[str, int] | None:
     if not record_usage:
         return None
@@ -789,11 +789,9 @@ async def _recover_replay_gap(conn: _GatewayWSConnection) -> None:
             "_receipt": receipt,
         }
     else:
-        conn.completion = {
-            "outcome": "unknown",
-            "_from_receipt": True,
-            "_receipt": receipt,
-        }
+        if isinstance(receipt, dict):
+            conn.last_receipt = receipt
+        conn.blocked_reason = "replay_gap_nonterminal"
 
 
 async def _fenced_interrupt(conn: _GatewayWSConnection) -> None:
@@ -997,7 +995,7 @@ def _usage_from_receipt(
     *,
     record_usage: bool,
     started_at: float,
-    allow_zero: bool = True,
+    allow_zero: bool = False,
 ) -> dict[str, int] | None:
     res_body = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
     rec_usage = receipt.get("usage") if isinstance(receipt.get("usage"), dict) else {}
@@ -1118,7 +1116,7 @@ async def _run_admitted_ws_turn(
             )
     await _detach_session(conn)
     usage = await asyncio.to_thread(
-        _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=True
+        _usage_from_receipt, conn, endpoint, receipt, record_usage=record_usage, started_at=started_at, allow_zero=False
     )
     return _finalize_settled_turn(request, conn, receipt, usage, redact_fn)
 
