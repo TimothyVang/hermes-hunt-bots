@@ -385,7 +385,7 @@ class CasePseudonymizer:
             if isinstance(node, tuple):
                 return tuple(_walk(x) for x in node)
             if isinstance(node, dict):
-                return {_walk(k): _walk(v) for k, v in node.items()}
+                return {k: _walk(v) for k, v in node.items()}
             return node
 
         return _walk(value)
@@ -602,11 +602,28 @@ def write_curated_case(
         _fail('already_exists', str(case_dir))
 
     if pseudonymizer._replaced_tokens:
-        assets = pseudonymizer.reconcile(list(assets))
-        sources = pseudonymizer.reconcile(list(sources))
-        step_specs = pseudonymizer.reconcile(list(step_specs))
+        seen_asset_ids = set()
+        reconciled_assets = []
+        for asset in assets:
+            a_copy = dict(asset, asset_id=pseudonymizer.reconcile(asset['asset_id']))
+            if a_copy['asset_id'] not in seen_asset_ids:
+                seen_asset_ids.add(a_copy['asset_id'])
+                reconciled_assets.append(a_copy)
+        assets = reconciled_assets
+        sources = [
+            dict(
+                src,
+                source_id=pseudonymizer.reconcile(src['source_id']),
+                asset_ids=list(dict.fromkeys(pseudonymizer.reconcile(list(src['asset_ids'])))),
+            )
+            for src in sources
+        ]
+        step_specs = [
+            dict(sp, asset_id=pseudonymizer.reconcile(sp['asset_id']))
+            for sp in step_specs
+        ]
         known_gaps = pseudonymizer.reconcile(list(known_gaps))
-        unassessed_asset_ids = pseudonymizer.reconcile(list(unassessed_asset_ids))
+        unassessed_asset_ids = list(dict.fromkeys(pseudonymizer.reconcile(list(unassessed_asset_ids))))
         extra_iocs = pseudonymizer.reconcile(list(extra_iocs))
         raw_events = [
             dict(

@@ -226,24 +226,34 @@ class BenchmarkIocTests(unittest.TestCase):
         rec_out = self.root / 'reconcile_out'
         rec_out.mkdir()
         rec_cov = dict(load_json(FIXTURES / 'fixtures' / 'case-8b42' / 'scenario.json')['coverage'], os=['linux'])
+        stale_tag = 'evt-' + stale_dns
         rec_res = write_curated_case(
             rec_out, case_seed='reconcile-seed', family_id='fam-reconcile', split='development',
             provenance='public_replay', coverage_tags=rec_cov,
             difficulty_factors={k: {'score': 0, 'rationale': 'r'} for k in ('noise', 'joins', 'time_span', 'gaps', 'ambiguity')},
-            sophistication={'band': 'S0', 'boundaries': []},
+            sophistication={'band': 'S1', 'boundaries': [{'boundary_id': 'b1', 'kind': 'host'}]},
             source_references=['https://example.com/ref'],
-            assets=[{'asset_id': unified_host, 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'}],
-            sources=[{'source_id': 'src1', 'asset_ids': [unified_host], 'telemetry': None, 'clock_offset_seconds': 0,
+            assets=[
+                {'asset_id': stale_dns, 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'},
+                {'asset_id': unified_host, 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'},
+            ],
+            sources=[{'source_id': 'src1', 'asset_ids': [stale_dns, unified_host], 'telemetry': None, 'clock_offset_seconds': 0,
                       'clock_uncertainty_seconds': 1, 'sensor_version': '1', 'config_version': '1',
                       'completeness': 'complete', 'source_sha256': 'a' * 64}],
-            raw_events=[{'tag': 'e_dns', 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
-                         'asset_id': unified_host, 'event_type': 'syslog', 'record_id': '1',
+            raw_events=[{'tag': stale_tag, 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
+                         'asset_id': stale_dns, 'event_type': 'syslog', 'record_id': '1',
                          'fields': {'timestamp_original': '2026-01-01T00:00:05Z', 'msg': early_msg}}],
-            step_specs=[], edges=[], pseudonymizer=pseudo_reconcile, control_case=True,
+            step_specs=[{'step_id': 'step-1', 'asset_id': stale_dns, 'technique_id': 'T1071.001',
+                         'boundary_id': 'b1', 'phase': 'initial', 'support_tags': [stale_tag]}],
+            edges=[], pseudonymizer=pseudo_reconcile, control_case=False,
         )
         sealed_ev = load_json(Path(rec_res['case_dir']) / 'public' / 'evidence.json')
+        sealed_tr = load_json(Path(rec_res['case_dir']) / 'evaluator' / 'truth.json')
+        self.assertEqual([a['asset_id'] for a in sealed_ev['assets']], [unified_host])
         self.assertIn(unified_host, sealed_ev['events'][0]['fields']['msg'])
         self.assertNotIn(stale_dns, sealed_ev['events'][0]['fields']['msg'])
+        self.assertEqual(sealed_tr['steps'][0]['asset_id'], unified_host)
+        self.assertEqual(sealed_tr['steps'][0]['support_sets'], [['e000001']])
 
         # Group ID G#### is rejected across source_feed and indicator_value, not only notes
         for bad_field, bad_val in (('source_feed', 'cti-G0016'), ('indicator_value', 'agent-g0016-loader')):
