@@ -174,7 +174,7 @@ def score_baselines(loaded, truths):
             'baselines': baselines, 'limitations': LIMITATIONS}
 
 
-def run_baselines(manifest, bundle_root, truth_directory, output):
+def run_baselines(manifest, bundle_root, truth_directory, output, workflow_path=None):
     """CLI entry: validate inputs, score, then create ``output`` as a NEW file."""
     from benchmark import load_experiment
     from benchmark_adjudication import load_truths
@@ -183,7 +183,7 @@ def run_baselines(manifest, bundle_root, truth_directory, output):
         _fail('already_exists', 'output')
     if not target.parent.is_dir():
         _fail('invalid_directory', 'output')
-    loaded = load_experiment(manifest, bundle_root)
+    loaded = load_experiment(manifest, bundle_root, workflow_path=workflow_path)
     report = score_baselines(loaded, load_truths(truth_directory, loaded))
     data = canonical_bytes(report)
     try:

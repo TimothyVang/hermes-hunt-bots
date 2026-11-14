@@ -564,6 +564,22 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(report['status'], 'provisional')
         self.assertIsNone(card(report)['detection']['f1'])
 
+    def test_ioc_regimes_are_stratified_into_separate_scorecards_and_slices(self):
+        snapshot = fixture(families=2)
+        snapshot['experiment']['cases'][0]['scenario']['ioc_regime'] = 'known_ioc_pivot'
+        snapshot['experiment']['cases'][1]['scenario']['ioc_regime'] = 'novel_apt_zero_ioc'
+        report = build_comparison(snapshot)
+        self.assertEqual(len(report['scorecards']), 4)
+        regimes_by_team = {
+            (c['team_id'], c['controls']['ioc_regime']): c['scenario_ids']
+            for c in report['scorecards']
+        }
+        self.assertEqual(regimes_by_team[('a', 'known_ioc_pivot')], ['scenario-0'])
+        self.assertEqual(regimes_by_team[('a', 'novel_apt_zero_ioc')], ['scenario-1'])
+        regime_slices = {(s['team_id'], s['category']) for s in report['slices'] if s['axis'] == 'ioc_regime'}
+        self.assertIn(('a', 'known_ioc_pivot'), regime_slices)
+        self.assertIn(('a', 'novel_apt_zero_ioc'), regime_slices)
+
 
 if __name__ == '__main__':
     unittest.main()

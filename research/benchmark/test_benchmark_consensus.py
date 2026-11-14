@@ -299,10 +299,12 @@ class ConsensusTest(unittest.TestCase):
         self.assertIn({'field': 'boundary_kind', 'boundary_id': 'boundary-2', 'drafts': ['identity', 'privilege'],
                        'merged': 'identity', 'step_ids': ['step-2']}, report['sophistication']['conflicts'])
         self.assertEqual(self.merge(self.b, self.a)[0]['sophistication']['boundaries'][1]['kind'], 'privilege')
-        # Different classes fall back to `host`; no remaining band fits a multi-host chain.
+        # Different classes fall back to `host`: the chain no longer crosses an identity or
+        # privilege boundary, so the conservative merge keeps it as a linked chain (S2).
         self.b['sophistication']['boundaries'][1]['kind'] = 'segment'
-        error = self.assertCode('sophistication_unsupported', self.merge)
-        self.assertEqual(error.field, 'curation.sophistication.band')
+        curation, report = self.merge()
+        self.assertEqual((curation['sophistication']['band'], curation['sophistication']['boundaries'][1]['kind']),
+                         ('S2', 'host'))
 
     def test_descriptive_disagreements_are_reported_not_refused(self):
         self.b['coverage']['dns_domain'] = ['recursive-forwarder']

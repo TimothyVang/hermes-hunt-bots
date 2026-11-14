@@ -14,7 +14,7 @@ import sys
 import time
 import warnings
 
-import benchmark_paths
+import benchmark_paths  # noqa: F401
 from benchmark_contracts import (
     BenchmarkError, call_cost_bound, canonical_bytes, confined_file, decode_json,
     digest_bytes, stage_output_schema, validate_stage_output,
@@ -57,7 +57,7 @@ def _isolated(model):
         secret = previous.get(name) if name is not None else None
         if name is not None and (not secret or any(ord(c) < 33 or ord(c) > 126 for c in secret)):
             _fail('credential_unavailable', 'model.credential_env')
-        if model['adapter'] == 'langchain':
+        if model['adapter'] in ('langchain', 'openai_http'):
             target = 'OPENAI_API_KEY' if model['provider'] == 'openai' else 'ANTHROPIC_API_KEY'
             if secret is not None:
                 allowed[target] = secret
@@ -278,9 +278,11 @@ def _context(call_spec, prompt):
         prompt = prompt.encode('utf-8')
     if type(prompt) is not bytes or prompt != canonical or store.read_artifact(trial['trial_id'], spec['prompt_artifact']) != canonical:
         _fail('fingerprint_conflict', 'call.prompt')
-    if runner.release_required(runner._case(frozen, trial)['scenario'], spec['model']):
+    release_authorized = False
+    if runner.release_required(runner._case(frozen, trial)['scenario'], spec['model'], team):
         _current_authorization(store, trial, spec['model'], human_only=True)
-    return store, spec, trial, frozen, team, canonical
+        release_authorized = True
+    return store, spec, trial, frozen, team, canonical, release_authorized
 
 
 def _current_authorization(store, trial, model, human_only=False):
@@ -310,7 +312,8 @@ def _checker(store, spec, trial, frozen, team, output, narrative_receipt, reused
     from envision_protocol import encode_json
     model = team['evidence_checker']
     evidence = runner._case(frozen, trial)['evidence']
-    request, invalid = build_checker_request(output, evidence, model)
+    qstore_path = store.query_store_path(evidence['query_store']) if 'query_store' in evidence else None
+    request, invalid = build_checker_request(output, evidence, model, query_store_path=qstore_path)
     if request is None:
         from benchmark_decisions import checker_validator_output
         return checker_validator_output(output, evidence, narrative_receipt['response_sha256'])
@@ -356,7 +359,7 @@ def _checker(store, spec, trial, frozen, team, output, narrative_receipt, reused
         if receipt['identity_status'] == 'reported_mismatch':
             _fail('model_identity_mismatch')
         elapsed = max(0, (time.monotonic_ns() - started) // 1000000)
-        appendix = assemble_checker(output, evidence, narrative_receipt['response_sha256'], model, response, invalid, elapsed)
+        appendix = assemble_checker(output, evidence, narrative_receipt['response_sha256'], model, response, invalid, elapsed, query_store_path=qstore_path)
         raw = canonical_bytes(appendix)
         if len(raw) > receipt['max_output_bytes']:
             _fail('output_limit')
@@ -373,13 +376,27 @@ def _checker(store, spec, trial, frozen, team, output, narrative_receipt, reused
     return appendix
 
 
+def _langchain_base_url(model, provenance, release_authorized):
+    base_url = model.get('base_url')
+    if not base_url:
+        return base_url
+    requested = str(model.get('model_requested') or '').lower()
+    if not requested.startswith(('claude-subscription/', 'codex-subscription/')):
+        return base_url
+    trimmed = base_url.rstrip('/')
+    suffix = '/v1' if trimmed.endswith('/v1') else ''
+    prefix = trimmed[:-3] if suffix else trimmed
+    rel_part = '/released' if release_authorized else ''
+    return '{}/provenance/{}{}{}'.format(prefix, provenance, rel_part, suffix or '/v1')
+
+
 def execute_call(call_spec, prompt):
     """Execute an explicitly frozen call, returning receipt/output/checker objects.
 
     A repeated terminal call reuses only immutable stored responses. Reserved or
     unknown calls never redispatch; persistence errors leave reservations intact.
     """
-    store, spec, trial, frozen, team, canonical = _context(call_spec, prompt)
+    store, spec, trial, frozen, team, canonical, release_authorized = _context(call_spec, prompt)
     call_id = call_spec['call_id']
     model = spec['model']
     structured = model['parameters'].get('structured_output', False)
@@ -387,7 +404,13 @@ def execute_call(call_spec, prompt):
     try:
         validate_parameters(model['provider'], model['max_output_tokens'], model['parameters']['temperature'],
                             model['parameters']['seed'], structured)
-        check_prerequisites(model['provider'])
+        if model['adapter'] == 'langchain':
+            check_prerequisites(model['provider'])
+        elif model['adapter'] == 'openai_http':
+            from benchmark_openai_http import check_http_prerequisites
+            check_http_prerequisites(model)
+        else:
+            _fail('configuration_invalid', 'model.adapter')
     except AdapterProblem as exc:
         _fail(_failure(exc), 'model')
     evidence = runner._case(frozen, trial)['evidence']
@@ -396,34 +419,70 @@ def execute_call(call_spec, prompt):
     if structured:
         # Guides decoding only; validate_stage_output below stays authoritative.
         options['response_schema'] = stage_output_schema(spec['stage_key'], evidence)
-    old = store.reserve_call(call_id, digest_bytes(canonical_bytes(spec)), spec)
-    if old is not None:
-        if old['status'] != 'completed':
-            _fail(old['failure_reason'], 'call')
-        output = decode_json(store.read_artifact(trial['trial_id'], old['response_artifact']))
-        validate_stage_output(output, spec['stage_key'], evidence)
-        checker = _checker(store, spec, trial, frozen, team, output, old, True)
-        return dict(receipt=old, output=output, checker=checker)
-    started = time.monotonic_ns()
-    receipt = _receipt(call_id, spec, frozen, team, _now())
-    raw = output = failure = None
-    rejected = {}
-    try:
-        with _isolated(model):
-            from langchain_adapter import invoke_response
-            response = invoke_response(canonical.decode('utf-8'), model['provider'], model['model_requested'],
-                                       model['base_url'], model['timeout_seconds'], **options)
-            receipt.update(_metadata(response, model))
-            # Identity first: a wrong model's output is never validated or retained.
-            if receipt['identity_status'] == 'reported_mismatch':
-                _fail('model_identity_mismatch')
-            raw, output = _response_bytes(response, receipt, receipt['max_output_bytes'], spec['stage_key'],
-                                          evidence, rejected)
-        receipt.update(status='completed', failure_reason=None)
-    except BaseException as exc:
-        failure = exc
-        reason = _failure(exc)
-        receipt.update(status='unknown' if reason in ('timeout', 'dispatch_interrupted') else 'failed', failure_reason=reason)
+    qstore_path = store.query_store_path(evidence['query_store']) if 'query_store' in evidence else None
+    if qstore_path is not None and model['adapter'] != 'openai_http':
+        _fail('query_store_requires_openai_http', 'model.adapter')
+    fallback_iocs = ()
+    if qstore_path is not None and 'intel.jsonl' in trial.get('public_artifacts', {}):
+        from benchmark_ioc import validate_ioc_feed_bytes
+        fallback_iocs = validate_ioc_feed_bytes(
+            store.read_artifact(trial['trial_id'], trial['public_artifacts']['intel.jsonl'])
+        )
+    from benchmark_query import QueryExecutor
+    with (QueryExecutor(qstore_path, evidence['query_store']['sha256'], fallback_iocs=fallback_iocs)
+          if qstore_path is not None else contextlib.nullcontext(None)) as qexec:
+        old = store.reserve_call(call_id, digest_bytes(canonical_bytes(spec)), spec)
+        if old is not None:
+            if old['status'] != 'completed':
+                _fail(old['failure_reason'], 'call')
+            output = decode_json(store.read_artifact(trial['trial_id'], old['response_artifact']))
+            validate_stage_output(output, spec['stage_key'], evidence)
+            checker = _checker(store, spec, trial, frozen, team, output, old, True)
+            return dict(receipt=old, output=output, checker=checker)
+        started = time.monotonic_ns()
+        receipt = _receipt(call_id, spec, frozen, team, _now())
+        raw = output = failure = query_summary = None
+        rejected = {}
+        try:
+            with _isolated(model):
+                provenance = runner._case(frozen, trial)['scenario']['provenance']
+                if model['adapter'] == 'openai_http':
+                    from benchmark_openai_http import invoke_openai_http
+                    try:
+                        response = invoke_openai_http(
+                            canonical.decode('utf-8'), model['provider'], model['model_requested'],
+                            model['base_url'], model['timeout_seconds'],
+                            expected_model_ids=model['expected_model_ids'],
+                            max_response_bytes=receipt['max_output_bytes'],
+                            query_executor=qexec, stage_key=spec['stage_key'],
+                            provenance=provenance, release_authorized=release_authorized,
+                            **options)
+                    finally:
+                        if qexec is not None:
+                            query_summary = qexec.summary()
+                else:
+                    from langchain_adapter import invoke_response
+                    lc_url = _langchain_base_url(model, provenance, release_authorized)
+                    response = invoke_response(canonical.decode('utf-8'), model['provider'], model['model_requested'],
+                                               lc_url, model['timeout_seconds'], **options)
+                receipt.update(_metadata(response, model))
+                # Identity first: a wrong model's output is never validated or retained.
+                if receipt['identity_status'] == 'reported_mismatch':
+                    _fail('model_identity_mismatch')
+                raw, output = _response_bytes(response, receipt, receipt['max_output_bytes'], spec['stage_key'],
+                                              evidence, rejected)
+            receipt.update(status='completed', failure_reason=None)
+        except BaseException as exc:
+            failure = exc
+            reason = _failure(exc)
+            receipt.update(status='unknown' if reason in ('timeout', 'dispatch_interrupted') else 'failed', failure_reason=reason)
+    if query_summary is not None:
+        receipt['query_usage'] = {
+            key: query_summary[key]
+            for key in ('queries_executed', 'rows_returned_total', 'bytes_returned_total', 'ioc_lookups')
+        }
+        if query_summary['queries_executed'] > 0:
+            receipt['query_audit'] = store.write_artifact(trial['trial_id'], 'query-audit', canonical_bytes(query_summary))
     # Only structurally validated public text may be retained as a response,
     # never provider exceptions, arbitrary SDK objects or hidden reasoning.
     if raw is not None and output is not None:

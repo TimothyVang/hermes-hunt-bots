@@ -1,0 +1,3600 @@
+{
+ "schema_version": 1,
+ "version": "bots-fields-1",
+ "note": "Splunk BOTS v1/v2/v3 sourcetype -> parser and field allowlist for benchmark_import_bots.py. events: {type key or \"*\": {field path: transform}}; \"prefix.*\" covers every leaf under prefix and \"*\" every other leaf. events_from reuses the OTRF channel allowlist (otrf:<channel>) or the attack_data format allowlist (attackdata:<format>); listed events override it. metadata_only: fields kept for a parsed record whose type has no entry. Unlisted fields are dropped and counted; unknown sourcetypes and unparsed records are metadata-only events. hex_argv: json field paths holding an audit-style argv (hex-encoded words are decoded before sanitizing).",
+ "sourcetypes": {
+  "ActiveDirectory": {
+   "parser": "metadata",
+   "source": "win-activedirectory",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Linux:SELinuxConfig": {
+   "parser": "kv",
+   "source": "linux-selinuxconfig",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "MSAD:NT6:Health": {
+   "parser": "metadata",
+   "source": "win-msad-nt6-health",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "MSAD:NT6:SiteInfo": {
+   "parser": "metadata",
+   "source": "win-msad-nt6-siteinfo",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:CPU": {
+   "parser": "metadata",
+   "source": "win-perfmon-cpu",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:LogicalDisk": {
+   "parser": "metadata",
+   "source": "win-perfmon-logicaldisk",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:Memory": {
+   "parser": "metadata",
+   "source": "win-perfmon-memory",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:NTDS": {
+   "parser": "metadata",
+   "source": "win-perfmon-ntds",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:Network": {
+   "parser": "metadata",
+   "source": "win-perfmon-network",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:Network_Interface": {
+   "parser": "metadata",
+   "source": "win-perfmon-network-interface",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:PhysicalDisk": {
+   "parser": "metadata",
+   "source": "win-perfmon-physicaldisk",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:Process": {
+   "parser": "metadata",
+   "source": "win-perfmon-process",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:Processor": {
+   "parser": "metadata",
+   "source": "win-perfmon-processor",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Perfmon:System": {
+   "parser": "metadata",
+   "source": "win-perfmon-system",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "PerfmonMk:Process": {
+   "parser": "metadata",
+   "source": "win-perfmonmk-process",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Powershell:ScriptExecutionSummary": {
+   "parser": "metadata",
+   "source": "win-powershell-scriptexecutionsummary",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "Script:GetEndpointInfo": {
+   "parser": "kv",
+   "source": "windows-endpoint-info",
+   "telemetry": null,
+   "os": "windows",
+   "events": {
+    "*": {
+     "host_tz": "keep",
+     "local_ip": "ip",
+     "public_ip": "ip",
+     "ip_city": "keep",
+     "ip_country": "keep",
+     "ip_org": "keep"
+    }
+   }
+  },
+  "Script:InstalledApps": {
+   "parser": "text",
+   "source": "windows-installed-apps",
+   "telemetry": null,
+   "os": "windows",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "Script:ListeningPorts": {
+   "parser": "kv",
+   "source": "windows-listening-ports",
+   "telemetry": null,
+   "os": "windows",
+   "events": {
+    "*": {
+     "transport": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep"
+    }
+   }
+  },
+  "Unix:ListeningPorts": {
+   "parser": "kv",
+   "source": "unix-listeningports",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:SSHDConfig": {
+   "parser": "kv",
+   "source": "unix-sshdconfig",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:Service": {
+   "parser": "kv",
+   "source": "unix-service",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:Update": {
+   "parser": "kv",
+   "source": "unix-update",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:Uptime": {
+   "parser": "kv",
+   "source": "unix-uptime",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:UserAccounts": {
+   "parser": "kv",
+   "source": "unix-useraccounts",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "Unix:Version": {
+   "parser": "kv",
+   "source": "unix-version",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "app": "keep",
+     "dest_ip": "ip",
+     "dest_port": "keep",
+     "pid": "keep",
+     "user": "linux-user",
+     "transport": "keep",
+     "type": "keep",
+     "runlevel3": "keep",
+     "package": "keep",
+     "SystemUpTime": "keep",
+     "os_release": "keep",
+     "os_name": "keep",
+     "file_hash": "keep",
+     "selinux": "keep",
+     "user_id": "keep",
+     "user_group_id": "keep",
+     "home": "linux-path",
+     "shell": "keep"
+    }
+   }
+  },
+  "WebLogic_Access_Combined": {
+   "parser": "columns",
+   "source": "weblogic-access",
+   "telemetry": null,
+   "os": "linux",
+   "split": "tab",
+   "columns": [
+    "date",
+    "time",
+    "method",
+    "session",
+    "status_code_0",
+    "uri",
+    "status",
+    "bytes"
+   ],
+   "events": {
+    "*": {
+     "method": "keep",
+     "uri": "content",
+     "status": "keep",
+     "bytes": "keep"
+    }
+   }
+  },
+  "WinEventLog:Application": {
+   "parser": "winevent-classic",
+   "source": "windows-application",
+   "telemetry": null,
+   "os": "windows",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content"
+    }
+   }
+  },
+  "WinEventLog:Directory-Service": {
+   "parser": "winevent-classic",
+   "source": "windows-directory-service",
+   "telemetry": null,
+   "os": "windows",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content",
+     "Sid": "sid"
+    }
+   }
+  },
+  "WinEventLog:Microsoft-Windows-AppLocker/EXE and DLL": {
+   "parser": "winevent-classic",
+   "source": "windows-applocker-exe",
+   "telemetry": null,
+   "os": "windows",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content",
+     "Sid": "sid"
+    }
+   }
+  },
+  "WinEventLog:Microsoft-Windows-AppLocker/Packaged app-Execution": {
+   "parser": "winevent-classic",
+   "source": "windows-applocker-app",
+   "telemetry": null,
+   "os": "windows",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content",
+     "Sid": "sid"
+    }
+   }
+  },
+  "WinEventLog:Microsoft-Windows-PowerShell/Operational": {
+   "parser": "winevent-classic",
+   "source": "windows-powershell",
+   "telemetry": "windows-security",
+   "os": "windows",
+   "events_from": "otrf:Microsoft-Windows-PowerShell/Operational",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "4104": {
+     "ScriptBlockText": "content",
+     "MessageNumber": "keep",
+     "MessageTotal": "keep",
+     "ScriptBlockId": "guid",
+     "Path": "path",
+     "Sid": "sid"
+    },
+    "4103": {
+     "Payload": "content",
+     "ContextInfo": "content",
+     "Sid": "sid"
+    },
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content",
+     "Sid": "sid"
+    }
+   }
+  },
+  "WinEventLog:Security": {
+   "parser": "winevent-classic",
+   "source": "windows-security",
+   "telemetry": "windows-security",
+   "os": "windows",
+   "events_from": "otrf:Security",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "4720": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain",
+     "SamAccountName": "user",
+     "DisplayName": "user",
+     "UserPrincipalName": "account",
+     "UserAccountControl": "keep",
+     "NewUacValue": "keep",
+     "PrimaryGroupId": "keep",
+     "PrivilegeList": "keep"
+    },
+    "4722": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain"
+    },
+    "4726": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain"
+    },
+    "4724": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain"
+    },
+    "4740": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain"
+    },
+    "4767": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "TargetSid": "sid",
+     "TargetUserSid": "sid",
+     "TargetUserName": "user",
+     "TargetDomainName": "domain"
+    },
+    "4660": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "ObjectServer": "keep",
+     "HandleId": "keep",
+     "ProcessId": "keep",
+     "ProcessName": "basename"
+    },
+    "1102": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep"
+    },
+    "4732": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "MemberSid": "sid",
+     "MemberName": "user",
+     "TargetSid": "sid",
+     "TargetUserName": "keep",
+     "TargetDomainName": "domain"
+    },
+    "4728": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "MemberSid": "sid",
+     "MemberName": "user",
+     "TargetSid": "sid",
+     "TargetUserName": "keep",
+     "TargetDomainName": "domain"
+    },
+    "4756": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "MemberSid": "sid",
+     "MemberName": "user",
+     "TargetSid": "sid",
+     "TargetUserName": "keep",
+     "TargetDomainName": "domain"
+    },
+    "4663": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "ObjectServer": "keep",
+     "ObjectType": "keep",
+     "ObjectName": "path",
+     "HandleId": "keep",
+     "AccessList": "keep",
+     "AccessMask": "keep",
+     "ProcessId": "keep",
+     "ProcessName": "basename"
+    },
+    "4689": {
+     "SubjectUserSid": "sid",
+     "SubjectUserName": "user",
+     "SubjectDomainName": "domain",
+     "SubjectLogonId": "keep",
+     "ProcessId": "keep",
+     "ProcessName": "basename",
+     "Status": "keep"
+    },
+    "5156": {
+     "ProcessID": "keep",
+     "Application": "path",
+     "Direction": "keep",
+     "SourceAddress": "ip",
+     "SourcePort": "keep",
+     "DestAddress": "ip",
+     "DestPort": "keep",
+     "Protocol": "keep",
+     "LayerName": "keep"
+    },
+    "5157": {
+     "ProcessID": "keep",
+     "Application": "path",
+     "Direction": "keep",
+     "SourceAddress": "ip",
+     "SourcePort": "keep",
+     "DestAddress": "ip",
+     "DestPort": "keep",
+     "Protocol": "keep",
+     "LayerName": "keep"
+    }
+   }
+  },
+  "WinEventLog:System": {
+   "parser": "winevent-classic",
+   "source": "windows-system",
+   "telemetry": null,
+   "os": "windows",
+   "events_from": "otrf:System",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   },
+   "events": {
+    "*": {
+     "SourceName": "keep",
+     "Level": "keep",
+     "Task": "keep",
+     "Opcode": "keep",
+     "Keywords": "keep",
+     "Message": "content"
+    }
+   }
+  },
+  "WinHostMon": {
+   "parser": "kv",
+   "source": "windows-hostmon",
+   "telemetry": null,
+   "os": "windows",
+   "type_field": "Type",
+   "events": {
+    "Process": {
+     "Name": "keep",
+     "ProcessId": "keep",
+     "ParentProcessId": "keep",
+     "Path": "path",
+     "CommandLine": "content",
+     "StartTime": "keep",
+     "Status": "keep"
+    },
+    "Service": {
+     "Name": "keep",
+     "DisplayName": "keep",
+     "Path": "content",
+     "ServiceAccount": "account",
+     "StartMode": "keep",
+     "State": "keep",
+     "Status": "keep"
+    },
+    "OperatingSystem": {
+     "OS": "keep",
+     "Architecture": "keep",
+     "Version": "keep",
+     "BuildNumber": "keep",
+     "LastBootUpTime": "keep"
+    },
+    "Computer": {
+     "Manufacturer": "keep",
+     "Model": "keep",
+     "Status": "keep"
+    },
+    "*": {
+     "Name": "keep",
+     "Status": "keep"
+    }
+   }
+  },
+  "WinRegistry": {
+   "parser": "kv",
+   "source": "windows-registry",
+   "telemetry": null,
+   "os": "windows",
+   "type_field": "registry_type",
+   "events": {
+    "*": {
+     "event_status": "keep",
+     "pid": "keep",
+     "process_image": "path",
+     "registry_type": "keep",
+     "key_path": "path",
+     "data_type": "keep",
+     "data": "content"
+    }
+   }
+  },
+  "WindowsUpdateLog": {
+   "parser": "metadata",
+   "source": "win-windowsupdatelog",
+   "telemetry": null,
+   "os": "windows"
+  },
+  "XmlWinEventLog:Microsoft-Windows-Sysmon/Operational": {
+   "parser": "winevent-xml",
+   "source": "sysmon",
+   "telemetry": "sysmon",
+   "os": "windows",
+   "events_from": "otrf:Microsoft-Windows-Sysmon/Operational",
+   "metadata_only": {
+    "SourceName": "keep",
+    "Level": "keep",
+    "Task": "keep",
+    "Opcode": "keep",
+    "Keywords": "keep"
+   }
+  },
+  "access_combined": {
+   "parser": "columns",
+   "source": "web-access",
+   "telemetry": null,
+   "os": "linux",
+   "split": "space-quoted",
+   "columns": [
+    "clientip",
+    "ident",
+    "user",
+    "time",
+    "request",
+    "status",
+    "bytes",
+    "referer",
+    "useragent"
+   ],
+   "events": {
+    "*": {
+     "clientip": "ip",
+     "user": "user",
+     "request": "content",
+     "status": "keep",
+     "bytes": "keep",
+     "referer": "content",
+     "useragent": "content"
+    }
+   }
+  },
+  "alternatives": {
+   "parser": "text",
+   "source": "text-alternatives",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "amazon-ssm-agent": {
+   "parser": "text",
+   "source": "text-amazon-ssm-agent",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "amazon-ssm-agent-too_small": {
+   "parser": "text",
+   "source": "text-amazon-ssm-agent-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "apache:error": {
+   "parser": "text",
+   "source": "text-apache-error",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "apache_error": {
+   "parser": "text",
+   "source": "text-apache-error-2",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "auditd": {
+   "parser": "auditd",
+   "source": "auditd",
+   "telemetry": "linux-audit",
+   "os": "linux",
+   "events_from": "attackdata:linux-auditd"
+  },
+  "aws:cloudtrail": {
+   "parser": "json",
+   "source": "cloudtrail",
+   "telemetry": "cloud-audit",
+   "os": "cloud",
+   "aws": true,
+   "type_field": "eventType",
+   "record_id_field": "eventID",
+   "events_from": "attackdata:aws-cloudtrail"
+  },
+  "aws:cloudwatch": {
+   "parser": "metadata",
+   "source": "meta-aws-cloudwatch",
+   "telemetry": null,
+   "os": null
+  },
+  "aws:cloudwatch:guardduty": {
+   "parser": "json",
+   "source": "aws-guardduty",
+   "telemetry": "cloud-audit",
+   "os": "cloud",
+   "aws": true,
+   "events": {
+    "*": {
+     "detail-type": "keep",
+     "region": "keep",
+     "account": "aws-account",
+     "detail.type": "keep",
+     "detail.title": "content",
+     "detail.description": "content",
+     "detail.severity": "keep",
+     "detail.service.action": "content",
+     "detail.resource": "content"
+    }
+   }
+  },
+  "aws:cloudwatchlogs": {
+   "parser": "text",
+   "source": "text-aws-cloudwatchlogs",
+   "telemetry": null,
+   "os": "cloud",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   },
+   "aws": true
+  },
+  "aws:cloudwatchlogs:vpcflow": {
+   "parser": "columns",
+   "source": "vpc-flow",
+   "telemetry": "flow",
+   "os": "cloud",
+   "aws": true,
+   "split": "space",
+   "columns": [
+    "version",
+    "account_id",
+    "interface_id",
+    "srcaddr",
+    "dstaddr",
+    "srcport",
+    "dstport",
+    "protocol",
+    "packets",
+    "bytes",
+    "start",
+    "end",
+    "action",
+    "log_status"
+   ],
+   "events": {
+    "*": {
+     "account_id": "aws-account",
+     "interface_id": "aws-resource",
+     "srcaddr": "ip",
+     "dstaddr": "ip",
+     "srcport": "keep",
+     "dstport": "keep",
+     "protocol": "keep",
+     "packets": "keep",
+     "bytes": "keep",
+     "start": "keep",
+     "end": "keep",
+     "action": "keep",
+     "log_status": "keep"
+    }
+   }
+  },
+  "aws:config:rule": {
+   "parser": "metadata",
+   "source": "meta-aws-config-rule",
+   "telemetry": null,
+   "os": null
+  },
+  "aws:description": {
+   "parser": "json",
+   "source": "aws-description",
+   "telemetry": null,
+   "os": "cloud",
+   "aws": true,
+   "events": {
+    "*": {
+     "account_id": "aws-account",
+     "owner_id": "aws-account",
+     "region": "keep",
+     "id": "aws-resource",
+     "vpc_id": "aws-resource",
+     "name": "aws-resource",
+     "Name": "aws-resource",
+     "state": "keep",
+     "status": "keep",
+     "description": "content",
+     "UserName": "aws-user",
+     "UserId": "aws-principal",
+     "Arn": "aws-arn",
+     "Path": "keep",
+     "CreateDate": "keep",
+     "AccessKeys": "content",
+     "CreationDate": "keep",
+     "cidr_block": "keep",
+     "private_ip_address": "ip",
+     "ip_address": "ip",
+     "FunctionName": "aws-resource",
+     "Role": "aws-arn",
+     "Runtime": "keep",
+     "LastModified": "keep",
+     "rules": "content",
+     "rules_egress": "content",
+     "instances": "content",
+     "platform": "keep",
+     "architecture": "keep",
+     "TagSet": "content"
+    }
+   }
+  },
+  "aws:elb:accesslogs": {
+   "parser": "columns",
+   "source": "aws-elb",
+   "telemetry": null,
+   "os": "cloud",
+   "aws": true,
+   "split": "space-quoted",
+   "columns": [
+    "type",
+    "time",
+    "elb",
+    "client",
+    "target",
+    "request_processing_time",
+    "target_processing_time",
+    "response_processing_time",
+    "elb_status_code",
+    "target_status_code",
+    "received_bytes",
+    "sent_bytes",
+    "request",
+    "user_agent",
+    "ssl_cipher",
+    "ssl_protocol",
+    "target_group_arn",
+    "trace_id"
+   ],
+   "events": {
+    "*": {
+     "type": "keep",
+     "elb": "aws-resource",
+     "client": "content",
+     "target": "content",
+     "elb_status_code": "keep",
+     "target_status_code": "keep",
+     "received_bytes": "keep",
+     "sent_bytes": "keep",
+     "request": "content",
+     "user_agent": "content"
+    }
+   }
+  },
+  "aws:rds:audit": {
+   "parser": "columns",
+   "source": "aws-rds-audit",
+   "telemetry": null,
+   "os": "cloud",
+   "split": "csv",
+   "columns": [
+    "timestamp",
+    "serverhost",
+    "username",
+    "host",
+    "connectionid",
+    "queryid",
+    "operation",
+    "database",
+    "object",
+    "retcode"
+   ],
+   "events": {
+    "*": {
+     "serverhost": "host",
+     "username": "user",
+     "host": "content",
+     "connectionid": "keep",
+     "operation": "keep",
+     "database": "keep",
+     "object": "content",
+     "retcode": "keep"
+    }
+   }
+  },
+  "aws:rds:error": {
+   "parser": "text",
+   "source": "text-aws-rds-error",
+   "telemetry": null,
+   "os": "cloud",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "aws:s3:accesslogs": {
+   "parser": "columns",
+   "source": "aws-s3-access",
+   "telemetry": "cloud-audit",
+   "os": "cloud",
+   "aws": true,
+   "split": "space-quoted",
+   "columns": [
+    "bucket_owner",
+    "bucket",
+    "time",
+    "remote_ip",
+    "requester",
+    "request_id",
+    "operation",
+    "key",
+    "request_uri",
+    "http_status",
+    "error_code",
+    "bytes_sent",
+    "object_size",
+    "total_time",
+    "turn_around_time",
+    "referrer",
+    "user_agent",
+    "version_id"
+   ],
+   "events": {
+    "*": {
+     "bucket_owner": "opaque",
+     "bucket": "aws-resource",
+     "remote_ip": "aws-source",
+     "requester": "content",
+     "operation": "keep",
+     "key": "content",
+     "request_uri": "content",
+     "http_status": "keep",
+     "error_code": "keep",
+     "bytes_sent": "keep",
+     "object_size": "keep",
+     "user_agent": "content"
+    }
+   }
+  },
+  "bandwidth": {
+   "parser": "metadata",
+   "source": "meta-bandwidth",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "bash_history": {
+   "parser": "text",
+   "source": "text-bash-history",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "bootstrap": {
+   "parser": "text",
+   "source": "text-bootstrap",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "cisco:asa": {
+   "parser": "cisco-asa",
+   "source": "cisco-asa",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "events": {
+    "*": {
+     "asa_level": "keep",
+     "message_id": "keep",
+     "message": "content"
+    }
+   }
+  },
+  "cloud-init": {
+   "parser": "text",
+   "source": "text-cloud-init",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "cloud-init-output": {
+   "parser": "text",
+   "source": "text-cloud-init-output",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "code42:api": {
+   "parser": "metadata",
+   "source": "meta-code42-api",
+   "telemetry": null,
+   "os": null
+  },
+  "code42:computer": {
+   "parser": "metadata",
+   "source": "meta-code42-computer",
+   "telemetry": null,
+   "os": null
+  },
+  "code42:org": {
+   "parser": "metadata",
+   "source": "meta-code42-org",
+   "telemetry": null,
+   "os": null
+  },
+  "code42:security": {
+   "parser": "json",
+   "source": "code42-security",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "eventType": "keep",
+     "formattedTimestamp": "keep",
+     "deviceRemoteAddress": "ip",
+     "deviceAddress": "ip",
+     "files": "content",
+     "processName": "content",
+     "processOwner": "user",
+     "fileStats.*": "keep",
+     "cloudStorageProvider.*": "content",
+     "detectionDevice.*": "content",
+     "ruleName": "content"
+    }
+   }
+  },
+  "code42:user": {
+   "parser": "json",
+   "source": "code42-user",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "email": "account",
+     "username": "account",
+     "active": "keep",
+     "blocked": "keep",
+     "status": "keep",
+     "modificationDate": "keep"
+    }
+   }
+  },
+  "collectd": {
+   "parser": "metadata",
+   "source": "meta-collectd",
+   "telemetry": null,
+   "os": null
+  },
+  "config_file": {
+   "parser": "text",
+   "source": "text-config-file",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "cpu": {
+   "parser": "metadata",
+   "source": "meta-cpu",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "cron-too_small": {
+   "parser": "text",
+   "source": "text-cron-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "csp-violation": {
+   "parser": "json",
+   "source": "csp-violation",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "csp-report.document-uri": "content",
+     "csp-report.referrer": "content",
+     "csp-report.violated-directive": "keep",
+     "csp-report.blocked-uri": "content",
+     "csp-report.source-file": "content",
+     "csp-report.line-number": "keep",
+     "csp-report.script-sample": "content"
+    }
+   }
+  },
+  "df": {
+   "parser": "metadata",
+   "source": "meta-df",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "dmesg": {
+   "parser": "text",
+   "source": "text-dmesg",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "dpkg": {
+   "parser": "text",
+   "source": "text-dpkg",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "error-too_small": {
+   "parser": "text",
+   "source": "text-error-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "errors": {
+   "parser": "text",
+   "source": "text-errors",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "errors-too_small": {
+   "parser": "text",
+   "source": "text-errors-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "ess_content_importer": {
+   "parser": "metadata",
+   "source": "meta-ess-content-importer",
+   "telemetry": null,
+   "os": null
+  },
+  "fgt_event": {
+   "parser": "kv",
+   "source": "fgt-event",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "type_field": "subtype",
+   "events": {
+    "*": {
+     "logid": "keep",
+     "type": "keep",
+     "subtype": "keep",
+     "level": "keep",
+     "action": "keep",
+     "srcip": "ip",
+     "srcport": "keep",
+     "dstip": "ip",
+     "dstport": "keep",
+     "proto": "keep",
+     "service": "keep",
+     "app": "keep",
+     "appcat": "keep",
+     "sentbyte": "keep",
+     "rcvdbyte": "keep",
+     "policyid": "keep",
+     "srcintf": "keep",
+     "dstintf": "keep",
+     "dstcountry": "keep",
+     "transip": "ip",
+     "transport": "keep",
+     "duration": "keep",
+     "sessionid": "keep",
+     "eventtype": "keep",
+     "hostname": "content",
+     "url": "content",
+     "catdesc": "keep",
+     "msg": "content",
+     "virus": "keep",
+     "filename": "content",
+     "attack": "keep",
+     "severity": "keep",
+     "direction": "keep",
+     "logdesc": "keep",
+     "user": "user",
+     "ref": "content",
+     "quarskip": "keep",
+     "analyticscksum": "keep",
+     "dtype": "keep",
+     "utmaction": "keep"
+    }
+   }
+  },
+  "fgt_traffic": {
+   "parser": "kv",
+   "source": "fgt-traffic",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "type_field": "subtype",
+   "events": {
+    "*": {
+     "logid": "keep",
+     "type": "keep",
+     "subtype": "keep",
+     "level": "keep",
+     "action": "keep",
+     "srcip": "ip",
+     "srcport": "keep",
+     "dstip": "ip",
+     "dstport": "keep",
+     "proto": "keep",
+     "service": "keep",
+     "app": "keep",
+     "appcat": "keep",
+     "sentbyte": "keep",
+     "rcvdbyte": "keep",
+     "policyid": "keep",
+     "srcintf": "keep",
+     "dstintf": "keep",
+     "dstcountry": "keep",
+     "transip": "ip",
+     "transport": "keep",
+     "duration": "keep",
+     "sessionid": "keep",
+     "eventtype": "keep",
+     "hostname": "content",
+     "url": "content",
+     "catdesc": "keep",
+     "msg": "content",
+     "virus": "keep",
+     "filename": "content",
+     "attack": "keep",
+     "severity": "keep",
+     "direction": "keep",
+     "logdesc": "keep",
+     "user": "user",
+     "ref": "content",
+     "quarskip": "keep",
+     "analyticscksum": "keep",
+     "dtype": "keep",
+     "utmaction": "keep"
+    }
+   }
+  },
+  "fgt_utm": {
+   "parser": "kv",
+   "source": "fgt-utm",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "type_field": "subtype",
+   "events": {
+    "*": {
+     "logid": "keep",
+     "type": "keep",
+     "subtype": "keep",
+     "level": "keep",
+     "action": "keep",
+     "srcip": "ip",
+     "srcport": "keep",
+     "dstip": "ip",
+     "dstport": "keep",
+     "proto": "keep",
+     "service": "keep",
+     "app": "keep",
+     "appcat": "keep",
+     "sentbyte": "keep",
+     "rcvdbyte": "keep",
+     "policyid": "keep",
+     "srcintf": "keep",
+     "dstintf": "keep",
+     "dstcountry": "keep",
+     "transip": "ip",
+     "transport": "keep",
+     "duration": "keep",
+     "sessionid": "keep",
+     "eventtype": "keep",
+     "hostname": "content",
+     "url": "content",
+     "catdesc": "keep",
+     "msg": "content",
+     "virus": "keep",
+     "filename": "content",
+     "attack": "keep",
+     "severity": "keep",
+     "direction": "keep",
+     "logdesc": "keep",
+     "user": "user",
+     "ref": "content",
+     "quarskip": "keep",
+     "analyticscksum": "keep",
+     "dtype": "keep",
+     "utmaction": "keep"
+    }
+   }
+  },
+  "hardware": {
+   "parser": "metadata",
+   "source": "meta-hardware",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "history-2": {
+   "parser": "text",
+   "source": "text-history-2",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "iis": {
+   "parser": "columns",
+   "source": "iis",
+   "telemetry": null,
+   "os": "windows",
+   "split": "space",
+   "columns": [
+    "date",
+    "time",
+    "s_ip",
+    "cs_method",
+    "cs_uri_stem",
+    "cs_uri_query",
+    "s_port",
+    "cs_username",
+    "c_ip",
+    "cs_user_agent",
+    "cs_referer",
+    "sc_status",
+    "sc_substatus",
+    "sc_win32_status",
+    "time_taken"
+   ],
+   "events": {
+    "*": {
+     "s_ip": "ip",
+     "cs_method": "keep",
+     "cs_uri_stem": "content",
+     "cs_uri_query": "content",
+     "s_port": "keep",
+     "cs_username": "user",
+     "c_ip": "ip",
+     "cs_user_agent": "content",
+     "cs_referer": "content",
+     "sc_status": "keep",
+     "sc_substatus": "keep",
+     "sc_win32_status": "keep",
+     "time_taken": "keep"
+    }
+   }
+  },
+  "interfaces": {
+   "parser": "metadata",
+   "source": "meta-interfaces",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "iostat": {
+   "parser": "metadata",
+   "source": "meta-iostat",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "lastlog": {
+   "parser": "text",
+   "source": "text-lastlog",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "linux_audit": {
+   "parser": "auditd",
+   "source": "linux-audit",
+   "telemetry": "linux-audit",
+   "os": "linux",
+   "events_from": "attackdata:linux-auditd"
+  },
+  "linux_secure": {
+   "parser": "syslog",
+   "source": "linux-secure",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "hostname": "host",
+     "program": "keep",
+     "pid": "keep",
+     "message": "content"
+    }
+   }
+  },
+  "localhost-5": {
+   "parser": "text",
+   "source": "text-localhost-5",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "lsof": {
+   "parser": "text",
+   "source": "text-lsof",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "maillog-too_small": {
+   "parser": "text",
+   "source": "text-maillog-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "ms:aad:audit": {
+   "parser": "json",
+   "source": "aad-audit",
+   "telemetry": "saas-audit",
+   "os": "cloud",
+   "record_id_field": "id",
+   "type_field": "activity",
+   "events": {
+    "*": {
+     "activity": "keep",
+     "activityDate": "keep",
+     "activityType": "keep",
+     "activityResultStatus": "keep",
+     "activityResultDescription": "content",
+     "activityOperationType": "keep",
+     "actor.userPrincipalName": "account",
+     "actor.ipAddress": "content",
+     "actor.name": "content",
+     "targets": "content",
+     "additionalDetails": "content",
+     "category": "keep",
+     "loggedByService": "keep"
+    }
+   }
+  },
+  "ms:aad:signin": {
+   "parser": "json",
+   "source": "aad-signin",
+   "telemetry": "identity-audit",
+   "os": "cloud",
+   "record_id_field": "id",
+   "events": {
+    "*": {
+     "userPrincipalName": "account",
+     "userDisplayName": "user",
+     "appDisplayName": "keep",
+     "ipAddress": "ip",
+     "clientAppUsed": "keep",
+     "signinErrorCode": "keep",
+     "failureReason": "keep",
+     "mfaRequired": "keep",
+     "location.city": "keep",
+     "location.state": "keep",
+     "location.country": "keep",
+     "deviceInformation": "content",
+     "loginStatus": "keep",
+     "signinDateTime": "keep",
+     "resourceDisplayName": "keep",
+     "conditionalAccessStatus": "keep"
+    }
+   }
+  },
+  "ms:o365:management": {
+   "parser": "json",
+   "source": "o365-management",
+   "telemetry": "saas-audit",
+   "os": "cloud",
+   "type_field": "Operation",
+   "record_id_field": "Id",
+   "events": {
+    "*": {
+     "Operation": "keep",
+     "Workload": "keep",
+     "RecordType": "keep",
+     "ResultStatus": "keep",
+     "UserId": "account",
+     "UserType": "keep",
+     "ClientIP": "ip",
+     "ActorIpAddress": "ip",
+     "ClientIPAddress": "ip",
+     "ObjectId": "content",
+     "ItemType": "keep",
+     "EventSource": "keep",
+     "SourceFileName": "content",
+     "SourceFileExtension": "keep",
+     "SourceRelativeUrl": "content",
+     "SiteUrl": "content",
+     "UserAgent": "content",
+     "Parameters": "content",
+     "ModifiedProperties": "content",
+     "ExtendedProperties": "content",
+     "Actor": "content",
+     "Target": "content",
+     "Item": "content",
+     "AffectedItems": "content",
+     "Folder": "content",
+     "DestFolder": "content",
+     "LogonType": "keep",
+     "MailboxOwnerUPN": "account",
+     "ApplicationDisplayName": "keep",
+     "TargetUserOrGroupName": "content",
+     "TargetUserOrGroupType": "keep",
+     "EventData": "content",
+     "ExternalAccess": "keep",
+     "OrganizationName": "content",
+     "LogonError": "keep"
+    }
+   }
+  },
+  "ms:o365:reporting:messagetrace": {
+   "parser": "json",
+   "source": "o365-messagetrace",
+   "telemetry": "saas-audit",
+   "os": "cloud",
+   "record_id_field": "MessageTraceId",
+   "events": {
+    "*": {
+     "SenderAddress": "content",
+     "RecipientAddress": "content",
+     "Subject": "content",
+     "Status": "keep",
+     "FromIP": "ip",
+     "ToIP": "ip",
+     "Size": "keep",
+     "DateReceived": "keep",
+     "MessageId": "content"
+    }
+   }
+  },
+  "mysql:connection:stats": {
+   "parser": "metadata",
+   "source": "meta-mysql-connection-stats",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:database": {
+   "parser": "metadata",
+   "source": "meta-mysql-database",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:errorLog": {
+   "parser": "text",
+   "source": "text-mysql-errorlog",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "mysql:instance:stats": {
+   "parser": "metadata",
+   "source": "meta-mysql-instance-stats",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:server:stats": {
+   "parser": "metadata",
+   "source": "meta-mysql-server-stats",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:status": {
+   "parser": "metadata",
+   "source": "meta-mysql-status",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:tableStatus": {
+   "parser": "metadata",
+   "source": "meta-mysql-tablestatus",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:table_io_waits_summary_by_index_usage": {
+   "parser": "metadata",
+   "source": "meta-mysql-table-io-waits-summary-by-index-usage",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:transaction:details": {
+   "parser": "kv",
+   "source": "mysql-transactions",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "database_name": "keep",
+     "EVENT_ID": "keep",
+     "Duration": "keep",
+     "SQL_TEXT": "content"
+    }
+   }
+  },
+  "mysql:transaction:stats": {
+   "parser": "metadata",
+   "source": "meta-mysql-transaction-stats",
+   "telemetry": null,
+   "os": null
+  },
+  "mysql:user": {
+   "parser": "kv",
+   "source": "mysql-users",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "database_name": "keep",
+     "user": "user",
+     "user_host": "content"
+    }
+   }
+  },
+  "mysql:variables": {
+   "parser": "metadata",
+   "source": "meta-mysql-variables",
+   "telemetry": null,
+   "os": null
+  },
+  "mysqld-8": {
+   "parser": "text",
+   "source": "text-mysqld-8",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "nessus:scan": {
+   "parser": "json",
+   "source": "nessus",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "plugin_id": "keep",
+     "plugin_family": "keep",
+     "host-ip": "ip",
+     "hostname": "content",
+     "scan_type": "keep",
+     "severity_index": "keep"
+    }
+   }
+  },
+  "netstat": {
+   "parser": "text",
+   "source": "text-netstat",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "o365:management:activity": {
+   "parser": "json",
+   "source": "o365-activity",
+   "telemetry": "saas-audit",
+   "os": "cloud",
+   "type_field": "Operation",
+   "record_id_field": "Id",
+   "events": {
+    "*": {
+     "Operation": "keep",
+     "Workload": "keep",
+     "RecordType": "keep",
+     "ResultStatus": "keep",
+     "UserId": "account",
+     "UserType": "keep",
+     "ClientIP": "ip",
+     "ActorIpAddress": "ip",
+     "ClientIPAddress": "ip",
+     "ObjectId": "content",
+     "ItemType": "keep",
+     "EventSource": "keep",
+     "SourceFileName": "content",
+     "SourceFileExtension": "keep",
+     "SourceRelativeUrl": "content",
+     "SiteUrl": "content",
+     "UserAgent": "content",
+     "Parameters": "content",
+     "ModifiedProperties": "content",
+     "ExtendedProperties": "content",
+     "Actor": "content",
+     "Target": "content",
+     "Item": "content",
+     "AffectedItems": "content",
+     "Folder": "content",
+     "DestFolder": "content",
+     "LogonType": "keep",
+     "MailboxOwnerUPN": "account",
+     "ApplicationDisplayName": "keep",
+     "TargetUserOrGroupName": "content",
+     "TargetUserOrGroupType": "keep",
+     "EventData": "content",
+     "ExternalAccess": "keep",
+     "OrganizationName": "content",
+     "LogonError": "keep"
+    }
+   }
+  },
+  "openPorts": {
+   "parser": "text",
+   "source": "text-openports",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "osquery:info": {
+   "parser": "text",
+   "source": "text-osquery-info",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "osquery:results": {
+   "parser": "json",
+   "source": "osquery",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "name": "keep",
+     "action": "keep",
+     "hostIdentifier": "host",
+     "calendarTime": "keep",
+     "unixTime": "keep",
+     "decorations.username": "user",
+     "columns.*": "content",
+     "columns.username": "user",
+     "columns.user": "user",
+     "columns.uid": "keep",
+     "columns.gid": "keep",
+     "columns.pid": "keep",
+     "columns.parent": "keep",
+     "columns.local_address": "ip",
+     "columns.remote_address": "ip",
+     "columns.address": "ip",
+     "columns.local_port": "keep",
+     "columns.remote_port": "keep",
+     "columns.port": "keep",
+     "columns.md5": "keep",
+     "columns.sha1": "keep",
+     "columns.sha256": "keep",
+     "columns.hostname": "host",
+     "columns.host": "content",
+     "columns.time": "keep",
+     "columns.mtime": "keep",
+     "columns.ctime": "keep",
+     "columns.atime": "keep",
+     "columns.size": "keep",
+     "columns.mode": "keep"
+    }
+   },
+   "hex_argv": [
+    "columns.cmdline"
+   ]
+  },
+  "osquery:warning": {
+   "parser": "text",
+   "source": "text-osquery-warning",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "osquery_info": {
+   "parser": "text",
+   "source": "text-osquery-info-2",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "osquery_results": {
+   "parser": "json",
+   "source": "osquery-results",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "name": "keep",
+     "action": "keep",
+     "hostIdentifier": "host",
+     "calendarTime": "keep",
+     "unixTime": "keep",
+     "decorations.username": "user",
+     "columns.*": "content",
+     "columns.username": "user",
+     "columns.user": "user",
+     "columns.uid": "keep",
+     "columns.gid": "keep",
+     "columns.pid": "keep",
+     "columns.parent": "keep",
+     "columns.local_address": "ip",
+     "columns.remote_address": "ip",
+     "columns.address": "ip",
+     "columns.local_port": "keep",
+     "columns.remote_port": "keep",
+     "columns.port": "keep",
+     "columns.md5": "keep",
+     "columns.sha1": "keep",
+     "columns.sha256": "keep",
+     "columns.hostname": "host",
+     "columns.host": "content",
+     "columns.time": "keep",
+     "columns.mtime": "keep",
+     "columns.ctime": "keep",
+     "columns.atime": "keep",
+     "columns.size": "keep",
+     "columns.mode": "keep"
+    }
+   },
+   "hex_argv": [
+    "columns.cmdline"
+   ]
+  },
+  "osquery_warning": {
+   "parser": "text",
+   "source": "text-osquery-warning-2",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "out-3": {
+   "parser": "text",
+   "source": "text-out-3",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "package": {
+   "parser": "text",
+   "source": "text-package",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "pan:system": {
+   "parser": "columns",
+   "source": "pan-system",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "split": "csv",
+   "strip_prefix": "(?:<[0-9]{1,3}>)?[A-Z][a-z]{2} +[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} \\S+ +",
+   "type_index": 3,
+   "columns": {
+    "TRAFFIC": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "bytes",
+     "bytes_sent",
+     "bytes_received",
+     "packets",
+     "start_time",
+     "elapsed",
+     "category",
+     "-",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "packets_sent",
+     "packets_received",
+     "session_end_reason"
+    ],
+    "THREAT": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "misc",
+     "threat_id",
+     "category",
+     "severity",
+     "direction",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "content_type",
+     "pcap_id",
+     "file_digest",
+     "cloud",
+     "url_index",
+     "user_agent",
+     "file_type",
+     "xff",
+     "referer",
+     "sender",
+     "subject",
+     "recipient",
+     "report_id"
+    ],
+    "SYSTEM": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "vsys",
+     "event_id",
+     "object",
+     "-",
+     "-",
+     "module",
+     "severity",
+     "description",
+     "sequence"
+    ]
+   },
+   "events": {
+    "*": {
+     "subtype": "keep",
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "nat_src_ip": "ip",
+     "nat_dest_ip": "ip",
+     "rule": "keep",
+     "src_user": "account",
+     "dest_user": "account",
+     "app": "keep",
+     "src_zone": "keep",
+     "dest_zone": "keep",
+     "session_id": "keep",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "protocol": "keep",
+     "action": "keep",
+     "bytes": "keep",
+     "bytes_sent": "keep",
+     "bytes_received": "keep",
+     "packets": "keep",
+     "start_time": "keep",
+     "elapsed": "keep",
+     "category": "keep",
+     "session_end_reason": "keep",
+     "misc": "content",
+     "threat_id": "content",
+     "severity": "keep",
+     "direction": "keep",
+     "file_digest": "keep",
+     "user_agent": "content",
+     "file_type": "keep",
+     "referer": "content",
+     "sender": "content",
+     "subject": "content",
+     "recipient": "content",
+     "event_id": "keep",
+     "object": "keep",
+     "module": "keep",
+     "description": "content"
+    }
+   }
+  },
+  "pan:threat": {
+   "parser": "columns",
+   "source": "pan-threat",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "split": "csv",
+   "strip_prefix": "(?:<[0-9]{1,3}>)?[A-Z][a-z]{2} +[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} \\S+ +",
+   "type_index": 3,
+   "columns": {
+    "TRAFFIC": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "bytes",
+     "bytes_sent",
+     "bytes_received",
+     "packets",
+     "start_time",
+     "elapsed",
+     "category",
+     "-",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "packets_sent",
+     "packets_received",
+     "session_end_reason"
+    ],
+    "THREAT": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "misc",
+     "threat_id",
+     "category",
+     "severity",
+     "direction",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "content_type",
+     "pcap_id",
+     "file_digest",
+     "cloud",
+     "url_index",
+     "user_agent",
+     "file_type",
+     "xff",
+     "referer",
+     "sender",
+     "subject",
+     "recipient",
+     "report_id"
+    ],
+    "SYSTEM": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "vsys",
+     "event_id",
+     "object",
+     "-",
+     "-",
+     "module",
+     "severity",
+     "description",
+     "sequence"
+    ]
+   },
+   "events": {
+    "*": {
+     "subtype": "keep",
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "nat_src_ip": "ip",
+     "nat_dest_ip": "ip",
+     "rule": "keep",
+     "src_user": "account",
+     "dest_user": "account",
+     "app": "keep",
+     "src_zone": "keep",
+     "dest_zone": "keep",
+     "session_id": "keep",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "protocol": "keep",
+     "action": "keep",
+     "bytes": "keep",
+     "bytes_sent": "keep",
+     "bytes_received": "keep",
+     "packets": "keep",
+     "start_time": "keep",
+     "elapsed": "keep",
+     "category": "keep",
+     "session_end_reason": "keep",
+     "misc": "content",
+     "threat_id": "content",
+     "severity": "keep",
+     "direction": "keep",
+     "file_digest": "keep",
+     "user_agent": "content",
+     "file_type": "keep",
+     "referer": "content",
+     "sender": "content",
+     "subject": "content",
+     "recipient": "content",
+     "event_id": "keep",
+     "object": "keep",
+     "module": "keep",
+     "description": "content"
+    }
+   }
+  },
+  "pan:traffic": {
+   "parser": "columns",
+   "source": "pan-traffic",
+   "telemetry": "firewall-proxy",
+   "os": "network",
+   "split": "csv",
+   "strip_prefix": "(?:<[0-9]{1,3}>)?[A-Z][a-z]{2} +[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} \\S+ +",
+   "type_index": 3,
+   "columns": {
+    "TRAFFIC": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "bytes",
+     "bytes_sent",
+     "bytes_received",
+     "packets",
+     "start_time",
+     "elapsed",
+     "category",
+     "-",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "packets_sent",
+     "packets_received",
+     "session_end_reason"
+    ],
+    "THREAT": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "src_ip",
+     "dest_ip",
+     "nat_src_ip",
+     "nat_dest_ip",
+     "rule",
+     "src_user",
+     "dest_user",
+     "app",
+     "vsys",
+     "src_zone",
+     "dest_zone",
+     "inbound_interface",
+     "outbound_interface",
+     "log_action",
+     "-",
+     "session_id",
+     "repeat_count",
+     "src_port",
+     "dest_port",
+     "nat_src_port",
+     "nat_dest_port",
+     "flags",
+     "protocol",
+     "action",
+     "misc",
+     "threat_id",
+     "category",
+     "severity",
+     "direction",
+     "sequence",
+     "action_flags",
+     "src_location",
+     "dest_location",
+     "-",
+     "content_type",
+     "pcap_id",
+     "file_digest",
+     "cloud",
+     "url_index",
+     "user_agent",
+     "file_type",
+     "xff",
+     "referer",
+     "sender",
+     "subject",
+     "recipient",
+     "report_id"
+    ],
+    "SYSTEM": [
+     "-",
+     "receive_time",
+     "serial",
+     "type",
+     "subtype",
+     "-",
+     "generated_time",
+     "vsys",
+     "event_id",
+     "object",
+     "-",
+     "-",
+     "module",
+     "severity",
+     "description",
+     "sequence"
+    ]
+   },
+   "events": {
+    "*": {
+     "subtype": "keep",
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "nat_src_ip": "ip",
+     "nat_dest_ip": "ip",
+     "rule": "keep",
+     "src_user": "account",
+     "dest_user": "account",
+     "app": "keep",
+     "src_zone": "keep",
+     "dest_zone": "keep",
+     "session_id": "keep",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "protocol": "keep",
+     "action": "keep",
+     "bytes": "keep",
+     "bytes_sent": "keep",
+     "bytes_received": "keep",
+     "packets": "keep",
+     "start_time": "keep",
+     "elapsed": "keep",
+     "category": "keep",
+     "session_end_reason": "keep",
+     "misc": "content",
+     "threat_id": "content",
+     "severity": "keep",
+     "direction": "keep",
+     "file_digest": "keep",
+     "user_agent": "content",
+     "file_type": "keep",
+     "referer": "content",
+     "sender": "content",
+     "subject": "content",
+     "recipient": "content",
+     "event_id": "keep",
+     "object": "keep",
+     "module": "keep",
+     "description": "content"
+    }
+   }
+  },
+  "protocol": {
+   "parser": "metadata",
+   "source": "meta-protocol",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "ps": {
+   "parser": "text",
+   "source": "text-ps",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "stream:arp": {
+   "parser": "json",
+   "source": "stream-arp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "opcode": "keep"
+    }
+   }
+  },
+  "stream:dhcp": {
+   "parser": "json",
+   "source": "stream-dhcp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "opcode": "keep",
+     "ciaddr": "ip",
+     "yiaddr": "ip",
+     "host_name": "content",
+     "dns_server": "ip",
+     "router": "ip"
+    }
+   }
+  },
+  "stream:dns": {
+   "parser": "json",
+   "source": "stream-dns",
+   "telemetry": "dns",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "query": "content",
+     "query_type": "keep",
+     "reply_code": "keep",
+     "name": "content",
+     "host_addr": "ip",
+     "hostname": "content",
+     "message_type": "keep",
+     "transaction_id": "keep",
+     "ttl": "keep",
+     "response_time": "keep",
+     "reply_code_id": "keep"
+    }
+   }
+  },
+  "stream:ftp": {
+   "parser": "json",
+   "source": "stream-ftp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "method": "keep",
+     "method_parameter": "content",
+     "reply_code": "keep",
+     "reply_content": "content",
+     "greeting": "content"
+    }
+   }
+  },
+  "stream:http": {
+   "parser": "json",
+   "source": "stream-http",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "c_ip": "ip",
+     "http_method": "keep",
+     "status": "keep",
+     "site": "content",
+     "uri": "content",
+     "uri_path": "content",
+     "uri_query": "content",
+     "uri_parm": "content",
+     "http_user_agent": "content",
+     "http_referrer": "content",
+     "http_content_type": "content",
+     "http_content_length": "keep",
+     "http_comment": "keep",
+     "server": "keep",
+     "form_data": "content",
+     "src_content": "content",
+     "src_headers": "content",
+     "cs_version": "keep",
+     "request": "content"
+    }
+   }
+  },
+  "stream:icmp": {
+   "parser": "json",
+   "source": "stream-icmp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "type": "keep",
+     "code": "keep",
+     "type_string": "keep",
+     "code_string": "keep"
+    }
+   }
+  },
+  "stream:igmp": {
+   "parser": "json",
+   "source": "stream-igmp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "type_string": "keep"
+    }
+   }
+  },
+  "stream:ip": {
+   "parser": "json",
+   "source": "stream-ip",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "protocol": "keep",
+     "protoid": "keep",
+     "version": "keep"
+    }
+   }
+  },
+  "stream:irc": {
+   "parser": "json",
+   "source": "stream-irc",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep"
+    }
+   }
+  },
+  "stream:ldap": {
+   "parser": "json",
+   "source": "stream-ldap",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "assertion_description": "keep",
+     "message_type": "keep"
+    }
+   }
+  },
+  "stream:mapi": {
+   "parser": "json",
+   "source": "stream-mapi",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "auth_type": "keep"
+    }
+   }
+  },
+  "stream:mysql": {
+   "parser": "json",
+   "source": "stream-mysql",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "query": "content",
+     "login": "user",
+     "command": "keep",
+     "error": "content",
+     "sql_statement": "content",
+     "dbname": "keep",
+     "sql_error_code": "keep",
+     "result_row_count": "keep"
+    }
+   }
+  },
+  "stream:sip": {
+   "parser": "json",
+   "source": "stream-sip",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "method": "keep"
+    }
+   }
+  },
+  "stream:smb": {
+   "parser": "json",
+   "source": "stream-smb",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "command": "keep",
+     "filename": "content",
+     "path": "content",
+     "nt_status": "keep",
+     "service": "content",
+     "username": "user",
+     "domain": "domain",
+     "user_id": "keep"
+    }
+   }
+  },
+  "stream:smtp": {
+   "parser": "json",
+   "source": "stream-smtp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "sender": "content",
+     "sender_email": "content",
+     "sender_alias": "content",
+     "receiver": "content",
+     "receiver_email": "content",
+     "receiver_alias": "content",
+     "subject": "content",
+     "mail_from": "content",
+     "rcpt_to": "content",
+     "attach_filename": "content",
+     "attach_type": "content",
+     "attach_size": "keep",
+     "attach_content_decoded_md5_hash": "keep",
+     "content_body": "content",
+     "response_code": "keep",
+     "server_response": "content",
+     "method": "keep",
+     "greeting": "content",
+     "received_from_ip": "ip",
+     "file_type": "keep",
+     "msg_id": "content",
+     "date": "keep"
+    }
+   }
+  },
+  "stream:snmp": {
+   "parser": "json",
+   "source": "stream-snmp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "method": "keep",
+     "version": "keep"
+    }
+   }
+  },
+  "stream:tcp": {
+   "parser": "json",
+   "source": "stream-tcp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep",
+     "connection": "content",
+     "tcp_status": "keep",
+     "ssl_subject": "content",
+     "ssl_issuer": "content",
+     "ssl_version": "keep",
+     "ssl_cert_sha1": "keep",
+     "initial_rtt": "keep"
+    }
+   }
+  },
+  "stream:udp": {
+   "parser": "json",
+   "source": "stream-udp",
+   "telemetry": "flow",
+   "os": null,
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "transport": "keep",
+     "protocol_stack": "keep",
+     "bytes": "keep",
+     "bytes_in": "keep",
+     "bytes_out": "keep",
+     "time_taken": "keep",
+     "flow_id": "keep",
+     "app": "keep",
+     "count": "keep",
+     "sum(bytes)": "keep",
+     "sum(bytes_in)": "keep",
+     "sum(bytes_out)": "keep",
+     "sum(packets_in)": "keep",
+     "sum(packets_out)": "keep",
+     "sum(time_taken)": "keep",
+     "packets_in": "keep",
+     "packets_out": "keep"
+    }
+   }
+  },
+  "suricata": {
+   "parser": "json",
+   "source": "suricata",
+   "telemetry": "suricata",
+   "os": null,
+   "type_field": "event_type",
+   "record_id_field": "flow_id",
+   "events": {
+    "*": {
+     "src_ip": "ip",
+     "dest_ip": "ip",
+     "src_port": "keep",
+     "dest_port": "keep",
+     "proto": "keep",
+     "app_proto": "keep",
+     "flow_id": "keep",
+     "event_type": "keep",
+     "alert.*": "content",
+     "http.*": "content",
+     "dns.*": "content",
+     "fileinfo.*": "content",
+     "tls.*": "content",
+     "ssh.*": "content",
+     "smtp.*": "content",
+     "flow.*": "keep",
+     "tcp.*": "keep"
+    }
+   }
+  },
+  "symantec:ep:agent:file": {
+   "parser": "text",
+   "source": "symantec-agent",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:agt_system:file": {
+   "parser": "text",
+   "source": "symantec-agt-system",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:behavior:file": {
+   "parser": "text",
+   "source": "symantec-behavior",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:packet:file": {
+   "parser": "text",
+   "source": "symantec-packet",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:risk:file": {
+   "parser": "text",
+   "source": "symantec-risk",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:scan:file": {
+   "parser": "text",
+   "source": "symantec-scan",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:scm_system:file": {
+   "parser": "text",
+   "source": "symantec-scm-system",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:security:file": {
+   "parser": "text",
+   "source": "symantec-security",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "symantec:ep:traffic:file": {
+   "parser": "text",
+   "source": "symantec-traffic",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "syslog": {
+   "parser": "syslog",
+   "source": "syslog",
+   "telemetry": null,
+   "os": null,
+   "events": {
+    "*": {
+     "fv": "keep",
+     "pr": "keep",
+     "sa": "ip",
+     "sp": "keep",
+     "da": "ip",
+     "dp": "keep",
+     "fss": "keep",
+     "fes": "keep",
+     "liuid": "account",
+     "pa": "account",
+     "pn": "content",
+     "ph": "keep",
+     "ppn": "content",
+     "pph": "keep",
+     "ds": "content",
+     "ibc": "keep",
+     "obc": "keep",
+     "mpn": "content",
+     "mpa": "account",
+     "luat": "keep",
+     "hostname": "host",
+     "program": "keep",
+     "pid": "keep",
+     "message": "content"
+    }
+   }
+  },
+  "time": {
+   "parser": "metadata",
+   "source": "meta-time",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "top": {
+   "parser": "text",
+   "source": "text-top",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "usersWithLoginPrivs": {
+   "parser": "text",
+   "source": "text-userswithloginprivs",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "vmstat": {
+   "parser": "metadata",
+   "source": "meta-vmstat",
+   "telemetry": null,
+   "os": "linux"
+  },
+  "web_ping": {
+   "parser": "metadata",
+   "source": "meta-web-ping",
+   "telemetry": null,
+   "os": null
+  },
+  "weblogic_stdout": {
+   "parser": "text",
+   "source": "text-weblogic-stdout",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "who": {
+   "parser": "text",
+   "source": "text-who",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  },
+  "yum-too_small": {
+   "parser": "text",
+   "source": "text-yum-too-small",
+   "telemetry": null,
+   "os": "linux",
+   "events": {
+    "*": {
+     "message": "content"
+    }
+   }
+  }
+ }
+}

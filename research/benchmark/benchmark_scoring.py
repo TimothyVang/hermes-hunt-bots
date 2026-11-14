@@ -6,8 +6,8 @@ import copy
 import math
 
 from benchmark_contracts import (
-    BenchmarkError, _digest, _id, _text, _window, canonical_bytes, digest_bytes,
-    validate_stage_output, validate_truth,
+    BenchmarkError, _digest, _id, _text, _window, bundle_event_ids, canonical_bytes,
+    digest_bytes, validate_stage_output, validate_truth,
 )
 from benchmark_attack import canonical_parent, canonical_technique, technique_status
 
@@ -169,7 +169,7 @@ def _verdict_index(verdicts, items, events, trial_id, output_sha256):
             raise BenchmarkError('invalid_array', 'verdicts.event_ids')
         for event_id in ids:
             _id(event_id, 'verdicts.event_ids')
-        if len(set(ids)) != len(ids) or not set(ids).issubset(events):
+        if len(set(ids)) != len(ids) or any(event_id not in events for event_id in ids):
             raise BenchmarkError('invalid_citation', 'verdicts.event_ids')
         result[key] = verdict
     return result
@@ -232,7 +232,8 @@ def mechanical_verdicts(findings, truth, events):
         else:
             verdict = 'insufficient'
         result[('finding', finding['finding_id'])] = {
-            'verdict': verdict, 'event_ids': sorted(cited & events), 'basis': MECHANICAL_RULES}
+            'verdict': verdict, 'event_ids': sorted(item for item in cited if item in events),
+            'basis': MECHANICAL_RULES}
     return result
 
 
@@ -265,7 +266,7 @@ def score_output(output, truth, public_bundle, verdicts, *, trial_id,
         _digest(output_sha256, 'output_sha256')
         # Missing answers are accounted for below; never substitute probability 0.
         validate_stage_output(output)
-    events = {event['event_id'] for event in public_bundle['events']}
+    events = bundle_event_ids(public_bundle)
     all_claims = output['claims'] if output is not None else []
     all_findings = output['findings'] if output is not None else []
     all_edges = output.get('chain_edges', []) if output is not None else []
@@ -393,7 +394,7 @@ def score_output(output, truth, public_bundle, verdicts, *, trial_id,
                      'insufficient': 0, 'missing': 0, 'unsupported': 0, 'null_reasons': {}}
     if mechanical:
         # Semantic support needs a human reader; only citation existence is checked.
-        valid = sum(set(claim['event_ids']).issubset(events) for claim in claims)
+        valid = sum(all(eid in events for eid in claim['event_ids']) for claim in claims)
         claim_metrics.update(supported=None, contradicted=None, insufficient=None,
                              unsupported=None, semantic_support=NOT_MEASURED_MECHANICAL,
                              citation_valid=valid, citation_invalid=len(claims) - valid)
@@ -420,7 +421,7 @@ def score_output(output, truth, public_bundle, verdicts, *, trial_id,
                  'invalid': sum(event_id not in events for item in cited_items
                                 for event_id in item['event_ids']),
                  'items_with_invalid_citations': sum(
-                     not set(item['event_ids']).issubset(events) for item in cited_items),
+                     any(eid not in events for eid in item['event_ids']) for item in cited_items),
                  'null_reasons': {}}
     _rate(citations, 'invalid_rate', citations['invalid'], citations['total'], 'no_citations')
 
@@ -533,7 +534,7 @@ def score_output(output, truth, public_bundle, verdicts, *, trial_id,
         ranking_blockers.append('missing_adjudication')
     if conflicts:
         ranking_blockers.append('conflicting_duplicate_adjudication')
-    if any(not (set(finding['event_ids']) & events) for finding in suspicious.values()):
+    if any(not any(eid in events for eid in finding['event_ids']) for finding in suspicious.values()):
         ranking_blockers.append('missing_model_citation')
     if diagnostics['diagnostic_only']:
         ranking_blockers.append('non_handoff_diagnostic')

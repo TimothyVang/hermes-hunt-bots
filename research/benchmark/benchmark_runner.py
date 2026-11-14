@@ -27,9 +27,12 @@ import uuid
 
 from benchmark_paths import FRAMEWORK, SOURCE_ROOTS, source_root
 import bot
-from benchmark_contracts import (REVIEW_POLICY, BenchmarkError, call_cost_bound, canonical_bytes,
-                                 confined_file, decode_json, digest_bytes, max_concurrent_calls,
-                                 parse_utc, route_is_paid, validate_public_bundle, validate_state_root)
+from benchmark_contracts import (REVIEW_POLICY, WORKFLOW_DEPENDENCIES as DEPENDENCIES,
+                                 WORKFLOW_LEDGER_ROLES as LEDGER_ROLES, BenchmarkError,  # noqa: F401
+                                 call_cost_bound, canonical_bytes, confined_file, decode_json,
+                                 digest_bytes, max_concurrent_calls, parse_utc, route_is_paid,
+                                 route_leaves_machine, validate_benchmark_workflow,
+                                 validate_public_bundle, validate_state_root)
 from benchmark_store import BenchmarkStore, STAGE_ROLES, _frozen, automatic_retry, call_timing
 from benchmark_decisions import (WORKFLOW_TITLE, WORKFLOW_SCOPE, WORKFLOW_ACCEPTANCE,
                                  advanced_output, auto_advance, auto_reconciled, auto_recover, auto_recovery,
@@ -37,15 +40,6 @@ from benchmark_decisions import (WORKFLOW_TITLE, WORKFLOW_SCOPE, WORKFLOW_ACCEPT
                                  stage_handoff, trial_view)
 
 HERE = Path(__file__).resolve().parent
-DEPENDENCIES = {
-    'scope': [], 'endpoint_evidence': ['scope'], 'network_evidence': ['scope'],
-    'hypotheses': ['scope'],
-    'analysis': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses'],
-    'review': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses', 'analysis'],
-    'handoff': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses', 'analysis', 'review'],
-}
-LEDGER_ROLES = dict(zip(DEPENDENCIES, ('coordinator', 'researcher', 'researcher',
-                                    'researcher', 'builder', 'reviewer', 'coordinator')))
 
 
 def _fail(code, field):
@@ -57,11 +51,7 @@ def _now():
 
 
 def _workflow(template):
-    tasks = template['tasks']
-    if ([task['key'] for task in tasks] != list(DEPENDENCIES)
-            or any(task['depends_on'] != DEPENDENCIES[task['key']]
-                   or task['role'] != LEDGER_ROLES[task['key']] for task in tasks)):
-        _fail('invalid_workflow', 'workflow')
+    validate_benchmark_workflow(template)
 
 
 def _team(frozen, trial):
@@ -125,6 +115,7 @@ def initialize_experiment(state_root, loaded, truth_directory, holdout_registry=
     # Read the exact released bytes before writing any state. Later copies use
     # these bytes, not mutable source paths; each repetition gets its own refs.
     public = {}
+    query_sources = {}
     for case in loaded['cases']:
         evidence = case['evidence']
         root = Path(case['evidence_path']).parent
@@ -136,8 +127,13 @@ def initialize_experiment(state_root, loaded, truth_directory, holdout_registry=
                 _fail('digest_mismatch', 'evidence.files')
             files[entry['path']] = data
         public[evidence['case_id']] = files
+        if 'query_store' in evidence:
+            qs = evidence['query_store']
+            query_sources[qs['sha256']] = confined_file(root, qs['path'])
     root = Path(state_root)
     store = BenchmarkStore(root, create=not (root / 'benchmark.sqlite3').exists())
+    for sha, qpath in sorted(query_sources.items()):
+        store.write_query_store(sha, qpath)
     store.create_experiment(frozen, truths)
     exp = frozen['experiment']
     for case in frozen['cases']:
@@ -560,12 +556,14 @@ def _environment(model):
 # Every call's adapter fingerprint covers exactly these sources' bytes.
 FINGERPRINTED_SOURCES = ('benchmark_models.py', 'benchmark_runner.py', 'benchmark_decisions.py',
                          'benchmark_contracts.py', 'benchmark_store.py', 'bot.py', 'workflows.py',
-                         'langchain_adapter.py', 'envision_protocol.py', 'benchmark_typesafe.py')
+                         'langchain_adapter.py', 'benchmark_openai_http.py', 'benchmark_query.py',
+                         'benchmark_ioc.py', 'envision_protocol.py', 'benchmark_typesafe.py')
 # The one declared list of data files the copied modules open beside their
 # sources: init/status data, plus the ledger role prompts every `bot.py run`
 # reads. Tests audit init/status opens and run a real dispatch from a snapshot.
 SOURCE_DATA = ('benchmarks/attack-v20-techniques.json', 'benchmarks/coverage.json',
-               'benchmarks/team-workflow.json', 'benchmarks/prompt-contract.txt', 'hermes-bots/catalog.json',
+               'benchmarks/team-workflow.json', 'benchmarks/team-workflow-novel-apt.json',
+               'benchmarks/prompt-contract.txt', 'hermes-bots/catalog.json',
                'roles/builder.txt', 'roles/coordinator.txt', 'roles/researcher.txt', 'roles/reviewer.txt')
 
 
@@ -577,7 +575,7 @@ def source_files():
     explicitly. A framework package import is refused rather than half-copied.
     """
     import ast
-    pending, found = list(FINGERPRINTED_SOURCES) + ['benchmark.py'], set()
+    pending, found = list(FINGERPRINTED_SOURCES) + ['benchmark.py', 'benchmark_subscription_proxy.py'], set()
     while pending:
         name = pending.pop()
         if name in found:
@@ -679,9 +677,9 @@ def _source_identity():
 PUBLIC_PROVENANCE = ('synthetic', 'public_replay')
 
 
-def release_required(scenario, model):
+def release_required(scenario, model, team=None):
     """Private evidence needs a recorded release before reaching a non-local route."""
-    return scenario['provenance'] not in PUBLIC_PROVENANCE and route_is_paid(model)
+    return scenario['provenance'] not in PUBLIC_PROVENANCE and route_leaves_machine(model, team)
 
 
 def _authorize(store, frozen, trial, model, preceding_seconds=0):
@@ -690,7 +688,7 @@ def _authorize(store, frozen, trial, model, preceding_seconds=0):
     # before it may leave this machine; local loopback routes and public or
     # synthetic evidence need none.
     model_sha = digest_bytes(canonical_bytes(model))
-    if release_required(_case(frozen, trial)['scenario'], model):
+    if release_required(_case(frozen, trial)['scenario'], model, _team(frozen, trial)):
         authorizations = store.trial_authorizations(trial['trial_id'])
         with store.connection() as db:
             authorized = False

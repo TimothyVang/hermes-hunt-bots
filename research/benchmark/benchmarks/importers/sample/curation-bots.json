@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "metadata_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "curated_by": "INVENTED sample curator",
+  "curated_utc": "2026-01-03T00:00:00+00:00",
+  "note": "INVENTED curation for test_benchmark_import_bots.py only; the tests fill dataset_sha256, metadata_sha256, partition_window and assessment_windows from the draft template. Not an answer key for any real data.",
+  "revision": 1,
+  "truth_revision": 1,
+  "attack_release": "v20",
+  "coverage": {
+    "os": ["windows-client"],
+    "execution_platform": ["virtual-machine"],
+    "network": ["flat-lan", "ipv4"],
+    "identity_domain": ["ad-single-domain"],
+    "operational_domain": ["enterprise-it"],
+    "dns_domain": ["internal-authoritative"],
+    "telemetry": ["windows-security"]
+  },
+  "assets": [
+    {"hostname": "WKST-01", "os_family": "windows-client", "os_version": null, "architecture": null, "vendor": null},
+    {"hostname": "WKST-02", "os_family": "windows-client", "os_version": null, "architecture": null, "vendor": null},
+    {"hostname": "web-01", "os_family": "linux", "os_version": null, "architecture": null, "vendor": null},
+    {"hostname": "FW-01", "os_family": "network-os", "os_version": null, "architecture": null, "vendor": null},
+    {"hostname": "cloud.example.test", "os_family": "not-applicable", "os_version": null, "architecture": null, "vendor": null}
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "technique_id": "T1136.001",
+      "asset": {"hostname": "WKST-01"},
+      "window_utc": null,
+      "execution_outcome": "succeeded",
+      "observability": "sufficient",
+      "support_sets": [],
+      "boundary_id": "boundary-host",
+      "phase": "persistence"
+    }
+  ],
+  "edges": [],
+  "controls": [
+    {"control_id": "control-1", "asset": {"hostname": "WKST-02"}, "window_utc": null, "expected_disposition": "benign"},
+    {"control_id": "control-2", "asset": {"hostname": "web-01"}, "window_utc": null, "expected_disposition": "insufficient"},
+    {"control_id": "control-3", "asset": {"hostname": "FW-01"}, "window_utc": null, "expected_disposition": "benign"},
+    {"control_id": "control-4", "asset": {"hostname": "cloud.example.test"}, "window_utc": null, "expected_disposition": "insufficient"}
+  ],
+  "lookalike_event_ids": [],
+  "sophistication": {
+    "band": "S1",
+    "boundaries": [{"boundary_id": "boundary-host", "kind": "host"}],
+    "preconditions": ["INVENTED: interactive administrator session"],
+    "emulation_limitations": ["INVENTED sample"],
+    "group_ids": [],
+    "source_references": []
+  },
+  "source_references": ["https://example.test/invented-bots-sample"],
+  "assessment_windows": [],
+  "partition_window": null
+}

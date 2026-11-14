@@ -22,7 +22,7 @@ import sys
 from benchmark_paths import FRAMEWORK
 from benchmark_contracts import (
     AUTO_ADVANCE_ACTOR, AUTO_ADVANCE_NOTE, BenchmarkError, MAX_BYTES, REVIEW_POLICY, STAGE_KEYS,
-    canonical_bytes, confined_file, decode_json, digest_bytes, parse_utc, validate_stage_output,
+    bundle_event_ids, canonical_bytes, confined_file, decode_json, digest_bytes, parse_utc, validate_stage_output,
 )
 from benchmark_store import (AUTO_RECONCILE_ACTOR, AUTO_RECONCILE_POLICY, AUTO_RETRY_ACTOR, AUTO_RETRY_POLICY,
                              CONFIGURATION_FAILURES, HUMAN_RECONCILE_POLICY, RETRYABLE_FAILURES,
@@ -211,7 +211,7 @@ def _validated_response(store, trial, call):
 
 def checker_validator_output(output, evidence, output_sha256):
     """Expected no-dispatch appendix for a candidate with no checkable citations."""
-    known = {e['event_id'] for e in evidence['events']}
+    known = bundle_event_ids(evidence)
     results = []
     for claim in output['claims']:
         if claim['event_ids'] and all(e in known for e in claim['event_ids']):

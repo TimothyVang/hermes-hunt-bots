@@ -15,7 +15,7 @@ import time
 import uuid
 from decimal import Decimal
 
-import benchmark_paths
+import benchmark_paths  # noqa: F401
 from benchmark_contracts import (
     AUTO_ADVANCE_ACTOR, AUTO_FREEZE_ACTOR, AUTO_FREEZE_NOTE, FREEZE_POLICY, BenchmarkError,
     REVIEW_POLICY, ROLE_IDS, STAGE_KEYS, call_cost_bound, canonical_bytes, campaign_manifest_digest,
@@ -619,6 +619,12 @@ class BenchmarkStore:
             if (ref['sha256'], ref['byte_count']) != (files[path]['sha256'], files[path]['byte_count']):
                 _fail('digest_mismatch', 'trial.public_artifacts')
             self.verify_artifact(spec['trial_id'], ref, routine)
+        if 'query_store' in cases[0]['evidence']:
+            from benchmark_query import sha256_file
+            qs = cases[0]['evidence']['query_store']
+            qpath = self.query_store_path(qs)
+            if not routine and sha256_file(qpath) != qs['sha256']:
+                _fail('artifact_corrupt', 'query_store.sha256')
         if spec['status'] == 'completed':
             # Completed means every stage advanced from a completed receipt.
             calls = {call['call_id']: call for call in (_unpack(row) for row in db.execute(
@@ -729,6 +735,55 @@ class BenchmarkStore:
                 _fsync_directory(parent)
         validate_state_root(self.root)
         return directory
+
+    def write_query_store(self, expected_sha256, source_path):
+        """Seal an immutable SQLite query store (`query-stores/<sha256>.sqlite3`) inside state_root."""
+        _digest(expected_sha256, 'query_store.sha256')
+        from benchmark_query import sha256_file
+        src = Path(os.path.abspath(os.fspath(source_path)))
+        if not src.is_file() or src.is_symlink():
+            _fail('artifact_unavailable', 'query_store')
+        if sha256_file(src) != expected_sha256:
+            _fail('digest_mismatch', 'query_store.sha256')
+        rel = 'query-stores/' + expected_sha256 + '.sqlite3'
+        dest = self.root / 'query-stores' / (expected_sha256 + '.sqlite3')
+        try:
+            self._private_directory('query-stores')
+            if dest.exists() or dest.is_symlink():
+                existing = confined_file(self.root, rel)
+                if sha256_file(existing) == expected_sha256:
+                    return existing
+            temp = self.root / 'query-stores' / ('.' + expected_sha256 + '.' + uuid.uuid4().hex + '.tmp')
+            fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
+            try:
+                with open(src, 'rb') as inp, os.fdopen(fd, 'wb') as out:
+                    while True:
+                        chunk = inp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(str(temp), str(dest))
+                _fsync_directory(dest.parent)
+            except BaseException:
+                _discard(temp)
+                raise
+        except OSError:
+            _fail('artifact_unavailable', 'query_store')
+        verified = confined_file(self.root, rel)
+        if sha256_file(verified) != expected_sha256:
+            _fail('artifact_corrupt', 'query_store.sha256')
+        return verified
+
+    def query_store_path(self, query_store):
+        """Return the confined immutable path of a sealed `query_store` inside state_root."""
+        _digest(query_store['sha256'], 'query_store.sha256')
+        rel = 'query-stores/' + query_store['sha256'] + '.sqlite3'
+        path = confined_file(self.root, rel)
+        if path.stat().st_size != query_store['byte_count']:
+            _fail('artifact_corrupt', 'query_store.byte_count')
+        return path
 
     def write_artifact(self, trial_id, kind, content):
         _id(trial_id, 'trial_id')
@@ -1139,7 +1194,7 @@ class BenchmarkStore:
                           'prompt_sha256', 'response_sha256', 'start_utc', 'end_utc', 'elapsed_ms',
                           'timeout_seconds', 'max_calls', 'max_output_bytes', 'finish_reason', 'usage',
                           'estimated_usage', 'cost', 'failure_reason', 'response_artifact'}, 'receipt',
-                {'rejected_response'})
+                {'rejected_response', 'query_audit', 'query_usage'})
         spec = item['spec']
         if type(receipt['schema_version']) is not int or receipt['schema_version'] != 1:
             _fail('unsupported_schema', 'receipt.schema_version')
@@ -1225,6 +1280,15 @@ class BenchmarkStore:
             _fail('incomplete_receipt', 'receipt.response_artifact')
         if 'rejected_response' in receipt:
             self._rejected_response(spec, receipt)
+        if 'query_audit' in receipt and receipt['query_audit'] is not None:
+            _ref(receipt['query_audit'])
+            self.read_artifact(spec['trial_id'], receipt['query_audit'])
+        if 'query_usage' in receipt and receipt['query_usage'] is not None:
+            _fields(receipt['query_usage'],
+                    {'queries_executed', 'rows_returned_total', 'bytes_returned_total', 'ioc_lookups'},
+                    'receipt.query_usage')
+            for qk, qv in receipt['query_usage'].items():
+                _number(qv, 'receipt.query_usage.' + qk, integer=True)
         _safe(receipt)
 
     def _rejected_response(self, spec, receipt):

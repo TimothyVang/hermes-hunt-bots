@@ -68,7 +68,38 @@ def _invalid(claim_id):
             'reason': 'invalid_or_missing_citation', 'origin': 'validator'}
 
 
-def build_checker_request(candidate, public, model):
+def _load_query_store_events(query_store_path, wanted_ids):
+    if not wanted_ids or query_store_path is None:
+        return {}
+    from benchmark_query import open_readonly_db
+    conn = open_readonly_db(query_store_path)
+    loaded = {}
+    try:
+        items = sorted(wanted_ids)
+        for offset in range(0, len(items), 400):
+            chunk = items[offset:offset + 400]
+            marks = ','.join('?' for _ in chunk)
+            rows = conn.execute(
+                'SELECT event_id, timestamp_utc, source_id, asset_id, event_type, file_sha256, record_id, fields_json '
+                'FROM events WHERE event_id IN ({})'.format(marks),
+                chunk,
+            ).fetchall()
+            for r in rows:
+                loaded[r['event_id']] = {
+                    'event_id': r['event_id'],
+                    'timestamp_utc': r['timestamp_utc'],
+                    'source_id': r['source_id'],
+                    'asset_id': r['asset_id'],
+                    'event_type': r['event_type'],
+                    'locator': {'file_sha256': r['file_sha256'], 'record_id': r['record_id']},
+                    'fields': decode_json(r['fields_json'].encode('utf-8')),
+                }
+    finally:
+        conn.close()
+    return loaded
+
+
+def build_checker_request(candidate, public, model, query_store_path=None):
     """Return one fixed batch and deterministic invalid-citation results.
 
     No claim or event outside a valid claim's explicit citation set is included.
@@ -77,6 +108,9 @@ def build_checker_request(candidate, public, model):
     _configuration(model)
     validate_stage_output(candidate, 'analysis', public)
     events = {event['event_id']: event for event in public['events']}
+    if not events and 'query_store' in public and query_store_path is not None:
+        wanted = {eid for claim in candidate['claims'] for eid in claim['event_ids']}
+        events = _load_query_store_events(query_store_path, wanted)
     objects, questions, invalid = {}, {}, []
     for claim in candidate['claims']:
         claim_id, cited = claim['claim_id'], claim['event_ids']
@@ -208,9 +242,9 @@ def invoke_checker(model, request, max_response_bytes):
     return _response(payload, claim_ids, model)
 
 
-def assemble_checker(candidate, public, narrative_sha, model, response, invalid_results, elapsed_ms):
+def assemble_checker(candidate, public, narrative_sha, model, response, invalid_results, elapsed_ms, query_store_path=None):
     """Bind all results to the unaltered narrative's exact-byte digest."""
-    request, expected_invalid = build_checker_request(candidate, public, model)
+    request, expected_invalid = build_checker_request(candidate, public, model, query_store_path=query_store_path)
     if type(narrative_sha) is not str or not re.fullmatch(r'[0-9a-f]{64}', narrative_sha):
         _fail('invalid_digest', 'checker.narrative_sha256')
     if invalid_results != expected_invalid:
