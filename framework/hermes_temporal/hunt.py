@@ -94,8 +94,8 @@ def _patched(patch_id: str) -> bool:
         return True
 
 
-def _build_tool_prompts(*, filmed: bool) -> dict[str, str]:
-    scope_delegation = "" if _patched(_SCOPE_NO_DELEGATION_PATCH) else (" " + _DELEGATION)
+def _build_tool_prompts(*, filmed: bool, scope_no_delegation: bool = True) -> dict[str, str]:
+    scope_delegation = "" if scope_no_delegation else (" " + _DELEGATION)
     include_browser = filmed or not _patched(_UNFILMED_OMIT_BROWSER_PATCH)
     kibana = _KIBANA if include_browser else ""
     browser = _BROWSER if include_browser else ""
@@ -178,6 +178,10 @@ _TOOL_PROMPTS = _build_tool_prompts(filmed=True)
 def _tool_instruction(stage: str, guidance: dict[str, str], tool_prompts: dict[str, str], *, tail_guidance: bool) -> str:
     suffix = " Stage guidance: " + guidance[stage] if (not tail_guidance and stage in guidance) else ""
     return tool_prompts[stage] + suffix
+
+
+def _scope_toolsets(step_id: str, *, scope_no_delegation: bool) -> tuple[str, ...] | None:
+    return ("no_mcp",) if step_id == "scope" and scope_no_delegation else None
 
 
 def _bounded_text(value: object, name: str, limit: int) -> str:
@@ -311,8 +315,13 @@ def supplied_evidence_hunt(raw: object) -> WorkflowRequest:
         "purple": ("Independently review the analysis and detection draft for evidence support, coverage, alternatives, contradictions, and operational risks. No deployment.", "framework-reviewer", ("analysis", "detection")),
         "incident": ("As Incident Response Lead, produce the final incident report from explicitly handed-off reviewed results and inline evidence. Include citations, alternatives, contradictions, uncertainty, coverage, and unresolved recommendations. This is a report, not an approval or remediation action.", "framework-coordinator", ("analysis", "detection", "purple")),
     }
+    scope_no_delegation = _patched(_SCOPE_NO_DELEGATION_PATCH)
     tail_guidance = _patched(_TAIL_STAGE_GUIDANCE_PATCH)
-    tool_prompts = _build_tool_prompts(filmed=filmed) if tool_driven else _TOOL_PROMPTS
+    tool_prompts = (
+        _build_tool_prompts(filmed=filmed, scope_no_delegation=scope_no_delegation)
+        if tool_driven
+        else _TOOL_PROMPTS
+    )
     if tool_driven:
         prompts = {
             step_id: (_tool_instruction(step_id, guidance, tool_prompts, tail_guidance=tail_guidance), profile, dependencies)
@@ -434,9 +443,13 @@ def supplied_evidence_hunt(raw: object) -> WorkflowRequest:
                            if tool_driven and tail_guidance and stage_key in guidance else "")
             prompt = instruction + "\n" + (network_header if step_id == "network" else common_header) + "\n\n" + scoped + tail_suffix
         timeout = {"timeout_seconds": TOOL_STEP_TIMEOUT_SECONDS} if tool_driven else {}
-        steps.append(HermesStep(step_id, prompt, profile, depends_on=dependencies, hunt_context=context,
-                                optional=parallel and (step_id in _INDEPENDENT_STAGES or step_id in follow_ids or step_id == "merge"),
-                                focus=("analysis", follow_ids.index(step_id)) if step_id in follow_ids else None, **timeout))
+        steps.append(HermesStep(
+            step_id, prompt, profile, depends_on=dependencies, hunt_context=context,
+            optional=parallel and (step_id in _INDEPENDENT_STAGES or step_id in follow_ids or step_id == "merge"),
+            focus=("analysis", follow_ids.index(step_id)) if step_id in follow_ids else None,
+            toolsets=_scope_toolsets(step_id, scope_no_delegation=scope_no_delegation),
+            **timeout,
+        ))
     assembled_bytes = sum(len(step.prompt.encode("utf-8")) for step in steps)
     hunt_limit = MAX_TEAM_HUNT_BYTES if follow_ids else MAX_HUNT_BYTES
     if assembled_bytes > hunt_limit or any(len(step.prompt.encode("utf-8")) > MAX_PROMPT_BYTES for step in steps):

@@ -21,7 +21,14 @@ import time
 from typing import Any, Callable
 import urllib.parse
 
-from .contracts import MAX_DIAGNOSTIC_CHARS, MAX_PROMPT_BYTES, USAGE_KEYS, ExecutionRequest, ExecutionResult
+from .contracts import (
+    MAX_DIAGNOSTIC_CHARS,
+    MAX_PROMPT_BYTES,
+    USAGE_KEYS,
+    ExecutionRequest,
+    ExecutionResult,
+    HermesStep,
+)
 
 GATEWAY_SUBPROTOCOL = "hermes-gateway-v1"
 TICKET_SUBPROTOCOL_PREFIX = "hermes-gateway-ticket."
@@ -82,9 +89,9 @@ def profile_max_turns(profile: str) -> int:
     return PROFILE_MAX_TURNS.get(profile, 6)
 
 
-def step_toolsets(step_id: str) -> tuple[str, ...] | None:
-    """Block ``delegate_task`` on ``scope`` so scope confirmation stays metadata-only."""
-    return ("no_mcp",) if step_id == "scope" else None
+def step_toolsets(step: HermesStep) -> tuple[str, ...] | None:
+    """Return explicit toolset overrides declared on ``step`` (e.g. ``('no_mcp',)`` on patched ``scope``)."""
+    return step.toolsets
 
 
 def hunt_env_for_request(request: ExecutionRequest) -> dict[str, str]:
@@ -104,8 +111,8 @@ def _home_hash(home: Path) -> str:
 
 
 def validate_loopback_ws_url(url: str) -> str:
-    if not isinstance(url, str) or not url:
-        raise ValueError("gateway_ws_url must be a non-empty loopback ws:// or wss:// URL")
+    if not isinstance(url, str) or not url or "?" in url or "#" in url:
+        raise ValueError("gateway_ws_url must be a non-empty loopback ws:// or wss:// URL without query or fragment")
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower()
     try:
@@ -113,13 +120,14 @@ def validate_loopback_ws_url(url: str) -> str:
     except ValueError as exc:
         raise ValueError("gateway_ws_url has an invalid port") from exc
     if (parsed.scheme not in ("ws", "wss") or parsed.username or parsed.password
+            or parsed.query or parsed.fragment
             or host not in _LOOPBACK_HOSTS or port is None or not 1 <= port <= 65535):
         raise ValueError("gateway_ws_url must target a loopback ws:// or wss:// host:port")
     return url
 
 
 def _ws_url_from_origin(api_origin: object) -> str | None:
-    if not isinstance(api_origin, str) or not api_origin:
+    if not isinstance(api_origin, str) or not api_origin or "?" in api_origin or "#" in api_origin:
         return None
     parsed = urllib.parse.urlsplit(api_origin)
     host = (parsed.hostname or "").lower()
@@ -128,6 +136,7 @@ def _ws_url_from_origin(api_origin: object) -> str | None:
     except ValueError:
         return None
     if (parsed.scheme not in ("http", "https") or parsed.username or parsed.password
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
             or host not in _LOOPBACK_HOSTS or port is None or not 1 <= port <= 65535):
         return None
     scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -743,16 +752,15 @@ def _build_create_policy(
     parameters: set[str],
     *,
     working_directory: str,
-    profile: str,
-    step_id: str,
+    step: HermesStep,
     client_env: dict[str, str],
 ) -> dict[str, Any]:
     policy: dict[str, Any] = {}
     if not parameters or "cwd" in parameters:
         policy["cwd"] = str(Path(working_directory).resolve())
     if not parameters or "max_turns" in parameters:
-        policy["max_turns"] = profile_max_turns(profile)
-    toolsets = step_toolsets(step_id)
+        policy["max_turns"] = profile_max_turns(step.profile)
+    toolsets = step_toolsets(step)
     if toolsets is not None and (not parameters or "toolsets" in parameters):
         policy["toolsets"] = list(toolsets)
     if not parameters or "client_env" in parameters:
@@ -794,6 +802,24 @@ async def _recover_replay_gap(conn: _GatewayWSConnection) -> None:
         conn.blocked_reason = "replay_gap_nonterminal"
 
 
+async def _refresh_generation(conn: _GatewayWSConnection) -> int | None:
+    if conn.session_id is None:
+        return None
+    with suppress(Exception):
+        snapshot = await conn.rpc(
+            "session.resume",
+            _timeout=CLEANUP_RPC_TIMEOUT,
+            session_id=conn.session_id,
+            omit_messages=True,
+        )
+        if isinstance(snapshot.get("subscription_id"), str) and snapshot["subscription_id"]:
+            conn.subscription_id = snapshot["subscription_id"]
+        fresh = snapshot.get("execution_generation")
+        if type(fresh) is int:
+            return fresh
+    return None
+
+
 async def _fenced_interrupt(conn: _GatewayWSConnection) -> None:
     if conn.session_id is None:
         return
@@ -805,8 +831,12 @@ async def _fenced_interrupt(conn: _GatewayWSConnection) -> None:
             execution_generation=conn.generation,
         )
     except _RpcError as exc:
+        if exc.reason != "stale_generation":
+            return
         fresh = exc.data.get("execution_generation")
-        if exc.reason == "stale_generation" and type(fresh) is int and fresh != conn.generation:
+        if type(fresh) is not int:
+            fresh = await _refresh_generation(conn)
+        if type(fresh) is int and fresh != conn.generation:
             conn.generation = fresh
             with suppress(Exception):
                 await conn.rpc(
@@ -1027,8 +1057,7 @@ async def _prepare_ws_session(
     policy = _build_create_policy(
         parameters,
         working_directory=working_directory,
-        profile=request.step.profile,
-        step_id=request.step.step_id,
+        step=request.step,
         client_env=hunt_env_for_request(request),
     )
     request_id = hashlib.sha256(request.execution_id.encode()).hexdigest()

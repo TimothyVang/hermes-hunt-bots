@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, replace
+import hashlib
 import importlib.util
 import io
 import json
@@ -521,16 +522,30 @@ class ExecutionReceiptTests(unittest.TestCase):
 
     def test_profile_turn_budgets_scope_no_mcp_and_hunt_env_reach_cli_fallback(self):
         raw = stream(INIT, RESULT)
-        scope_req = ExecutionRequest('hunt-wf:0:retry', HermesStep('scope', 'Confirm scope.', 'framework-coordinator'))
+        scope_req = ExecutionRequest(
+            'hunt-wf:0:retry', HermesStep('scope', 'Confirm scope.', 'framework-coordinator', toolsets=('no_mcp',))
+        )
+        raw_scope_req = ExecutionRequest('hunt-wf:0:raw', HermesStep('scope', 'Confirm scope.', 'framework-coordinator'))
         hunter_req = ExecutionRequest('hunt-wf:1', HermesStep('evidence', 'Search logs.', 'framework-researcher'))
+        legacy_fp = hashlib.sha256(
+            json.dumps(['scope', 'Confirm scope.', 'framework-coordinator', 300],
+                       ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')
+        ).hexdigest()
+        self.assertEqual(execution_module._fingerprint(raw_scope_req), legacy_fp)
+        self.assertNotEqual(execution_module._fingerprint(scope_req), legacy_fp)
         with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
             _invoke(self.config, scope_req)
             scope_cmd, scope_env = popen.call_args.args[0], popen.call_args.kwargs['env']
+        with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
+            _invoke(self.config, raw_scope_req)
+            raw_scope_cmd = popen.call_args.args[0]
         with patch.object(execution_module.subprocess, 'Popen', return_value=StreamProcess(raw)) as popen:
             _invoke(self.config, hunter_req)
             hunter_cmd, hunter_env = popen.call_args.args[0], popen.call_args.kwargs['env']
         self.assertEqual(scope_cmd[-4:], ['--max-turns', '8', '--toolsets', 'no_mcp'])
         self.assertEqual((scope_env['HUNT_RUN_ID'], scope_env['HUNT_STEP_ID']), ('hunt-wf', 'scope'))
+        self.assertEqual(raw_scope_cmd[-2:], ['--max-turns', '8'])
+        self.assertNotIn('--toolsets', raw_scope_cmd)
         self.assertEqual(hunter_cmd[-2:], ['--max-turns', '6'])
         self.assertNotIn('--toolsets', hunter_cmd)
         self.assertEqual((hunter_env['HUNT_RUN_ID'], hunter_env['HUNT_STEP_ID']), ('hunt-wf', 'evidence'))
@@ -542,11 +557,13 @@ class ExecutionReceiptTests(unittest.TestCase):
         store.checkpoint_session(req.execution_id, 'sess-ephemeral-1', 'inp-sha256-1')
         self.assertEqual(store.checkpointed(req.execution_id), ('sess-ephemeral-1', 'inp-sha256-1'))
         store.finish(ExecutionResult('unknown', req.execution_id, '', 'subprocess_timeout'))
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(store._connect()) as db:
             mode = db.execute('PRAGMA journal_mode').fetchone()[0]
+            sync_level = db.execute('PRAGMA synchronous').fetchone()[0]
             row = db.execute('SELECT session_id, input_id FROM receipts WHERE execution_id = ?',
                              (req.execution_id,)).fetchone()
         self.assertEqual(mode.lower(), 'wal')
+        self.assertEqual(sync_level, 2)
         self.assertEqual(row, ('sess-ephemeral-1', 'inp-sha256-1'))
 
     def test_receipt_returns_usage_and_session_on_repeat(self):

@@ -127,6 +127,14 @@ def _result(request: ExecutionRequest, status: str, reason: str, output: str = '
                            reason_code=reason, session_id=session_id, usage=usage, diagnostic=diagnostic)
 
 
+def _valid_toolsets(toolsets: object) -> bool:
+    return toolsets is None or (
+        isinstance(toolsets, tuple) and bool(toolsets)
+        and all(isinstance(item, str) and _STEP_ID.fullmatch(item) is not None for item in toolsets)
+        and len(toolsets) == len(set(toolsets))
+    )
+
+
 def _valid_request(request: ExecutionRequest) -> bool:
     try:
         step = request.step
@@ -137,7 +145,8 @@ def _valid_request(request: ExecutionRequest) -> bool:
                 and isinstance(step.prompt, str) and bool(step.prompt.strip())
                 and len(step.prompt.encode('utf-8')) <= MAX_PROMPT_BYTES
                 and step.profile in PROFILES and type(step.timeout_seconds) is int
-                and 1 <= step.timeout_seconds <= 3600)
+                and 1 <= step.timeout_seconds <= 3600
+                and _valid_toolsets(step.toolsets))
     except (AttributeError, TypeError, UnicodeError):
         return False
 
@@ -171,9 +180,11 @@ def _valid_config(config: ExecutionConfig) -> bool:
 
 def _fingerprint(request: ExecutionRequest) -> str:
     step = request.step
-    fields = [step.step_id, step.prompt, step.profile, step.timeout_seconds]
+    fields: list[object] = [step.step_id, step.prompt, step.profile, step.timeout_seconds]
     if step.hunt_context is not None:
         fields.append(step.hunt_context)
+    if step.toolsets is not None:
+        fields.append(list(step.toolsets))
     data = json.dumps(fields, ensure_ascii=True, sort_keys=True,
                       separators=(',', ':')).encode('ascii')
     return hashlib.sha256(data).hexdigest()
@@ -192,7 +203,7 @@ class ReceiptStore:
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
         db.execute('PRAGMA journal_mode=WAL')
-        db.execute('PRAGMA synchronous=NORMAL')
+        db.execute('PRAGMA synchronous=FULL')
         db.execute('PRAGMA busy_timeout=30000')
         db.execute('CREATE TABLE IF NOT EXISTS receipts ('
                    'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
@@ -449,7 +460,7 @@ def _invoke_cli(config: ExecutionConfig, request: ExecutionRequest) -> Execution
     command = [config.executable, '-p', step.profile, 'chat', '--oneshot', '--quiet',
                '--query-file', '-', '--source', 'cli' if config.visible_sessions is True else 'tool',
                '--max-turns', str(profile_max_turns(step.profile))]
-    toolsets = step_toolsets(step.step_id)
+    toolsets = step_toolsets(step)
     if toolsets is not None:
         command += ['--toolsets', ','.join(toolsets)]
     stream = None

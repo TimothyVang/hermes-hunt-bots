@@ -59,6 +59,8 @@ class _MockGatewayServer:
         self.server_requests: list[tuple[str, str, dict[str, Any]]] = []
         self.srq_responses: list[dict[str, Any]] = []
         self.stale_interrupt_once = False
+        self.stale_interrupt_bare = False
+        self.resume_generation = 2
         self._stale_sent = False
         self.turn_started = asyncio.Event()
         self.detached = asyncio.Event()
@@ -179,7 +181,7 @@ class _MockGatewayServer:
             snap = {
                 "stored_session_id": state["session_id"],
                 "subscription_id": "sub-resumed",
-                "execution_generation": 2,
+                "execution_generation": self.resume_generation,
                 "pending": list(state["pending"]),
             }
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": snap}))
@@ -189,9 +191,12 @@ class _MockGatewayServer:
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"cancelled": True, "execution_generation": 3}}))
 
         async def on_interrupt(req_id: Any, _params: dict[str, Any]) -> None:
-            if self.stale_interrupt_once and not self._stale_sent:
+            if (self.stale_interrupt_once or self.stale_interrupt_bare) and not self._stale_sent:
                 self._stale_sent = True
-                err = {"code": -32009, "message": "stale generation", "data": {"reason": "stale_generation", "execution_generation": 7}}
+                data: dict[str, Any] = {"reason": "stale_generation"}
+                if not self.stale_interrupt_bare:
+                    data["execution_generation"] = 7
+                err = {"code": -32009, "message": "stale generation", "data": data}
                 await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "error": err}))
                 return
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"interrupted": True}}))
@@ -357,7 +362,7 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
             cfg = replace(self.config, gateway_ws_url=server.ws_url, gateway_ticket="test-ticket-abc123")
             req = ExecutionRequest(
                 "hunt-alpha:0",
-                HermesStep("scope", "Confirm scope only.", "framework-coordinator", timeout_seconds=30),
+                HermesStep("scope", "Confirm scope only.", "framework-coordinator", timeout_seconds=30, toolsets=("no_mcp",)),
             )
             prior_env = os.environ.get("HERMES_HOME")
             res = await asyncio.to_thread(execute, cfg, req)
@@ -433,6 +438,29 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("toolsets", create_params)
         interrupts = [p for m, p in server.calls if m == "session.interrupt"]
         self.assertEqual([p["execution_generation"] for p in interrupts], [3, 7])
+
+        async with _MockGatewayServer() as bare_server:
+            bare_server.hang_submit = True
+            bare_server.stale_interrupt_bare = True
+            bare_server.resume_generation = 7
+            bare_cfg = replace(self.config, gateway_ws_url=bare_server.ws_url, gateway_ticket="test-ticket-abc123")
+            bare_req = ExecutionRequest(
+                "hunt-beta-bare:0",
+                HermesStep("scope", "Standalone scope without no_mcp.", "framework-coordinator", timeout_seconds=1),
+            )
+            bare_res = await asyncio.to_thread(execute, bare_cfg, bare_req)
+        self.assertEqual((bare_res.status, bare_res.reason_code), ("unknown", "subprocess_timeout"))
+        self.assertEqual(
+            [m for m, _ in bare_server.calls],
+            [
+                "runtime.describe", "session.create", "prompt.submit",
+                "prompt.cancel", "session.interrupt", "session.resume", "session.interrupt",
+                "prompt.receipt", "session.detach",
+            ],
+        )
+        self.assertNotIn("toolsets", dict(bare_server.calls[1][1]))
+        self.assertEqual([p["execution_generation"] for m, p in bare_server.calls if m == "session.interrupt"], [3, 7])
+        self.assertEqual(dict(bare_server.calls[-1][1])["subscription_id"], "sub-resumed")
 
     async def test_cancelled_ws_turn_sends_cancel_interrupt_and_detach_and_replay_gap_recovers(self) -> None:
         async with _MockGatewayServer() as server:
@@ -612,7 +640,19 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_ws_path_completion_status_without_outcome_and_identify_matching(self) -> None:
         self.assertEqual(transport_module.MAX_CONTROL_RESPONSE_BYTES, 524288)
         self.assertEqual(transport_module._ws_url_from_origin("http://127.0.0.1:8642"), "ws://127.0.0.1:8642/api/ws")
+        self.assertEqual(transport_module._ws_url_from_origin("http://127.0.0.1:8642/"), "ws://127.0.0.1:8642/api/ws")
         self.assertEqual(transport_module._ws_url_from_origin("https://localhost:9000"), "wss://localhost:9000/api/ws")
+        for bad_origin in ("http://127.0.0.1:8642/subpath", "http://127.0.0.1:8642?x=1", "http://127.0.0.1:8642/#frag"):
+            self.assertIsNone(transport_module._ws_url_from_origin(bad_origin))
+        self.assertEqual(transport_module.validate_loopback_ws_url("ws://127.0.0.1:8765/ws"), "ws://127.0.0.1:8765/ws")
+        for bad_ws in (
+            "ws://127.0.0.1:8765/api/ws#fragment",
+            "ws://127.0.0.1:8765/api/ws#",
+            "ws://127.0.0.1:8765/api/ws?x=1",
+            "ws://127.0.0.1:8765/api/ws?",
+        ):
+            with self.assertRaises(ValueError):
+                transport_module.validate_loopback_ws_url(bad_ws)
 
         profile_home = (self.hermes_home / "profiles" / "framework-researcher").resolve()
         other_home = (self.hermes_home / "profiles" / "framework-coordinator").resolve()
@@ -631,6 +671,9 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(no_match)
 
         async with _MockGatewayServer() as server:
+            frag_cfg = replace(self.config, gateway_ws_url=server.ws_url + "#fragment", gateway_ticket="test-ticket-abc123")
+            frag_res = await asyncio.to_thread(execute, frag_cfg, ExecutionRequest("hunt-frag:0", HermesStep("scope", "Frag.")))
+            self.assertEqual((frag_res.status, frag_res.reason_code), ("failed", "invalid_configuration"))
             wrong_path = server.ws_url.removesuffix("/api/ws") + "/ws"
             explicit_wrong = await asyncio.to_thread(
                 transport_module.invoke_gateway,
@@ -687,8 +730,11 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
             "sys.path = [p for p in sys.path if 'swarm-pr2-temporal' not in p] + [sys.argv[1]]\n"
             "import hermes_temporal.transport as t\n"
             "import hermes_temporal.execution as e\n"
+            "from hermes_temporal.contracts import HermesStep\n"
             "print(t.GATEWAY_SUBPROTOCOL, t.profile_max_turns('framework-coordinator'), "
-            "t.profile_max_turns('framework-researcher'), t.step_toolsets('scope'))\n"
+            "t.profile_max_turns('framework-researcher'), "
+            "t.step_toolsets(HermesStep('scope', 'x', toolsets=('no_mcp',))), "
+            "t.step_toolsets(HermesStep('scope', 'x')))\n"
         )
         proc = subprocess.run(
             [sys.executable, "-P", "-c", probe, framework_dir],
@@ -701,7 +747,7 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
             check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "hermes-gateway-v1 8 6 ('no_mcp',)")
+        self.assertEqual(proc.stdout.strip(), "hermes-gateway-v1 8 6 ('no_mcp',) None")
 
 
 if __name__ == "__main__":
