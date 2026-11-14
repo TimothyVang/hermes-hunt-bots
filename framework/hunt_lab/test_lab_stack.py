@@ -4,6 +4,7 @@ Run from framework/: python -B -m unittest hunt_lab.test_lab_stack
 With Docker installed, the compose checks also read Docker's own rendering of the file (`docker compose config`).
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
@@ -12,9 +13,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -107,13 +110,21 @@ class FakeDocker:
     """Stands in for the Docker CLI: records each call and answers `compose ps` with `services`."""
 
     def __init__(self):
-        self.calls, self.services, self.remaining, self.down_code = [], {}, '', 0
+        self.calls, self.services, self.remaining = [], {}, ''
+        self.down_code = self.exec_code = self.rm_code = 0
 
     def __call__(self, arguments, timeout=lab_stack.DOCKER_SECONDS):
         self.calls.append(list(arguments))
         if arguments[:1] == ['compose'] and 'ps' in arguments:
             rows = [{'Service': name, 'State': state, 'ExitCode': code} for name, (state, code) in self.services.items()]
             return subprocess.CompletedProcess(arguments, 0, '\n'.join(json.dumps(row) for row in rows), '')
+        if arguments[:1] == ['compose'] and 'exec' in arguments:
+            return subprocess.CompletedProcess(arguments, self.exec_code, '', '')
+        if arguments[:1] == ['compose'] and 'rm' in arguments:
+            if self.rm_code == 0 and '-s' in arguments:
+                for svc in arguments[arguments.index('-s') + 1:]:
+                    self.services.pop(svc, None)
+            return subprocess.CompletedProcess(arguments, self.rm_code, '', '')
         if arguments[:1] == ['compose'] and 'down' in arguments:
             self.services = {}
             return subprocess.CompletedProcess(arguments, self.down_code, '', '')
@@ -331,6 +342,326 @@ class StackTests(unittest.TestCase):
         ports = {state['lab_port'], state['kibana_port'], state['arkime_port']}
         self.assertFalse(ports & {19340, 19341, 19342}, ports)
         self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
+
+    def test_a_warm_switch_whose_compose_up_fails_later_reports_it_and_stop_removes_the_shared_project(self):
+        # Once `compose up` is spawned the previous case is retired (one state.json per port set); a later compose
+        # failure belongs to the incoming case, and stopping it tears down the project no other case holds.
+        self.invoke('start')
+        self.running()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'loading_case')
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+
+        self.up_running = False
+        (self.root / 'team-med-902' / 'compose.log').write_text(
+            ' Container hunt-lab-dns-lab-001-lab-1  Starting\nError response from daemon: ports are not available\n',
+            encoding='utf-8')
+        failed = self.invoke('status', case_id='team-med-902')
+        self.assertEqual((failed['state'], failed['reason']), ('error', 'compose_up_failed'))
+
+        stopped = self.invoke('stop', case_id='team-med-902')
+        self.assertEqual((stopped['state'], stopped['reason']), ('stopped', 'stopped'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual([p.name for p in self.root.iterdir() if p.is_dir()], [])
+
+    def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
+        first_ev = self.evidence()
+        # A read-only source file: the hard link staged from it must never be what makes it writable again.
+        source = first_ev / 'case.json'
+        os.chmod(source, 0o444)
+        self.addCleanup(lambda: os.chmod(source, 0o600))
+        self.invoke('start', evidence_dir=str(first_ev))
+        self.assertEqual(os.stat(source).st_nlink, 2)
+        self.running()
+        self.docker.services['lab'] = ('exited', 0)
+        self.docker.services['arkime'] = ('exited', 1)
+        self.docker.services['kibana-setup'] = ('exited', 2)
+        first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
+
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+
+        self.docker.exec_code = 1
+        res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((res['state'], res['reason']), ('error', 'arkime_purge_failed'))
+        self.assertEqual(self.terminated, [])
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.docker.exec_code = 0
+
+        # A failed `rm` may have removed some of dns-lab-001's containers: it is brought back, its Arkime sessions
+        # purged first so the re-run pcap-import does not double them.
+        self.docker.rm_code = 1
+        launched_before = len(self.launched)
+        self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'warm_reset_failed')
+        self.assertEqual([env['CASE_ID'] for _argv, env, _log in self.launched[launched_before:]], ['dns-lab-001'])
+        self.assertEqual([call[-1] for call in self.docker.calls if 'exec' in call][-2:], ['team-med-902', 'dns-lab-001'])
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.docker.rm_code = 0
+
+        # A restore that cannot spawn leaves dns-lab-001 in place, so status reports it and stop can still tear it down.
+        with patch.object(lab_stack, '_launch', side_effect=OSError('spawn failed')):
+            self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertFalse((self.root / 'dns-lab-001' / 'up.json').exists())
+        self.assertFalse((self.root / 'team-med-902').exists())
+
+        calls_seen = []
+
+        def fail_once_then_restore(argv, variables, log_path):
+            calls_seen.append(lab_stack._child_env(variables)['CASE_ID'])
+            if len(calls_seen) == 1:
+                raise OSError('spawn failed')
+            return 7777
+
+        with patch.object(lab_stack, '_launch', side_effect=fail_once_then_restore):
+            self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertEqual(calls_seen, ['team-med-902', 'dns-lab-001'])
+        self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertEqual(json.loads((self.root / 'dns-lab-001' / 'up.json').read_text(encoding='utf-8'))['pid'], 7777)
+        self.assertFalse((self.root / 'team-med-902').exists())
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'dns-lab-001')
+
+        self.running()
+        self.docker.services['arkime'] = ('exited', 1)
+        switched = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((switched['state'], switched['reason'], switched['case_id']),
+                         ('starting', 'loading_case', 'team-med-902'))
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith('.retired-')], [])
+        # Retiring dns-lab-001 deleted its read-only hard link and left the source file read-only.
+        self.assertFalse(os.stat(source).st_mode & stat.S_IWRITE)
+        self.assertEqual(os.stat(source).st_nlink, 1)
+        second_state = endpoints.container_state(self.root / 'team-med-902' / 'state.json')
+        self.assertEqual((second_state['lab_port'], second_state['kibana_port'], second_state['arkime_port']),
+                         first_ports)
+        self.assertEqual(second_state['project'], 'hunt-lab-team-med-902')
+        self.assertEqual((self.root / 'team-med-902' / 'compose-project').read_text(encoding='ascii').strip(),
+                         'hunt-lab-dns-lab-001')
+        argv_two, env_two, _log_two = self.launched[-1]
+        self.assertEqual(argv_two[-4:], ['-p', 'hunt-lab-dns-lab-001', 'up', '-d'])
+        self.assertEqual((env_two['PROJECT'], env_two['CASE_ID']), ('hunt-lab-dns-lab-001', 'team-med-902'))
+        self.assertTrue(any(call[:8] == ['compose', '-p', 'hunt-lab-dns-lab-001', 'exec', '-T', 'netns', 'python3', '-B']
+                            for call in self.docker.calls))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'rm', '-f', '-s', 'lab', 'arkime', *lab_stack.ONE_SHOTS],
+                      self.docker.calls)
+
+        # Stopping a retired/stale case folder whose compose project is actively shared by team-med-902 never runs compose down.
+        (self.root / 'dns-lab-001').mkdir()
+        downs_before = [c for c in self.docker.calls if 'down' in c]
+        stopped_old = self.invoke('stop', case_id='dns-lab-001')
+        self.assertEqual((stopped_old['state'], stopped_old['reason']), ('stopped', 'stopped'))
+        self.assertEqual([c for c in self.docker.calls if 'down' in c], downs_before)
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+
+        # A real-data case (data_origin) or cold=True never reuses the warm synthetic stack.
+        real_ev = self.evidence()
+        case_real = json.loads((real_ev / 'case.json').read_text(encoding='utf-8'))
+        case_real['case_id'] = 'work-med-001'
+        case_real['data_origin'] = 'work-export'
+        (real_ev / 'case.json').write_text(json.dumps(case_real), encoding='utf-8')
+        self.invoke('start', evidence_dir=str(real_ev))
+        real_state = endpoints.container_state(self.root / 'work-med-001' / 'state.json')
+        self.assertNotEqual((real_state['lab_port'], real_state['kibana_port'], real_state['arkime_port']),
+                            first_ports)
+        self.assertTrue((self.root / 'team-med-902').exists())
+
+    def test_post_spawn_up_json_error_retires_previous_case_without_rollback(self):
+        self.invoke('start')
+        self.running()
+        self.terminated.clear()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        real_write_json = lab_stack._write_json
+
+        def fail_on_up_json(path, value):
+            if Path(path).name == 'up.json':
+                raise OSError('up.json write failed')
+            real_write_json(path, value)
+
+        def spawn_incoming(argv, variables, log_path):
+            self.launched.append((argv, lab_stack._child_env(variables), log_path))
+            return 4343
+
+        launched_before = len(self.launched)
+        with patch.object(lab_stack, '_launch', side_effect=spawn_incoming), \
+                patch.object(lab_stack, '_write_json', side_effect=fail_on_up_json):
+            res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((res['state'], res['reason'], res['case_id']), ('error', 'stack_io_error', 'team-med-902'))
+        self.assertEqual([env['CASE_ID'] for _a, env, _l in self.launched[launched_before:]], ['team-med-902'])
+        self.assertEqual(self.terminated, [4242, 4343])
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'team-med-902')
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        stopped = self.invoke('stop')
+        self.assertEqual((stopped['state'], stopped['reason'], stopped['case_id']),
+                         ('stopped', 'stopped', 'team-med-902'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual(endpoints.container_states(self.state_dir), [])
+
+    def test_pre_spawn_last_json_and_locked_warm_dir_errors_roll_back_cleanly(self):
+        self.invoke('start')
+        self.running()
+        self.terminated.clear()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        real_write_json = lab_stack._write_json
+
+        def fail_on_last_json(path, value):
+            if Path(path).name == 'last.json':
+                raise OSError('last.json write failed')
+            real_write_json(path, value)
+
+        launched_before = len(self.launched)
+        with patch.object(lab_stack, '_write_json', side_effect=fail_on_last_json):
+            res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((res['state'], res['reason'], res['case_id']), ('error', 'stack_io_error', 'team-med-902'))
+        self.assertEqual(self.launched[launched_before:], [])
+        self.assertEqual(self.terminated, [])
+        self.assertEqual([s['case_id'] for s in endpoints.container_states(self.state_dir)], ['dns-lab-001'])
+        self.assertEqual(self.invoke('status')['case_id'], 'dns-lab-001')
+
+        # A concurrent reader holding warm_dir/state.json without FILE_SHARE_DELETE blocks pre-spawn stash,
+        # rolls back last.json and restores dns-lab-001 without ever spawning team-med-902 or duplicating ports.
+        launched_before = len(self.launched)
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.CreateFileW(str(self.root / 'dns-lab-001' / 'state.json'),
+                                        0x80000000, 0x3, None, 3, 0, None)
+            self.assertNotIn(handle, (None, wintypes.HANDLE(-1).value))
+            try:
+                with patch.object(lab_stack.time, 'sleep'):
+                    locked_res = self.invoke('start', evidence_dir=str(second_ev))
+            finally:
+                kernel.CloseHandle(handle)
+        else:
+            with patch.object(lab_stack.time, 'sleep'), \
+                    patch.object(lab_stack.os, 'replace', side_effect=PermissionError('busy')):
+                locked_res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((locked_res['state'], locked_res['reason'], locked_res['case_id']),
+                         ('error', 'stack_io_error', 'team-med-902'))
+        self.assertEqual([env['CASE_ID'] for _a, env, _l in self.launched[launched_before:]], ['dns-lab-001'])
+        self.assertEqual([s['case_id'] for s in endpoints.container_states(self.state_dir)], ['dns-lab-001'])
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'dns-lab-001')
+        stopped = self.invoke('stop')
+        self.assertEqual((stopped['state'], stopped['reason'], stopped['case_id']),
+                         ('stopped', 'stopped', 'dns-lab-001'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual(endpoints.container_states(self.state_dir), [])
+
+    def test_same_case_id_start_is_idempotent_for_matching_evidence_and_refuses_mismatched_evidence(self):
+        self.invoke('start')
+        self.running()
+        matching_copy = self.evidence()
+        again = self.invoke('start', evidence_dir=str(matching_copy))
+        self.assertEqual((again['state'], again['case_id']), ('starting', 'dns-lab-001'))
+        self.assertEqual(len(self.launched), 1)
+
+        mismatched = self.evidence()
+        meta = json.loads((mismatched / 'case.json').read_text(encoding='utf-8'))
+        meta['data_origin'] = 'work-export'
+        (mismatched / 'case.json').write_text(json.dumps(meta), encoding='utf-8')
+        refused = self.invoke('start', evidence_dir=str(mismatched))
+        self.assertEqual((refused['state'], refused['reason'], refused['case_id']),
+                         ('error', 'case_conflict', 'dns-lab-001'))
+        self.assertEqual(len(self.launched), 1)
+        staged = json.loads((self.root / 'dns-lab-001' / 'evidence' / 'case.json').read_text(encoding='utf-8'))
+        self.assertNotIn('data_origin', staged)
+
+    def test_data_origin_case_colliding_with_shared_warm_project_gets_distinct_compose_project(self):
+        self.invoke('start')
+        self.running()
+        first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        self.invoke('start', evidence_dir=str(second_ev))
+        self.running()
+
+        # Now team-med-902 owns compose project hunt-lab-dns-lab-001; a real-data dns-lab-001 must not clobber it.
+        colliding_ev = self.evidence()
+        case_colliding = json.loads((colliding_ev / 'case.json').read_text(encoding='utf-8'))
+        case_colliding['case_id'] = 'dns-lab-001'
+        case_colliding['data_origin'] = 'work-export'
+        (colliding_ev / 'case.json').write_text(json.dumps(case_colliding), encoding='utf-8')
+        res = self.invoke('start', evidence_dir=str(colliding_ev))
+        self.assertEqual((res['state'], res['case_id']), ('starting', 'dns-lab-001'))
+        colliding_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        expected_proj = f"hunt-lab-dns-lab-001-{colliding_state['instance'][:8]}"
+        self.assertEqual(colliding_state['project'], 'hunt-lab-dns-lab-001')
+        self.assertRegex(expected_proj, lab_stack.COMPOSE_PROJECT_RE)
+        self.assertEqual((self.root / 'dns-lab-001' / 'compose-project').read_text(encoding='ascii').strip(),
+                         expected_proj)
+        self.assertEqual(self.launched[-1][0][-4:], ['-p', expected_proj, 'up', '-d'])
+        self.assertNotEqual(
+            (colliding_state['lab_port'], colliding_state['kibana_port'], colliding_state['arkime_port']),
+            first_ports)
+        stopped = self.invoke('stop', case_id='dns-lab-001')
+        self.assertEqual(stopped['reason'], 'stopped')
+        self.assertIn(['compose', '-p', expected_proj, 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+
+    def test_concurrent_starts_serialize_per_root_and_never_share_ports(self):
+        self.invoke('start')
+        self.running()
+        ev_two, ev_three = self.evidence(), self.evidence()
+        for folder, cid in ((ev_two, 'team-med-902'), (ev_three, 'team-med-903')):
+            meta = json.loads((folder / 'case.json').read_text(encoding='utf-8'))
+            meta['case_id'] = cid
+            (folder / 'case.json').write_text(json.dumps(meta), encoding='utf-8')
+
+        def slow_launch(argv, variables, log_path):
+            time.sleep(0.04)
+            self.launched.append((argv, lab_stack._child_env(variables), log_path))
+            self.running()
+            return 5151
+
+        with patch.object(lab_stack, '_launch', side_effect=slow_launch), ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(self.invoke, 'start', evidence_dir=str(ev_two))
+            f2 = pool.submit(self.invoke, 'start', evidence_dir=str(ev_three))
+            r1, r2 = f1.result(timeout=15), f2.result(timeout=15)
+        self.assertNotEqual(r1['state'], 'error', r1)
+        self.assertNotEqual(r2['state'], 'error', r2)
+        states = endpoints.container_states(self.state_dir)
+        self.assertEqual(len(states), 1, states)
+        all_ports = [s[k] for s in states for k in ('lab_port', 'kibana_port', 'arkime_port')]
+        self.assertEqual(len(all_ports), len(set(all_ports)))
+
+        # Contention on the OS file lock surfaces stack_busy once DOWN_SECONDS expires.
+        fd = os.open(self.root / '.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_BINARY', 0), 0o600)
+        lab_stack._try_lock_fd(fd)
+        try:
+            with patch.object(lab_stack, 'DOWN_SECONDS', 0.06):
+                busy = self.invoke('stop')
+            self.assertEqual((busy['state'], busy['reason']), ('error', 'stack_busy'))
+        finally:
+            lab_stack._unlock_fd(fd)
+            os.close(fd)
 
     def test_stop_removes_the_project_and_its_state_and_ends_a_start_in_progress(self):
         self.invoke('start')

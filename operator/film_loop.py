@@ -127,11 +127,12 @@ def film_lane(n, lane, args, base, cfg, knobs):
     result = rec['result']
     actions, activity = load_actions(d, rec)
     cov = acts.coverage(actions)
-    edit = cutter.cut(d, rec, actions, knobs, cov) if rec['board_frames'] else None
+    edit = cutter.cut(d, rec, actions, knobs, cov, include_full=False) if rec['board_frames'] else None
     who = film_lanes.label(lane)
     out = {'lane': who, 'found': result['mean_found'], 'coverage': cov['coverage'], 'misattributed': result['misattributed'],
            'halts': result['halts'], 'result': result, 'driving': cov,
-           'video': str(d / edit['video']) if edit else None, 'video_full': str(d / edit['video_full']) if edit else None}
+           'video': str(d / edit['video']) if edit else None,
+           'video_full': str(d / edit['video_full']) if (edit and edit.get('video_full')) else None}
     cut = {'lane': who, 'd': d, 'edit': edit, 'actions': actions, 'cov': cov, 'result': result} if edit else None
     return out, cut, tl.tool_digest(activity)
 
@@ -235,8 +236,19 @@ def adopt(state, outcome, digests):
 
 
 def promote(state, outcome):
-    """Make the loop the best; BEST.mp4 becomes its best lane's reviewed cut (a side-by-side would halve each lane's size)."""
+    """Make the loop the best; render any deferred 1x video-full.mp4 on its lanes, and copy its best lane's cut to BEST.mp4."""
     state['best'] = outcome
+    for lane_out in (outcome.get('lanes') or {}).values():
+        if not isinstance(lane_out, dict) or not lane_out.get('video') or lane_out.get('video_full'):
+            continue
+        lane_d = Path(lane_out['video']).parent
+        film_json = lane_d / 'film.json'
+        if film_json.exists():
+            rec = json.loads(film_json.read_text(encoding='utf-8'))
+            actions, _ = load_actions(lane_d, rec)
+            cov = lane_out.get('driving') or acts.coverage(actions)
+            full_name = cutter.ensure_full_cut(lane_d, rec, actions, cov)
+            lane_out['video_full'] = str(lane_d / full_name)
     if outcome['video']:
         shutil.copyfile(outcome['video'], FILM_LOOPS / 'BEST.mp4')
 

@@ -52,8 +52,9 @@ def _command(args):
         return _emit(result, 0 if result["ok"] else 1)
     try:
         stack = importlib.import_module(f"{__name__}.lab_stack")
+        kwargs = {"cold": True} if getattr(args, "cold", False) else {}
         result = stack.invoke(operation, state_dir=state_dir, profile=owner, case_id=args.case_id,
-                              evidence_dir=args.evidence_dir, wait=args.wait)
+                              evidence_dir=args.evidence_dir, wait=args.wait, **kwargs)
     except Exception:
         # Do not echo environment, command lines, private paths, or exception data.
         return _emit(_failure(owner, "error", "runtime_failed"), 4)
@@ -83,6 +84,8 @@ def _setup(parser):
                              "else the bundled fixture)")
     parser.add_argument("--wait", type=int, default=0,
                         help="start: seconds to keep reading the container lab's status while it starts")
+    parser.add_argument("--cold", action="store_true",
+                        help="start: tear down any warm container stack first instead of reusing it")
 
 
 def register(ctx):
@@ -102,11 +105,14 @@ def register(ctx):
     if not owned & (set(adapter.SCHEMAS) | {"lab_browser"}):
         return
     browser = importlib.import_module(f"{__name__}.lab_browser") if "lab_browser" in owned else None
-    state_dir = adapter.lab_state_dir(home, owner)
 
     def bind(call):
         def handler(arguments, **_kwargs):
-            result = call(arguments, state_dir=state_dir, profile=owner)
+            from hermes_constants import get_hermes_home as _current_home, profile_name_for_home as _current_profile
+            active_home = _current_home()
+            active_owner = _current_profile(active_home)
+            active_state_dir = adapter.lab_state_dir(active_home, active_owner)
+            result = call(arguments, state_dir=active_state_dir, profile=active_owner)
             return json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
         return handler
 

@@ -57,7 +57,7 @@ def read_index(out, name='index.jsonl'):
 
 
 class Watcher(core.Watcher):
-    """Watches both owners' browsers under root until stop(); frames go to Index(out)."""
+    """Watches both owners' browsers under `<root>/<profile>/` and `<root>/<profile>/runs/*` until stop(); frames go to Index(out)."""
 
     def __init__(self, out, root, profiles=tuple(OWNERS), connect=core.websocket, poll=0.25):
         self.index = Index(out)

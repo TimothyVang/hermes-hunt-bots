@@ -201,6 +201,62 @@ def load_profile_config(home=None):
         return _load_gateway_config(*(() if home is None else (Path(home) / 'config.yaml',)))
 
 
+def default_local_model(config=None):
+    """The profile's effective default model for a local session, or ``None`` when none is configured."""
+    from gateway.run import _resolve_gateway_model
+    resolved_cfg = load_profile_config() if config is None else config
+    if isinstance(resolved_cfg, dict) and 'model' in resolved_cfg:
+        raw = resolved_cfg.get('model')
+        if isinstance(raw, str):
+            resolved_cfg = {**resolved_cfg, 'model': raw.strip()}
+        elif isinstance(raw, dict):
+            cleaned = {
+                **raw,
+                **{k: v.strip() for k, v in raw.items() if k in {'default', 'model'} and isinstance(v, str)},
+            }
+            resolved_cfg = {**resolved_cfg, 'model': cleaned}
+    resolved = _resolve_gateway_model(resolved_cfg)
+    return resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
+
+
+def _refuse_missing_local_model():
+    import inspect
+    frame = inspect.currentframe()
+    caller = frame.f_back.f_back if frame is not None and frame.f_back is not None else None
+    if (caller is not None and caller.f_code.co_name == '_create_chat'
+            and caller.f_globals.get('__name__') == 'gateway.session_onboarding'):
+        from gateway.session_onboarding import OnboardingRefusal
+        raise OnboardingRefusal(5080, 'No model is set up to run onboarding on.')
+    raise RuntimeStoreError('invalid_params', field='model',
+                            detail='no model requested and no default model is configured')
+
+
+def _resume_existing_local_create(authority, sid, policy, params, client_key):
+    """Handle idempotent ``request_id`` retries, healing or quarantining legacy ``model: None`` rows first."""
+    from gateway.session_local_recovery import heal_legacy_null_model_session, restore_local_session
+    from gateway.session_policy import launch_key, restore_policy
+    from hermes_state_local import local_receipt, same_create_retry
+    import hmac
+    import json
+    if not heal_legacy_null_model_session(authority, sid, raise_on_quarantine=False):
+        return None
+    saved = local_receipt(authority.db, sid)
+    original = restore_policy(saved['policy'])
+    if not same_create_retry(saved['policy'], policy.request_json, params):
+        raise RuntimeStoreError('invalid_params', field='request_id',
+                                detail='a resumed request_id must carry the same frozen request')
+    if 'model_requested' in json.loads(original.request_json):
+        # An owner-resolved alias: its key came from the profile (a `.env` rotation is not a changed
+        # request) and the client sent none, so one it sends now is a different request.
+        if client_key is not None:
+            raise RuntimeStoreError('admission_conflict')
+    elif original.credential_ref is not None or params.get('api_key') is not None:
+        key = launch_key(authority, original)
+        if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
+            raise RuntimeStoreError('admission_conflict')
+    return restore_local_session(authority, sid)
+
+
 @contextmanager
 def profile_env_scope(home=None):
     """Bind the profile's current ``.env`` (see ``load_profile_config``) unless a scope is bound."""
@@ -286,7 +342,6 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
-    from gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
     client_key = params.get('api_key')  # the client's own; an alias's key is the owner's expansion
@@ -313,9 +368,11 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
                 {**json.loads(policy.request_json), 'model_requested': raw_model, 'route_derived': derived},
                 sort_keys=True))
         marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
-        if policy.model is None:
+        requested_model = policy.model.strip() if isinstance(policy.model, str) and policy.model.strip() else None
+        effective_model = requested_model or default_local_model(policy.config())
+        if policy.model is None and effective_model is not None:
             from hermes_cli.anon_auth import GUEST_MODEL
-            policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
+            policy = replace(policy, model=effective_model)
             if policy.model == GUEST_MODEL:
                 # Follows its profile, so the provider the user connects later replaces the trial model.
                 marks[FOLLOW_ADOPTED] = True
@@ -329,30 +386,16 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     from dataclasses import asdict
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity, restore_local_session
+    from gateway.session_local_recovery import local_identity
     authority._require_admission_open()
     sid = local_identity(authority.profile_id, actor.subject, request_id)
-    from gateway.session_policy import bind_launch_key, restore_policy, launch_key
+    from gateway.session_policy import bind_launch_key
     if authority.db.get_session(sid) is not None:
-        from hermes_state_local import local_receipt
-        saved = local_receipt(authority.db, sid)
-        original = restore_policy(saved['policy'])
-        from hermes_state_local import same_create_retry
-        if not same_create_retry(saved['policy'], policy.request_json, params):
-            raise RuntimeStoreError('invalid_params', field='request_id',
-                                    detail='a resumed request_id must carry the same frozen request')
-        import hmac
-        import json
-        if 'model_requested' in json.loads(original.request_json):
-            # An owner-resolved alias: its key came from the profile (a `.env` rotation is not a changed
-            # request) and the client sent none, so one it sends now is a different request.
-            if client_key is not None:
-                raise RuntimeStoreError('admission_conflict')
-        elif original.credential_ref is not None or params.get('api_key') is not None:
-            key = launch_key(authority, original)
-            if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
-                raise RuntimeStoreError('admission_conflict')
-        return restore_local_session(authority, sid)
+        resumed = _resume_existing_local_create(authority, sid, policy, params, client_key)
+        if resumed is not None:
+            return resumed
+    if not isinstance(policy.model, str) or not policy.model.strip():
+        _refuse_missing_local_model()
     from gateway.session_policy import launch_skills
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
