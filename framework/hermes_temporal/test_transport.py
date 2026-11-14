@@ -60,6 +60,7 @@ class _MockGatewayServer:
         self.srq_responses: list[dict[str, Any]] = []
         self.stale_interrupt_once = False
         self.stale_interrupt_bare = False
+        self.emit_info_before_stale_error = False
         self.resume_generation = 2
         self._stale_sent = False
         self.turn_started = asyncio.Event()
@@ -193,6 +194,10 @@ class _MockGatewayServer:
         async def on_interrupt(req_id: Any, _params: dict[str, Any]) -> None:
             if (self.stale_interrupt_once or self.stale_interrupt_bare) and not self._stale_sent:
                 self._stale_sent = True
+                if self.emit_info_before_stale_error:
+                    await self._send_event(
+                        ws, state["session_id"], "session.info", {"execution_generation": 7, "pending": []}, gen=7
+                    )
                 data: dict[str, Any] = {"reason": "stale_generation"}
                 if not self.stale_interrupt_bare:
                     data["execution_generation"] = 7
@@ -439,28 +444,30 @@ class GatewayTransportTests(unittest.IsolatedAsyncioTestCase):
         interrupts = [p for m, p in server.calls if m == "session.interrupt"]
         self.assertEqual([p["execution_generation"] for p in interrupts], [3, 7])
 
-        async with _MockGatewayServer() as bare_server:
-            bare_server.hang_submit = True
-            bare_server.stale_interrupt_bare = True
-            bare_server.resume_generation = 7
-            bare_cfg = replace(self.config, gateway_ws_url=bare_server.ws_url, gateway_ticket="test-ticket-abc123")
-            bare_req = ExecutionRequest(
-                "hunt-beta-bare:0",
-                HermesStep("scope", "Standalone scope without no_mcp.", "framework-coordinator", timeout_seconds=1),
+        for idx, emit_info in enumerate((False, True)):
+            async with _MockGatewayServer() as bare_server:
+                bare_server.hang_submit = True
+                bare_server.stale_interrupt_bare = True
+                bare_server.emit_info_before_stale_error = emit_info
+                bare_server.resume_generation = 7
+                bare_cfg = replace(self.config, gateway_ws_url=bare_server.ws_url, gateway_ticket="test-ticket-abc123")
+                bare_req = ExecutionRequest(
+                    f"hunt-beta-bare:{idx}",
+                    HermesStep("scope", "Standalone scope without no_mcp.", "framework-coordinator", timeout_seconds=1),
+                )
+                bare_res = await asyncio.to_thread(execute, bare_cfg, bare_req)
+            self.assertEqual((bare_res.status, bare_res.reason_code), ("unknown", "subprocess_timeout"))
+            self.assertEqual(
+                [m for m, _ in bare_server.calls],
+                [
+                    "runtime.describe", "session.create", "prompt.submit",
+                    "prompt.cancel", "session.interrupt", "session.resume", "session.interrupt",
+                    "prompt.receipt", "session.detach",
+                ],
             )
-            bare_res = await asyncio.to_thread(execute, bare_cfg, bare_req)
-        self.assertEqual((bare_res.status, bare_res.reason_code), ("unknown", "subprocess_timeout"))
-        self.assertEqual(
-            [m for m, _ in bare_server.calls],
-            [
-                "runtime.describe", "session.create", "prompt.submit",
-                "prompt.cancel", "session.interrupt", "session.resume", "session.interrupt",
-                "prompt.receipt", "session.detach",
-            ],
-        )
-        self.assertNotIn("toolsets", dict(bare_server.calls[1][1]))
-        self.assertEqual([p["execution_generation"] for m, p in bare_server.calls if m == "session.interrupt"], [3, 7])
-        self.assertEqual(dict(bare_server.calls[-1][1])["subscription_id"], "sub-resumed")
+            self.assertNotIn("toolsets", dict(bare_server.calls[1][1]))
+            self.assertEqual([p["execution_generation"] for m, p in bare_server.calls if m == "session.interrupt"], [3, 7])
+            self.assertEqual(dict(bare_server.calls[-1][1])["subscription_id"], "sub-resumed")
 
     async def test_cancelled_ws_turn_sends_cancel_interrupt_and_detach_and_replay_gap_recovers(self) -> None:
         async with _MockGatewayServer() as server:

@@ -823,12 +823,13 @@ async def _refresh_generation(conn: _GatewayWSConnection) -> int | None:
 async def _fenced_interrupt(conn: _GatewayWSConnection) -> None:
     if conn.session_id is None:
         return
+    sent_generation = conn.generation
     try:
         await conn.rpc(
             "session.interrupt",
             _timeout=CLEANUP_RPC_TIMEOUT,
             session_id=conn.session_id,
-            execution_generation=conn.generation,
+            execution_generation=sent_generation,
         )
     except _RpcError as exc:
         if exc.reason != "stale_generation":
@@ -836,7 +837,9 @@ async def _fenced_interrupt(conn: _GatewayWSConnection) -> None:
         fresh = exc.data.get("execution_generation")
         if type(fresh) is not int:
             fresh = await _refresh_generation(conn)
-        if type(fresh) is int and fresh != conn.generation:
+        if type(fresh) is not int and conn.generation != sent_generation:
+            fresh = conn.generation
+        if type(fresh) is int and fresh != sent_generation:
             conn.generation = fresh
             with suppress(Exception):
                 await conn.rpc(
