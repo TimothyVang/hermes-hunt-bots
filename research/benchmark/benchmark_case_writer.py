@@ -602,13 +602,17 @@ def write_curated_case(
         _fail('already_exists', str(case_dir))
 
     if pseudonymizer._replaced_tokens:
-        seen_asset_ids = set()
+        seen_assets = {}
         reconciled_assets = []
         for asset in assets:
             a_copy = dict(asset, asset_id=pseudonymizer.reconcile(asset['asset_id']))
-            if a_copy['asset_id'] not in seen_asset_ids:
-                seen_asset_ids.add(a_copy['asset_id'])
-                reconciled_assets.append(a_copy)
+            aid = a_copy['asset_id']
+            if aid in seen_assets:
+                if seen_assets[aid] != a_copy:
+                    _fail('conflicting_asset_metadata', aid)
+                continue
+            seen_assets[aid] = a_copy
+            reconciled_assets.append(a_copy)
         assets = reconciled_assets
         sources = [
             dict(

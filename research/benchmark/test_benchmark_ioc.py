@@ -255,6 +255,27 @@ class BenchmarkIocTests(unittest.TestCase):
         self.assertEqual(sealed_tr['steps'][0]['asset_id'], unified_host)
         self.assertEqual(sealed_tr['steps'][0]['support_sets'], [['e000001']])
 
+        with self.assertRaises(BenchmarkError) as conflict_ctx:
+            write_curated_case(
+                rec_out, case_seed='reconcile-conflict-seed', family_id='fam-reconcile', split='development',
+                provenance='public_replay', coverage_tags=rec_cov,
+                difficulty_factors={k: {'score': 0, 'rationale': 'r'} for k in ('noise', 'joins', 'time_span', 'gaps', 'ambiguity')},
+                sophistication={'band': 'S0', 'boundaries': []},
+                source_references=['https://example.com/ref'],
+                assets=[
+                    {'asset_id': stale_dns, 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'},
+                    {'asset_id': unified_host, 'os_family': 'windows-server', 'os_version': '2022', 'architecture': 'x86_64', 'vendor': 'microsoft'},
+                ],
+                sources=[{'source_id': 'src1', 'asset_ids': [stale_dns, unified_host], 'telemetry': None, 'clock_offset_seconds': 0,
+                          'clock_uncertainty_seconds': 1, 'sensor_version': '1', 'config_version': '1',
+                          'completeness': 'complete', 'source_sha256': 'a' * 64}],
+                raw_events=[{'tag': stale_tag, 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
+                             'asset_id': stale_dns, 'event_type': 'syslog', 'record_id': '1',
+                             'fields': {'timestamp_original': '2026-01-01T00:00:05Z', 'msg': early_msg}}],
+                step_specs=[], edges=[], pseudonymizer=pseudo_reconcile, control_case=True,
+            )
+        self.assertEqual(conflict_ctx.exception.code, 'conflicting_asset_metadata')
+
         # Group ID G#### is rejected across source_feed and indicator_value, not only notes
         for bad_field, bad_val in (('source_feed', 'cti-G0016'), ('indicator_value', 'agent-g0016-loader')):
             bad_entry = dict(PUBLIC_CTI_SEED_CATALOG[-1], **{bad_field: bad_val})
