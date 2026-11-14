@@ -33,6 +33,7 @@ QUERY_SCHEMA_VERSION = 1
 DEFAULT_MAX_QUERIES_PER_STAGE = 12
 DEFAULT_MAX_ROWS_PER_QUERY = 35
 DEFAULT_MAX_BYTES_PER_QUERY = 24576
+MIN_MAX_BYTES_PER_QUERY = 128
 TOOL_NAMES = (
     'count_events', 'search_events', 'get_events',
     'asset_timeline', 'pivot_indicator', 'lookup_ioc',
@@ -386,21 +387,40 @@ def _shrink_row_to_budget(item, max_bytes):
         base = dict(item, fields={'fields_truncated': True})
         base_bytes = canonical_bytes(base)
         if len(base_bytes) <= max_bytes:
-            budget = max(0, max_bytes - len(base_bytes) - 32)
             trimmed_fields = {'fields_truncated': True}
-            n_keys = max(1, len(item['fields']))
-            for k in sorted(item['fields']):
+            ordered_keys = sorted(
+                item['fields'],
+                key=lambda key: (len(canonical_bytes(item['fields'][key])), key),
+            )
+            marker = '...[truncated]'
+            for idx, k in enumerate(ordered_keys):
                 v = item['fields'][k]
+                rem_keys = max(1, len(ordered_keys) - idx)
+                cand_full = dict(trimmed_fields)
+                cand_full[k] = v
+                full_bytes = canonical_bytes(dict(item, fields=cand_full))
+                cur_bytes = len(canonical_bytes(dict(item, fields=trimmed_fields)))
+                fair_share = max(0, (max_bytes - cur_bytes) // rem_keys)
+                if len(full_bytes) <= max_bytes and (rem_keys == 1 or len(full_bytes) - cur_bytes <= fair_share):
+                    trimmed_fields = cand_full
+                    continue
                 if isinstance(v, str):
-                    cap = max(16, budget // n_keys)
-                    raw_v = v.encode('utf-8')
-                    if len(raw_v) > cap:
-                        v = raw_v[:cap].decode('utf-8', 'ignore') + '...[truncated]'
-                cand_fields = dict(trimmed_fields)
-                cand_fields[k] = v
-                cand = dict(item, fields=cand_fields)
-                if len(canonical_bytes(cand)) <= max_bytes:
-                    trimmed_fields = cand_fields
+                    probe_fields = dict(trimmed_fields)
+                    probe_fields[k] = marker
+                    overhead = len(canonical_bytes(dict(item, fields=probe_fields)))
+                    if overhead <= max_bytes:
+                        raw_v = v.encode('utf-8')
+                        cap = min(len(raw_v), max(0, (max_bytes - overhead) // rem_keys))
+                        while cap >= 0:
+                            cand_v = raw_v[:cap].decode('utf-8', 'ignore') + marker
+                            cand_fields = dict(trimmed_fields)
+                            cand_fields[k] = cand_v
+                            if len(canonical_bytes(dict(item, fields=cand_fields))) <= max_bytes:
+                                trimmed_fields = cand_fields
+                                break
+                            if cap == 0:
+                                break
+                            cap = min(cap - 1, (cap * 3) // 4)
             shrunk = dict(item, fields=trimmed_fields)
             shrunk_bytes = canonical_bytes(shrunk)
             if len(shrunk_bytes) <= max_bytes:
@@ -424,6 +444,19 @@ class QueryExecutor:
                  max_calls=DEFAULT_MAX_QUERIES_PER_STAGE,
                  max_rows=DEFAULT_MAX_ROWS_PER_QUERY,
                  max_bytes=DEFAULT_MAX_BYTES_PER_QUERY):
+        for name, val, lo in (
+            ('max_calls', max_calls, 1),
+            ('max_rows', max_rows, 1),
+            ('max_bytes', max_bytes, MIN_MAX_BYTES_PER_QUERY),
+        ):
+            if isinstance(val, bool) or not isinstance(val, int) or val < lo:
+                _fail('invalid_query_parameters', name)
+        min_envelope = len(canonical_bytes({
+            'ok': True, 'tool': 'pivot_indicator', 'rows': [], 'row_count': 0,
+            'truncated': False, 'note': '', 'calls_remaining': max_calls,
+        }))
+        if max_bytes < min_envelope:
+            _fail('invalid_query_parameters', 'max_bytes')
         self._conn = open_readonly_db(db_path, expected_sha256)
         self._max_calls = max_calls
         self._max_rows = max_rows
@@ -467,10 +500,15 @@ class QueryExecutor:
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
             err_resp = {'ok': False, 'error': 'invalid_tool_or_args', 'allowed_tools': list(TOOL_NAMES),
                         'calls_remaining': self.calls_remaining}
+            err_bytes = canonical_bytes(err_resp)
+            if len(err_bytes) > self._max_bytes:
+                err_resp = {'ok': False, 'error': 'invalid_tool_or_args',
+                            'calls_remaining': self.calls_remaining}
+                err_bytes = canonical_bytes(err_resp)
             self.audit.append({
                 'tool': str(tool) if isinstance(tool, str) else 'invalid',
                 'ok': False, 'error': 'invalid_tool_or_args', 'rows_returned': 0,
-                'bytes_returned': len(canonical_bytes(err_resp)), 'truncated': False, 'elapsed_ms': elapsed,
+                'bytes_returned': len(err_bytes), 'truncated': False, 'elapsed_ms': elapsed,
             })
             return err_resp
         try:
@@ -484,45 +522,70 @@ class QueryExecutor:
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
             code = exc.code if isinstance(exc, BenchmarkError) else 'invalid_query_parameters'
             err_resp = {'ok': False, 'error': code, 'calls_remaining': self.calls_remaining}
+            err_bytes = canonical_bytes(err_resp)
+            if len(err_bytes) > self._max_bytes:
+                code = 'invalid_query_parameters'
+                err_resp = {'ok': False, 'error': code, 'calls_remaining': self.calls_remaining}
+                err_bytes = canonical_bytes(err_resp)
             self.audit.append({'tool': tool, 'ok': False, 'error': code, 'rows_returned': 0,
-                               'bytes_returned': len(canonical_bytes(err_resp)), 'truncated': False, 'elapsed_ms': elapsed})
+                               'bytes_returned': len(err_bytes), 'truncated': False, 'elapsed_ms': elapsed})
             return err_resp
 
         effective_cap = min(max(1, int(row_cap)), self._max_rows)
-        note_str = str(note or '')
-        if len(note_str.encode('utf-8')) > max(32, self._max_bytes // 4):
-            note_str = note_str.encode('utf-8')[:max(32, self._max_bytes // 4)].decode('utf-8', 'ignore')
-        envelope_bytes = len(canonical_bytes({
-            'ok': True, 'tool': tool, 'rows': [], 'row_count': effective_cap,
-            'truncated': False, 'note': note_str, 'calls_remaining': self.calls_remaining,
+        calls_rem = self.calls_remaining
+        base_empty_false = len(canonical_bytes({
+            'ok': True, 'tool': tool, 'rows': [], 'row_count': 0,
+            'truncated': False, 'note': '', 'calls_remaining': calls_rem,
         }))
-        row_budget = max(0, self._max_bytes - envelope_bytes)
-        capped, truncated = [], False
-        used_row_bytes = 0
-        for item in rows[:effective_cap]:
-            encoded = canonical_bytes(item)
-            comma_cost = 1 if capped else 0
-            if used_row_bytes + comma_cost + len(encoded) > row_budget:
-                truncated = True
-                if not capped and row_budget > 0:
-                    shrunk, shrunk_bytes = _shrink_row_to_budget(item, row_budget)
-                    if shrunk is not None:
-                        capped.append(shrunk)
-                        used_row_bytes += len(shrunk_bytes)
-                break
-            capped.append(item)
-            used_row_bytes += comma_cost + len(encoded)
-        if len(rows) > len(capped):
+        note_str = str(note or '')
+        note_cap = min(self._max_bytes // 4, max(0, self._max_bytes - base_empty_false))
+        while note_str and len(canonical_bytes(note_str)) - 2 > note_cap:
+            step = max(0, min(len(note_str) - 1, note_cap))
+            note_str = note_str[:step]
+        empty_false_bytes = len(canonical_bytes({
+            'ok': True, 'tool': tool, 'rows': [], 'row_count': 0,
+            'truncated': False, 'note': note_str, 'calls_remaining': calls_rem,
+        }))
+
+        def _exact_resp_len(k, sum_bytes, is_trunc):
+            return empty_false_bytes + sum_bytes + (len(str(k)) - 1) - (1 if is_trunc else 0)
+
+        candidate_rows = list(rows[:effective_cap])
+        encoded_rows = [canonical_bytes(item) for item in candidate_rows]
+        all_sum = sum(len(b) for b in encoded_rows) + max(0, len(encoded_rows) - 1)
+        if len(rows) <= effective_cap and _exact_resp_len(len(encoded_rows), all_sum, False) <= self._max_bytes:
+            capped = candidate_rows
+            truncated = False
+        else:
+            capped = []
             truncated = True
+            used_row_bytes = 0
+            for item, encoded in zip(candidate_rows, encoded_rows):
+                cand_sum = used_row_bytes + (1 if capped else 0) + len(encoded)
+                fits_trunc = _exact_resp_len(len(capped) + 1, cand_sum, True) <= self._max_bytes
+                genuinely_drops_row = len(rows) > effective_cap or (len(capped) + 1 < len(rows))
+                if not (fits_trunc and genuinely_drops_row):
+                    if not capped:
+                        single_budget = self._max_bytes - _exact_resp_len(1, 0, True)
+                        if len(rows) <= effective_cap:
+                            single_budget = min(single_budget, len(encoded) - 1)
+                        if single_budget > 0:
+                            shrunk, shrunk_bytes = _shrink_row_to_budget(item, single_budget)
+                            if shrunk is not None:
+                                capped.append(shrunk)
+                                used_row_bytes = len(shrunk_bytes)
+                    break
+                capped.append(item)
+                used_row_bytes = cand_sum
+
         resp = {
             'ok': True, 'tool': tool, 'rows': capped, 'row_count': len(capped),
-            'truncated': truncated, 'note': note_str, 'calls_remaining': self.calls_remaining,
+            'truncated': truncated, 'note': note_str, 'calls_remaining': calls_rem,
         }
         resp_bytes = canonical_bytes(resp)
         if len(resp_bytes) > self._max_bytes:
-            truncated = True
             resp = {'ok': True, 'tool': tool, 'rows': [], 'row_count': 0,
-                    'truncated': True, 'note': '', 'calls_remaining': self.calls_remaining}
+                    'truncated': True, 'note': '', 'calls_remaining': calls_rem}
             resp_bytes = canonical_bytes(resp)
         elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000)
         self.audit.append({
@@ -602,13 +665,22 @@ class QueryExecutor:
         ids = args.get('event_ids')
         if type(ids) is not list or not ids:
             _fail('invalid_array', 'event_ids')
-        clean = [str(x).strip() for x in ids[:self._max_rows] if isinstance(x, str) and x.strip()]
+        clean = []
+        seen = set()
+        for raw_id in ids[:max(self._max_rows * 2, 64)]:
+            if isinstance(raw_id, str) and raw_id.strip():
+                eid = raw_id.strip()
+                if eid not in seen:
+                    seen.add(eid)
+                    clean.append(eid)
+                    if len(clean) > self._max_rows:
+                        break
         if not clean:
             return [], 'empty', self._max_rows
         placeholders = ','.join('?' for _ in clean)
         sql = f'SELECT * FROM events WHERE event_id IN ({placeholders}) ORDER BY epoch_us ASC, seq ASC'
         rows = [self._format_event(r) for r in self._conn.execute(sql, clean)]
-        return rows, f'requested={len(clean)}', self._max_rows
+        return rows, f'requested={min(len(clean), self._max_rows)}', self._max_rows
 
     def _tool_asset_timeline(self, args):
         asset_id = str(args.get('asset_id') or '').strip()

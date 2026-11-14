@@ -261,6 +261,7 @@ class CasePseudonymizer:
         self._reverse = {}
         self._by_kind = {}
         self._short_host_fqdn = {}
+        self._replaced_tokens = {}
         self._known_dirty = True
         self._known = KnownIdentities({})
         self.sanitize_totals = new_totals()
@@ -281,6 +282,8 @@ class CasePseudonymizer:
         if value is None:
             return ''
         raw = str(value).strip()
+        if kind in ('host', 'dns', 'domain') and raw.endswith('.'):
+            raw = raw.rstrip('.')
         if not raw or _PROTECTED_TOKEN_RE.fullmatch(raw):
             return raw
         folded = raw.casefold()
@@ -303,14 +306,15 @@ class CasePseudonymizer:
             prefix = _KIND_PREFIX.get(kind, 'value')
             norm = folded
             if kind == 'host' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
+                existing_dns = self._forward.get(('dns', norm))
                 short = norm.split('.', 1)[0]
                 if len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
-                    token = self._forward.get(('host', short)) or self._token('host', short)
+                    token = self._forward.get(('host', short)) or existing_dns or self._token('host', short)
                     self._record('host', short, token)
                     self._record('host', raw, token, overwrite=True)
                     self._record('dns', raw, token, overwrite=True)
                     return token
-                token = self._token('host', norm)
+                token = existing_dns or self._token('host', norm)
                 self._record('host', raw, token, overwrite=True)
                 self._record('dns', raw, token, overwrite=True)
                 return token
@@ -338,12 +342,53 @@ class CasePseudonymizer:
         if key not in self._forward or overwrite:
             old = self._forward.get(key)
             self._forward[key] = token
-            if old is not None and old != token and old not in self._forward.values():
-                self._reverse.pop(old, None)
+            if old is not None and old != token:
+                self._replaced_tokens[old] = token
+                if old not in self._forward.values():
+                    self._reverse.pop(old, None)
             if token not in self._reverse or kind == 'host':
                 self._reverse[token] = {'kind': kind, 'original': raw}
             self._by_kind.setdefault(kind, set()).add(raw)
             self._known_dirty = True
+
+    def _resolved_replacements(self):
+        if not self._replaced_tokens:
+            return {}
+        resolved = {}
+        limit = len(self._replaced_tokens) + 1
+        for src, dst in self._replaced_tokens.items():
+            cur = dst
+            steps = 0
+            while cur in self._replaced_tokens and cur != src and steps < limit:
+                cur = self._replaced_tokens[cur]
+                steps += 1
+            if cur != src:
+                resolved[src] = cur
+        return resolved
+
+    def reconcile(self, value):
+        """Rewrite any retired alias tokens inside `value` to their unified final tokens."""
+        resolved = self._resolved_replacements()
+        if not resolved:
+            return value
+
+        def _walk(node):
+            if isinstance(node, str):
+                if node in resolved:
+                    return resolved[node]
+                return _PROTECTED_TOKEN_SCAN_RE.sub(
+                    lambda m: resolved.get(m.group(0), m.group(0)),
+                    node,
+                )
+            if isinstance(node, list):
+                return [_walk(x) for x in node]
+            if isinstance(node, tuple):
+                return tuple(_walk(x) for x in node)
+            if isinstance(node, dict):
+                return {_walk(k): _walk(v) for k, v in node.items()}
+            return node
+
+        return _walk(value)
 
     def known_identities(self):
         if self._known_dirty:
@@ -555,6 +600,23 @@ def write_curated_case(
     case_dir = out_root / case_id
     if os.path.lexists(case_dir):
         _fail('already_exists', str(case_dir))
+
+    if pseudonymizer._replaced_tokens:
+        assets = pseudonymizer.reconcile(list(assets))
+        sources = pseudonymizer.reconcile(list(sources))
+        step_specs = pseudonymizer.reconcile(list(step_specs))
+        known_gaps = pseudonymizer.reconcile(list(known_gaps))
+        unassessed_asset_ids = pseudonymizer.reconcile(list(unassessed_asset_ids))
+        extra_iocs = pseudonymizer.reconcile(list(extra_iocs))
+        raw_events = [
+            dict(
+                ev,
+                asset_id=pseudonymizer.reconcile(ev['asset_id']),
+                source_id=pseudonymizer.reconcile(ev['source_id']),
+                fields=pseudonymizer.reconcile(ev['fields']),
+            )
+            for ev in raw_events
+        ]
 
     # Sort events deterministically by (UTC timestamp, source_id, asset_id, original index)
     decorated = []

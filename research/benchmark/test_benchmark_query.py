@@ -6,7 +6,7 @@ import unittest
 
 import benchmark_paths  # noqa: F401
 from benchmark_contracts import (
-    ASSESSMENT_QUESTION, bundle_event_ids, canonical_bytes, digest_bytes,
+    ASSESSMENT_QUESTION, BenchmarkError, bundle_event_ids, canonical_bytes, digest_bytes,
     load_json, stage_output_schema, validate_public_bundle, validate_scenario,
     validate_stage_output, validate_truth,
 )
@@ -309,6 +309,50 @@ class BenchmarkQueryTests(unittest.TestCase):
             self.assertEqual(exact_resp['row_count'], 1)
             self.assertFalse(exact_resp['truncated'])
             self.assertEqual(len(canonical_bytes(exact_resp)), exact_budget)
+
+        # Exact-fit when extra matching rows force truncated=True (default 24576-byte cap)
+        two_events = [
+            {
+                'event_id': f'e{idx:06d}',
+                'timestamp_utc': f'2026-02-01T00:00:0{idx}Z',
+                'source_id': 'sysmon',
+                'asset_id': 'ws01',
+                'event_type': 'sysmon_1',
+                'fields': {'timestamp_original': f'2026-02-01T00:00:0{idx}Z', 'CommandLine': 'A'},
+                'locator': {'file_sha256': 'a' * 64, 'record_id': idx},
+            }
+            for idx in (1, 2)
+        ]
+        probe_two_db = self.root / 'two_base.sqlite3'
+        probe_two_spec = build_query_store(probe_two_db, two_events, (), prefix='e', width=6)
+        with QueryExecutor(probe_two_db, probe_two_spec['sha256'], max_rows=1, max_bytes=50000) as p2:
+            base_two = p2.execute('search_events', {'limit': 1})
+        two_events[0]['fields']['CommandLine'] = 'A' * (1 + 24576 - len(canonical_bytes(base_two)))
+        exact_two_db = self.root / 'two_exact.sqlite3'
+        exact_two_spec = build_query_store(exact_two_db, two_events, (), prefix='e', width=6)
+        with QueryExecutor(exact_two_db, exact_two_spec['sha256'], max_rows=1, max_bytes=50000) as p2_hi:
+            expected_two = p2_hi.execute('search_events', {'limit': 1})
+        self.assertEqual(len(canonical_bytes(expected_two)), 24576)
+        self.assertTrue(expected_two['truncated'])
+        with QueryExecutor(exact_two_db, exact_two_spec['sha256'], max_rows=1, max_bytes=24576) as p2_exact:
+            actual_two = p2_exact.execute('search_events', {'limit': 1})
+        self.assertEqual(len(canonical_bytes(actual_two)), 24576)
+        self.assertEqual(actual_two['rows'], expected_two['rows'])
+
+        # Error responses and minimum cap enforcement respect max_bytes=128
+        for cap in (128, 200, 24576):
+            with QueryExecutor(fit_db, fit_spec['sha256'], max_bytes=cap) as err_exec:
+                bad_tool = err_exec.execute('not_a_tool', {})
+                self.assertFalse(bad_tool['ok'])
+                self.assertEqual(bad_tool['error'], 'invalid_tool_or_args')
+                self.assertLessEqual(len(canonical_bytes(bad_tool)), cap)
+                bad_param = err_exec.execute('search_events', {'start_utc': 'not-a-timestamp'})
+                self.assertFalse(bad_param['ok'])
+                self.assertLessEqual(len(canonical_bytes(bad_param)), cap)
+        for bad_kwargs in ({'max_bytes': 64}, {'max_bytes': True}, {'max_rows': 0}, {'max_calls': 0}):
+            with self.assertRaises(BenchmarkError) as param_ctx:
+                QueryExecutor(fit_db, fit_spec['sha256'], **bad_kwargs)
+            self.assertEqual(param_ctx.exception.code, 'invalid_query_parameters')
 
 
 if __name__ == '__main__':

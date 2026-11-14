@@ -199,6 +199,52 @@ class BenchmarkIocTests(unittest.TestCase):
         self.assertEqual(pseudo_collision.pseudonymize('dns', 'srv.beta.example'), beta_tok)
         self.assertIn(beta_tok, pseudo_collision.clean_content('connect to srv.beta.example'))
 
+        # DNS-first registration (with or without shared shortnames) preserves prior sanitized content joins
+        pseudo_dns_pair = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        seen_hosts = []
+        for fqdn in ('srv.alpha.example', 'srv.beta.example'):
+            first_dns = pseudo_dns_pair.pseudonymize('dns', fqdn)
+            content_before = pseudo_dns_pair.clean_content('connect to ' + fqdn)
+            host_after = pseudo_dns_pair.pseudonymize('host', fqdn)
+            dns_after = pseudo_dns_pair.pseudonymize('dns', fqdn)
+            content_after = pseudo_dns_pair.clean_content('connect to ' + fqdn)
+            self.assertEqual(host_after, first_dns)
+            self.assertEqual(dns_after, host_after)
+            self.assertIn(host_after, content_before)
+            self.assertIn(host_after, content_after)
+            seen_hosts.append(host_after)
+        self.assertNotEqual(seen_hosts[0], seen_hosts[1])
+
+        # Curated case writer reconciles any retired alias tokens before sealing public/evidence.json
+        pseudo_reconcile = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        stale_dns = pseudo_reconcile.pseudonymize('dns', 'srv.alpha.example')
+        early_msg = pseudo_reconcile.clean_content('beacon to srv.alpha.example')
+        short_host = pseudo_reconcile.pseudonymize('host', 'srv')
+        unified_host = pseudo_reconcile.pseudonymize('host', 'srv.alpha.example')
+        self.assertEqual(unified_host, short_host)
+        self.assertNotEqual(stale_dns, unified_host)
+        rec_out = self.root / 'reconcile_out'
+        rec_out.mkdir()
+        rec_cov = dict(load_json(FIXTURES / 'fixtures' / 'case-8b42' / 'scenario.json')['coverage'], os=['linux'])
+        rec_res = write_curated_case(
+            rec_out, case_seed='reconcile-seed', family_id='fam-reconcile', split='development',
+            provenance='public_replay', coverage_tags=rec_cov,
+            difficulty_factors={k: {'score': 0, 'rationale': 'r'} for k in ('noise', 'joins', 'time_span', 'gaps', 'ambiguity')},
+            sophistication={'band': 'S0', 'boundaries': []},
+            source_references=['https://example.com/ref'],
+            assets=[{'asset_id': unified_host, 'os_family': 'linux', 'os_version': '12', 'architecture': 'x86_64', 'vendor': 'debian'}],
+            sources=[{'source_id': 'src1', 'asset_ids': [unified_host], 'telemetry': None, 'clock_offset_seconds': 0,
+                      'clock_uncertainty_seconds': 1, 'sensor_version': '1', 'config_version': '1',
+                      'completeness': 'complete', 'source_sha256': 'a' * 64}],
+            raw_events=[{'tag': 'e_dns', 'timestamp_utc': '2026-01-01T00:00:05Z', 'source_id': 'src1',
+                         'asset_id': unified_host, 'event_type': 'syslog', 'record_id': '1',
+                         'fields': {'timestamp_original': '2026-01-01T00:00:05Z', 'msg': early_msg}}],
+            step_specs=[], edges=[], pseudonymizer=pseudo_reconcile, control_case=True,
+        )
+        sealed_ev = load_json(Path(rec_res['case_dir']) / 'public' / 'evidence.json')
+        self.assertIn(unified_host, sealed_ev['events'][0]['fields']['msg'])
+        self.assertNotIn(stale_dns, sealed_ev['events'][0]['fields']['msg'])
+
         # Group ID G#### is rejected across source_feed and indicator_value, not only notes
         for bad_field, bad_val in (('source_feed', 'cti-G0016'), ('indicator_value', 'agent-g0016-loader')):
             bad_entry = dict(PUBLIC_CTI_SEED_CATALOG[-1], **{bad_field: bad_val})
