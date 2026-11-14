@@ -191,6 +191,21 @@ class BenchmarkIocTests(unittest.TestCase):
         filesrv_host = pseudo_overwrite.pseudonymize('host', 'FILESRV.corp.example')
         self.assertEqual(pseudo_overwrite.pseudonymize('dns', 'FILESRV.corp.example'), filesrv_host)
 
+        # Shared short hostname across two domains keeps distinct host tokens while joining each FQDN across host and dns
+        pseudo_collision = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        alpha_tok = pseudo_collision.pseudonymize('host', 'srv.alpha.example')
+        beta_tok = pseudo_collision.pseudonymize('host', 'srv.beta.example')
+        self.assertNotEqual(alpha_tok, beta_tok)
+        self.assertEqual(pseudo_collision.pseudonymize('dns', 'srv.beta.example'), beta_tok)
+        self.assertIn(beta_tok, pseudo_collision.clean_content('connect to srv.beta.example'))
+
+        # Group ID G#### is rejected across source_feed and indicator_value, not only notes
+        for bad_field, bad_val in (('source_feed', 'cti-G0016'), ('indicator_value', 'agent-g0016-loader')):
+            bad_entry = dict(PUBLIC_CTI_SEED_CATALOG[-1], **{bad_field: bad_val})
+            with self.assertRaises(BenchmarkError) as g_ctx:
+                validate_ioc_feed_bytes(encode_ioc_feed([bad_entry]))
+            self.assertEqual(g_ctx.exception.code, 'truth_public_overlap')
+
         # URL command-line extraction emits valid url_path + ipv4/domain, and known_ioc_pivot filters downstream catalog matches
         url_ev = {
             'case_id': 'case-cafe1234',

@@ -65,7 +65,7 @@ _HEX64 = re.compile(r'\A[0-9a-fA-F]{64}\Z')
 _HEX40 = re.compile(r'\A[0-9a-fA-F]{40}\Z')
 _HEX32 = re.compile(r'\A[0-9a-fA-F]{32}\Z')
 _KV_HASH = re.compile(r'\b(SHA256|SHA1|MD5|IMPHASH)=([0-9A-Fa-f]{32,64})\b', re.I)
-_GROUP_ID = re.compile(r'(?<![A-Za-z0-9])G[0-9]{4}(?![0-9])')
+_GROUP_ID = re.compile(r'(?<![A-Za-z0-9])G[0-9]{4}(?![0-9])', re.I)
 
 def _ioc_id(indicator_type, indicator_value):
     payload = canonical_bytes({'type': indicator_type, 'value': indicator_value})
@@ -183,8 +183,10 @@ def validate_ioc_entry(entry, field='ioc'):
     _text(entry['source_feed'], field + '.source_feed')
     parse_utc(entry['first_seen_utc'], field + '.first_seen_utc')
     _text(entry['notes'], field + '.notes')
-    if _GROUP_ID.search(entry['notes']) or _ATTACK_TOKEN.search(entry['notes']):
-        _fail('truth_public_overlap', field + '.notes')
+    for str_key in ('ioc_id', 'indicator_value', 'source_feed', 'notes'):
+        val_str = entry[str_key]
+        if _GROUP_ID.search(val_str) or _ATTACK_TOKEN.search(val_str):
+            _fail('truth_public_overlap', '{}.{}'.format(field, str_key))
     _json_value(entry, field, public=True)
     return entry
 

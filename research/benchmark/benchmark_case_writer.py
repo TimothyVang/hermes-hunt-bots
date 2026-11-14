@@ -310,7 +310,15 @@ class CasePseudonymizer:
                     self._record('host', raw, token, overwrite=True)
                     self._record('dns', raw, token, overwrite=True)
                     return token
+                token = self._token('host', norm)
+                self._record('host', raw, token, overwrite=True)
+                self._record('dns', raw, token, overwrite=True)
+                return token
             if kind == 'dns' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
+                exact_host = self._forward.get(('host', norm))
+                if exact_host is not None:
+                    self._record('dns', raw, exact_host, overwrite=True)
+                    return exact_host
                 short, rest = norm.split('.', 1)
                 if len(short) >= 2 and ('domain', rest) in self._forward:
                     return self.pseudonymize('host', raw)
