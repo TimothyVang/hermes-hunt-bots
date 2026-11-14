@@ -191,11 +191,13 @@ class BaseInputTest(unittest.TestCase):
     def test_a_new_brief_keeps_the_base_origin(self):
         for scope, origin in ((PUBLIC_SCOPE, 'public-dataset'), (WORK_SCOPE, 'work-export')):
             real = {'scope': scope, 'synthetic_only': False, 'data_origin': origin}
-            self.assertEqual(tl.build_input(real, 'new brief', {}, 'dedale-001')['scope'],
-                             scope.replace('case brief', 'new brief'))
+            built = tl.build_input(real, 'new brief', {}, 'dedale-001')
+            self.assertEqual(built['scope'], scope.replace('case brief', 'new brief'))
+            self.assertIs(built['parallel'], True)
         synthetic = {'scope': 'Synthetic dedale-001 only; case brief', 'synthetic_only': True}
-        self.assertEqual(tl.build_input(synthetic, 'new brief', {}, 'dedale-001')['scope'],
-                         'Synthetic dedale-001 only; new brief')
+        built_syn = tl.build_input(synthetic, 'new brief', {}, 'dedale-001')
+        self.assertEqual(built_syn['scope'], 'Synthetic dedale-001 only; new brief')
+        self.assertIs(built_syn['parallel'], True)
 
 
 class StubLab:
@@ -212,7 +214,8 @@ class StubLab:
 
             def do_GET(self):
                 url = urlsplit(self.path)
-                if self.headers.get(endpoints.SECRET_HEADER) != lab.secret:
+                expected = endpoints.caller_secret(lab.secret, self.headers.get('X-Hermes-Profile'))
+                if self.headers.get(endpoints.SECRET_HEADER) != expected:
                     status, body = 401, {'error': 'caller_not_authorized'}
                 else:
                     lab.paths.append(url.path)

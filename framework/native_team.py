@@ -42,6 +42,7 @@ PROFILE_ROUTES = (
 DEFAULT_ROUTE = 'framework-researcher'
 
 HUNT_TOOL_PROFILES = tuple(name for name in PROFILES if name != 'framework-coordinator')
+CLIENT_ENV_PASSTHROUGH = ('HUNT_RUN_ID', 'HUNT_STEP_ID')
 
 # Earlier reviewed values that apply may replace; any other differing value is user policy.
 SUPERSEDED_SETTINGS = {
@@ -49,10 +50,12 @@ SUPERSEDED_SETTINGS = {
         profile: {
             'agent.allowed_tool_names': [
                 ['hunt_lab_query'] if profile == 'framework-network-analyst' else [],
-                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields')],
-                [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'packet_fields'],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields', 'hunt_lab_batch')],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('packet_fields', 'hunt_lab_batch')],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'hunt_lab_batch'],
             ],
             'platform_toolsets.cli': [['no_mcp']],
+            'terminal.client_env_passthrough': [[]],
         }
         for profile in HUNT_TOOL_PROFILES
     },
@@ -122,6 +125,8 @@ def expected_settings(profile):
         # Native Tool Search defers plugin tools behind tool_search/tool_call bridges,
         # which an exact allowlist then strips, hiding the owned hunt_lab tools entirely.
         expected['tools.tool_search.enabled'] = 'off'
+        # Local gateway session.create(client_env=...) drops non-default keys unless passthrough allows them.
+        expected['terminal.client_env_passthrough'] = list(CLIENT_ENV_PASSTHROUGH)
     return expected
 
 
@@ -177,12 +182,14 @@ def plan_lines():
         disabled = _disabled_toolset_requirements(profile)
         enabled = _enabled_toolset_requirements(profile)
         search = settings.get('tools.tool_search.enabled')
+        passthrough = settings.get('terminal.client_env_passthrough')
         lines.append(
             f"{profile}: model={spec['model']}; fallback_providers=[]; fallback_model=[]; "
             f"agent.max_turns={spec['max_turns']}; platform_toolsets.cli={tools}; "
             f'agent.allowed_tool_names={allowed}; agent.disabled_toolsets adds {disabled}'
             + (f' and removes {enabled}' if enabled else '')
             + (f'; tools.tool_search.enabled={search}' if search else '')
+            + (f'; terminal.client_env_passthrough={passthrough}' if passthrough else '')
         )
     lines.append('Coordinator output/turn controls: delegation.max_spawn_depth=1; delegation.max_iterations=8; delegation.max_summary_chars=4000; delegation.fallback_providers=[].')
     lines.append('Coordinator delegation policy: delegation.backend=profile_routes; delegation.backends.profile_routes.profiles is exactly the five authored specialists, which Hermes enforces at runtime as the task.profile enum; a task with no profile runs as ' + DEFAULT_ROUTE + '.')
