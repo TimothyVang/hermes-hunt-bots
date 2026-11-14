@@ -18,6 +18,13 @@ RECORD_SHAPES); one file must use exactly one of them. Output: a NEW directory
     evaluator/pseudonyms.json          original -> pseudonym map
     evaluator/salt.json                per-import HMAC salt
 
+Subcommand `compound` imports ONE explicit UTC partition of a multi-host compound
+recording (for example datasets/compound/apt29) with its README as metadata:
+records outside the window, and with `--collection-profile` outside the pinned
+live-lab collector filter, are excluded and stated as known gaps; its
+records.jsonl is an index of the imported original lines; the prompt projection
+must fit 1 MiB. `compound-plan` splits a window into partitions that fit.
+
 Safety decisions:
 - The dataset is untrusted data. Nothing in it is executed, followed or fetched.
 - Metadata YAML is parsed by a strict hand-written subset parser: only `id`,
@@ -61,7 +68,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from benchmark_contracts import (ASSESSMENT_QUESTION, COVERAGE_AXES, BenchmarkError,
+from benchmark_contracts import (ASSESSMENT_QUESTION, COVERAGE_AXES, MAX_BYTES, BenchmarkError,
                                  canonical_bytes, decode_json, digest_bytes, load_json,
                                  parse_utc, validate_public_bundle, validate_scenario,
                                  validate_truth)
@@ -80,6 +87,13 @@ MAX_RATIO = 200
 MAX_ARCHIVE_ENTRIES = 16
 MAX_LINE_BYTES = 1024 * 1024
 MAX_RECORDS = 500000
+# Compound recordings (several hosts, one long emulation) are streamed and imported as explicit UTC partitions.
+COMPOUND_MAX_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
+COMPOUND_MAX_RECORDS = 1000000
+# `live-collector`: the pinned Windows collector filter of live-lab campaigns (benchmark_evidence).
+COLLECTION_PROFILES = ('live-collector',)
+# A compound partition's prompt projection (evidence + records.jsonl) must fit the contract prompt cap.
+MAX_PUBLIC_BYTES = MAX_BYTES
 MAX_METADATA_BYTES = 256 * 1024
 MAX_SIDE_FILE_BYTES = 4 * 1024 * 1024
 MAX_KEEP_CHARS = 4096
@@ -184,6 +198,31 @@ def read_dataset(path, max_member_bytes=MAX_MEMBER_BYTES, max_input_bytes=MAX_IN
         return candidate, data, candidate.name, data
     if suffix != '.zip' or not is_zip:
         _fail('unsupported_dataset_layout', 'dataset')
+    archive, info = _single_member(data, max_member_bytes)
+    chunks, total = [], 0
+    try:
+        with archive.open(info) as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                # The header is not trusted: enforce the cap on actual output.
+                if total > max_member_bytes or total > max(info.compress_size, 1) * MAX_RATIO:
+                    _fail('member_too_large', 'dataset.member')
+                chunks.append(chunk)
+    except BenchmarkError:
+        raise
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError, RuntimeError):
+        _fail('invalid_archive', 'dataset.member')
+    member = b''.join(chunks)
+    if len(member) != info.file_size:
+        _fail('invalid_archive', 'dataset.member')
+    return candidate, data, info.filename.rsplit('/', 1)[-1], member
+
+
+def _single_member(data, max_member_bytes):
+    """Open zip `data` and return (archive, info) for its one regular .json member, checked before reading."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
         infos = archive.infolist()
@@ -216,26 +255,7 @@ def read_dataset(path, max_member_bytes=MAX_MEMBER_BYTES, max_input_bytes=MAX_IN
         _fail('member_too_large', 'dataset.member')
     if info.file_size > max(info.compress_size, 1) * MAX_RATIO:
         _fail('compression_ratio', 'dataset.member')
-    chunks, total = [], 0
-    try:
-        with archive.open(info) as handle:
-            while True:
-                chunk = handle.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                # The header is not trusted: enforce the cap on actual output.
-                if total > max_member_bytes or total > max(info.compress_size, 1) * MAX_RATIO:
-                    _fail('member_too_large', 'dataset.member')
-                chunks.append(chunk)
-    except BenchmarkError:
-        raise
-    except (zipfile.BadZipFile, OSError, ValueError, EOFError, RuntimeError):
-        _fail('invalid_archive', 'dataset.member')
-    member = b''.join(chunks)
-    if len(member) != info.file_size:
-        _fail('invalid_archive', 'dataset.member')
-    return candidate, data, info.filename.rsplit('/', 1)[-1], member
+    return archive, info
 
 
 # --------------------------------------------------------- strict YAML subset
@@ -812,6 +832,55 @@ def _record_shape(record, field):
     return shape
 
 
+def _record_entry(number, raw, channels, field_map, naive_utc, shape):
+    """Parse ORIGINAL line `number` into an entry; returns (entry, shape). `shape` is the export's shape so far."""
+    if raw.endswith(b'\r'):
+        raw = raw[:-1]
+    field = 'dataset.line.%d' % number
+    if len(raw) > MAX_LINE_BYTES:
+        _fail('line_too_large', field)
+    entry = {'line': number, 'line_sha256': digest_bytes(raw)}
+    if not raw.strip():
+        entry['status'] = 'blank_line'
+        return entry, shape
+    try:
+        record = decode_json(raw)
+    except BenchmarkError:
+        _fail('invalid_json', field)
+    detected = _record_shape(record, field)
+    if shape is None:
+        shape = detected
+        if shape == SHAPE_NXLOG and naive_utc:
+            _fail('conflicting_arguments', 'naive_timestamps_utc')
+    elif detected != shape:
+        _fail('mixed_record_shapes', field)
+    channel, event_id, host = record.get('Channel'), record.get('EventID'), record.get('Hostname')
+    if type(event_id) is str and re.fullmatch(r'[0-9]{1,5}', event_id):
+        event_id = int(event_id)
+    if type(channel) is not str or type(event_id) is not int or type(host) is not str or not _HOST.fullmatch(host):
+        _fail('unsupported_record_shape', field)
+    if shape == SHAPE_FLAT:
+        moment, naive = _parse_time(record.get('TimeCreated'), naive_utc, field)
+        record_id = record.get('EventRecordID', record.get('RecordNumber'))
+    else:
+        # NXLog EventTime: zone-less collector wall clock, whole seconds. Read as a placeholder UTC value here;
+        # build_case requires a Sysmon UtcTime reference to place it (see measure_clock).
+        match = NXLOG_TIME.fullmatch(record['EventTime'])
+        if not match:
+            _fail('invalid_timestamp', field)
+        moment, naive = parse_utc(match.group(1) + 'T' + match.group(2) + 'Z', field), False
+        record_id = record['RecordNumber']
+    canonical = channels.get(channel.casefold(), channel)
+    spec = field_map['channels'].get(canonical)
+    entry.update({'record': record, 'channel': canonical, 'channel_original': channel, 'event_id': event_id,
+                  'host': host, 'time': moment, 'naive': naive,
+                  'record_id': None if record_id is None else str(record_id)})
+    # Every record is imported: allowlisted types with their fields, any other type metadata-only.
+    entry['status'] = 'imported'
+    entry['coverage'] = 'allowlisted' if spec is not None and str(event_id) in spec['events'] else 'metadata_only'
+    return entry, shape
+
+
 def parse_records(member, field_map, naive_utc=False):
     """Return (entries, shape): one entry per ORIGINAL line; nothing is silently dropped."""
     if member[:3] == b'\xef\xbb\xbf':
@@ -827,52 +896,7 @@ def parse_records(member, field_map, naive_utc=False):
     channels = {name.casefold(): name for name in field_map['channels']}
     entries, shape = [], None
     for number, raw in enumerate(lines, 1):
-        if raw.endswith(b'\r'):
-            raw = raw[:-1]
-        field = 'dataset.line.%d' % number
-        if len(raw) > MAX_LINE_BYTES:
-            _fail('line_too_large', field)
-        entry = {'line': number, 'line_sha256': digest_bytes(raw)}
-        if not raw.strip():
-            entry['status'] = 'blank_line'
-            entries.append(entry)
-            continue
-        try:
-            record = decode_json(raw)
-        except BenchmarkError:
-            _fail('invalid_json', field)
-        detected = _record_shape(record, field)
-        if shape is None:
-            shape = detected
-            if shape == SHAPE_NXLOG and naive_utc:
-                _fail('conflicting_arguments', 'naive_timestamps_utc')
-        elif detected != shape:
-            _fail('mixed_record_shapes', field)
-        channel, event_id, host = record.get('Channel'), record.get('EventID'), record.get('Hostname')
-        if type(event_id) is str and re.fullmatch(r'[0-9]{1,5}', event_id):
-            event_id = int(event_id)
-        if type(channel) is not str or type(event_id) is not int or type(host) is not str or not _HOST.fullmatch(host):
-            _fail('unsupported_record_shape', field)
-        if shape == SHAPE_FLAT:
-            moment, naive = _parse_time(record.get('TimeCreated'), naive_utc, field)
-            record_id = record.get('EventRecordID', record.get('RecordNumber'))
-        else:
-            # NXLog EventTime: zone-less collector wall clock, whole seconds. Read as a placeholder UTC value here;
-            # build_case requires a Sysmon UtcTime reference to place it (see measure_clock).
-            match = NXLOG_TIME.fullmatch(record['EventTime'])
-            if not match:
-                _fail('invalid_timestamp', field)
-            moment, naive = parse_utc(match.group(1) + 'T' + match.group(2) + 'Z', field), False
-            record_id = record['RecordNumber']
-        canonical = channels.get(channel.casefold(), channel)
-        spec = field_map['channels'].get(canonical)
-        entry.update({'record': record, 'channel': canonical, 'channel_original': channel, 'event_id': event_id,
-                      'host': host, 'time': moment, 'naive': naive,
-                      'record_id': None if record_id is None else str(record_id)})
-        # Every record is imported: allowlisted types with their fields, any other type metadata-only.
-        entry['status'] = 'imported'
-        entry['coverage'] = 'allowlisted' if spec is not None and str(event_id) in spec['events'] else \
-            'metadata_only'
+        entry, shape = _record_entry(number, raw, channels, field_map, naive_utc, shape)
         entries.append(entry)
     if not any(entry['status'] == 'imported' for entry in entries):
         _fail('no_supported_records', 'dataset')
@@ -916,28 +940,39 @@ UNREVIEWED_LIMITATION = ('Answer key is an UNREVIEWED agent proposal (truth atte
                          'truth.')
 CONSENSUS_HINT = 'agent_consensus'
 CONSENSUS_CURATOR = 'agent-consensus'
+PUBLISHER_HINT = 'publisher_labels'
+PUBLISHER_CURATOR = 'publisher-labels'
 CONSENSUS_LIMITATION = ('Answer key is an AGENT CONSENSUS of two independent AI drafts merged mechanically; no human '
                         'reviewed it (truth attestation agent_consensus). Steps, controls and labels the drafts '
                         'disagreed on are dropped: disputed records are ignored by scoring and disputed questions '
                         'carry a null label. Scores from it carry truth_attestation agent_consensus and are never '
                         'compared with human-attested or proposal truth.')
-_LIMITATION_BY_ATTESTATION = {'unreviewed_proposal': UNREVIEWED_LIMITATION, 'agent_consensus': CONSENSUS_LIMITATION}
+PUBLISHER_LIMITATION = ('Answer key is derived mechanically from dataset-publisher ground-truth labels; no human '
+                        'reviewed the benchmark mapping (truth attestation publisher_labels). Scores from it carry '
+                        'truth_attestation publisher_labels and form a separate cohort.')
+_LIMITATION_BY_ATTESTATION = {
+    'unreviewed_proposal': UNREVIEWED_LIMITATION,
+    'agent_consensus': CONSENSUS_LIMITATION,
+    'publisher_labels': PUBLISHER_LIMITATION,
+}
 
 
 def _proposal_attestation(value, field):
-    """Classify a decoded curation: `unreviewed_proposal`, `agent_consensus` or `human_attested`.
+    """Classify a decoded curation: `unreviewed_proposal`, `agent_consensus`, `publisher_labels` or `human_attested`.
 
-    Proposals lose `status` and must still carry a null curator: nothing here attests them. An agent consensus
-    loses `attestation_hint` and must name the fixed automation curator, never a human.
+    Proposals lose `status` and must still carry a null curator: nothing here attests them. An agent consensus or
+    publisher-label key loses `attestation_hint` and must name its fixed automation curator, never a human.
     """
     if type(value) is not dict:
         return 'human_attested'
     if 'attestation_hint' in value:
-        if value.pop('attestation_hint') != CONSENSUS_HINT or 'status' in value:
+        hint = value.pop('attestation_hint')
+        if hint not in (CONSENSUS_HINT, PUBLISHER_HINT) or 'status' in value:
             _fail('invalid_attestation_hint', field + '.attestation_hint')
-        if value.get('curated_by') != CONSENSUS_CURATOR:
+        expected_curator = CONSENSUS_CURATOR if hint == CONSENSUS_HINT else PUBLISHER_CURATOR
+        if value.get('curated_by') != expected_curator:
             _fail('consensus_curator_mismatch', field + '.curated_by')
-        return 'agent_consensus'
+        return hint
     if 'status' not in value:
         return 'human_attested'
     if value.pop('status') != PROPOSAL_STATUS:
@@ -955,8 +990,9 @@ def _check_curator(value, attestation, field):
         return
     for key in ('curated_by', 'note'):
         _text(value[key], field + '.' + key)
-    if attestation == 'human_attested' and value['curated_by'].strip().casefold() == CONSENSUS_CURATOR:
-        # Stripping the hint must never turn an automatic consensus into human attestation.
+    if attestation == 'human_attested' and value['curated_by'].strip().casefold() in (CONSENSUS_CURATOR,
+                                                                                      PUBLISHER_CURATOR):
+        # Stripping the hint must never turn an automatic consensus or publisher key into human attestation.
         _fail('consensus_hint_missing', field + '.curated_by')
     parse_utc(value['curated_utc'], field + '.curated_utc')
 
@@ -971,7 +1007,8 @@ def load_curation(path):
                     'note', 'revision', 'truth_revision', 'attack_release', 'coverage', 'assets',
                     'steps', 'edges', 'controls', 'lookalike_event_ids', 'sophistication',
                     'source_references'}, field,
-            {'assessment_windows', 'matched_control', 'family_id', 'excluded_locators'})
+            {'assessment_windows', 'matched_control', 'family_id', 'excluded_locators', 'partition_window',
+             'collection_profile'})
     if value['schema_version'] != 1:
         _fail('unsupported_schema', field + '.schema_version')
     for key in ('dataset_sha256', 'metadata_sha256'):
@@ -983,6 +1020,13 @@ def load_curation(path):
             _fail('invalid_integer', field + '.' + key)
     if 'family_id' in value:
         _family_override(value['family_id'], field + '.family_id')
+    if 'partition_window' in value:
+        _strict(value['partition_window'], {'start_inclusive', 'end_exclusive'}, field + '.partition_window')
+        if not parse_utc(value['partition_window']['start_inclusive'], field + '.partition_window') < \
+                parse_utc(value['partition_window']['end_exclusive'], field + '.partition_window'):
+            _fail('invalid_window', field + '.partition_window')
+    if 'collection_profile' in value and value['collection_profile'] not in COLLECTION_PROFILES:
+        _fail('invalid_choice', field + '.collection_profile')
     value['attestation'] = attestation
     return value, data
 
@@ -1050,6 +1094,9 @@ def _summarize_attestation(report, summary):
     elif attestation == 'agent_consensus':
         summary['warning'] = ('AGENT CONSENSUS: truth is attestation=agent_consensus (two AI drafts merged '
                               'mechanically, no human review); its scores form a separate cohort.')
+    elif attestation == 'publisher_labels':
+        summary['warning'] = ('PUBLISHER LABELS: truth is attestation=publisher_labels (mechanical ground-truth '
+                              'mapping, no human review); its scores form a separate cohort.')
 
 
 def _family_from_techniques(techniques):
@@ -1064,6 +1111,21 @@ def _family_override(value, field):
     techniques = ['T' + base + ('.' + sub if sub else '') for base, sub in tokens]
     if _family_from_techniques(techniques) != value:
         _fail('invalid_identifier', field)
+
+
+class _ExcludedLines(dict):
+    """Compound partition lines: an original line outside the partition or profile is known but not imported."""
+
+    def __init__(self, imported, original_lines):
+        super().__init__(imported)
+        self.original_lines = original_lines
+
+    def get(self, line, default=None):
+        if line in self:
+            return self[line]
+        if type(line) is int and 1 <= line <= self.original_lines:
+            return {'line': line, 'status': 'excluded_from_partition'}
+        return default
 
 
 def _resolve(locator, by_line, by_record, field):
@@ -1201,14 +1263,26 @@ def measure_clock(entries, time_field='TimeCreated'):
     """
     deltas = []
     for entry in entries:
-        value = entry['record'].get('UtcTime') if entry['channel'] == 'Microsoft-Windows-Sysmon/Operational' else None
-        if type(value) is not str:
-            continue
-        match = NAIVE_TIME.fullmatch(value)
-        if not match:
-            continue
-        reference = parse_utc(match.group(1) + 'T' + match.group(2) + 'Z', 'dataset.UtcTime')
-        deltas.append((entry['time'] - reference).total_seconds())
+        delta = _clock_delta(entry)
+        if delta is not None:
+            deltas.append(delta)
+    return clock_from_deltas(deltas, time_field)
+
+
+def _clock_delta(entry):
+    """Seconds between an entry's export time and its own Sysmon UtcTime, or None without a reference."""
+    value = entry['record'].get('UtcTime') if entry['channel'] == 'Microsoft-Windows-Sysmon/Operational' else None
+    if type(value) is not str:
+        return None
+    match = NAIVE_TIME.fullmatch(value)
+    if not match:
+        return None
+    reference = parse_utc(match.group(1) + 'T' + match.group(2) + 'Z', 'dataset.UtcTime')
+    return (entry['time'] - reference).total_seconds()
+
+
+def clock_from_deltas(deltas, time_field):
+    """The measure_clock decision from measured export-time minus Sysmon-UtcTime deltas."""
     if not deltas:
         return {'offset_seconds': None, 'uncertainty_seconds': None, 'reference_records': 0,
                 'note': 'absolute time unverified: no Sysmon UtcTime reference in this export'}
@@ -1229,6 +1303,30 @@ def _attack_url(technique):
     return 'https://attack.mitre.org/techniques/' + technique.replace('.', '/') + '/'
 
 
+def _matching_curation(curation_path, draft_os_family, dataset_sha, metadata_sha):
+    """Load the curation for these exact inputs, or check the draft's declared OS family."""
+    if curation_path is None:
+        if draft_os_family not in COVERAGE_AXES['os']:
+            _fail('invalid_choice', 'draft_os_family')
+        return None, None
+    if draft_os_family is not None:
+        _fail('conflicting_arguments', 'draft_os_family')
+    curation, curation_bytes = load_curation(curation_path)
+    if curation['dataset_sha256'] != dataset_sha or curation['metadata_sha256'] != metadata_sha:
+        _fail('curation_dataset_mismatch', 'curation')
+    return curation, curation_bytes
+
+
+def _single_collector(shape, records):
+    """One forwarding collector renders every NXLog EventTime, so one measured offset applies to all hosts."""
+    if shape != SHAPE_NXLOG:
+        return None
+    collectors = len({record.get('host') for record in records})
+    if collectors != 1:
+        _fail('multiple_collectors', 'dataset.host')
+    return collectors
+
+
 def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
                draft_os_family=None, naive_utc=False, max_member_bytes=MAX_MEMBER_BYTES,
                coverage=None, encoded_payloads='preview'):
@@ -1239,32 +1337,15 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
     _, metadata_bytes = _read_regular(metadata_path, MAX_METADATA_BYTES, 'metadata')
     metadata = parse_metadata_yaml(metadata_bytes)
     _bind_metadata(metadata, input_path.name, member_name)
-    dataset_sha, metadata_sha = digest_bytes(input_bytes), digest_bytes(metadata_bytes)
-    member_sha = digest_bytes(member)
-    curation = curation_bytes = None
-    if curation_path is not None:
-        if draft_os_family is not None:
-            _fail('conflicting_arguments', 'draft_os_family')
-        curation, curation_bytes = load_curation(curation_path)
-        if curation['dataset_sha256'] != dataset_sha or curation['metadata_sha256'] != metadata_sha:
-            _fail('curation_dataset_mismatch', 'curation')
-    elif draft_os_family not in COVERAGE_AXES['os']:
-        _fail('invalid_choice', 'draft_os_family')
-
+    dataset = {'file': input_path.name, 'sha256': digest_bytes(input_bytes), 'byte_count': len(input_bytes),
+               'member': member_name, 'member_sha256': digest_bytes(member), 'member_byte_count': len(member),
+               'metadata_sha256': digest_bytes(metadata_bytes)}
+    curation, curation_bytes = _matching_curation(curation_path, draft_os_family, dataset['sha256'],
+                                                  dataset['metadata_sha256'])
     entries, shape = parse_records(member, field_map, naive_utc)
     time_field = 'TimeCreated' if shape == SHAPE_FLAT else 'EventTime'
-    reserved = RESERVED_FIELDS if shape == SHAPE_FLAT else NXLOG_RESERVED
-    names = Pseudonyms(salt)
-    imported = [e for e in entries if e['status'] == 'imported']
     with_records = [e for e in entries if 'record' in e]
-    hosts = sorted({e['host'].casefold() for e in with_records})
-    names.register_domains(hosts)
-    collectors = None
-    if shape == SHAPE_NXLOG:
-        # One forwarding collector renders every EventTime, so one measured offset applies to all hosts.
-        collectors = len({e['record'].get('host') for e in with_records})
-        if collectors != 1:
-            _fail('multiple_collectors', 'dataset.host')
+    collectors = _single_collector(shape, (e['record'] for e in with_records))
     clock = measure_clock(with_records, time_field)
     if shape == SHAPE_NXLOG and clock['offset_seconds'] is None:
         _fail('no_clock_reference', 'dataset.EventTime')
@@ -1274,8 +1355,27 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
             entry['time'] = entry['time'] - shift
     stamps = [e['time'] for e in with_records]
     outer = (min(stamps).replace(microsecond=0), max(stamps).replace(microsecond=0) + timedelta(seconds=1))
+    hosts = sorted({e['host'].casefold() for e in with_records})
+    return _assemble(metadata, dataset, field_map, salt, curation, curation_bytes, draft_os_family, entries, shape,
+                     hosts, collectors, clock, outer, coverage, encoded_payloads)
+
+
+def _assemble(metadata, dataset, field_map, salt, curation, curation_bytes, draft_os_family, entries, shape, hosts,
+              collectors, clock, outer, coverage, encoded_payloads, compound=None):
+    """Shared case builder: `entries` are the parsed lines to publish; `compound` describes a compound partition."""
+    dataset_sha, metadata_sha, member_sha = dataset['sha256'], dataset['metadata_sha256'], dataset['member_sha256']
+    member_name = dataset['member']
+    time_field = 'TimeCreated' if shape == SHAPE_FLAT else 'EventTime'
+    reserved = RESERVED_FIELDS if shape == SHAPE_FLAT else NXLOG_RESERVED
+    names = Pseudonyms(salt)
+    imported = [e for e in entries if e['status'] == 'imported']
+    with_records = [e for e in entries if 'record' in e]
+    names.register_domains(hosts)
     window = _normal_window(outer)
-    case_id = 'case-' + hmac.new(salt, ('case\x00' + dataset_sha).encode('utf-8'), hashlib.sha256).hexdigest()[:16]
+    case_key = 'case\x00' + dataset_sha
+    if compound is not None:
+        case_key += '\x00' + _utc_text(outer[0]) + '\x00' + _utc_text(outer[1]) + '\x00' + (compound['profile'] or '')
+    case_id = 'case-' + hmac.new(salt, case_key.encode('utf-8'), hashlib.sha256).hexdigest()[:16]
 
     # Assets: explicit facts from curation, or one operator-declared OS for a draft.
     if curation is not None:
@@ -1394,11 +1494,15 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
     structured_rewrites = _rewrite_structured(rewritable, names, hosts)
     events.sort(key=lambda e: (e['timestamp_utc'], e['event_id']))
 
-    # records.jsonl mirrors the ORIGINAL line structure: line N is original line N.
+    # records.jsonl mirrors the ORIGINAL line structure: line N is original line N. A compound partition publishes
+    # only its imported records, so its records.jsonl is an index (event ID -> original line, in original order);
+    # each record's sanitized fields are published once, in evidence.json, so the prompt cap holds twice the events.
     by_event = {e['event_id']: e for e in events}
     lines = []
     for entry in entries:
-        if entry['status'] == 'imported':
+        if compound is not None:
+            lines.append(canonical_bytes({'event_id': entry['event_id_public'], 'line': entry['line']}))
+        elif entry['status'] == 'imported':
             lines.append(canonical_bytes(by_event[entry['event_id_public']]))
         else:
             lines.append(canonical_bytes({'line': entry['line'], 'status': 'not_imported', 'reason': entry['status']}))
@@ -1428,6 +1532,8 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
                          'reason': 'content_truncated: %d content field values exceeded %d bytes; each keeps its '
                                    'first %d bytes and ends with an explicit truncation marker'
                                    % (truncated[(source, host)], MAX_CONTENT_BYTES, MAX_CONTENT_BYTES)})
+    if compound is not None:
+        gaps.extend(_compound_gaps(compound, field_map, source_keys, asset_ids, window))
     gaps.sort(key=lambda g: (g['asset_id'], g['source_id'] or '', g['reason']))
 
     # Assessment grid: every asset x every declared window, including controls.
@@ -1453,10 +1559,19 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
               'assessment_questions': questions}
     validate_public_bundle(bundle)
     public_bytes = canonical_bytes(bundle)
-    _leak_check(public_bytes + records, metadata, input_path.name, member_name, names, hosts)
+    _leak_check(public_bytes + records, metadata, dataset['file'], member_name, names, hosts)
     manifest_sha = digest_bytes(public_bytes)
+    prompt_bytes = None
+    if compound is not None:
+        from benchmark_corpus import prompt_projection_bytes
+        prompt_bytes = prompt_projection_bytes(bundle, {'records.jsonl': records})
+        if compound['max_public_bytes'] is not None and prompt_bytes > compound['max_public_bytes']:
+            # A case that cannot fit the prompt cap is refused, never sampled; split the window instead.
+            _fail('public_bundle_too_large', 'partition')
 
     by_line = {e['line']: e for e in entries}
+    if compound is not None:
+        by_line = _ExcludedLines(by_line, compound['original_lines'])
     by_record = {}
     for entry in with_records:
         for key in ('EventRecordID', 'RecordNumber'):
@@ -1473,9 +1588,9 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
     report = {'schema_version': 1, 'importer_version': IMPORTER_VERSION,
               'status': 'curated' if curation is not None else DRAFT_MARKER,
               'split': 'development', 'provenance': 'public_replay',
-              'dataset': {'file': input_path.name, 'sha256': dataset_sha, 'member': member_name,
-                          'member_sha256': member_sha, 'byte_count': len(input_bytes),
-                          'member_byte_count': len(member)},
+              'dataset': {'file': dataset['file'], 'sha256': dataset_sha, 'member': member_name,
+                          'member_sha256': member_sha, 'byte_count': dataset['byte_count'],
+                          'member_byte_count': dataset['member_byte_count']},
               'metadata': {'file_sha256': metadata_sha, 'id': metadata['id'], 'title': metadata['title'],
                            'type': metadata['type'], 'declared_techniques': metadata['techniques'],
                            'links': metadata['links']},
@@ -1511,6 +1626,21 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
                          'assessment_questions': len(questions)},
               'public_bytes': {'evidence.json': len(public_bytes), 'records.jsonl': len(records)},
               'evidence_manifest_sha256': manifest_sha, 'case_id': case_id}
+    if compound is not None:
+        report['counts'].update({'original_lines': compound['original_lines'], 'not_imported': {
+            'blank_line': compound['blank_lines'],
+            'outside_partition_window': sum(compound['outside'].values()),
+            'collection_profile_filter': sum(compound['filtered'].values())}})
+        report['public_bytes']['prompt_projection'] = prompt_bytes
+        report['public_bytes']['max_public_bytes'] = compound['max_public_bytes']
+        report['partition'] = {'window_utc': window, 'excluded_records': sum(compound['outside'].values()),
+                               'excluded_by_host': dict(sorted(compound['outside'].items())),
+                               'imported_line_ranges': _line_ranges([e['line'] for e in imported])}
+        report['collection_profile'] = _profile_report(compound)
+        report['record_shape']['compound'] = {'hosts': hosts, 'clock_reference_records': clock['reference_records'],
+                                              'records_jsonl': 'index of imported records only ({event_id, line}), '
+                                                               'in original line order; locator record_id is the '
+                                                               'original line; fields are in evidence.json'}
     outputs = {'public/evidence.json': public_bytes, 'public/records.jsonl': records,
                'evaluator/locators.json': canonical_bytes(locators),
                'evaluator/pseudonyms.json': canonical_bytes({'schema_version': 1, 'mapping': names.mapping}),
@@ -1524,13 +1654,18 @@ def build_case(dataset_path, metadata_path, field_map, salt, curation_path=None,
         _refuse_draft_check(draft, bundle)
         outputs['evaluator/truth.DRAFT.json'] = canonical_bytes(draft)
         outputs['evaluator/curation-template.json'] = canonical_bytes(
-            _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, window, draft_os_family))
+            _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, window, draft_os_family,
+                      compound))
         report['counts']['steps'] = 0
         outputs['evaluator/import-report.json'] = canonical_bytes(report)
         return case_id, outputs
 
+    if compound is not None:
+        _check_compound_curation(curation, outer, compound['profile'])
+    elif 'partition_window' in curation or 'collection_profile' in curation:
+        _fail('partition_mismatch', 'curation.partition_window')
     truth, scenario, curated = _curated(curation, metadata, bundle, events, by_line, by_record, hosts,
-                                         asset_ids, outer, dataset_sha, member_name, coverage)
+                                         asset_ids, outer, dataset_sha, member_name, coverage, compound)
     report['curation'] = dict(curated, sha256=digest_bytes(curation_bytes))
     report['counts']['steps'] = len(truth['steps'])
     outputs['evaluator/truth.json'] = canonical_bytes(truth)
@@ -1546,7 +1681,8 @@ def _leak_check(public, metadata, input_name, member_name, names, hosts):
                     r'dns|segment|value)-[0-9a-f]{16}', ' ', public.decode('utf-8').casefold())
     needles = {metadata['id'].casefold(), input_name.rsplit('.', 1)[0].casefold(),
                member_name.rsplit('.', 1)[0].casefold()}
-    needles.update(link.rsplit('/', 1)[-1].rsplit('.', 1)[0].casefold() for link in metadata['links'])
+    needles.update(link.rsplit('/', 1)[-1].rsplit('.', 1)[0].casefold()
+                   for link in list(metadata['links']) + list(metadata.get('datasets', ())))
     if len(metadata['title']) >= 12:
         needles.add(metadata['title'].casefold())
     if any(needle and needle in folded for needle in needles):
@@ -1574,7 +1710,7 @@ def refuse_draft(truth, public_bundle=None):
     return validate_truth(truth, public_bundle)
 
 
-def _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, window, os_family):
+def _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, window, os_family, compound=None):
     candidates = []
     for entry in sorted(imported, key=lambda e: (e['time'], e['line'])):
         event = by_event[entry['event_id_public']]
@@ -1587,7 +1723,7 @@ def _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, wi
               'execution_outcome': None, 'observability': None, 'support_sets': [],
               'boundary_id': 'boundary-host', 'phase': 'initial'}
              for index, item in enumerate(metadata['techniques'])]
-    return {
+    template = {
         'NOT_VALID_FOR_SCORING': 'Curation template. Every null and empty list must be decided by a human '
                                  'curator from the original records. Nothing here is truth.',
         'instructions': [
@@ -1616,10 +1752,16 @@ def _template(metadata, dataset_sha, metadata_sha, hosts, imported, by_event, wi
                                'source_references': []},
             'source_references': [],
             'assessment_windows': [window]}}
+    if compound is not None:
+        # A partition defines the case: the curation must declare the same window and collection profile.
+        template['curation']['partition_window'] = window
+        if compound['profile'] is not None:
+            template['curation']['collection_profile'] = compound['profile']
+    return template
 
 
 def _curated(curation, metadata, bundle, events, by_line, by_record, hosts, asset_ids, outer,
-             dataset_sha, member_name, coverage):
+             dataset_sha, member_name, coverage, compound=None):
     field = 'curation'
     steps_in = curation['steps']
     if type(steps_in) is not list:
@@ -1700,16 +1842,26 @@ def _curated(curation, metadata, bundle, events, by_line, by_record, hosts, asse
     references = curation['source_references']
     if type(references) is not list or not references or not all(type(r) is str for r in references):
         _fail('invalid_array', field + '.source_references')
-    derived_family = _family_from_techniques(techniques)
+    derived_family = _family_from_techniques(techniques) if compound is None else compound['family_id']
     family = curation.get('family_id', derived_family)
+    limitations = soph['emulation_limitations']
+    scenario_id = 'otrf-' + metadata['id'].casefold()
+    if compound is not None:
+        if 'family_id' in curation:
+            # Every partition of one compound recording is one bootstrap cluster; no override.
+            _fail('unsupported_field', field + '.family_id')
+        scenario_id = compound['scenario_id']
+        if type(limitations) is not list:
+            _fail('invalid_array', field + '.sophistication.emulation_limitations')
+        limitations = limitations + [_partition_limitation(compound, bundle['window_utc'])]
     scenario = {
-        'schema_version': 1, 'scenario_id': 'otrf-' + metadata['id'].casefold(),
+        'schema_version': 1, 'scenario_id': scenario_id,
         'family_id': family,
         'revision': curation['revision'], 'split': 'development', 'provenance': 'public_replay',
         'coverage': curation['coverage'], 'difficulty': difficulty,
         'sophistication': {'band': soph['band'], 'steps': sophistication_steps, 'edges': curation['edges'],
                            'preconditions': soph['preconditions'], 'boundaries': soph['boundaries'],
-                           'emulation_limitations': _limitations(soph['emulation_limitations'],
+                           'emulation_limitations': _limitations(limitations,
                                                                  curation['attestation'],
                                                                  field + '.sophistication.emulation_limitations'),
                            'group_ids': soph['group_ids'], 'source_references': soph['source_references']},
@@ -1726,6 +1878,359 @@ def _curated(curation, metadata, bundle, events, by_line, by_record, hosts, asse
                     'family_id': {'value': family, 'metadata_derived': derived_family,
                                   'source': 'curation_override' if 'family_id' in curation else 'metadata'}})
     return truth, scenario, curated
+
+
+# -------------------------------------------------------- compound recordings
+
+_README_ADVERSARY = re.compile(r'^# Adversary[ \t]*\n(?:[ \t]*\n)*([A-Za-z0-9][A-Za-z0-9 ._-]{0,63}?)[ \t]*$', re.M)
+_README_DATASET = re.compile(r'\[([A-Za-z0-9._-]+\.zip)\]\(((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.zip)\)')
+
+
+def parse_compound_readme(data):
+    """Parse an OTRF compound dataset README (Markdown); compound datasets have no metadata YAML.
+
+    Only the adversary name under `# Adversary` and the Markdown links to `.zip` datasets are interpreted. The
+    README declares no per-dataset ATT&CK mapping, so no technique is derived from it.
+    """
+    if type(data) is not bytes or len(data) > MAX_METADATA_BYTES:
+        _fail('input_too_large', 'metadata')
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError:
+        _fail('invalid_text', 'metadata')
+    if '\x00' in text:
+        _fail('invalid_text', 'metadata')
+    text = text.replace('\r\n', '\n')
+    match = _README_ADVERSARY.search(text)
+    if not match:
+        _fail('missing_field', 'metadata.adversary')
+    title = match.group(1)
+    identifier = re.sub(r'[ ._]+', '-', title.casefold())
+    if not _ID.fullmatch(identifier):
+        _fail('invalid_identifier', 'metadata.adversary')
+    datasets = set()
+    for name, path in _README_DATASET.findall(text):
+        if path.rsplit('/', 1)[-1] != name or '..' in path.split('/'):
+            _fail('invalid_object', 'metadata.datasets')
+        datasets.add(path)
+    if not datasets:
+        _fail('invalid_array', 'metadata.datasets')
+    return {'id': identifier, 'title': title, 'type': 'compound', 'techniques': [], 'links': [],
+            'datasets': sorted(datasets)}
+
+
+def _member_lines(archive, info, digest):
+    """Stream (original line number, raw bytes) from the member with the hard byte and ratio caps."""
+    total, pending, number = 0, b'', 0
+    try:
+        with archive.open(info) as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > COMPOUND_MAX_MEMBER_BYTES or total > max(info.compress_size, 1) * MAX_RATIO:
+                    _fail('member_too_large', 'dataset.member')
+                digest.update(chunk)
+                if number == 0 and not pending and chunk[:3] == b'\xef\xbb\xbf':
+                    chunk = chunk[3:]
+                parts = (pending + chunk).split(b'\n')
+                pending = parts.pop()
+                for raw in parts:
+                    number += 1
+                    yield number, raw
+                if len(pending) > MAX_LINE_BYTES + 1:
+                    _fail('line_too_large', 'dataset.line.%d' % (number + 1))
+    except BenchmarkError:
+        raise
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError, RuntimeError):
+        _fail('invalid_archive', 'dataset.member')
+    if pending:
+        yield number + 1, pending
+    if total != info.file_size:
+        _fail('invalid_archive', 'dataset.member')
+
+
+def _profile_filter(profile):
+    """{casefolded channel: event IDs} kept by a collection profile; None keeps everything."""
+    if profile is None:
+        return None
+    if profile not in COLLECTION_PROFILES:
+        _fail('invalid_choice', 'collection_profile')
+    import benchmark_evidence
+    return {channel: sorted(benchmark_evidence.supported_event_ids(channel)) for channel in benchmark_evidence.CHANNELS}
+
+
+def _slug(text):
+    return re.sub(r'[^a-z0-9]+', '-', text.casefold()).strip('-')
+
+
+def scan_compound(dataset_path, metadata_path, field_map, window, profile=None, naive_utc=False):
+    """Stream a compound OTRF recording twice and keep only the records of one UTC window.
+
+    Pass 1 checks every line (shape, collector, record cap) and measures the clock against Sysmon UtcTime over the
+    WHOLE recording. Pass 2 keeps records whose normalized time is inside `window` (start inclusive, end exclusive):
+    records outside the collection profile are counted, not kept. Records outside the window are only counted per
+    host. Nothing inside the window is sampled. Returns a scan for `build_compound_case`/`plan_compound`.
+    """
+    window = _partition_tuple(window, 'window')
+    filters = _profile_filter(profile)
+    allowed = None if filters is None else {channel.casefold(): frozenset(ids) for channel, ids in filters.items()}
+    candidate, data = _read_regular(dataset_path, MAX_INPUT_BYTES, 'dataset')
+    if candidate.suffix.casefold() != '.zip' or data[:4] != b'PK\x03\x04':
+        _fail('unsupported_dataset_layout', 'dataset')
+    archive, info = _single_member(data, COMPOUND_MAX_MEMBER_BYTES)
+    member_name = info.filename.rsplit('/', 1)[-1]
+    _, metadata_bytes = _read_regular(metadata_path, MAX_METADATA_BYTES, 'metadata')
+    metadata = parse_compound_readme(metadata_bytes)
+    # The README links the published .zip itself: its file name must be one of those links exactly, and the member
+    # must belong to it (same stem, optional `_<timestamp>` suffix).
+    if candidate.name.casefold() not in {path.rsplit('/', 1)[-1].casefold() for path in metadata['datasets']}:
+        _fail('metadata_dataset_mismatch', 'metadata.datasets')
+    _bind_metadata({'links': [candidate.name]}, candidate.name, member_name)
+    channels = {name.casefold(): name for name in field_map['channels']}
+
+    digest, shape, deltas, collectors, totals, times, blank = hashlib.sha256(), None, [], set(), {}, [], 0
+    for number, raw in _member_lines(archive, info, digest):
+        if number > COMPOUND_MAX_RECORDS:
+            _fail('too_many_records', 'dataset')
+        if number == 1 and raw.lstrip()[:1] == b'[':
+            _fail('unsupported_dataset_layout', 'dataset')
+        entry, shape = _record_entry(number, raw, channels, field_map, naive_utc, shape)
+        if entry['status'] == 'blank_line':
+            blank += 1
+            times.append(None)
+            continue
+        host = entry['host'].casefold()
+        totals[host] = totals.get(host, 0) + 1
+        if shape == SHAPE_NXLOG:
+            collectors.add(entry['record'].get('host'))
+        delta = _clock_delta(entry)
+        if delta is not None:
+            deltas.append(delta)
+        times.append(entry['time'])
+    if not totals:
+        _fail('no_supported_records', 'dataset')
+    member_sha = digest.hexdigest()
+    collector_count = _single_collector(shape, [{'host': item} for item in collectors])
+    time_field = 'TimeCreated' if shape == SHAPE_FLAT else 'EventTime'
+    clock = clock_from_deltas(deltas, time_field)
+    if clock['offset_seconds'] is None:
+        # Partition windows are UTC; without a Sysmon reference the export clock cannot be placed.
+        _fail('no_clock_reference', 'dataset.' + time_field)
+    shift = timedelta(seconds=clock['offset_seconds'])
+
+    second, entries, filtered = hashlib.sha256(), [], []
+    for number, raw in _member_lines(archive, info, second):
+        moment = times[number - 1]
+        if moment is None or not window[0] <= moment - shift < window[1]:
+            continue
+        entry, _ = _record_entry(number, raw, channels, field_map, naive_utc, shape)
+        entry['time'] = entry['time'] - shift
+        entry['raw_bytes'] = len(raw)
+        if allowed is not None and entry['event_id'] not in allowed.get(entry['channel'].casefold(), ()):
+            filtered.append((entry['time'], entry['host'].casefold(), entry['channel'], entry['event_id'], len(raw)))
+            continue
+        entries.append(entry)
+    if second.hexdigest() != member_sha:
+        _fail('dataset_changed', 'dataset.member')
+    stem = _slug(candidate.name.rsplit('.', 1)[0])
+    return {'metadata': metadata, 'shape': shape, 'clock': clock, 'collectors': collector_count,
+            'hosts': sorted(totals), 'totals': totals, 'original_lines': len(times), 'blank_lines': blank,
+            'window': window, 'profile': profile, 'profile_filter': filters, 'entries': entries,
+            'filtered': filtered, 'family_id': 'otrf-compound-' + metadata['id'] + '-' + stem,
+            'dataset': {'file': candidate.name, 'sha256': digest_bytes(data), 'byte_count': len(data),
+                        'member': member_name, 'member_sha256': member_sha, 'member_byte_count': info.file_size,
+                        'metadata_sha256': digest_bytes(metadata_bytes)}}
+
+
+def _partition_tuple(value, field):
+    if type(value) not in (tuple, list) or len(value) != 2:
+        _fail('invalid_window', field)
+    value = tuple(parse_utc(item, field) if type(item) is str else item for item in value)
+    if not all(type(item) is datetime and item.tzinfo is not None for item in value) or not value[0] < value[1]:
+        _fail('invalid_window', field)
+    return value
+
+
+def build_compound_case(scan, field_map, salt, partition, curation_path=None, draft_os_family=None, coverage=None,
+                        encoded_payloads='preview', max_public_bytes=MAX_PUBLIC_BYTES):
+    """One partition of a scanned compound recording as a case; returns (case_id, {relative_path: bytes}).
+
+    `partition` must lie inside the scanned window. Its public prompt projection (evidence plus records.jsonl, as
+    `benchmark_corpus.public_prompt_bytes` measures it) must fit `max_public_bytes`, else `public_bundle_too_large`:
+    choose smaller contiguous partitions (`plan_compound`) instead of sampling.
+    """
+    if encoded_payloads not in ENCODED_PAYLOAD_MODES:
+        _fail('invalid_choice', 'encoded_payloads')
+    if max_public_bytes is not None and (type(max_public_bytes) is not int or
+                                         not 0 < max_public_bytes <= MAX_PUBLIC_BYTES):
+        _fail('invalid_limit', 'max_public_bytes')
+    partition = _partition_tuple(partition, 'partition')
+    if partition[0] < scan['window'][0] or partition[1] > scan['window'][1]:
+        _fail('invalid_window', 'partition')
+    curation, curation_bytes = _matching_curation(curation_path, draft_os_family, scan['dataset']['sha256'],
+                                                  scan['dataset']['metadata_sha256'])
+    entries = [e for e in scan['entries'] if partition[0] <= e['time'] < partition[1]]
+    if not entries:
+        _fail('no_supported_records', 'partition')
+    filtered, inside = {}, {}
+    for entry in entries:
+        inside[entry['host'].casefold()] = inside.get(entry['host'].casefold(), 0) + 1
+    for moment, host, channel, event_id, _ in scan['filtered']:
+        if partition[0] <= moment < partition[1]:
+            filtered[(host, channel, event_id)] = filtered.get((host, channel, event_id), 0) + 1
+            inside[host] = inside.get(host, 0) + 1
+    window = _normal_window(partition)
+    key = {'window_utc': window} if scan['profile'] is None else {'window_utc': window,
+                                                                  'collection_profile': scan['profile']}
+    compound = {'profile': scan['profile'], 'profile_filter': scan['profile_filter'], 'family_id': scan['family_id'],
+                'scenario_id': scan['family_id'] + '-p' + digest_bytes(canonical_bytes(key))[:12],
+                'outside': {host: scan['totals'][host] - inside.get(host, 0) for host in scan['hosts']},
+                'filtered': filtered, 'original_lines': scan['original_lines'], 'blank_lines': scan['blank_lines'],
+                'max_public_bytes': max_public_bytes}
+    return _assemble(scan['metadata'], scan['dataset'], field_map, salt, curation, curation_bytes, draft_os_family,
+                     entries, scan['shape'], scan['hosts'], scan['collectors'], scan['clock'], partition, coverage,
+                     encoded_payloads, compound)
+
+
+def _line_ranges(lines):
+    """Sorted original line numbers as compact `a-b` ranges."""
+    ranges = []
+    for line in sorted(set(lines)):
+        if ranges and line == ranges[-1][1] + 1:
+            ranges[-1][1] = line
+        else:
+            ranges.append([line, line])
+    return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in ranges)
+
+
+def _source_of(field_map, channel):
+    spec = field_map['channels'].get(channel)
+    return spec['source'] if spec is not None else 'channel:' + channel.casefold()
+
+
+def _compound_gaps(compound, field_map, source_keys, asset_ids, window):
+    """Known gaps stating every record a compound partition excludes, per asset and (where present) source."""
+    gaps = []
+    for host, count in sorted(compound['outside'].items()):
+        if count:
+            gaps.append({'source_id': None, 'asset_id': asset_ids[host], 'window_utc': window,
+                         'reason': 'outside_partition_window: %d records of this asset in the published recording '
+                                   'fall outside the declared partition window and were excluded; nothing inside '
+                                   'the window was sampled' % count})
+    grouped = {}
+    for (host, channel, event_id), count in compound['filtered'].items():
+        grouped.setdefault((_source_of(field_map, channel), host), {})['%s:%d' % (channel, event_id)] = count
+    for (source, host), types in sorted(grouped.items()):
+        listed = ', '.join('%s x%d' % (name, types[name]) for name in sorted(types))
+        gaps.append({'source_id': source_keys.get((source, host)), 'asset_id': asset_ids[host], 'window_utc': window,
+                     'reason': 'collection_profile_filter: %d records of source %s inside the window are event types '
+                               'the %s collection profile does not collect and were excluded (%s)'
+                               % (sum(types.values()), source, compound['profile'], listed)})
+    return gaps
+
+
+def _profile_report(compound):
+    by_host = {}
+    for (host, channel, event_id), count in sorted(compound['filtered'].items()):
+        by_host.setdefault(host, {})['%s:%d' % (channel, event_id)] = count
+    return {'name': compound['profile'], 'event_ids': compound['profile_filter'],
+            'source': None if compound['profile'] is None else 'benchmark_evidence.supported_event_ids',
+            'excluded_records': sum(compound['filtered'].values()), 'excluded_by_host': by_host}
+
+
+def _partition_limitation(compound, window):
+    text = ('Derived partition %s to %s of a published compound recording; records outside it are excluded and '
+            'stated as outside_partition_window known gaps.' % (window['start_inclusive'], window['end_exclusive']))
+    if compound['profile'] is not None:
+        text += (' Collection profile %s: %d records inside the window of event types the pinned live-lab '
+                 'collector does not collect are excluded and stated as collection_profile_filter known gaps.'
+                 % (compound['profile'], sum(compound['filtered'].values())))
+    return text
+
+
+def _check_compound_curation(curation, outer, profile):
+    declared = curation.get('partition_window')
+    if declared is None or (parse_utc(declared['start_inclusive'], 'curation.partition_window'),
+                            parse_utc(declared['end_exclusive'], 'curation.partition_window')) != outer:
+        _fail('partition_mismatch', 'curation.partition_window')
+    if curation.get('collection_profile') != profile:
+        _fail('partition_mismatch', 'curation.collection_profile')
+
+
+def _window_stats(scan, start, end):
+    kept = [e for e in scan['entries'] if start <= e['time'] < end]
+    dropped = [item for item in scan['filtered'] if start <= item[0] < end]
+    return {'records_unfiltered': len(kept) + len(dropped),
+            'raw_bytes_unfiltered': sum(e['raw_bytes'] for e in kept) + sum(item[4] for item in dropped),
+            'records_kept': len(kept), 'raw_bytes_kept': sum(e['raw_bytes'] for e in kept),
+            'records_profile_excluded': len(dropped)}
+
+
+def _measured_prompt_bytes(scan, field_map, salt, start, end):
+    _, outputs = build_compound_case(scan, field_map, salt, (start, end), draft_os_family='windows-client',
+                                     max_public_bytes=None)
+    return decode_json(outputs['evaluator/import-report.json'])['public_bytes']['prompt_projection']
+
+
+def plan_compound(scan, field_map, max_public_bytes=MAX_PUBLIC_BYTES, salt=None):
+    """Split the scanned window into the fewest contiguous whole-second partitions that each fit the prompt cap.
+
+    Greedy from the window start: each partition ends at the latest whole second whose measured prompt projection
+    still fits. Record times have whole-second resolution, so a single second whose records alone exceed the cap
+    cannot be split: it becomes an `unpublishable` interval that no case covers (stated, never sampled). Returns
+    the partitions and unpublishable intervals with unfiltered/kept counts and measured prompt bytes. Sizes do not
+    depend on the salt (fixed-length pseudonyms).
+    """
+    if type(max_public_bytes) is not int or not 0 < max_public_bytes <= MAX_PUBLIC_BYTES:
+        _fail('invalid_limit', 'max_public_bytes')
+    salt = secrets.token_bytes(SALT_BYTES) if salt is None else salt
+    start, end = scan['window']
+    second = timedelta(seconds=1)
+    cuts = sorted({e['time'].replace(microsecond=0) + second for e in scan['entries']} | {end})
+    cuts = [cut for cut in cuts if start < cut <= end]
+    intervals = []
+    while start < end:
+        options = [cut for cut in cuts if cut > start]
+        if not any(start <= e['time'] < end for e in scan['entries']):
+            # Only records outside the profile remain: they belong to the previous interval's tail.
+            if not intervals:
+                _fail('no_supported_records', 'window')
+            intervals[-1].update(end=end, prompt_bytes=None)
+            break
+        low, high, best = 0, len(options) - 1, None
+        while low <= high:
+            middle = (low + high) // 2
+            try:
+                size = _measured_prompt_bytes(scan, field_map, salt, start, options[middle])
+            except BenchmarkError as error:
+                if error.code != 'no_supported_records':
+                    raise
+                size = 0
+            if size <= max_public_bytes:
+                best, low = (options[middle], size), middle + 1
+            else:
+                high = middle - 1
+        if best is None:
+            intervals.append({'start': start, 'end': options[0], 'prompt_bytes': None, 'publishable': False})
+            start = options[0]
+            continue
+        intervals.append({'start': start, 'end': best[0], 'prompt_bytes': best[1], 'publishable': True})
+        start = best[0]
+    partitions, unpublishable = [], []
+    for item in intervals:
+        if item['prompt_bytes'] is None:
+            item['prompt_bytes'] = _measured_prompt_bytes(scan, field_map, salt, item['start'], item['end'])
+            if item['publishable'] and item['prompt_bytes'] > max_public_bytes:
+                item['publishable'] = False
+        stats = dict(_window_stats(scan, item['start'], item['end']),
+                     window_utc=_normal_window((item['start'], item['end'])), prompt_bytes=item['prompt_bytes'])
+        (partitions if item['publishable'] else unpublishable).append(stats)
+    return {'schema_version': 1, 'window_utc': _normal_window(scan['window']), 'collection_profile': scan['profile'],
+            'max_public_bytes': max_public_bytes, 'clock': scan['clock'],
+            'totals': _window_stats(scan, *scan['window']), 'partitions': partitions,
+            'unpublishable': unpublishable}
 
 
 # -------------------------------------------------------------------- output
@@ -1939,10 +2444,100 @@ def sign_main(argv):
     return 0
 
 
+def _compound_arguments(parser):
+    parser.add_argument('--dataset', required=True, help='compound OTRF .zip (one JSON-lines member)')
+    parser.add_argument('--metadata', required=True, help='the compound dataset README.md that links the .zip')
+    parser.add_argument('--window-start', required=True, help='partition start (UTC with offset, inclusive), '
+                                                              'compared with clock-corrected time')
+    parser.add_argument('--window-end', required=True, help='partition end (UTC with offset, exclusive)')
+    parser.add_argument('--collection-profile', choices=COLLECTION_PROFILES,
+                        help='keep only the event IDs the pinned live-lab collector collects; every other record '
+                             'in the window is excluded and stated as a collection_profile_filter known gap')
+    parser.add_argument('--max-public-bytes', type=int, default=MAX_PUBLIC_BYTES,
+                        help='cap on the prompt projection (evidence + records.jsonl); at most 1 MiB')
+    parser.add_argument('--fields', default=str(DEFAULT_FIELDS), help='field allowlist JSON')
+
+
+def compound_main(argv):
+    parser = argparse.ArgumentParser(
+        prog='benchmark_import_otrf.py compound',
+        description='Import ONE explicit UTC partition of a multi-host compound OTRF recording (for example '
+                    'datasets/compound/apt29) as a DEVELOPMENT case. Records outside the window (and, with '
+                    '--collection-profile, outside the profile) are excluded and stated as known gaps.')
+    _compound_arguments(parser)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--curation', help='curation JSON declaring the same partition_window/collection_profile')
+    mode.add_argument('--draft-os-family', choices=COVERAGE_AXES['os'],
+                      help='no curation: emit a draft (NOT VALID FOR SCORING) with this declared OS family')
+    parser.add_argument('--output', required=True, help='NEW directory; must not exist')
+    parser.add_argument('--salt-file', help='evaluator/salt.json from the draft of the same partition')
+    parser.add_argument('--coverage', default=str(DEFAULT_COVERAGE), help='coverage catalog JSON')
+    parser.add_argument('--encoded-payloads', choices=ENCODED_PAYLOAD_MODES, default='preview')
+    args = parser.parse_args(argv)
+    try:
+        salt = load_salt(args.salt_file) if args.salt_file else secrets.token_bytes(SALT_BYTES)
+        field_map = load_field_map(args.fields)
+        coverage = load_json(args.coverage) if args.curation else None
+        window = (args.window_start, args.window_end)
+        scan = scan_compound(args.dataset, args.metadata, field_map, window, args.collection_profile)
+        case_id, outputs = build_compound_case(scan, field_map, salt, window, curation_path=args.curation,
+                                               draft_os_family=args.draft_os_family, coverage=coverage,
+                                               encoded_payloads=args.encoded_payloads,
+                                               max_public_bytes=args.max_public_bytes)
+        case_dir = write_outputs(args.output, case_id, outputs)
+    except BenchmarkError as error:
+        print('error: {}: {}'.format(error.code, error.field), file=sys.stderr)
+        return 2
+    report = decode_json(outputs['evaluator/import-report.json'])
+    summary = {'case_id': case_id, 'case_directory': str(case_dir), 'status': report['status'],
+               'counts': report['counts'], 'public_bytes': report['public_bytes'],
+               'partition': {'window_utc': report['partition']['window_utc'],
+                             'excluded_records': report['partition']['excluded_records']},
+               'collection_profile': {'name': report['collection_profile']['name'],
+                                      'excluded_records': report['collection_profile']['excluded_records']}}
+    if report['status'] == DRAFT_MARKER:
+        summary['warning'] = 'DRAFT: truth.DRAFT.json is NOT VALID FOR SCORING; curate before use.'
+    _summarize_attestation(report, summary)
+    sys.stdout.write(canonical_bytes(summary).decode('utf-8') + '\n')
+    return 0
+
+
+def compound_plan_main(argv):
+    parser = argparse.ArgumentParser(
+        prog='benchmark_import_otrf.py compound-plan',
+        description='Measure a compound recording window and split it into the fewest contiguous whole-second '
+                    'partitions whose prompt projection fits the cap. Writes a NEW plan JSON; imports nothing.')
+    _compound_arguments(parser)
+    parser.add_argument('--output', required=True, help='NEW plan JSON file outside the source tree')
+    args = parser.parse_args(argv)
+    try:
+        target = Path(os.path.abspath(args.output))
+        if _in_source(target.resolve()):
+            _fail('output_in_source_tree', 'output')
+        if os.path.lexists(target):
+            _fail('output_exists', 'output')
+        field_map = load_field_map(args.fields)
+        scan = scan_compound(args.dataset, args.metadata, field_map, (args.window_start, args.window_end),
+                             args.collection_profile)
+        plan = plan_compound(scan, field_map, args.max_public_bytes)
+        with open(target, 'xb') as handle:
+            handle.write(canonical_bytes(plan))
+    except BenchmarkError as error:
+        print('error: {}: {}'.format(error.code, error.field), file=sys.stderr)
+        return 2
+    sys.stdout.write(canonical_bytes({'output': str(target), 'partitions': len(plan['partitions']),
+                                      'unpublishable': len(plan['unpublishable'])}).decode('utf-8') + '\n')
+    return 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ['sign']:
         return sign_main(argv[1:])
+    if argv[:1] == ['compound']:
+        return compound_main(argv[1:])
+    if argv[:1] == ['compound-plan']:
+        return compound_plan_main(argv[1:])
     parser = argparse.ArgumentParser(description='Import an OTRF Security-Datasets Windows export as a '
                                                  'DEVELOPMENT benchmark case (public_replay). Separate '
                                                  'subcommand: `sign --proposal P --review R --by NAME --note TEXT '

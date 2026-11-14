@@ -27,7 +27,8 @@ from pathlib import Path
 
 from benchmark_adjudication import _fail, _sealed_snapshot, _template, load_adjudication, load_truths
 from benchmark_comparison import FORMAT_FAILURES
-from benchmark_contracts import REVIEW_POLICY, STAGE_KEYS, _window, canonical_bytes, digest_bytes
+from benchmark_contracts import (REVIEW_POLICY, STAGE_KEYS, _window, bundle_event_ids,
+                                 canonical_bytes, digest_bytes)
 from benchmark_holdout import write_new_file
 from benchmark_scoring import (
     MECHANICAL, RUBRIC_VERSION, _parent_only, _technique, assertion_key, disputed_only, edge_item_id,
@@ -41,6 +42,8 @@ TRUTH_BASIS = 'truth_comparison'
 EVIDENCE_BASIS = 'public_evidence'
 CALL_BASIS = 'call_receipt'
 TRUTH_LIMITATIONS = {
+    'publisher_labels': 'Some truth is derived mechanically from dataset-publisher ground-truth labels, '
+                        'never human-reviewed (publisher_labels).',
     'unreviewed_proposal': 'Some truth is an unreviewed proposed answer key (unreviewed_proposal).',
     'agent_consensus': 'Some truth is an agent consensus answer key: two independent AI drafts merged '
                        'mechanically, never human-reviewed (agent_consensus); findings citing only its disputed '
@@ -97,7 +100,7 @@ class _Output:
                                     output_sha256=item['output_sha256'], adjudication=mode)
         self.errors = []
         self.unadjudicated = len(self.metrics['missing_adjudications'])
-        events = {event['event_id'] for event in evidence['events']}
+        events = bundle_event_ids(evidence)
         if self.mechanical:
             judged = mechanical_verdicts(output['findings'], truth, events)
         else:
@@ -124,7 +127,7 @@ class _Output:
             for value in items:
                 content = (kind,) + (_claim_key(value) if kind == 'claim' else _finding_key(value))
                 identity = {'item_kind': kind, 'item_id': value[id_field]}
-                invalid = sorted(set(value['event_ids']) - events)
+                invalid = sorted(eid for eid in set(value['event_ids']) if eid not in events)
                 if invalid:
                     self._add('invalid_citation', content + tuple(invalid),
                               dict(identity, invalid_event_ids=invalid), EVIDENCE_BASIS)

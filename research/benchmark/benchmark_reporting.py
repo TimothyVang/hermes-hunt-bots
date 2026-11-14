@@ -86,6 +86,13 @@ def _verify_artifacts(store, snapshot, trials):
             _fail('response_artifact')
         if ref is not None and receipt.get('response_sha256') != ref['sha256']:
             raise BenchmarkError('digest_mismatch', 'response_sha256')
+    for case in snapshot['experiment'].get('cases', ()):
+        qs = (case.get('evidence') or {}).get('query_store')
+        if qs is not None:
+            from benchmark_query import sha256_file
+            qpath = store.query_store_path(qs)
+            if sha256_file(qpath) != qs['sha256']:
+                raise BenchmarkError('digest_mismatch', 'query_store.sha256')
     return verified
 
 
@@ -299,7 +306,10 @@ def _call_summary(calls):
             'estimated_usage': {key: _measurement([(r.get('estimated_usage') or {}).get(key) for r in receipts])
                                 for key in USAGE_FIELDS},
             'cost': {key: _measurement([(r.get('cost') or {}).get(key) for r in receipts])
-                     for key in COST_FIELDS}}
+                     for key in COST_FIELDS},
+            'query_store_usage': {key: _measurement([(r.get('query_usage') or {}).get(key) for r in receipts])
+                                  for key in ('queries_executed', 'rows_returned_total',
+                                              'bytes_returned_total', 'ioc_lookups')}}
 
 
 def _wall_time(value):

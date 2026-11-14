@@ -27,7 +27,7 @@ SETTLED_STATUS = {'human': 'final', 'mechanical': 'mechanical'}
 BOOTSTRAP_SAMPLES = 2000
 BOOTSTRAP_SEED = 1729
 AXES = ('os', 'network', 'identity_domain', 'operational_domain', 'dns_domain',
-        'difficulty', 'sophistication')
+        'difficulty', 'sophistication', 'ioc_regime')
 RATE_NAMES = {'precision', 'recall', 'f1', 'support_rate', 'contradicted_rate',
               'invalid_rate', 'false_alarm_rate', 'correct_disposition_rate',
               'decision_coverage', 'brier'}
@@ -183,10 +183,11 @@ def _labels(case):
     actual_os = sorted({asset.get('os_family') for asset in evidence.get('assets', [])
                         if asset.get('os_family') is not None})
     labels = {axis: sorted(coverage.get(axis, [])) for axis in AXES
-              if axis not in ('os', 'difficulty', 'sophistication')}
+              if axis not in ('os', 'difficulty', 'sophistication', 'ioc_regime')}
     labels['os'] = actual_os
     labels['difficulty'] = [scenario.get('difficulty', {}).get('band')]
     labels['sophistication'] = [scenario.get('sophistication', {}).get('band')]
+    labels['ioc_regime'] = [scenario['ioc_regime']] if scenario.get('ioc_regime') else []
     mismatch = set(actual_os) != set(coverage.get('os', []))
     return labels, mismatch
 
@@ -263,6 +264,9 @@ def _measurements(rows):
             'local_energy_cost_usd': _measurement([receipt.get('cost', {}).get('local_energy_cost_usd') for receipt in receipts]),
             'provider_reported_usage': {key: _measurement([receipt.get('usage', {}).get(key) for receipt in receipts])
                                         for key in ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens')},
+            'query_store_usage': {key: _measurement([(receipt.get('query_usage') or {}).get(key) for receipt in receipts])
+                                  for key in ('queries_executed', 'rows_returned_total',
+                                              'bytes_returned_total', 'ioc_lookups')},
             'evidence_checker_calls': sum(call.get('spec', {}).get('component') == 'evidence_checker' for call in calls)}
 
 
@@ -455,6 +459,7 @@ def build_comparison(snapshot):
                         truth_frozen=score['truth_frozen'] if score else None,
                         timing_contended=timing_contended,
                         split=scenario.get('split'), provenance=scenario.get('provenance'),
+                        ioc_regime=scenario.get('ioc_regime'),
                         detector_condition=_condition(case), budgets=experiment.get('budgets'))
         for key in ('workflow_sha256', 'prompt_contract_sha256', 'coverage_sha256', 'rubric_version'):
             controls[key] = experiment.get(key)
@@ -567,8 +572,9 @@ def build_comparison(snapshot):
                             'Mechanical adjudication applies deterministic rules, not human verdicts: its status is '
                             'mechanical, claim semantic support and correct control dispositions are '
                             'not_measured_mechanical, and it is never compared or ranked with human adjudication.',
-                            'Truth marked unreviewed_proposal is an unreviewed proposed answer key, and truth '
-                            'marked agent_consensus is two independent AI drafts merged mechanically; neither is a '
+                            'Truth marked publisher_labels is derived mechanically from dataset-publisher labels, '
+                            'truth marked unreviewed_proposal is an unreviewed proposed answer key, and truth '
+                            'marked agent_consensus is two independent AI drafts merged mechanically; none is a '
                             'human attestation, and findings citing only agent_consensus disputed records are '
                             'ignored; truth attestation and truth freeze are cohort controls.',
                             'Concurrent calls (timing_contended) share hosts and providers; elapsed times are '

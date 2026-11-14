@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import benchmark_paths
+import benchmark_paths  # noqa: F401
 from benchmark_contracts import (BenchmarkError, canonical_bytes, confined_file, digest_bytes,
-                                 load_json, validate_coverage, validate_experiment,
-                                 validate_public_bundle, validate_scenario)
+                                 load_json, validate_benchmark_workflow, validate_coverage,
+                                 validate_experiment, validate_public_bundle, validate_scenario)
 from workflows import validate_template
 
 HERE = Path(__file__).resolve().parent
@@ -19,7 +19,24 @@ class SafeParser(argparse.ArgumentParser):
         self.exit(2, 'invalid_arguments: arguments\n')
 
 
-def load_experiment(path, bundle_root=None):
+def _resolve_workflow_path(workflow_path):
+    if workflow_path is None:
+        return HERE / 'benchmarks' / 'team-workflow.json'
+    candidate = Path(workflow_path)
+    if not candidate.is_absolute():
+        candidate = (HERE / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        rel = candidate.relative_to(HERE).as_posix()
+    except ValueError:
+        raise BenchmarkError('path_escape', 'workflow') from None
+    if not rel.startswith('benchmarks/'):
+        raise BenchmarkError('path_escape', 'workflow') from None
+    return confined_file(HERE, rel, 'workflow')
+
+
+def load_experiment(path, bundle_root=None, workflow_path=None):
     """Resolve a portable experiment without writes, imports of SDKs, or probes."""
     path = Path(path).absolute()
     root = Path(bundle_root).absolute() if bundle_root else path.parent
@@ -30,10 +47,10 @@ def load_experiment(path, bundle_root=None):
     path = confined_file(root, relative, 'experiment')
     experiment = validate_experiment(load_json(path))
     coverage_path = HERE / 'benchmarks' / 'coverage.json'
-    workflow_path = HERE / 'benchmarks' / 'team-workflow.json'
+    resolved_workflow = _resolve_workflow_path(workflow_path)
     prompt_path = HERE / 'benchmarks' / 'prompt-contract.txt'
     for source, field in ((coverage_path, 'coverage_sha256'),
-                          (workflow_path, 'workflow_sha256'),
+                          (resolved_workflow, 'workflow_sha256'),
                           (prompt_path, 'prompt_contract_sha256')):
         confined_file(HERE, source.relative_to(HERE).as_posix(), field)
         content = (canonical_bytes(load_json(source)) if source.suffix == '.json'
@@ -42,9 +59,10 @@ def load_experiment(path, bundle_root=None):
             raise BenchmarkError('digest_mismatch', field)
     coverage = validate_coverage(load_json(coverage_path))
     try:
-        workflow = validate_template(load_json(workflow_path))
+        workflow = validate_template(load_json(resolved_workflow))
     except ValueError:
         raise BenchmarkError('invalid_workflow', 'workflow') from None
+    validate_benchmark_workflow(workflow)
     cases = []
     seen = set()
     for reference in experiment['scenario_refs']:
@@ -65,6 +83,11 @@ def load_experiment(path, bundle_root=None):
         cases.append({'scenario': scenario, 'evidence': evidence,
                       'evidence_path': evidence_path, 'scenario_path': scenario_path,
                       'reference': reference})
+    if any('query_store' in case['evidence'] for case in cases):
+        for team in experiment['teams']:
+            for role_spec in team['roles'].values():
+                if role_spec['adapter'] != 'openai_http':
+                    raise BenchmarkError('query_store_requires_openai_http', 'experiment.teams')
     return {'experiment': experiment, 'coverage': coverage, 'workflow': workflow,
             'prompt_contract': prompt_path.read_text(encoding='utf-8'), 'cases': cases}
 
@@ -76,6 +99,7 @@ def parser():
     validate = commands.add_parser('validate')
     validate.add_argument('--experiment', required=True)
     validate.add_argument('--bundle-root')
+    validate.add_argument('--workflow')
     export = commands.add_parser('export')
     export.add_argument('--experiment', required=True)
     export.add_argument('--output', required=True)
@@ -83,6 +107,7 @@ def parser():
     initialize = commands.add_parser('init')
     initialize.add_argument('--experiment', required=True)
     initialize.add_argument('--bundle-root')
+    initialize.add_argument('--workflow')
     initialize.add_argument('--truth', required=True,
                             help='DIR/<case_id>/evaluator/truth.json; frozen automatically before any trial')
     initialize.add_argument('--holdout-registry',
@@ -113,10 +138,12 @@ def parser():
     corpus.add_argument('--holdout-registry', help='required when any scenario is holdout')
     corpus.add_argument('--context-tokens', type=int,
                         help='refuse a case whose estimated prompt (bytes / 3) plus max_output_tokens exceeds N')
+    corpus.add_argument('--workflow', help='optional workflow template under benchmarks/ (default: team-workflow.json)')
     baselines = commands.add_parser(
         'baselines', help='offline: score deterministic reference baselines (floors, never teams) into a NEW file')
     baselines.add_argument('--experiment-manifest', required=True)
     baselines.add_argument('--bundle-root')
+    baselines.add_argument('--workflow')
     baselines.add_argument('--truth', required=True, help='directory of <case_id>/evaluator/truth.json')
     baselines.add_argument('--output', required=True, help='NEW JSON report file')
     reconcile = commands.add_parser('reconcile')
@@ -254,7 +281,7 @@ def main(argv=None):
             raise BenchmarkError('state_root_required', 'state_root')
         code = 0
         if args.command == 'validate':
-            loaded = load_experiment(args.experiment, args.bundle_root)
+            loaded = load_experiment(args.experiment, args.bundle_root, workflow_path=args.workflow)
             report = {'valid': True, 'execution': 'framework-managed',
                       'experiment_id': loaded['experiment']['experiment_id'],
                       'cases': len(loaded['cases']), 'network_access': False}
@@ -270,7 +297,7 @@ def main(argv=None):
         elif args.command == 'init':
             from benchmark_runner import initialize_experiment
             report = initialize_experiment(args.state_root,
-                                           load_experiment(args.experiment, args.bundle_root),
+                                           load_experiment(args.experiment, args.bundle_root, workflow_path=args.workflow),
                                            args.truth, holdout_registry=args.holdout_registry)
         elif args.command == 'status':
             from benchmark_runner import status
@@ -290,10 +317,12 @@ def main(argv=None):
             report = build_corpus_experiment(args.cases, args.team, args.experiment_id, args.repetitions,
                                              args.output, seed=args.seed,
                                              holdout_registry=args.holdout_registry,
-                                             context_tokens=args.context_tokens)
+                                             context_tokens=args.context_tokens,
+                                             workflow_path=args.workflow)
         elif args.command == 'baselines':
             from benchmark_baselines import run_baselines
-            report = run_baselines(args.experiment_manifest, args.bundle_root, args.truth, args.output)
+            report = run_baselines(args.experiment_manifest, args.bundle_root, args.truth, args.output,
+                                   workflow_path=args.workflow)
         elif args.command == 'reconcile':
             from benchmark_decisions import reconcile
             report = reconcile(args.state_root, args.experiment, args.call,

@@ -475,6 +475,9 @@ def merge_drafts(a, b, defaults, now):
     # A partition window defines the case itself; two different partitions are a real conflict.
     if a['partition'] != b['partition']:
         _fail('draft_conflict', 'curation.partition_window')
+    # So does a compound partition's collection profile (which records the case publishes at all).
+    if a['curation'].get('collection_profile') != b['curation'].get('collection_profile'):
+        _fail('draft_conflict', 'curation.collection_profile')
     chosen, disputed_choices = {}, {}
     clock = [('clock_declaration' in draft['curation'], draft['curation'].get('clock_declaration')) for draft in (a, b)]
     sameness = {'assessment_windows': a['windows'] == b['windows'],  # compared as instants
@@ -654,6 +657,8 @@ def merge_drafts(a, b, defaults, now):
     curation.update(chosen)
     if 'partition_window' in a['curation']:
         curation['partition_window'] = a['curation']['partition_window']
+    if 'collection_profile' in a['curation']:
+        curation['collection_profile'] = a['curation']['collection_profile']
     family = (a['curation'].get('family_id'), b['curation'].get('family_id'))
     if family[0] is not None and family[0] == family[1]:
         curation['family_id'] = family[0]

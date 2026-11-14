@@ -261,51 +261,40 @@ class ManifestContractsTests(unittest.TestCase):
         data['sophistication']['steps'] = []
         contracts.validate_scenario(data, coverage())
 
-    def test_s1_allows_independent_atomic_steps_on_one_asset_only(self):
+    def test_s1_is_unlinked_atomic_steps_on_any_assets(self):
         data = scenario()
         steps = data['sophistication']['steps']
-        steps.append({'step_id': 't2', 'asset_id': 'a1', 'boundary_id': 'b1', 'phase': 'initial'})
+        steps.append({'step_id': 't2', 'asset_id': 'a2', 'boundary_id': 'b1', 'phase': 'initial'})
         contracts.validate_scenario(data, coverage())
         data['sophistication']['edges'] = [['t1', 't2']]
-        with self.assertRaises(contracts.BenchmarkError) as caught:
-            contracts.validate_scenario(data, coverage())
-        self.assertEqual(caught.exception.code, 'rubric_mismatch')
-        data['sophistication']['edges'] = []
-        steps[1]['asset_id'] = 'a2'
         with self.assertRaises(contracts.BenchmarkError) as caught:
             contracts.validate_scenario(data, coverage())
         self.assertEqual(caught.exception.code, 'rubric_mismatch')
 
-    def test_tier_is_judged_on_linked_chain_with_independent_side_steps(self):
+    def test_tier_is_judged_on_strongest_chain_with_concurrent_activity(self):
         data = scenario()
         data['sophistication']['band'] = 'S2'
-        data['sophistication']['steps'] = [
-            {'step_id': name, 'asset_id': 'a1', 'boundary_id': 'b1', 'phase': 'initial'}
-            for name in ('t1', 't2', 'side')]
-        data['sophistication']['edges'] = [['t1', 't2']]
+        data['sophistication']['boundaries'].append({'boundary_id': 'b2', 'kind': 'identity'})
+        step = lambda name, asset, boundary='b1': {
+            'step_id': name, 'asset_id': asset, 'boundary_id': boundary, 'phase': 'initial'}
+        # Two concurrent, causally unrelated chains on two hosts plus an atomic step.
+        data['sophistication']['steps'] = [step('t1', 'a1'), step('t2', 'a1'), step('u1', 'a2'),
+                                           step('u2', 'a2'), step('side', 'a3')]
+        data['sophistication']['edges'] = [['t1', 't2'], ['u1', 'u2']]
         contracts.validate_scenario(data, coverage())
-        data['sophistication']['edges'] = [['t1', 't2'], ['side', 'x']]
+        # Concurrent activity on other assets cannot make a single-host chain S3.
+        data['sophistication']['band'] = 'S3'
+        data['sophistication']['steps'][4] = step('side', 'a3', 'b2')
+        with self.assertRaises(contracts.BenchmarkError) as caught:
+            contracts.validate_scenario(data, coverage())
+        self.assertEqual(caught.exception.code, 'rubric_mismatch')
+        # One chain crossing an identity boundary between hosts supports S3 beside the other chain.
+        data['sophistication']['steps'][3] = step('u2', 'a3', 'b2')
+        contracts.validate_scenario(data, coverage())
+        # An edge to an unknown step is still refused.
+        data['sophistication']['edges'].append(['side', 'missing'])
         with self.assertRaises(contracts.BenchmarkError):
             contracts.validate_scenario(data, coverage())
-        # Two disconnected chains are not one causal chain.
-        data['sophistication']['steps'].append(
-            {'step_id': 't4', 'asset_id': 'a1', 'boundary_id': 'b1', 'phase': 'initial'})
-        data['sophistication']['edges'] = [['t1', 't2'], ['side', 't4']]
-        with self.assertRaises(contracts.BenchmarkError) as caught:
-            contracts.validate_scenario(data, coverage())
-        self.assertEqual(caught.exception.code, 'rubric_mismatch')
-        # An independent side step on a second asset cannot make a single-host chain S3.
-        data = scenario()
-        data['sophistication']['band'] = 'S3'
-        data['sophistication']['boundaries'].append({'boundary_id': 'b2', 'kind': 'identity'})
-        data['sophistication']['steps'] = [
-            {'step_id': 't1', 'asset_id': 'a1', 'boundary_id': 'b1', 'phase': 'initial'},
-            {'step_id': 't2', 'asset_id': 'a1', 'boundary_id': 'b1', 'phase': 'initial'},
-            {'step_id': 'side', 'asset_id': 'a2', 'boundary_id': 'b2', 'phase': 'initial'}]
-        data['sophistication']['edges'] = [['t1', 't2']]
-        with self.assertRaises(contracts.BenchmarkError) as caught:
-            contracts.validate_scenario(data, coverage())
-        self.assertEqual(caught.exception.code, 'rubric_mismatch')
 
     def test_public_digest_and_original_timestamp(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1130,6 +1119,18 @@ class PathContractsTests(unittest.TestCase):
                 contracts.validate_state_root(worktree / 'state')
             with self.assertRaises(contracts.BenchmarkError):
                 contracts.validate_state_root(root)
+
+
+class WorkflowTemplateTests(unittest.TestCase):
+    def test_shipped_workflows_validate_and_stay_in_snapshot_data(self):
+        import benchmark_runner
+        from workflows import validate_template
+        here = Path(contracts.__file__).resolve().parent
+        for rel in ('benchmarks/team-workflow.json', 'benchmarks/team-workflow-novel-apt.json'):
+            with self.subTest(workflow=rel):
+                self.assertIn(rel, benchmark_runner.SOURCE_DATA)
+                tpl = validate_template(contracts.load_json(here / rel))
+                benchmark_runner._workflow(tpl)
 
 
 if __name__ == '__main__':

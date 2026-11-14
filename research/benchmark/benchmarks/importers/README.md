@@ -298,12 +298,17 @@ descriptors, and `Message` everywhere else.
 attack_data importer and the lab sealer. It is deterministic and runs, in order:
 
 1. Normalise to text; NUL is refused (`invalid_text`); newlines are kept.
-2. **Secrets → `[REDACTED:<kind>]`**: password arguments and literals (`-Password X`, `/p:X`, `/password:X`, `-p X`
-   only after net/runas/psexec/sshpass-like tools, `net user <name> <password>`, `net use \\host\share <password>`,
-   `password=`/`pwd=`, `ConvertTo-SecureString '<x>'` and `'<x>' | ConvertTo-SecureString`, URL `user:pass@`),
+2. **Secrets → `[REDACTED:<kind>]`**: password arguments and literals (`-Password X`, `--password X`/`--password=X`,
+   `/p:X`, `/password:X`, `-p X` only after net/runas/psexec/sshpass/mysql/useradd-like tools, archiver passwords
+   `rar`/`7z` `-p<pass>` and `-hp<pass>` and `zip`/`unzip` `-P <pass>`, `net user [/add] <name> <password>` (also
+   with a quoted `"…\net.exe"` image path), `net use \\host\share <password>`, `password=`/`pwd=`/`pass=`/`secret=`
+   also inside joined keys (`quick_password=`, `confirm_password=`, `client_secret=`, `newpassword=`, `password2=`)
+   and percent-encoded inside URLs (`%26password%3D<pw>%26`, also cmd.exe-doubled `%%26password%%3D`),
+   `ConvertTo-SecureString '<x>'` and `'<x>' | ConvertTo-SecureString`, URL `user:pass@`),
    NTLM/LM `LM:NT` pairs and 32-hex hashes after `:` or a hash keyword (`/ntlm:`, `-Hash`, `rc4`), Kerberos
    (`$krb5tgs$…`, `/aes256:`, base64 `doI…` tickets), private-key PEM blocks, AWS `AKIA`/`ASIA` keys and 40-character
-   secret keys in key context, JWTs, `Authorization:`/`Cookie:` values, connection-string passwords. A PowerShell
+   secret keys in key context (`aws_secret_access_key`, `SecretAccessKey`, `secret_key`), JWTs,
+   `Authorization:`/`Cookie:` values, connection-string passwords. A PowerShell
    `-EncodedCommand` payload (any unambiguous prefix: `-e`, `-ec`, `-en`, `-enc` … `-EncodedCommand`, any case) is
    decoded to scan for secrets. A payload whose decoded text holds one becomes `[REDACTED:encoded_secret]` in both
    modes. Otherwise `--encoded-payloads preview` (default) replaces a UTF-16LE payload with
@@ -311,7 +316,8 @@ attack_data importer and the lab sealer. It is deterministic and runs, in order:
    characters, sanitized by steps 2–4, control characters escaped>"`, plus ` …[preview of 512 chars]` when the
    script is longer; payloads that are not UTF-16LE text stay as they are. `full` keeps the base64 payload (see
    Antivirus above). Previews are counted as `encoded_previewed` in the sanitizer totals.
-3. **Identities → the import's own pseudonyms** (`Pseudonyms.content`): SIDs, `DOMAIN\user`, `user@domain`, UNC
+3. **Identities → the import's own pseudonyms** (`Pseudonyms.content`): SIDs (also when joined by `_` or followed by
+   `-<word>`, as in `S-1-5-21-…-1107_Classes` hive names and `…PIPE_S-1-5-21-…_` pipe names), `DOMAIN\user`, `user@domain`, UNC
    `\\host\`, `\Users\<name>\` and `/home/<name>/` profiles, IPv4/IPv6 literals (loopback, unspecified and version
    numbers such as `Version=4.0.0.0` or `Chrome/103.0.0.0` kept), and every original the import has already
    pseudonymized (users, NetBIOS names, DNS names, IPs, mapped GUIDs, opaque names) plus the export's hostnames
@@ -485,6 +491,113 @@ locators). They exist for `test_benchmark_import_otrf.py` only. All of their hos
 records are fictitious, and they carry no information about any model or real environment. Content, message-parser
 and metadata-only tests append further invented records (secrets, profiles, classic PowerShell, WMI and session
 messages) to a temporary copy; `test_benchmark_sanitize.py` uses invented strings only.
+
+## Compound recordings: OTRF APT29 evaluation (`compound`, `compound-plan`)
+
+`datasets/compound/apt29` is a multi-host, multi-step APT replay: MITRE ATT&CK Evaluations Round 2 APT29, emulated
+again by Roberto Rodriguez (OTRF). Day 1 runs Pupy and Meterpreter (spearphish payload, smash-and-grab collection, a
+stealth toolkit, lateral movement, persistence fired after a reboot); day 2 runs PoshC2 (low-and-slow breach,
+domain takeover, persistence). Step-by-step ground truth is the emulation plan
+`datasets/compound/apt29/emulationplans/apt29.xlsx` in the same repository. Licence: the same MIT `LICENSE` file as
+the atomic datasets (byte-identical at the pinned commit); keep the notice with every copy.
+
+### Verified data format (inspected 2026-11-07, commit `d9d40ef123d2c87d5d3df28c96bcab4f0faccc87`)
+
+| | Day 1 `day1/apt29_evals_day1_manual.zip` | Day 2 `day2/apt29_evals_day2_manual.zip` |
+| --- | --- | --- |
+| zip / member | 13,944,973 B; one member, 385,334,029 B | 43,033,041 B; one member, 1,714,987,031 B |
+| SHA-256 | `98a07314…fbe5` | `377f8cba…65f9` |
+| records | 196,081 (no blank lines, LF) | 587,286 |
+| hosts | SCRANTON 131,119; NASHUA 29,056; NEWYORK (DC) 23,935; UTICA 11,971 | UTICA 480,297; SCRANTON 66,419; NEWYORK 29,207; NASHUA 11,363 |
+| EventTime span (local) | 2020-05-01 22:55:23–23:28:17 (33 min) | 2020-05-02 03:50:47–04:29:22 (39 min) |
+| clock | −14400 s against 143,883 Sysmon `UtcTime`; residual 27.0 s | −14400 s against 407,263 records; residual 36.8 s |
+
+Both zips are plain Git blobs (not LFS, not split). Every record is the `nxlog-eventtime` shape (one WEC collector,
+`RecordNumber`, `tags` list). Channels: Sysmon (73 % / 69 %), Security spelled `Security` and `security`, PowerShell
+Operational, classic Windows PowerShell, System, WMI-Activity, TerminalServices, Windows Firewall and BITS. The
+recordings contain only the four Windows hosts; the plan's attacker servers and OneDrive were not instrumented, and
+the pcaps/Zeek folders are not imported. The residual is Sysmon's write delay: `EventTime` trails Sysmon's own
+`UtcTime` by up to 27 s (day 1) and 37 s (day 2), so record order inside a few seconds is not event order.
+
+The atomic path cannot read these files (member above 256 MiB, day 2 above 500,000 records, no metadata YAML),
+and a whole day cannot be one case: the activity runs at about 100 (day 1) and 250 (day 2) records per second.
+
+### Mode and partition semantics
+
+`benchmark_import_otrf.py compound` streams the zip twice (64 MiB input, 2 GiB member, 1,000,000 records, 1 MiB
+line, ratio 200:1). The first pass checks every line and measures the clock on the WHOLE recording. The second pass
+keeps one explicit UTC window. The metadata is the compound `README.md`: only the `# Adversary` name and the `.zip`
+links are read, and the input file name must be one of those links. Semantics follow the attack_data partitions:
+
+- `--window-start/--window-end` are UTC with offset, start inclusive, end exclusive, compared with clock-corrected
+  time. Every record outside the window is excluded and stated: one `outside_partition_window` known gap per asset
+  with its count, and per-host counts plus the imported original line ranges in `import-report.json` → `partition`.
+- `--collection-profile live-collector` keeps only the event IDs the pinned live-lab collector collects
+  (`benchmark_evidence.supported_event_ids`: Sysmon 1/3/13/22, Security logon/process/Kerberos, PowerShell
+  4103/4104/400/403/600/800, WMI-Activity, TaskScheduler, System 7036). Every other record inside the window is
+  excluded and stated as a `collection_profile_filter` known gap per source and asset (`source_id` null for a
+  channel the profile drops entirely), with per-host counts by type in `import-report.json` → `collection_profile`.
+  Replay and live-lab cases therefore share one collection convention. Nothing inside the window and profile is
+  sampled.
+- Every host of the recording is an asset of every partition, even one with no record in the window, so questions
+  and attribution stay comparable across partitions. Each event sits on the computer that logged it.
+- `public/records.jsonl` is an index, one line `{"event_id", "line"}` per imported record in original order. Each
+  record's sanitized fields are published once, in `evidence.json`. Locators keep the original line number.
+- The prompt projection (evidence plus records file, exactly as `benchmark_corpus.public_prompt_bytes` measures it)
+  must fit `--max-public-bytes` (default and maximum 1 MiB), else `public_bundle_too_large`. Nothing is truncated.
+- A curation must declare the same `partition_window` and `collection_profile` (`partition_mismatch`); the
+  consensus merge requires both drafts to agree on them (`draft_conflict`). A support record outside the partition
+  or profile fails with `support_record_not_imported`. An atomic import refuses either key.
+- `scenario_id` is `otrf-compound-<adversary>-<dataset stem>-p<12 hex>`. Every partition of one recording keeps
+  the family `otrf-compound-<adversary>-<dataset stem>` (one bootstrap cluster, no `family_id` override), and the
+  scenario's limitations state the partition and the profile exclusions.
+
+`compound-plan` measures a window and splits it into the fewest contiguous whole-second partitions that fit the cap
+(greedy, binary search on measured sizes). `EventTime` has whole-second resolution, so a single second whose records
+alone exceed the cap cannot be split: the plan lists it under `unpublishable` and no case covers it.
+
+```powershell
+py -3 benchmark_import_otrf.py compound-plan --dataset $data/day1/apt29_evals_day1_manual.zip --metadata $data/README.md --window-start 2020-05-02T02:55:26+00:00 --window-end 2020-05-02T02:56:16+00:00 --collection-profile live-collector --output $work/day1-g01.plan.json
+py -3 benchmark_import_otrf.py compound --dataset $data/day1/apt29_evals_day1_manual.zip --metadata $data/README.md --window-start 2020-05-02T02:55:26+00:00 --window-end 2020-05-02T02:56:16+00:00 --collection-profile live-collector --draft-os-family windows-client --output $work/drafts/day1-g01-p01
+py -3 benchmark_consensus.py merge --draft-a $p/curation.PROPOSED.json --draft-b $pb/curation.PROPOSED.json --locators $case/evaluator/locators.json --template $case/evaluator/curation-template.json --output $work/consensus/day1-g01-p01/curation.json --report $work/consensus/day1-g01-p01/report.json
+py -3 benchmark_import_otrf.py compound --dataset $data/day1/apt29_evals_day1_manual.zip --metadata $data/README.md --window-start 2020-05-02T02:55:26+00:00 --window-end 2020-05-02T02:56:16+00:00 --collection-profile live-collector --curation $work/consensus/day1-g01-p01/curation.json --salt-file $case/evaluator/salt.json --output $work/import-day1-g01-p01
+```
+
+In Git Bash, set `MSYS_NO_PATHCONV=1`: MSYS otherwise rewrites the colon-separated timestamps as path lists.
+
+### Segmentation rule
+
+One case group per emulation-plan step number (day 1: 1–10, day 2: 11–20). The group's evidence span is the first
+to last clock-corrected time of its step-action records (process creations, script blocks, registry sets, logons
+and C2 connections on the attacker's process lineage), found before any answer key was written and stored with the
+data (`segmentation/<day>.json`). The window is that span plus a fixed 30 s lead and trail, clipped at the
+whole-second midpoint to the neighbouring group, so groups never overlap and the background around each step stays
+in its case. `compound-plan` then splits each group window. A partition without an attack step is a benign control;
+it always lies inside a step-group window.
+
+### Limits
+
+- The collection profile drops Sysmon 10 (LSASS access), 11 (file creation), 12 (registry key create/delete),
+  System 7045 and most Security object-access events. Steps evidenced only there become `insufficient`.
+- Day 2's PoshC2 module loads write about 1,000 PowerShell 4103 plus 1,000 classic 800 records per second; such a
+  second alone holds up to 9 MB of public evidence and is unpublishable under the 1 MiB prompt cap.
+- The emulation plan uses pre-v7 ATT&CK IDs; answer keys use `benchmark_attack.canonical_technique` (v20).
+
+### Imported result (2026-11-07)
+
+Day 1: ten step-group windows (02:55:26–03:22:02 UTC) split into 34 partitions; the seconds 03:19:30 and 03:19:31
+(SCRANTON boot, 3,714 and 2,168 benign registry-set records) are unpublishable. Each partition got two independent
+agent drafts; 31 merged into `agent_consensus` keys (Cohen's kappa 0.27–1.0 where defined) and validate as one
+development experiment. Three merges were refused: g08-p01 (`sophistication_unsupported`: the agreed edges do not
+connect the lateral-movement chain) and g10-p02/p03 (`matched_control_unavailable`: one draft keyed the reboot service
+start as T1543.003, the other as T1569.002). Day 2 was not imported: its ten group windows would need about 128
+partitions plus 118 unpublishable seconds, and those seconds hold the key PoshC2 records of steps 12–17 and 20.
+Per-group unfiltered/filtered counts and bytes are in `<data>/apt29/day1-window-stats.json` and
+`day2-window-stats.json`. All answer keys are agent consensus, not human-attested.
+
+The invented sample `sample/sample-compound-README.md` with `sample/sample_compound_lab_2026-01-02.json` (three
+fictitious hosts, records outside the window, out-of-profile records, a blank line) drives
+`CompoundImportTest` in `test_benchmark_import_otrf.py`; the test zips it at run time.
 
 # Splunk attack_data importer: Linux auditd and AWS CloudTrail (development split only)
 
@@ -712,6 +825,161 @@ a bucket policy, and a metadata-only `AwsServiceEvent`). `curation-attackdata-au
 invented curations. They exist for `test_benchmark_import_attackdata.py` only; every account, user, address, key
 and record is fictitious (documentation address ranges, `.test` names, example account `123456789012`).
 
+# Splunk BOTS importer: Boss of the SOC v1, v2, v3 (development split only)
+
+`benchmark_import_bots.py` turns explicit UTC windows of the public [Splunk Boss of the SOC](https://github.com/splunk/botsv3)
+datasets (v1 2016, v2 2017, v3 2018) into partition cases: multi-host Windows, Linux, network-sensor, firewall, AWS
+and SaaS telemetry of SOC exercises. It reuses the OTRF compound machinery (partition windows, `plan`, the OTRF
+curation schema, `_curated`, `write_outputs`, consensus merge) and the attack_data pseudonyms, auditd parsing and
+CloudTrail allowlist; it does not fork them. Every case is `split: development`, `provenance: public_replay`.
+
+**License and contamination.** CC0-1.0 (`official/LICENSE` beside the data); no attribution requirement, the import
+report records the notice anyway. Contamination is very high: questions, answers and IOCs are in many public
+write-ups and training sets. Never use a BOTS case as a holdout or as evidence of hunting skill on unseen activity.
+The importer refuses public output containing `botsv1`/`botsv2`/`botsv3` or `boss of the soc`
+(`forbidden_public_metadata`) and never names the SIEM product in importer text, because `splunk` is also a lab host
+label.
+
+## Verified data format (inspected 2026-11-08)
+
+| | v1 | v2 / v3 |
+| --- | --- | --- |
+| Files | `json/botsv1.<sourcetype>.json.gz`, one sourcetype per file | `botsv<N>-export/db_<latest>_<earliest>_<id>.csv.gz` (`splunk cmd exporttool -csv` buckets, mixed sourcetypes) |
+| Record | `{"preview","offset","result":{…,"_raw","_time","host","source","sourcetype"}}` per line; optional final `{"preview":false,"lastrow":true}` | CSV `_time` (UTC epoch), `source::…`, `host::…`, `sourcetype::…`, `_raw`, `_meta` |
+| `_time` | rendered `YYYY-MM-DD HH:MM:SS.mmm MDT` (UTC−6) | integer epoch seconds |
+| Order | every file non-increasing in `_time` (all 31.9 M records checked) | unordered inside a bucket |
+
+Measured over every row of all 16 v3 and 49 v2 buckets: no row precedes the `earliest` of its file name; rows of the
+31 v2 daily noise buckets run up to 3599 s past `latest` (other buckets: none). The importer opens a bucket only when
+`[earliest, latest + 3600 s]` overlaps the window and refuses a read row outside that range
+(`bucket_range_violation`). v1 files are read newest first until the window start (`unsorted_export` if a file is not
+ordered) and a v1 file whose sourcetype the profile excludes is not read. Undecodable bytes in `_raw` become `\xNN`
+text and NUL characters in parsed values (Stream payloads decode `\u0000`) become the text `\x00`. A v1 search-time
+multivalue `host`/`sourcetype` (JSON list) keeps its first value; the rest are counted per file
+(`dataset.files_read[].multivalue_host_or_sourcetype_values_dropped`). Typical scan times on this workstation:
+v3 ≈ 10 s, v1 ≈ 75 s for 2016-08-24, v2 ≈ 2 min (daily 263 MB buckets).
+
+**Event time** is the Splunk-assigned `_time` (clock offset 0, uncertainty 1 s; `fields.timestamp_original` keeps the
+exported value); timestamps inside `_raw` are not re-derived (v2 Windows renders host-local UTC−7, v1 hosts UTC−6/−7).
+**Assets** are the Splunk `host` values with at least one imported record in the partition (sensors such as
+`splunk-02`, `jupiter`, `FROTHLY-FW1` or `splunk.froth.ly` are assets too: each event sits on the host that logged
+it). The draft template's default OS per host is derived from its sourcetypes' declared hints and is unverified.
+
+## Selection: incident, window, collection profile
+
+- `--incident <slug>` names the incident group; family `bots-<version>-<incident>` (one bootstrap cluster per
+  incident, no `family_id` override). `scenario_id` adds `-p<12 hex>` of the window and profile.
+- `--window-start/--window-end`: UTC with offset, start inclusive, end exclusive. The case window is the partition.
+- Collection profile: `--host` (repeatable) and either `--sourcetype` or `--exclude-sourcetype` (repeatable),
+  case-insensitive. Records of other hosts or sourcetypes inside the window are excluded and stated as
+  `collection_profile_filter` known gaps (per asset with counts by sourcetype; one asset-less gap for other hosts;
+  v1 files not read are named). Every asset also gets an `outside_partition_window` gap.
+- `dataset_sha256` is the SHA-256 of the selection descriptor (dataset, version, incident, every export file name and
+  byte count, profile); `metadata_sha256` is the data folder's `provenance.json`. A curation therefore binds to its
+  incident and profile (`curation_dataset_mismatch`), and to its window through `partition_window`
+  (`partition_mismatch`).
+- **Locators.** Each record's global line is `file_number × 100,000,000 + ordinal` (`file_number` = 1-based position
+  in the sorted file list, `ordinal` = CSV row or JSON line). `records.jsonl` is an index `{event_id, line}`;
+  `locators.json` adds `record_id` (Windows `RecordNumber`/`EventRecordID`, CloudTrail `eventID`, O365/AAD `Id`,
+  Stream/Suricata `flow_id`), `channel` (the sourcetype), `hostname`, `file` and `ordinal`. Curations cite
+  `{"line": N}` or `{"record_id": "ID", "channel": "<sourcetype>", "hostname": "<host>"}` (bare `record_id` only
+  when unique). A cited line of the export outside the partition fails with `support_record_not_imported`.
+
+```powershell
+py -3 benchmark_import_bots.py plan --version v3 --data $bots\v3 --incident aws-key --window-start 2018-08-20T09:16:00+00:00 --window-end 2018-08-20T09:28:00+00:00 --sourcetype aws:cloudtrail --output $work\v3\plans\aws-key.json
+py -3 benchmark_import_bots.py case --version v3 --data $bots\v3 --incident aws-key --window-start 2018-08-20T09:21:40+00:00 --window-end 2018-08-20T09:28:00+00:00 --sourcetype aws:cloudtrail --draft --output $work\v3\drafts\aws-key-p02
+py -3 benchmark_import_bots.py case --version v3 --data $bots\v3 --incident aws-key --window-start 2018-08-20T09:21:40+00:00 --window-end 2018-08-20T09:28:00+00:00 --sourcetype aws:cloudtrail --curation $work\v3\consensus\aws-key-p02.json --salt-file $draft\evaluator\salt.json --output $work\v3\cases-aws-key-p02
+```
+
+`plan` measures the prompt projection of every candidate partition with the real builder (greedy, binary search on
+whole seconds) and lists seconds that alone exceed the cap as `unpublishable`; nothing is sampled. Profile exclusion
+counts are kept per record time, so a partition built by `case` has exactly the size `plan` measured. Curations use
+the OTRF schema (assets by `hostname`; proposal, `agent_consensus` and signed attestations as in OTRF steps 4a/4b) and
+must keep the template's `partition_window` and omit `collection_profile` and `family_id`. The scenario's
+limitations state the partition, the profile and, for v1/v2, that the background is generated noise (v1: ~1,757
+synthetic Windows hosts; v2: 31 daily template buckets attributed to the real host names), not real-user activity.
+In Git Bash set `MSYS_NO_PATHCONV=1`.
+
+## Parsers and allowlist (`bots-fields.json`, `bots-fields-1`)
+
+`bots-fields.json` maps each sourcetype to a parser, a source name, a coverage telemetry value (or null), a draft OS
+hint and `events: {type key | "*": {field path: transform}}` (`"prefix.*"` covers every leaf under a prefix, `"*"`
+every other leaf) plus non-content `metadata_only` fields for a parsed record whose type has no entry.
+`events_from` reuses an existing allowlist: `otrf:<channel>` (OTRF EventData allowlists for Security, System,
+Sysmon, PowerShell/Operational) or `attackdata:<format>` (CloudTrail record types and auditd); listed events override
+it. Transforms are the OTRF and attack_data ones; `sid` additionally maps a classic `DOMAIN\name` rendering through
+`account`, keeps Windows constants (`BUILTIN\…`, `NT AUTHORITY\…`, `Mandatory Label\…`) and pseudonymizes Entra ID
+`S-1-12-1-…` SIDs whole. Unlisted fields are dropped and counted (`counts.dropped_fields`).
+
+| Parser | Sourcetypes (parsed) |
+| --- | --- |
+| `winevent-classic` | `WinEventLog:Security`, `:System`, `:Application`, `:Microsoft-Windows-PowerShell/Operational` (4104 script blocks, 4103 via the OTRF parser), AppLocker, Directory-Service. Message labels map to EventData names (`Creator Subject/Security ID` → `SubjectUserSid`, `Process Command Line` → `CommandLine`, `New Account` → `Target*`, `Member` → `Member*`, …); System/Application/AppLocker publish `Message` as content. |
+| `winevent-xml` | `XmlWinEventLog:Microsoft-Windows-Sysmon/Operational` (EventData, `<!` DTD/entities refused → unparsed); `RuleName` stays dropped. |
+| `json` | `stream:*` (tcp, udp, ip, icmp, igmp, arp, dhcp, dns, http, smtp, ftp, smb, ldap, mysql, mapi, sip, snmp, irc), `suricata` (type `event_type`), `osquery:results`/`osquery_results`, `aws:cloudtrail` (attack_data allowlist), `aws:description`, `aws:cloudwatch:guardduty`, `o365:management:activity`, `ms:o365:management` (type `Operation`), `ms:o365:reporting:messagetrace`, `ms:aad:signin`, `ms:aad:audit`, `code42:security`, `code42:user`, `csp-violation`, `nessus:scan`. Stream's non-JSON `\xNN` byte escapes are read as text; a record holding several JSON objects (Splunk line merging) publishes the first (`merged_json_objects_dropped`). |
+| `kv` | `WinRegistry`, `WinHostMon` (type `Type`), `fgt_traffic`/`fgt_utm`/`fgt_event` (type `subtype`), `Script:ListeningPorts`, `Script:GetEndpointInfo`, `Unix:*`, `Linux:SELinuxConfig`, `mysql:transaction:details`, `mysql:user` |
+| `syslog` | `syslog` (Cisco NVM `key="value"` flows or `program[pid]: message`), `linux_secure` |
+| `cisco-asa` | `cisco:asa` (type = message ID, message as content) |
+| `columns` | `pan:traffic`/`pan:threat`/`pan:system` (PAN-OS CSV after the syslog header), `access_combined`, `iis` (W3C default fields), `WebLogic_Access_Combined`, `aws:cloudwatchlogs:vpcflow`, `aws:elb:accesslogs`, `aws:s3:accesslogs`, `aws:rds:audit` |
+| `auditd` | `linux_audit`, `auditd` (attack_data parsing, argv reassembly and allowlist; raw and `ausearch -i` shapes) |
+| `text` | the whole line as sanitized `message` content: `symantec:ep:*`, `ps`, `top`, `lsof`, `netstat`, `who`, `lastlog`, `openPorts`, `package`, `bash_history`, `osquery:info`/`:warning`, apt/dpkg/cloud-init/dmesg/cron/maillog/yum, SSM agent, Tomcat/Apache/WebLogic/MySQL error logs, `aws:cloudwatchlogs`, `aws:rds:error`, `Script:InstalledApps` |
+| `metadata` (declared metadata-only) | `Perfmon:*`, `PerfmonMk:Process`, `MSAD:NT6:*`, `collectd`, `mysql:*` statistics, `df`, `vmstat`, `iostat`, `cpu`, `bandwidth`, `interfaces`, `protocol`, `hardware`, `time`, `web_ping`, `aws:cloudwatch`, `aws:config:rule`, `code42:api`/`org`/`computer`, `ess_content_importer`, `WindowsUpdateLog`, `Powershell:ScriptExecutionSummary` |
+
+Any other sourcetype is a **metadata-only** event (`st-<slug>` source, telemetry null; counted in
+`counts.unknown_sourcetypes`); a record its parser refuses is metadata-only too and stated as an `unparsed_records`
+known gap (`counts.unparsed_by_sourcetype`). Deliberately dropped: MAC addresses, HTTP response bodies
+(`dest_content`), cookies, Stream binary payloads, `aws:description` Lambda environment variables (they hold a
+collector token), osquery `decorations.host_uuid`, and Sysmon `RuleName`. Text records above 16384 bytes (`ps`,
+`lsof`) are cut with the explicit marker and a `content_truncated` gap. Event types are `<source>:<type key>`; type
+keys are printable, at most 64 characters, with ATT&CK-looking tokens masked.
+
+**Decoding before sanitizing.** osquery `process_events` writes argv like the kernel's EXECVE record: quoted words,
+and upper-case hex for words holding spaces (`"bash" "-c" 2F62696E2F7368…`). For the `hex_argv` paths
+(`columns.cmdline` of both osquery sourcetypes) such a quoted command line is rewritten as shell words with the
+attack_data argv rules, hex words decoded, so redaction and pseudonymization see ordinary command text
+(`"useradd" "-p" "<pass>"` → `useradd -p [REDACTED:password]`; counted as `argv_rewritten` and `hex_argv_decoded` in
+`counts.dropped_fields`). Well-known Linux/macOS service accounts (`root`, `ec2-user`, `mysql`,
+`apache`, `postfix`, `games`, `streamfwd`, …; `SYSTEM_ACCOUNTS`) stay literal like Windows built-in principals, and
+only multi-label host suffixes are DNS domains (`kutekitten.local` does not make `local` an identity). The lab's
+domains come from the case's hosts, every host the scan saw in the window (including profile-excluded ones) and
+Windows `Computer` names, so `froth.ly` is pseudonymized in DNS queries even when `splunk.froth.ly` is outside the
+host profile. Names glued into other text stay as written: a pipe suffix `…\<user>48_` or a OneDrive personal-site
+path `<user>_<domain>_<tld>` are not whole tokens of a known identity.
+
+**Content and pseudonyms.** Content values pass `benchmark_sanitize.sanitize_text` (above), re-run until no new
+pseudonym appears; lists are sanitized element-wise; objects (CloudTrail parameters, O365 `Parameters`) go through
+attack_data `_aws_scrub` (secret-named keys dropped, identity keys pseudonymized) first, and ARNs/account IDs get the
+AWS pseudonyms in sourcetypes flagged `aws`. Kept, path and SID values are rewritten with every identity the import
+pseudonymized; ATT&CK tokens in kept values are masked (`sanitizer.attack_masked_kept_values`). AWS service principals
+(`<service>.amazonaws.com`) stay literal. The leak check refuses a bundle whose event or asset values still contain
+any pseudonymized original of four characters or more (alphanumeric boundaries; field names, the source half of
+event types such as `stream-http`, the fixed question and gap texts are importer vocabulary and are not scanned; user
+names `http`, `https`, `www`, `admin` and `administrator` stay literal with the service accounts; form/query user
+keys such as `quick_username=`, `login=` or percent-encoded `%26username%3D<name>` get their value replaced in place by
+its user (or `user@dns`) pseudonym, so every copy is pseudonymized alike) or any BOTS name anywhere. Other
+percent-encoded identities (an encoded `email%3D<name>%40<domain>`) are not decoded. An original glued to other
+characters (for example an attempted user `null<name>` in a CloudTrail message) is not a token and stays as written.
+
+## Secrets found in the data (inspected 2026-11-08)
+
+v3 holds `net1 user /add <name> <password>` in Sysmon and Security command lines (redacted, including the quoted
+`"…\net.exe"` form), the leaked IAM access key ID in CloudTrail `userIdentity.accessKeyId` (pseudonymized `key-…`)
+and in mail text (redacted `aws_access_key`); its secret key does not occur in the export. CloudTrail
+`responseElements.credentials.sessionToken` and `requestParameters.password` are dropped. v1/v2 brute-force
+passwords in HTTP `form_data` (`passwd=`) are redacted. Not detected: a password written as prose (the v2 phishing
+mail gives its attachment password in the body); review mail `content_body` evidence before any wider use.
+
+## Invented sample
+
+`sample/bots-v3-sample.csv` (exporttool CSV: classic Security 4688/4720/4732/4689 with a `net user /add` password,
+Sysmon XML with an `-enc` payload, an AWS key and a `technique_id` RuleName, Stream HTTP with `passwd=` and a cookie,
+Stream DNS, CloudTrail `CreateLoginProfile` with a password, two merged osquery objects, `linux_secure`, Cisco ASA,
+auditd EXECVE+SYSCALL with a detector `key`, O365 `Set-Mailbox` forwarding, PowerShell 4104, WinRegistry, an unknown
+sourcetype, an unparsable Stream record, a second host and a record outside the window), `sample/bots-v1-sample.jsonl`
+(search-export lines newest first with a `rar -hp` password and the `lastrow` marker), `sample/bots-provenance.json`
+and `sample/curation-bots.json` exist for `test_benchmark_import_bots.py` only; the tests gzip them into bucket and
+file names at run time. Every host, user, address, key and record is fictitious (`.example.test`, documentation
+addresses, account `123456789012`).
+
 # Agent consensus answer keys (both importers)
 
 `benchmark_consensus.py` replaces human answer-key review with an automatic, honestly labelled mechanism:
@@ -819,3 +1087,31 @@ Exit codes: `0` success; `2` refusal (`error: <code>: <field>`). Other refusals:
 curation or an earlier consensus), `format_mismatch`, `output_exists`, `output_in_source_tree`,
 `invalid_directory`, `conflicting_arguments`. `test_benchmark_consensus.py` exercises the merge on invented
 curations derived from the samples above.
+
+# Label-derived real-IOC and Wave 2 SQLite query-track APT importers
+
+Four additional importers share `benchmark_case_writer.py`, `benchmark_sanitize.py`, `benchmark_ioc.py` (`ioc-feed-1`
+in `public/intel.jsonl`) and `benchmark_query.py` (`events.sqlite3` FTS5 query store) to produce mechanical
+`attestation: "publisher_labels"` cases without AI-drafted curations:
+
+| Importer | Source dataset & license | Track & sophistication | Key sanitization & truth rules |
+| --- | --- | --- | --- |
+| `benchmark_import_goldensaml.py` | OTRF SimuLand `GoldenSAMLADFSMailAccess` (MIT) | Inline bundle; **S5** hybrid AD FS -> DC -> Entra ID -> Exchange Online | Joins Windows AD FS / DC Sysmon + Security logs (`WindowsEvents`) with Microsoft 365 Defender (`Microsoft365DefenderEvents`), Entra ID audit logs (`AADAuditEvents`) and Exchange Online (`OfficeActivityEvents`); maps steps from the published SimuLand sequence. |
+| `benchmark_import_invictus.py` | Invictus AWS CloudTrail dataset | Inline bundle; **S0** benign controls and **S3/S4** multi-step AWS IAM/SecretsManager/CloudTrail evasion chains | Reads S3 `{"Records": [...]}` `.json` / `.json.gz` files, extracts Stratus Red Team invocation UUIDs from `userAgent` into mechanical `publisher_labels` ground truth, recursively redacts secret-bearing CloudTrail parameter/credential keys (`[REDACTED:secret]`), and strips all `stratus-red-team*` tokens from public `userAgent` before sealing. |
+| `benchmark_import_camlds.py` | AIT / Austrian Institute of Technology CAM-LDS v1 (CC BY 4.0) | Inline bundle; **S0** Linux controls and **S2–S4** Linux multi-source SSH/VNC lateral-movement and persistence chains | Reads centralized Wazuh alerts (`wazuh/logs/alerts/alerts.json`) and host logs (`auth.log`, `cron.log`, `dpkg.log`, `apache2/access.log`, `audit/audit.log`, `suricata/eve.json`) and derives steps mechanically from `attacker/attackmate.json`; strictly refuses to copy `configs/` (private SSH/TLS keys) or `attacker/` logs into `public/`. |
+| `benchmark_import_query_apt.py` | OTRF `APT29 Day 2` (MIT), `DEDALE` (CC BY 4.0, excluding DRL-1.1 rules), `FullAPT-2025` (CC BY 4.0) | Wave 2 SQLite `query_store` (`public/events.sqlite3`); **S4** whole-campaign multi-host / multi-OS APT chains (`24,000`–`28,000+` indexed events per case under `<20 KiB` prompt bytes) | Streams zip/bz2/CSV archives safely without loading multi-GB members into memory, strips publisher label columns (`Label`, `Technique`, `Tactic`, `Seed_Event` in `FullAPT-2025`; `malicious_events_class_1.jsonl` join in `DEDALE`) from public rows, indexes sanitized rows in FTS5 (`events`, `events_fts`, `iocs`, `meta`), and verifies citations against `events.sqlite3`. |
+
+## Real threat-intelligence IOC feed (`benchmark_ioc.py`, `ioc-feed-1`)
+
+Every case written through `benchmark_case_writer.py` seals `public/intel.jsonl` (`schema_version: 1` per line, specification `ioc-feed-1`):
+
+1. Extracts technical indicators observed in sanitized events (SHA-256/MD5/IMPHASH hashes, named pipes, JA3 digests, User-Agents, SSH client banners, URL paths (`url_path`), process/script names, and pseudonymized C2/IPv4/domain indicators), emitting case-derived indicators with `source_feed: "scenario-ti-feed"`.
+2. Merges real public CTI software/group tool indicators derived from the pinned MITRE ATT&CK v20 STIX bundle plus public MalwareBazaar/ThreatFox/Feodo-class tool and infrastructure artifacts, scrubbing all `Txxxx` technique strings so `intel.jsonl` never leaks ATT&CK answers.
+3. Enforces two explicit evaluation regimes recorded in evaluator-only `scenario.json` (`ioc_regime`, cohort control, forbidden in public bundles) and `evaluator/import-report.json` (`ioc_feed.ioc_regime`):
+   - `known_ioc_pivot`: requires at least one active entry-pivot indicator matching a truth event (`missing_known_ioc_pivot` if none can be extracted on a non-control case) alongside `known_false_positive` and `historical_rotated` benign decoy indicators.
+   - `novel_apt_zero_ioc`: withholds all truth-step infrastructure/hash indicators (`active_truth_matches == 0`) while keeping benign decoy IOCs active in `intel.jsonl`, forcing teams to hunt via Pyramid-of-Pain behavioral chains rather than indicator memorization.
+
+Unit tests (`test_benchmark_ioc.py`, `test_benchmark_query.py`, `test_benchmark_import_goldensaml.py`,
+`test_benchmark_import_invictus.py`, `test_benchmark_import_camlds.py`, `test_benchmark_import_query_apt.py`, and
+`test_benchmark_openai_http.py`) exercise all four importers, the IOC regimes, the SQLite query tools, and the
+stdlib OpenAI/loopback subscription adapter on synthetic in-memory fixtures with zero external data dependencies.
