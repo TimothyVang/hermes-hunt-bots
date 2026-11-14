@@ -106,15 +106,15 @@ Details, including the exact gate commands: [framework/hermes_temporal/README.md
 
 ## 6. Make your first PR
 
-Install the [deep-mode](https://github.com/TimothyVang/deep-mode) plugin once (commands in [HUNT-BOTS.md, Contributing](HUNT-BOTS.md#contributing)), then point your coding agent at the project skill [.agents/skills/hunt-bots-pr/SKILL.md](.agents/skills/hunt-bots-pr/SKILL.md). In short:
+Install the [deepmodebot](https://github.com/TimothyVang/deepmodebot) plugin once (commands in [HUNT-BOTS.md, Contributing](HUNT-BOTS.md#contributing)), then point your coding agent at the project skill [.agents/skills/hunt-bots-pr/SKILL.md](.agents/skills/hunt-bots-pr/SKILL.md). In short:
 
 1. Branch from `hunt-bots`.
 2. Prove the change on the real thing.
 3. Run `scripts/hunt_bots_check.py`.
-4. Self-review the branch with deep-mode's PR review.
+4. Self-review the branch with deepmodebot's PR review.
 5. Open a ready PR with the Why / What changed / Scope / Blast Radius / Verification sections.
 
-A maintainer reviews it with `/deep-mode:review-pr`, and a code owner approves.
+A maintainer reviews it with `/deepmodebot:review-pr`, and a code owner approves.
 
 ## 7. Optional: the operator tools
 

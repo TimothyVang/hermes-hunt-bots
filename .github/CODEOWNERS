@@ -65,7 +65,7 @@ uv.lock                         @TimothyVang
 /framework/                     @TimothyVang
 /research/                      @TimothyVang
 /HUNT-BOTS.md                   @TimothyVang
-/.deep-mode.json                @TimothyVang
+/.deepmodebot.json                @TimothyVang
 /scripts/hunt_bots_check.py     @TimothyVang
 /THIRD-PARTY-NOTICES.md         @TimothyVang
 /operator/                      @TimothyVang
