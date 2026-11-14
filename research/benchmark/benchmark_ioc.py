@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import benchmark_paths  # noqa: F401
+import benchmark_paths
 from benchmark_contracts import (
     BenchmarkError, _ATTACK_TOKEN, _enum, _fields, _id, _json_value,
     _number, _text, canonical_bytes, confined_file, decode_json, digest_bytes,
@@ -64,8 +64,8 @@ IOC_REQUIRED_FIELDS = {
 _HEX64 = re.compile(r'\A[0-9a-fA-F]{64}\Z')
 _HEX40 = re.compile(r'\A[0-9a-fA-F]{40}\Z')
 _HEX32 = re.compile(r'\A[0-9a-fA-F]{32}\Z')
-_KV_HASH = re.compile(r'\b(SHA256|SHA1|MD5|IMPHASH)=([0-9A-Fa-f]{32,64})\b', re.I)
-_GROUP_ID = re.compile(r'(?<![A-Za-z0-9])G[0-9]{4}(?![0-9])', re.I)
+_KV_HASH = re.compile(r'\b(SHA256|SHA1|MD5|IMPHASH)=([0-9A-Fa-f]{32,64})\b', re.IGNORECASE)
+_GROUP_ID = re.compile(r'(?<![A-Za-z0-9])G[0-9]{4}(?![0-9])', re.IGNORECASE)
 
 def _ioc_id(indicator_type, indicator_value):
     payload = canonical_bytes({'type': indicator_type, 'value': indicator_value})
@@ -186,7 +186,7 @@ def validate_ioc_entry(entry, field='ioc'):
     for str_key in ('ioc_id', 'indicator_value', 'source_feed', 'notes'):
         val_str = entry[str_key]
         if _GROUP_ID.search(val_str) or _ATTACK_TOKEN.search(val_str):
-            _fail('truth_public_overlap', '{}.{}'.format(field, str_key))
+            _fail('truth_public_overlap', f'{field}.{str_key}')
     _json_value(entry, field, public=True)
     return entry
 
@@ -206,7 +206,7 @@ def validate_ioc_feed_bytes(data):
     seen = set()
     for index, line in enumerate(lines, 1):
         entry = decode_json(line)
-        validate_ioc_entry(entry, 'ioc_feed[{}]'.format(index))
+        validate_ioc_entry(entry, f'ioc_feed[{index}]')
         if entry['ioc_id'] in seen:
             _fail('duplicate_identifier', 'ioc_feed.ioc_id')
         seen.add(entry['ioc_id'])
@@ -405,6 +405,19 @@ _SCENARIO_TI_NOTE = (
 )
 
 
+def _iter_raw_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str):
+                yield k
+            yield from _iter_raw_strings(v)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_raw_strings(item)
+
+
 def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729, extra_iocs=(),
                         all_events=None):
     """Build `(feed_entries, manifest)` for one case under `regime`.
@@ -423,11 +436,14 @@ def build_case_ioc_feed(evidence, truth, *, regime='known_ioc_pivot', seed=1729,
     truth_event_ids = {eid for step in truth_steps for group in step['support_sets'] for eid in group}
     truth_indicator_pool = {pair for eid in truth_event_ids for pair in extracted.get(eid, ())}
     truth_pairs_folded = {(t, v.casefold()) for t, v in truth_indicator_pool}
-    truth_text_blobs = [
-        canonical_bytes(event.get('fields', {})).decode('utf-8').casefold()
-        for event in source_events
-        if event['event_id'] in truth_event_ids
-    ]
+    truth_text_blobs = []
+    for event in source_events:
+        if event['event_id'] not in truth_event_ids:
+            continue
+        fields_obj = event.get('fields', {})
+        truth_text_blobs.append(canonical_bytes(fields_obj).decode('utf-8').casefold())
+        for raw_str in _iter_raw_strings(fields_obj):
+            truth_text_blobs.append(raw_str.casefold())
     benign_event_ids = [event['event_id'] for event in source_events if event['event_id'] not in truth_event_ids]
 
     def _matches_any_truth(itype, ival):
@@ -672,7 +688,7 @@ def main(argv=None):
         print(json.dumps(report))
         return 0
     except BenchmarkError as exc:
-        print('error: {}: {}'.format(exc.code, exc.field), file=sys.stderr)
+        print(f'error: {exc.code}: {exc.field}', file=sys.stderr)
         return 2
 
 

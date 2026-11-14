@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-import benchmark_paths  # noqa: F401
+import benchmark_paths
 from benchmark_contracts import BenchmarkError, load_json, validate_public_bundle, validate_scenario, validate_truth
 from benchmark_ioc import (
     IOC_FILE_NAME, IOC_SCHEMA_VERSION, PUBLIC_CTI_SEED_CATALOG, attach_ioc_feed,
@@ -370,6 +370,69 @@ class BenchmarkIocTests(unittest.TestCase):
             )
         self.assertEqual(leak_ctx.exception.code, 'forbidden_public_metadata')
         self.assertEqual(list(bad_out.iterdir()), [])
+
+    def test_novel_apt_zero_ioc_excludes_raw_backslash_and_quote_cmdline_signatures(self):
+        from benchmark_ioc import build_case_ioc_feed
+        for idx, cmd in enumerate((
+            r'C:\Temp\loader.exe --stage run',
+            'bash -c "cat /etc/shadow"',
+        )):
+            ev = {
+                'case_id': f'case-badd{idx:04x}',
+                'window_utc': {'start_inclusive': '2026-01-01T00:00:00Z', 'end_exclusive': '2026-01-01T01:00:00Z'},
+                'events': [{'event_id': 'e1', 'fields': {'nested': [{'CommandLine': cmd}]}}],
+            }
+            tr = {'steps': [{
+                'step_id': 's1',
+                'window_utc': {'start_inclusive': '2026-01-01T00:00:00Z', 'end_exclusive': '2026-01-01T00:01:00Z'},
+                'support_sets': [['e1']],
+            }]}
+            probe = dict(
+                PUBLIC_CTI_SEED_CATALOG[-1],
+                ioc_id=f'ioc-probe-escaped-{idx}',
+                indicator_type='process_cmdline_sig',
+                indicator_value=cmd,
+                status='active',
+                confidence=0.95,
+                source_feed='verifier-public-cti',
+                notes='Exact observed command-line signature.',
+            )
+            feed, manifest = build_case_ioc_feed(ev, tr, regime='novel_apt_zero_ioc', extra_iocs=[probe])
+            validate_ioc_feed_bytes(encode_ioc_feed(feed))
+            retained = [x for x in feed if x['status'] == 'active' and x['indicator_value'] == cmd]
+            self.assertEqual(manifest['active_truth_matches'], 0)
+            self.assertEqual(retained, [])
+
+        # Also verify attach_ioc_feed on a full sealed case bundle with raw backslashes and quotes in truth event fields
+        case_dir = self._make_curated_case('case-3333cccc')
+        ev_path = case_dir / 'public' / 'evidence.json'
+        ev_doc = load_json(ev_path)
+        tr_doc = load_json(case_dir / 'evaluator' / 'truth.json')
+        target_eid = tr_doc['steps'][0]['support_sets'][0][0]
+        raw_win_cmd = r'C:\Windows\Temp\stage_agent.exe --config "C:\ProgramData\agent.cfg"'
+        for ev_row in ev_doc['events']:
+            if ev_row['event_id'] == target_eid:
+                ev_row['fields']['CommandLine'] = raw_win_cmd
+        ev_path.write_text(json.dumps(ev_doc, indent=2) + '\n', encoding='utf-8')
+
+        extra = [dict(
+            PUBLIC_CTI_SEED_CATALOG[-1],
+            ioc_id='ioc-probe-sealed-win-cmd',
+            indicator_type='process_cmdline_sig',
+            indicator_value=raw_win_cmd,
+            status='active',
+            confidence=0.95,
+            source_feed='verifier-public-cti',
+            notes='Exact observed Windows command-line signature.',
+        )]
+        sealed_manifest = attach_ioc_feed(case_dir, regime='novel_apt_zero_ioc', seed=42, extra_iocs=extra)
+        self.assertEqual(sealed_manifest['active_truth_matches'], 0)
+        sealed_feed = validate_ioc_feed_bytes((case_dir / 'public' / IOC_FILE_NAME).read_bytes())
+        self.assertFalse(any(x['status'] == 'active' and x['indicator_value'] == raw_win_cmd for x in sealed_feed))
+        coverage = load_json(FIXTURES / 'coverage.json')
+        revalidated_ev = validate_public_bundle(load_json(ev_path), case_dir / 'public')
+        validate_scenario(load_json(case_dir / 'scenario.json'), coverage)
+        validate_truth(load_json(case_dir / 'evaluator' / 'truth.json'), revalidated_ev)
 
 
 if __name__ == '__main__':
