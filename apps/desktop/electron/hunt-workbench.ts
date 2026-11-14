@@ -1000,27 +1000,39 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     return null
   }
 
-  const cleanupManagedBoard = () => {
+  const cancelInflightBoard = () => {
     boardLifecycleEpoch += 1
-    let hadActive = false
 
-    if (inflightBoard) {
-      const pending = inflightBoard
-      inflightBoard = null
-      killChildQuietly(pending.child)
-      unlinkQuietly(pending.tempInputPath)
-      hadActive = true
+    if (!inflightBoard) {
+      return null
     }
 
-    if (managedBoard) {
-      const active = managedBoard
-      managedBoard = null
-      killChildQuietly(active.child)
-      unlinkQuietly(active.tempInputPath)
-      hadActive = true
+    const pending = inflightBoard
+    inflightBoard = null
+    killChildQuietly(pending.child)
+    unlinkQuietly(pending.tempInputPath)
+
+    return pending.child
+  }
+
+  const retireManagedBoard = () => {
+    if (!managedBoard) {
+      return null
     }
 
-    return hadActive
+    const active = managedBoard
+    managedBoard = null
+    killChildQuietly(active.child)
+    unlinkQuietly(active.tempInputPath)
+
+    return active.child
+  }
+
+  const cleanupManagedBoard = () => {
+    const cancelledChild = cancelInflightBoard()
+    const retiredChild = retireManagedBoard()
+
+    return Boolean(cancelledChild || retiredChild)
   }
 
   const readRegistryEntries = (home: string): Map<number, { address?: string; filePath: string; workflowId?: string }> => {
@@ -1150,6 +1162,10 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
     if (caseId && !SAFE_CASE_ID.test(caseId)) {
       return { error: 'Invalid case ID.' }
+    }
+
+    if (request?.port !== undefined && (!Number.isInteger(request.port) || request.port < 0 || request.port > 65535)) {
+      return { error: 'Port must be between 1 and 65535 (or 0 for automatic loopback port).' }
     }
 
     return { address, caseId, rawOrigin, workflowId }
@@ -1383,6 +1399,8 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
       inflightBoard = null
     }
 
+    retireManagedBoard()
+
     managedBoard = {
       address: validated.address,
       child,
@@ -1518,15 +1536,14 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     }
 
     boardStartSeq += 1
-    const prepared = await prepareBoardStart(request, validated, boardStartSeq)
+    const myStart = boardStartSeq
+    const cancelledInflight = cancelInflightBoard()
+    const inflightExited = cancelledInflight ? waitForChildExit(cancelledInflight, 3000) : Promise.resolve()
+    const prepared = await prepareBoardStart(request, validated, myStart)
 
     if ('error' in prepared) {
       return { error: prepared.error, ok: false }
     }
-
-    const superseded = [managedBoard?.child, inflightBoard?.child].filter((item): item is ChildProcess => Boolean(item))
-    const supersededExited = Promise.all(superseded.map(item => waitForChildExit(item, 3000)))
-    cleanupManagedBoard()
 
     const tracker = {
       child: null as ChildProcess | null,
@@ -1548,10 +1565,42 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     }
 
     try {
-      await supersededExited
+      await inflightExited
 
       if (boardLifecycleEpoch !== tracker.epoch) {
         return abortTracker('Board startup cancelled.')
+      }
+
+      if (request?.port !== undefined && request.port !== 0 && managedBoard?.port === request.port) {
+        if (fileExists(prepared.runtime.pythonExe)) {
+          const check = await runPython(
+            prepared.runtime,
+            [
+              '-c',
+              'import sys; from hermes_temporal.cli import _strict_input; from hermes_temporal.board import build_state; raise SystemExit(2 if build_state(_strict_input(sys.argv[1]), None, None)["input_errors"] else 0)',
+              prepared.inputPath
+            ],
+            { timeoutMs: 8000 }
+          )
+
+          if (boardLifecycleEpoch !== tracker.epoch) {
+            return abortTracker('Board startup cancelled.')
+          }
+
+          if (check.code !== 0) {
+            return abortTracker(check.stderr.trim() || 'error: input is not a readable supplied-evidence hunt')
+          }
+        }
+
+        const samePortOld = retireManagedBoard()
+
+        if (samePortOld) {
+          await waitForChildExit(samePortOld, 3000)
+        }
+
+        if (boardLifecycleEpoch !== tracker.epoch) {
+          return abortTracker('Board startup cancelled.')
+        }
       }
 
       const portChoice = await pickTargetBoardPort(request?.port)

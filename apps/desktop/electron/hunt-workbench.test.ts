@@ -471,22 +471,26 @@ describe('hunt-workbench', () => {
       check()
     })
 
-    expect(spawnedChildren[1].killed).toBe(true)
-    expect(fs.existsSync(exportedTempFiles[1])).toBe(false)
+    expect(spawnedChildren[1].killed).toBe(false)
+    expect(fs.existsSync(exportedTempFiles[1])).toBe(true)
 
     wb.dispose()
     const thirdResult = await thirdPromise
 
     expect(thirdResult).toEqual({ error: 'Board startup cancelled.', ok: false })
+    expect(spawnedChildren[1].killed).toBe(true)
+    expect(fs.existsSync(exportedTempFiles[1])).toBe(false)
     expect(spawnedChildren[2].killed).toBe(true)
     expect(fs.existsSync(exportedTempFiles[2])).toBe(false)
   })
 
-  it('keeps the running board when a replacement start fails during input preparation', async () => {
+  it('keeps the running board when a replacement start fails validation, input preparation, or child startup', async () => {
     const home = makeTempDir()
     tempDirs.push(home)
     const inlineFile = path.join(home, 'inline.json')
     fs.writeFileSync(inlineFile, JSON.stringify({ scope: 'synthetic', synthetic_only: true }))
+    const badSemanticFile = path.join(home, 'empty.json')
+    fs.writeFileSync(badSemanticFile, '{}')
     const spawned: Array<ReturnType<typeof fakeChildProcess>> = []
     let runtimeAvailable = true
 
@@ -497,7 +501,13 @@ describe('hunt-workbench', () => {
       resolvePython: async () =>
         runtimeAvailable ? { frameworkRoot: '/repo/framework', pythonExe: '/repo/framework/.venv-temporal/bin/python' } : null,
       spawnBoardProcess: (_rt, args) => {
-        const child = fakeChildProcess(`http://127.0.0.1:${args[args.indexOf('--port') + 1]}/`)
+        const inputArg = args[args.indexOf('--input') + 1]
+
+        const child =
+          inputArg === badSemanticFile
+            ? fakeChildProcess(undefined, 2, 'error: input is not a readable supplied-evidence hunt')
+            : fakeChildProcess(`http://127.0.0.1:${args[args.indexOf('--port') + 1]}/`)
+
         spawned.push(child)
 
         return child
@@ -506,6 +516,12 @@ describe('hunt-workbench', () => {
 
     const started = await wb.startBoard({ inputPath: inlineFile, port: 8895, workflowId: 'wf-live' })
     expect(started.ok).toBe(true)
+
+    const badPort = await wb.startBoard({ inputPath: inlineFile, port: 65536, workflowId: 'wf-replacement' })
+    expect(badPort.ok).toBe(false)
+    expect(badPort.error).toMatch(/Port must be between 1 and 65535/)
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].killed).toBe(false)
 
     const missingInput = await wb.startBoard({
       inputPath: path.join(home, 'does-not-exist.json'),
@@ -516,6 +532,12 @@ describe('hunt-workbench', () => {
     expect(missingInput.ok).toBe(false)
     expect(missingInput.error).toMatch(/does not exist/)
     expect(spawned).toHaveLength(1)
+    expect(spawned[0].killed).toBe(false)
+
+    const semanticFail = await wb.startBoard({ inputPath: badSemanticFile, workflowId: 'wf-replacement' })
+    expect(semanticFail.ok).toBe(false)
+    expect(semanticFail.error).toMatch(/not a readable supplied-evidence hunt/)
+    expect(spawned).toHaveLength(2)
     expect(spawned[0].killed).toBe(false)
 
     runtimeAvailable = false

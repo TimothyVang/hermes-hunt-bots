@@ -40,7 +40,7 @@ Run `doctor` before driving any UI journey and whenever state looks unexpected:
 python .agents/skills/verify-hunt-command/control-hunt-command.py doctor --python <lock-python> --hermes-home <isolated-hermes-home>
 ```
 
-`doctor` is strictly read-only: it verifies the lock Python, both Desktop plugin sources, clean `apps/desktop/assets`, packed binary presence, and any active loopback `HuntBoard` endpoints registered under `<hermes-home>/hunt-board/`.
+`doctor` is strictly read-only: it verifies the lock Python, both Desktop plugin sources, clean `apps/desktop/assets`, packed binary presence (pass `--skip-packed-check` for source/CLI-only checks before `npm run pack:hunt`), and any active loopback `HuntBoard` endpoints registered under `<hermes-home>/hunt-board/`.
 
 ## Drive
 

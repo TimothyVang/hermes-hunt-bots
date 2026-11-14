@@ -49,7 +49,8 @@ def _resolve_lock_python(explicit: str | None) -> Path | None:
     ])
     for cand in candidates:
         if cand.is_file():
-            return cand.resolve()
+            # Preserve venv bin/python symlinks on POSIX so pyvenv.cfg stays active.
+            return Path(os.path.abspath(cand))
     return None
 
 
@@ -122,12 +123,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             break
         except ValueError:
             continue
+    ok = res.returncode == 0 and parsed is not None
     return _emit({
-        "ok": res.returncode == 0 and parsed is not None,
+        "ok": ok,
         "exit_code": res.returncode,
         "status": parsed,
         "stderr": res.stderr.strip(),
-    }, 0 if res.returncode == 0 else 1)
+    }, 0 if ok else 1)
 
 
 def cmd_launch(args: argparse.Namespace) -> int:

@@ -15,6 +15,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -76,7 +77,8 @@ def _resolve_lock_python(explicit: str | None) -> Path | None:
     ])
     for cand in candidates:
         if cand.is_file():
-            return cand.resolve()
+            # Preserve venv bin/python symlinks on POSIX so pyvenv.cfg stays active.
+            return Path(os.path.abspath(cand))
     return None
 
 
@@ -176,14 +178,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         and checks["workspace_plugin_exists"]
         and checks["hunt_lab_plugin_exists"]
         and checks["desktop_assets_clean"]
+        and (bool(getattr(args, "skip_packed_check", False)) or checks["packed_binary_exists"])
     )
     remediation = None
     if not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a venv with framework/requirements-hunt.lock installed."
+    elif not checks["workspace_plugin_exists"] or not checks["hunt_lab_plugin_exists"]:
+        remediation = "Confirm framework/desktop/cybersecurity-workspace/plugin.js and framework/hunt_lab/desktop/plugin.js exist."
     elif not checks["desktop_assets_clean"]:
         remediation = (
             "Inspect `git -C apps/desktop status -- assets` and remove unintended pack outputs "
             "without discarding tracked edits."
+        )
+    elif not checks["packed_binary_exists"] and not getattr(args, "skip_packed_check", False):
+        remediation = (
+            "Run `npm run pack:hunt` in apps/desktop before launching Desktop UI journeys "
+            "(or pass --skip-packed-check for source/CLI-only checks)."
         )
     return _emit({"ok": ok, "checks": checks, "remediation": remediation}, 0 if ok else 1)
 
@@ -278,7 +288,7 @@ def _windows_terminate_verified(pid: int, expected_binary: str, expected_create:
             return "dead"
         if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
             return "mismatch"
-        return "stopped" if kernel32.TerminateProcess(handle, 1) else "failed"
+        return "stopped" if kernel32.TerminateProcess(handle, 1) else f"error:WinError({ctypes.get_last_error()})"
     finally:
         kernel32.CloseHandle(handle)
 
@@ -396,6 +406,63 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return _emit({"ok": True, "pid": proc.pid, "pid_file": str(pid_file), "hermes_home": str(hermes_home)})
 
 
+def _probe_mjpeg_stream(port: int, profile: str) -> dict:
+    if not re.fullmatch(r"[a-z0-9-]+", profile):
+        return {"status": 0, "ok": False, "error": "Invalid live profile slug."}
+    mjpg_url = f"http://127.0.0.1:{port}/live/{profile}.mjpg"
+    req = urllib.request.Request(
+        mjpg_url,
+        headers={"Host": f"127.0.0.1:{port}", "Sec-Fetch-Dest": "image"},
+        method="GET",
+    )
+    status = 0
+    ctype = ""
+    buf = bytearray()
+    try:
+        with _LOOPBACK_OPENER.open(req, timeout=3.0) as resp:
+            status = resp.status
+            ctype = resp.headers.get("Content-Type", "")
+            if status != 200 or "multipart/x-mixed-replace" not in ctype:
+                return {"status": status, "content_type": ctype, "ok": False, "error": f"Unexpected response on {mjpg_url}"}
+            while len(buf) < 4096:
+                chunk = resp.read1(1024) if hasattr(resp, "read1") else resp.read(64)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                sep = buf.find(b"\r\n\r\n")
+                if sep >= 0 and len(buf) >= sep + 6:
+                    jpeg_frame = bytes(buf[sep + 4 : sep + 6]) == b"\xff\xd8"
+                    return {
+                        "status": status,
+                        "content_type": ctype,
+                        "bytes_sampled": len(buf),
+                        "jpeg_frame": jpeg_frame,
+                        "ok": jpeg_frame,
+                        **({} if jpeg_frame else {"error": f"Stream payload on {mjpg_url} is not JPEG"}),
+                    }
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, "ok": False, "error": f"HTTP {exc.code} on {mjpg_url}"}
+    except OSError as exc:
+        if status == 200:
+            return {
+                "status": status,
+                "content_type": ctype,
+                "bytes_sampled": len(buf),
+                "jpeg_frame": False,
+                "ok": False,
+                "error": f"No JPEG frame received on {mjpg_url} within timeout.",
+            }
+        return {"status": 0, "ok": False, "error": str(exc)}
+    return {
+        "status": status,
+        "content_type": ctype,
+        "bytes_sampled": len(buf),
+        "jpeg_frame": False,
+        "ok": False,
+        "error": f"No JPEG frame received on {mjpg_url}.",
+    }
+
+
 def cmd_board_probe(args: argparse.Namespace) -> int:
     if args.port < 1 or args.port > 65535:
         return _emit({"ok": False, "error": "Board port must be 1..65535 (Rule 2)."}, 1)
@@ -405,28 +472,7 @@ def cmd_board_probe(args: argparse.Namespace) -> int:
             "ok": False,
             "error": f"No active HuntBoard at http://127.0.0.1:{args.port}/. Start Hunt Board from /hunt-board or pass the active loopback --port.",
         }, 1)
-    live_check = None
-    if args.profile:
-        mjpg_url = f"http://127.0.0.1:{args.port}/live/{args.profile}.mjpg"
-        req = urllib.request.Request(
-            mjpg_url,
-            headers={"Host": f"127.0.0.1:{args.port}", "Sec-Fetch-Dest": "image"},
-            method="GET",
-        )
-        try:
-            with _LOOPBACK_OPENER.open(req, timeout=3.0) as resp:
-                ctype = resp.headers.get("Content-Type", "")
-                chunk = resp.read(44)
-                live_check = {
-                    "status": resp.status,
-                    "content_type": ctype,
-                    "bytes_sampled": len(chunk),
-                    "ok": resp.status == 200 and "multipart/x-mixed-replace" in ctype and len(chunk) > 0,
-                }
-        except urllib.error.HTTPError as exc:
-            live_check = {"status": exc.code, "ok": False, "error": f"HTTP {exc.code} on {mjpg_url}"}
-        except OSError as exc:
-            live_check = {"status": 0, "ok": False, "error": str(exc)}
+    live_check = _probe_mjpeg_stream(args.port, args.profile) if args.profile else None
     ok = True if live_check is None else bool(live_check["ok"])
     return _emit({"ok": ok, "board": info, "live_stream": live_check}, 0 if ok else 1)
 
@@ -587,6 +633,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--python", help="Lock venv Python interpreter path.")
     p_doc.add_argument("--hermes-home", help="Isolated HERMES_HOME to inspect for board-<port>.json entries.")
     p_doc.add_argument("--board-port", type=int, help="Additional loopback Hunt Board port to probe.")
+    p_doc.add_argument(
+        "--skip-packed-check",
+        action="store_true",
+        help="Allow doctor to succeed in source/CLI-only environments before running `npm run pack:hunt`.",
+    )
     p_doc.set_defaults(func=cmd_doctor)
 
     p_launch = sub.add_parser("launch", help="Launch unpacked Hunt Command against an isolated HERMES_HOME.")
