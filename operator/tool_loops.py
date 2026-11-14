@@ -85,6 +85,7 @@ def build_input(base, brief, guidance, case_id):
     # A real-data case (public dataset or work export) keeps the origin label lab-input gave it; never relabel it synthetic.
     origin = base['scope'].split(' only; ', 1)[0] if 'data_origin' in base else f'Synthetic {case_id}'
     raw['scope'] = f'{origin} only; ' + brief
+    raw['parallel'] = True
     if guidance:
         raw['stage_guidance'] = guidance
     return raw

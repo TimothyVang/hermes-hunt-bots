@@ -30,6 +30,7 @@ def load(name):
 lab_server = load('lab_server')
 ARKIME_GET = lab_server.arkime_get
 ingest = load('ingest')
+kibana_setup = load('kibana_setup')
 
 SECRET = 'c0ffee' * 10 + 'beef'
 CASE = {'case_id': 'lab-med-001', 'question': 'Synthetic question.',
@@ -105,8 +106,11 @@ class ServerCase(unittest.TestCase):
         finally:
             connection.close()
 
-    def request(self, path, method='GET', profile=None):
-        headers = {lab_server.SECRET_HEADER: SECRET, **({'X-Hermes-Profile': profile} if profile else {})}
+    def request(self, path, method='GET', profile=None, run_id=None):
+        token = lab_server.profile_secret(SECRET, profile) if profile in lab_server.PROFILES else SECRET
+        headers = {lab_server.SECRET_HEADER: token,
+                   **({'X-Hermes-Profile': profile} if profile else {}),
+                   **({lab_server.RUN_ID_HEADER: run_id} if run_id else {})}
         status, _headers, body = self.exchange(path, method, headers)
         return status, (json.loads(body) if body else None)
 
@@ -407,7 +411,9 @@ class EndpointTests(ServerCase):
         self.request('/es/search?q=alice', profile='framework-researcher')
         self.request('/es/search?size=0', profile='framework-reviewer')
         self.arkime.return_value = b'203.0.113.9, 2\n'
-        self.request('/arkime/unique?field=ip.dst', profile='made-up-profile')
+        self.assertEqual(self.request('/arkime/unique?field=ip.dst', profile='made-up-profile'),
+                         (401, {'error': 'caller_not_authorized'}))
+        self.request('/arkime/unique?field=ip.dst')
         self.request('/es/search?q=board', profile='hunt-board')
         self.request('/case')
         status, value = self.request('/activity?after=0')
@@ -425,6 +431,25 @@ class EndpointTests(ServerCase):
         self.assertEqual(([e['seq'] for e in page['entries']], page['next'], page['more']), ([1, 2], 2, True))
         # A cursor from before an API restart (beyond the current sequence) restarts at the beginning.
         self.assertEqual(len(self.request('/activity?after=500')[1]['entries']), 3)
+
+    def test_activity_filters_by_run_id_and_rejects_post_requests(self):
+        self.request('/es/search?q=run_a_1', profile='framework-researcher', run_id='wf-a:round:001')
+        self.request('/es/search?q=run_b_1', profile='framework-researcher', run_id='wf-b:round:001')
+        self.request('/es/search?q=unscoped', profile='framework-researcher')
+        status_a, only_a = self.request('/activity?after=0&run_id=wf-a:round:001', profile='hunt-board')
+        self.assertEqual(status_a, 200)
+        self.assertEqual([(e['params']['q'], e['run_id']) for e in only_a['entries']],
+                         [('run_a_1', 'wf-a:round:001')])
+        status_b, only_b = self.request('/activity?after=0', profile='hunt-board', run_id='wf-b:round:001')
+        self.assertEqual(status_b, 200)
+        self.assertEqual([(e['params']['q'], e['run_id']) for e in only_b['entries']],
+                         [('run_b_1', 'wf-b:round:001')])
+        self.assertEqual(len(self.request('/activity?after=0', profile='hunt-board')[1]['entries']), 3)
+        self.assertEqual(self.request('/activity?after=0&run_id=wf-a:round:001',
+                                      profile='hunt-board', run_id='wf-b:round:001')[0], 400)
+        self.assertEqual(self.request('/es/search?q=bad', profile='framework-researcher', run_id='bad space')[0], 400)
+        self.assertEqual(self.request('/activity', method='POST', profile='hunt-board'),
+                         (405, {'error': 'read_only'}))
 
     def test_activity_ring_keeps_only_the_newest_entries(self):
         ring = lab_server.Activity(limit=3)
@@ -518,6 +543,34 @@ class CallerTests(ServerCase):
                 self.assertEqual((status, answer[lab_server.INSTANCE_HEADER]), (expected, self.server.instance_id))
         self.assertEqual(self.exchange('/view', 'GET', {lab_server.SECRET_HEADER: SECRET})[1][lab_server.INSTANCE_HEADER],
                          self.server.instance_id)
+
+    def test_bot_subkeys_enforce_profile_binding_and_tool_ownership(self):
+        researcher_key = lab_server.profile_secret(SECRET, 'framework-researcher')
+        # Claiming another profile with researcher's HMAC subkey, or claiming a bot profile with master SECRET, is 401.
+        self.assertEqual(
+            self.exchange('/arkime/sessions', 'GET', {
+                lab_server.SECRET_HEADER: researcher_key,
+                'X-Hermes-Profile': 'framework-network-analyst',
+            })[:1] + (json.loads(self.exchange('/arkime/sessions', 'GET', {
+                lab_server.SECRET_HEADER: researcher_key,
+                'X-Hermes-Profile': 'framework-network-analyst',
+            })[2]),),
+            (401, {'error': 'caller_not_authorized'}),
+        )
+        status_master, _, body_master = self.exchange(
+            '/es/search?q=a', 'GET', {lab_server.SECRET_HEADER: SECRET, 'X-Hermes-Profile': 'framework-researcher'})
+        self.assertEqual((status_master, json.loads(body_master)), (401, {'error': 'caller_not_authorized'}))
+        # Even omitting X-Hermes-Profile with researcher_key still authenticates as researcher and enforces ownership!
+        status_omit, _, body_omit = self.exchange(
+            '/arkime/sessions', 'GET', {lab_server.SECRET_HEADER: researcher_key})
+        self.assertEqual((status_omit, json.loads(body_omit)), (403, {'error': 'tool_not_owned'}))
+        for unowned in ('/arkime/sessions', '/arkime/unique?field=ip.dst', '/intel?values=1.1.1.1',
+                        '/es/detect?q=a&name=r', '/events', '/network', '/health', '/activity'):
+            with self.subTest(unowned=unowned):
+                self.assertEqual(self.request(unowned, profile='framework-researcher'),
+                                 (403, {'error': 'tool_not_owned'}))
+        self.assertEqual(self.request('/view', profile='framework-builder'), (403, {'error': 'tool_not_owned'}))
+        self.assertEqual(self.request('/case', profile='framework-builder'), (200, CASE))
 
     def test_the_console_takes_the_secret_from_its_url_and_data_routes_never_do(self):
         self.elastic.response = es_hits([{'event': {'id': 'evt-000001'}, 'message': 'hello'}])
@@ -1169,6 +1222,31 @@ class IngestTests(unittest.TestCase):
         mismatched = self.write('other.jsonl', [{'case_id': 'dns-lab-001', 'indicator': {'type': 'ip', 'value': '1.2.3.4'}}])
         with mock.patch.object(ingest, 'request', FakeIndexer()), self.assertRaises(ValueError):
             ingest.ingest_intel('http://es', mismatched, 'lab-med-001')
+
+
+class KibanaSetupTests(unittest.TestCase):
+    def test_configure_creates_active_and_per_case_aliases_and_data_views(self):
+        calls = []
+
+        def fake_req(base, path, method='GET', body=None, kibana=False):
+            calls.append((method, base + path, body, kibana))
+            if method == 'GET' and path == '/api/status':
+                return {'status': {'overall': {'level': 'available'}}}
+            if method == 'GET' and path.startswith('/api/data_views/data_view/'):
+                view_id = path.rsplit('/', 1)[1]
+                return {'data_view': {'id': view_id, 'title': view_id, 'timeFieldName': '@timestamp'}}
+            if path.endswith('/_count'):
+                return {'count': 4}
+            return {'acknowledged': True}
+
+        count = kibana_setup.configure('http://es', 'http://kibana', CASE, call=fake_req)
+        self.assertEqual(count, 4)
+        alias_actions = next(body['actions'] for method, url, body, _k in calls if url.endswith('/_aliases'))
+        added = [item['add']['alias'] for item in alias_actions if 'add' in item]
+        self.assertEqual(added, ['hunt-lab-case-events', 'hunt-lab-case-lab-med-001'])
+        created_views = [body['data_view']['id'] for method, url, body, _k in calls
+                         if method == 'POST' and url.endswith('/api/data_views/data_view')]
+        self.assertEqual(created_views, ['hunt-lab-case-events', 'hunt-lab-case-lab-med-001'])
 
 
 if __name__ == '__main__':

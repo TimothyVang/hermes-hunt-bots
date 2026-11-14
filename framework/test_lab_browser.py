@@ -154,7 +154,9 @@ class LabStub:
                 pass
 
             def do_GET(self):
-                allowed = self.headers.get(endpoints.SECRET_HEADER) == LAB_SECRET
+                profile = self.headers.get('X-Hermes-Profile')
+                expected = endpoints.caller_secret(LAB_SECRET, profile)
+                allowed = expected is not None and self.headers.get(endpoints.SECRET_HEADER) == expected
                 data = json.dumps(case if allowed else {'error': 'caller_not_authorized'}).encode()
                 self.send_response(200 if allowed else 401)
                 self.send_header('Content-Type', 'application/json')
@@ -894,6 +896,61 @@ class DemoModeTests(unittest.TestCase):
         self.assertGreater(len(traffic[0]), 12)
         self.assertEqual(traffic[0], traffic[1])
         self.assertEqual(traffic[0], traffic[2])
+
+
+class ParallelStepIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.lab = LabStub()
+        self.addCleanup(self.lab.close)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.browser_dir = Path(temp.name) / 'hunt-lab-browser'
+        self.profile_root = self.browser_dir / 'framework-researcher'
+        self.addCleanup(lab_browser.shutdown)
+
+    def test_parallel_run_and_step_env_vars_scope_session_and_mirror_audit(self):
+        self.browser_dir.mkdir(parents=True)
+        (self.browser_dir / 'demo.json').write_text('{"headed": false}', encoding='utf-8')
+        env_a = {'HUNT_RUN_ID': 'wf-1:round:001', 'HUNT_STEP_ID': 'followup-1'}
+        env_b = {'HUNT_RUN_ID': 'wf-1:round:001', 'HUNT_STEP_ID': 'followup-2'}
+        root_a, run_a, step_a = lab_browser.session_root(self.profile_root, env_a)
+        root_b, run_b, step_b = lab_browser.session_root(self.profile_root, env_b)
+        self.assertEqual((run_a, step_a), ('wf-1:round:001', 'followup-1'))
+        self.assertEqual((run_b, step_b), ('wf-1:round:001', 'followup-2'))
+        self.assertNotEqual(root_a, root_b)
+        self.assertNotIn(':', root_a.name)
+        self.assertEqual(lab_browser.session_root(self.profile_root, {}), (self.profile_root, None, None))
+        self.assertEqual(lab_browser._demo_path(root_a), self.browser_dir / 'demo.json')
+        self.assertEqual(lab_browser.read_demo(lab_browser._demo_path(root_a)).marker, 'on')
+
+        fake_a, fake_b = FakeBrowser(), FakeBrowser()
+        with patch.dict(os.environ, env_a, clear=False), \
+                patch.object(lab_browser, '_launch', side_effect=lambda r, _s, d: session(fake_a, self.lab.url, r, demo=d)):
+            res_a = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws01'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+        with patch.dict(os.environ, env_b, clear=False), \
+                patch.object(lab_browser, '_launch', side_effect=lambda r, _s, d: session(fake_b, self.lab.url, r, demo=d)):
+            res_b = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws02'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+        self.assertTrue(res_a['ok'], res_a)
+        self.assertTrue(res_b['ok'], res_b)
+        self.assertTrue((root_a / 'session.json').is_file())
+        self.assertTrue((root_b / 'session.json').is_file())
+        self.assertFalse((self.profile_root / 'session.json').exists())
+        mirrored = [json.loads(line) for line in (self.profile_root / 'audit.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(entry['run_id'], entry['step_id'], entry['query'], entry['demo']) for entry in mirrored],
+                         [('wf-1:round:001', 'followup-1', 'host.name:ws01', 'on'),
+                          ('wf-1:round:001', 'followup-2', 'host.name:ws02', 'on')])
+
+    def test_non_owner_profiles_are_refused_before_any_browser_starts(self):
+        for profile in ('framework-reviewer', 'framework-builder', 'framework-librarian', 'framework-coordinator', None):
+            with self.subTest(profile=profile), \
+                    patch.object(lab_browser, '_start', side_effect=AssertionError('must not start browser')):
+                result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'},
+                                          state_dir=self.lab.state_dir, profile=profile, browser_root=self.profile_root)
+                self.assertEqual((result['ok'], result['error']), (False, 'tool_not_owned'))
 
 
 if __name__ == '__main__':

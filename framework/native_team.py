@@ -49,8 +49,9 @@ SUPERSEDED_SETTINGS = {
         profile: {
             'agent.allowed_tool_names': [
                 ['hunt_lab_query'] if profile == 'framework-network-analyst' else [],
-                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields')],
-                [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'packet_fields'],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('lab_browser', 'packet_fields', 'hunt_lab_batch')],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool not in ('packet_fields', 'hunt_lab_batch')],
+                [tool for tool in TOOL_OWNERSHIP[profile] if tool != 'hunt_lab_batch'],
             ],
             'platform_toolsets.cli': [['no_mcp']],
         }

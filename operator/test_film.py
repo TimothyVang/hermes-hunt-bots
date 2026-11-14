@@ -419,14 +419,80 @@ class EditPlanTest(unittest.TestCase):
             r = cutter.Renderer(Path(tmp))
             r.video(entries, 5, cutter.overlay(segs, 5), Path(tmp) / 'video.mp4')
             graph = (Path(tmp) / 'video.filter.txt').read_text(encoding='utf-8')
-            texts = {f.read_text(encoding='utf-8'): f for f in Path(tmp).glob('text-*.txt')}
+            ass_text = (Path(tmp) / 'video.ass').read_text(encoding='utf-8')
         self.assertEqual(run.call_count, 1)
         self.assertIn(f'trim=duration={segs[-1]["out_end"]:.6f}', graph)
-        draws = graph.split(',drawtext=')
-        label = next(d for d in draws if texts['5x speed · every frame is real'].name in d)
-        self.assertNotIn('enable=', label)
-        caption = next(d for d in draws if any(texts[t].name in d for t in texts if 'elastic_search' in t))
-        self.assertIn('enable=', caption)
+        self.assertNotIn('drawtext=', graph)
+        self.assertIn('ass=filename=', graph)
+        dialogues = [line for line in ass_text.splitlines() if line.startswith('Dialogue: ')]
+        label_line = next(line for line in dialogues if ',Label,' in line)
+        self.assertIn('Dialogue: 0,0:00:00.00,', label_line)
+        self.assertIn('5x speed · every frame is real', label_line)
+        caption_line = next(line for line in dialogues if ',Caption,' in line)
+        self.assertIn('elastic_search', caption_line)
+        self.assertNotIn('Dialogue: 0,0:00:00.00,', caption_line)
+
+    def test_in_loop_cut_defers_full_master_until_promote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / 'film-00'
+            d.mkdir()
+            idx = screencast.Index(d, 'board-index.jsonl')
+            idx.add(cutter.BOARD, T0 + 1.0, b'\xff\xd8' + b'x' * 20_000)
+            idx.add(cutter.BOARD, T0 + 10.0, b'\xff\xd8' + b'y' * 20_000)
+            (d / 'board-state.jsonl').write_text('', encoding='utf-8')
+            (d / 'screencast').mkdir()
+            (d / 'audit.jsonl').write_text('', encoding='utf-8')
+            (d / 'activity.json').write_text('[]', encoding='utf-8')
+            rec = {
+                'case_id': 'lab-med-001',
+                't0': T0,
+                'round_start': T0,
+                'round_end': T0 + 20.0,
+                'board_frames': 2,
+                'board_index': 'board-index.jsonl',
+                'board_state': 'board-state.jsonl',
+                'screencast': 'screencast',
+                'audit': 'audit.jsonl',
+                'activity': 'activity.json',
+                'result': {'rounds': [{'found': 12, 'total': 18}], 'misattributed': 0, 'halts': 0,
+                           'minutes': 1.0, 'tool_calls': 4},
+            }
+            (d / 'film.json').write_text(json.dumps(rec), encoding='utf-8')
+            cov = acts.coverage([])
+            encoded = []
+
+            def fake_card(_self, _lines, out):
+                Path(out).write_bytes(b'card')
+
+            def fake_video(_self, _entries, _speed, _bar, out):
+                encoded.append(Path(out).name)
+                Path(out).write_bytes(b'mp4-' + Path(out).name.encode())
+
+            with patch.object(cutter.Renderer, 'card', fake_card), \
+                    patch.object(cutter.Renderer, 'video', fake_video), \
+                    patch.object(film_loop, 'FILM_LOOPS', Path(tmp)):
+                edit = cutter.cut(d, rec, [], cutter.Knobs(), cov, include_full=False)
+                self.assertEqual(encoded, ['video.mp4'])
+                self.assertIsNone(edit['video_full'])
+                self.assertIsNone(edit['full']['video'])
+                self.assertFalse((d / 'video-full.mp4').exists())
+
+                outcome = {
+                    'loop': 0,
+                    'video': str(d / 'video.mp4'),
+                    'best_lane': 'default',
+                    'lanes': {'default': {'lane': 'default', 'video': str(d / 'video.mp4'),
+                                          'video_full': None, 'driving': cov}},
+                }
+                state = {}
+                film_loop.promote(state, outcome)
+                self.assertEqual(encoded, ['video.mp4', 'video-full.mp4'])
+                self.assertTrue((d / 'video-full.mp4').exists())
+                self.assertTrue((Path(tmp) / 'BEST.mp4').exists())
+                self.assertEqual(outcome['lanes']['default']['video_full'], str(d / 'video-full.mp4'))
+                saved = json.loads((d / 'edit.json').read_text(encoding='utf-8'))
+                self.assertEqual(saved['video_full'], 'video-full.mp4')
+                self.assertEqual(saved['full']['video'], 'video-full.mp4')
 
     def test_captions_follow_the_bots_and_can_be_turned_off(self):
         actions = acts.from_activity([activity(T0 + 30, TH, 'elastic_search', q='a')])
@@ -589,6 +655,32 @@ class ScreencastTest(unittest.TestCase):
         watcher.stop()
         self.assertEqual(connected, [])
         self.assertEqual(screencast.read_index(self.root / 'sc'), {})
+
+    def test_parallel_run_step_subdirectories_are_watched_and_merged_into_audit(self):
+        step_dir = self.root / 'browsers' / TH / 'runs' / 'hunt-01--evidence'
+        (step_dir / 'user-data').mkdir(parents=True)
+        live = 'ws://127.0.0.1:9333/devtools/browser/parallel'
+        browser = FakeBrowser([(T0 + 2.0, b'parallel step frame')], targets=('TP1',))
+        (step_dir / 'user-data' / 'DevToolsActivePort').write_text('9333\n/devtools/browser/parallel\n')
+        (step_dir / 'session.json').write_text(json.dumps({
+            'ws_url': live, 'main_target': 'TP1', 'page': 'kibana_discover', 'last_used': T0 + 2.0,
+        }))
+        out = self.root / 'sc-parallel'
+        watcher = screencast.Watcher(out, root=self.root / 'browsers', profiles=(TH,),
+                                     connect=lambda url: browser, poll=0.03).start()
+        try:
+            self.wait_for(lambda: len(screencast.read_index(out).get(TH, [])) == 1)
+        finally:
+            watcher.stop()
+        self.assertEqual(screencast.read_index(out)[TH][0][1].read_bytes(), b'parallel step frame')
+        self.assertEqual(core.shown_page(self.root / 'browsers', TH), 'kibana_discover')
+        line_a = audit(T0 + 5, TH, query='host.name:ws01', entered='typed')
+        line_b = audit(T0 + 1, TH, query='process.name:cmd.exe', entered='typed')
+        (self.root / 'browsers' / TH / 'audit.jsonl').write_text(line_a + '\n', encoding='utf-8')
+        (step_dir / 'audit.jsonl').write_text(line_a + '\n' + line_b + '\n', encoding='utf-8')
+        merged = self.root / 'merged-audit.jsonl'
+        record.copy_audit(merged, self.root / 'browsers', T0, T0 + 10)
+        self.assertEqual(merged.read_text(encoding='utf-8').splitlines(), [line_b, line_a])
 
 
 if __name__ == '__main__':

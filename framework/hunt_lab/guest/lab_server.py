@@ -17,6 +17,7 @@ import argparse
 import base64
 from collections import deque
 from datetime import datetime, timezone
+import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
@@ -45,6 +46,15 @@ PROFILES = frozenset({
     'framework-librarian', 'framework-builder', 'framework-reviewer',
 })
 BOARD_PROFILE = 'hunt-board'
+TOOL_OWNERSHIP = {
+    'framework-coordinator': ('delegate_task',),
+    'framework-researcher': ('elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields', 'hunt_lab_batch'),
+    'framework-builder': ('detection_test', 'elastic_aggregate'),
+    'framework-reviewer': ('elastic_search', 'arkime_sessions', 'detection_test'),
+    'framework-librarian': ('intel_lookup', 'elastic_aggregate'),
+    'framework-network-analyst': ('arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser',
+                                  'packet_fields', 'hunt_lab_batch'),
+}
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 # The instance this start belongs to: the container lab mounts a file here with a new ID for every start.
 INSTANCE_ID_FILE = '/var/lib/cloud/data/instance-id'
@@ -53,7 +63,9 @@ INSTANCE_ID = re.compile(r'[A-Za-z0-9._-]{1,128}')
 # public_port any 127.0.0.1 port is accepted; the hostname is what defeats DNS rebinding.
 INSTANCE_HEADER = 'X-Hunt-Lab-Instance'
 SECRET_HEADER = 'X-Hunt-Lab-Secret'
+RUN_ID_HEADER = 'X-Hunt-Run-Id'
 SECRET = re.compile(r'[0-9a-f]{64}')
+RUN_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
 LOOPBACK_HOST = re.compile(r'127\.0\.0\.1:([1-9][0-9]{0,4})')
 # The HTML console a browser tab opens: the only routes that also take the secret as ?key=.
 CONSOLE_PATHS = ('/', '/view')
@@ -928,12 +940,13 @@ class Activity:
                                      time=datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
                                      **entry))
 
-    def since(self, after, limit):
+    def since(self, after, limit, run_id=None):
         with self.lock:
             # A restarted server restarts numbering; a stale cursor sees the whole ring.
             if after > self.sequence:
                 after = 0
-            pending = [entry for entry in self.entries if entry['seq'] > after]
+            pending = [entry for entry in self.entries
+                       if entry['seq'] > after and (run_id is None or entry.get('run_id') == run_id)]
             entries = [dict(entry) for entry in pending[:limit]]
             return (entries[-1]['seq'] if entries else after), entries, len(pending) > limit
 
@@ -981,11 +994,50 @@ def kibana_case_ready(case_id):
         return False
 
 
+def profile_secret(secret, profile):
+    """Stateless per-profile caller subkey derived from a 64-hex master lab secret."""
+    return hmac.new(secret.encode('ascii'), profile.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
 def allowed_host(server, value):
     """Host is exactly 127.0.0.1:<port>, the service's own port when it knows the one its callers use."""
     match = LOOPBACK_HOST.fullmatch(value)
     return (match is not None and int(match[1]) <= 65535
             and (server.public_port is None or int(match[1]) == server.public_port))
+
+
+def _authenticate_caller(master_secret, token_hex, claimed):
+    """Return `(True, authed_profile_or_None)` when `token_hex` matches `claimed` (or a known subkey/master), else `(False, None)`."""
+    token = token_hex.encode('ascii')
+    master = master_secret.encode('ascii')
+    if claimed == BOARD_PROFILE:
+        board_key = profile_secret(master_secret, BOARD_PROFILE).encode('ascii')
+        ok = hmac.compare_digest(token, master) or hmac.compare_digest(token, board_key)
+        return (True, BOARD_PROFILE) if ok else (False, None)
+    if claimed is not None:
+        if claimed not in PROFILES:
+            return False, None
+        ok = hmac.compare_digest(token, profile_secret(master_secret, claimed).encode('ascii'))
+        return (True, claimed) if ok else (False, None)
+    if hmac.compare_digest(token, master):
+        return True, None
+    matched = None
+    for candidate in sorted(PROFILES) + [BOARD_PROFILE]:
+        if hmac.compare_digest(token, profile_secret(master_secret, candidate).encode('ascii')):
+            matched = candidate
+    return (True, matched) if matched is not None else (False, None)
+
+
+def _route_owned_by_profile(authed, path):
+    """True when `authed` (or non-bot operator/board) is allowed to call `path`."""
+    if path is None or authed not in PROFILES or path == '/case':
+        return True
+    owned = TOOL_OWNERSHIP[authed]
+    if path in CONSOLE_PATHS:
+        return 'lab_browser' in owned
+    if path in TOOL_ROUTES:
+        return TOOL_ROUTES[path][0] in owned
+    return path not in ('/health', '/activity')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -997,22 +1049,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(INSTANCE_HEADER, self.server.instance_id)
         super().end_headers()
 
-    def refused(self, console=False):
-        """Answer a request from anyone but this service's caller with a fixed code; True when it was refused.
+    def refused(self, console=False, path=None):
+        """Answer a request from anyone but an authorized caller with a fixed code; True when refused.
 
         The Host check comes first, so a DNS-rebinding page cannot even learn whether its secret guess was wrong.
-        Only the console pages (GET / and /view, `console`) also take the secret as ?key=, for a browser tab.
+        Bot profiles authenticate exclusively with their HMAC(lab_secret, profile) subkey and may reach only
+        routes owned by their TOOL_OWNERSHIP entry (plus /case). Only the console pages (GET / and /view) also
+        take ?key= for a browser tab.
         """
         hosts = self.headers.get_all('Host') or []
         if len(hosts) != 1 or not allowed_host(self.server, hosts[0]):
             self.send(403, {'error': 'host_not_allowed'})
             return True
         secrets = self.headers.get_all(SECRET_HEADER) or []
-        if not secrets and console:
+        profiles = self.headers.get_all('X-Hermes-Profile') or []
+        if not secrets and console and not profiles:
             secrets = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get(CONSOLE_KEY, [])
-        if len(secrets) != 1 or not hmac.compare_digest(secrets[0].encode('latin-1', 'replace'),
-                                                        self.server.secret.encode('ascii')):
+        if len(secrets) != 1 or len(profiles) > 1 or not SECRET.fullmatch(secrets[0]):
             self.send(401, {'error': 'caller_not_authorized'})
+            return True
+        ok, authed = _authenticate_caller(self.server.secret, secrets[0], profiles[0] if profiles else None)
+        if not ok:
+            self.send(401, {'error': 'caller_not_authorized'})
+            return True
+        self._authed_profile = authed
+        if not _route_owned_by_profile(authed, path):
+            self.send(403, {'error': 'tool_not_owned'})
             return True
         return False
 
@@ -1030,6 +1092,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def tool(self, path, params):
+        run_ids = self.headers.get_all(RUN_ID_HEADER) or []
+        if len(run_ids) > 1 or (run_ids and not RUN_ID.fullmatch(run_ids[0])):
+            self.send(400, {'error': 'invalid_query'})
+            return
+        run_id = run_ids[0] if run_ids else None
         name, handler, (count_key, total_key) = TOOL_ROUTES[path]
         status, value, error = 200, None, None
         try:
@@ -1042,13 +1109,14 @@ class Handler(BaseHTTPRequestHandler):
             status, error = 503, exc.args[0]
         except (OSError, KeyError, RuntimeError):
             status, error = 503, 'backend_not_ready'
-        claimed = self.headers.get('X-Hermes-Profile', '')
-        if claimed != BOARD_PROFILE:
+        authed = getattr(self, '_authed_profile', None)
+        if authed != BOARD_PROFILE:
+            extra = {'run_id': run_id} if run_id is not None else {}
             self.server.activity.record(
-                profile=claimed if claimed in PROFILES else 'unknown', tool=name, endpoint=path,
+                profile=authed if authed in PROFILES else 'unknown', tool=name, endpoint=path,
                 params={key[:40]: values[-1][:300] for key, values in list(params.items())[:10]},
                 result_count=counted(value[count_key]) if value else None,
-                total=value.get(total_key) if value and total_key else None, error=error)
+                total=value.get(total_key) if value and total_key else None, error=error, **extra)
         if error is None:
             self.send(200, value)
         elif status == 400:
@@ -1057,7 +1125,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(503, {'error': error, 'partial_results': False})
 
     def do_GET(self):
-        if not self.refused(console=urlsplit(self.path).path in CONSOLE_PATHS):
+        path = urlsplit(self.path).path
+        if not self.refused(console=path in CONSOLE_PATHS, path=path):
             self.route()
 
     def route(self):
@@ -1072,10 +1141,22 @@ class Handler(BaseHTTPRequestHandler):
                 ready, value = health(self.server)
                 self.send(200 if ready else 503, value)
             elif target.path == '/activity':
-                values = single(params, {'after', 'limit'})
+                values = single(params, {'after', 'limit', 'run_id'})
                 after = bounded(values.get('after'), 0, 0, 10**9)
                 limit = bounded(values.get('limit'), 100, 1, 100)
-                cursor, entries, more = self.server.activity.since(after, limit)
+                hdr_runs = self.headers.get_all(RUN_ID_HEADER) or []
+                if len(hdr_runs) > 1:
+                    raise ValueError('Repeated X-Hunt-Run-Id')
+                q_run = values.get('run_id')
+                h_run = hdr_runs[0] if hdr_runs else None
+                if q_run is not None and not RUN_ID.fullmatch(q_run):
+                    raise ValueError('Invalid run_id')
+                if h_run is not None and not RUN_ID.fullmatch(h_run):
+                    raise ValueError('Invalid X-Hunt-Run-Id')
+                if q_run is not None and h_run is not None and q_run != h_run:
+                    raise ValueError('Mismatched run_id')
+                run_filter = q_run if q_run is not None else h_run
+                cursor, entries, more = self.server.activity.since(after, limit, run_id=run_filter)
                 self.send(200, {'case_id': self.server.case['case_id'], 'next': cursor, 'more': more,
                                 'entries': entries})
             elif target.path == '/case':

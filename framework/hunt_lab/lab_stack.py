@@ -57,6 +57,17 @@ DOCKER_SECONDS = 30
 DOWN_SECONDS = 300
 ONE_SHOTS = ('arkime-init', 'ingest', 'pcap-import', 'kibana-setup')
 SERVICES = ('elasticsearch', 'netns', 'lab', 'kibana', 'arkime', 'relay')
+WARM_CORE_SERVICES = ('elasticsearch', 'netns', 'kibana', 'relay')
+COMPOSE_PROJECT_FILE = 'compose-project'
+COMPOSE_PROJECT_RE = re.compile(r'hunt-lab-[a-z0-9-]{3,64}')
+_PURGE_ARKIME_CASE = (
+    "import json, sys, urllib.request; "
+    "body = json.dumps({'query': {'term': {'tags': 'case:' + sys.argv[1]}}}).encode(); "
+    "req = urllib.request.Request("
+    "'http://elasticsearch:9200/arkime_sessions3-*/_delete_by_query?refresh=true&conflicts=proceed&ignore_unavailable=true', "
+    "data=body, method='POST', headers={'Content-Type': 'application/json'}); "
+    "urllib.request.urlopen(req, timeout=20).read()"
+)
 HEALTH_KEYS = ('ready', 'event_count', 'network_session_count', 'intel_count', 'arkime_viewer_ready',
                'kibana_ready', 'network_capture')
 # A line `docker compose up` writes when it gives up (a port taken, a dependency that never became healthy).
@@ -126,14 +137,26 @@ def _case_dir(root, case_id):
 
 
 def _evidence(evidence_dir):
-    """The case id and the (name, path) evidence files the container lab loads for this folder."""
+    """The case id, folder, allowlisted (name, path) files, and validated case.json metadata."""
     try:
         folder = case_files.local_path(evidence_dir)
         files = case_files.evidence_files(folder)
-        case_id = case_files.case_metadata(folder / 'case.json')['case_id']
+        meta = case_files.case_metadata(folder / 'case.json')
     except (case_files.CaseError, OSError):
         raise StackFailure('invalid_evidence') from None
-    return case_id, folder, files
+    return meta['case_id'], folder, files, meta
+
+
+def _compose_project(case_dir, case_id):
+    try:
+        override = (case_dir / COMPOSE_PROJECT_FILE).read_text(encoding='ascii').strip()
+    except FileNotFoundError:
+        return project(case_id)
+    except (OSError, UnicodeDecodeError):
+        raise StackFailure('container_state_invalid') from None
+    if not COMPOSE_PROJECT_RE.fullmatch(override):
+        raise StackFailure('container_state_invalid')
+    return override
 
 
 def _stage(files, target):
@@ -368,7 +391,7 @@ def _status(profile, root, case_id):
     result.update(lab_url=lab_url, arkime_url='http://127.0.0.1:%d' % state['arkime_port'],
                   kibana_url='http://127.0.0.1:%d' % state['kibana_port'], lab_port=state['lab_port'],
                   arkime_port=state['arkime_port'], kibana_port=state['kibana_port'], started_at=state['started_at'])
-    services = _services(state['project'])
+    services = _services(_compose_project(case_dir, case_id))
     result['services'] = {name: status if code is None or status != 'exited' else '%s(%s)' % (status, code)
                           for name, (status, code) in sorted(services.items())}
     ready, health, reason = _health(state)
@@ -419,7 +442,48 @@ def _terminate(pid):
         pass
 
 
-def _start(profile, root, evidence_dir, case_id):
+def _case_is_synthetic(case_dir):
+    try:
+        meta = json.loads((case_dir / 'evidence' / 'case.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and 'data_origin' not in meta
+
+
+def _warm_stack(root, incoming_case_id):
+    """Find a running synthetic container stack under `root` whose warm core services can be reused."""
+    if not root.is_dir():
+        return None
+    for other_dir in sorted(root.iterdir()):
+        if not other_dir.is_dir() or other_dir.name == incoming_case_id:
+            continue
+        try:
+            other_state = endpoints.container_state(other_dir / 'state.json')
+        except endpoints.QueryFailure:
+            continue
+        if other_state is None or not _case_is_synthetic(other_dir):
+            continue
+        compose_proj = _compose_project(other_dir, other_state['case_id'])
+        try:
+            services = _services(compose_proj)
+        except StackFailure:
+            continue
+        if all(services.get(name, (None,))[0] == 'running' for name in WARM_CORE_SERVICES):
+            return other_dir, other_state, compose_proj
+    return None
+
+
+def _stop_up_launcher(case_dir):
+    if os.path.lexists(case_dir / 'up.json') and _up_running(case_dir):
+        _terminate(_read_json(case_dir / 'up.json')['pid'])
+        deadline = time.monotonic() + 15
+        while _up_running(case_dir):
+            if time.monotonic() > deadline:
+                raise StackFailure('compose_up_still_running')
+            time.sleep(0.5)
+
+
+def _start(profile, root, evidence_dir, case_id, *, cold=False):
     if evidence_dir is None:
         last = _last(root)
         if last is not None and case_id in (None, last['case_id']):
@@ -428,10 +492,14 @@ def _start(profile, root, evidence_dir, case_id):
             evidence_dir = FIXTURE
         else:
             raise StackFailure('evidence_dir_required')
-    loaded, folder, files = _evidence(evidence_dir)
+    loaded, folder, files, meta = _evidence(evidence_dir)
     if case_id is not None and case_id != loaded:
         raise StackFailure('case_mismatch')
     case_dir = _case_dir(root, loaded)
+    if cold and root.is_dir():
+        for existing in sorted(root.iterdir()):
+            if existing.is_dir() and endpoints.CASE_ID.fullmatch(existing.name):
+                _stop(profile, root, existing.name)
     if os.path.lexists(case_dir):
         # Already started: report it. A failed stack is stopped before it is started again.
         return _status(profile, root, loaded)
@@ -439,6 +507,7 @@ def _start(profile, root, evidence_dir, case_id):
         raise StackFailure('docker_unavailable')
     root.mkdir(parents=True, exist_ok=True)
     endpoints.owner_only(root)
+    warm = None if (cold or 'data_origin' in meta) else _warm_stack(root, loaded)
     case_dir.mkdir()
     pid = None
     try:
@@ -450,20 +519,36 @@ def _start(profile, root, evidence_dir, case_id):
         mounted = 0o600 if os.name == 'nt' else 0o644
         _write_new(case_dir / 'lab-secret', secret.encode('ascii'), mounted)
         _write_new(case_dir / 'instance-id', (instance + '\n').encode('ascii'), mounted)
-        lab_port, kibana_port, arkime_port = _ports(_recorded_ports(root))
+        if warm is not None:
+            warm_dir, warm_state, compose_proj = warm
+            lab_port = warm_state['lab_port']
+            kibana_port = warm_state['kibana_port']
+            arkime_port = warm_state['arkime_port']
+            if compose_proj != project(loaded):
+                _write_new(case_dir / COMPOSE_PROJECT_FILE, (compose_proj + '\n').encode('ascii'))
+            _stop_up_launcher(warm_dir)
+            (warm_dir / 'state.json').unlink(missing_ok=True)
+            if meta.get('network_capture') != 'none':
+                _docker(['compose', '-p', compose_proj, 'exec', '-T', 'netns', 'python3', '-c',
+                         _PURGE_ARKIME_CASE, loaded])
+        else:
+            compose_proj = project(loaded)
+            lab_port, kibana_port, arkime_port = _ports(_recorded_ports(root))
         state = {'version': endpoints.CONTAINER_VERSION, 'case_id': loaded, 'project': project(loaded),
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
                  'arkime_port': arkime_port, 'started_at': time.time()}
         _write_new(case_dir / 'state.json', json.dumps(state, sort_keys=True).encode('ascii'))
         _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
         variables = {
-            'PROJECT': state['project'], 'LAB_IMAGE': lab_image(), 'CASE_ID': loaded,
+            'PROJECT': compose_proj, 'LAB_IMAGE': lab_image(), 'CASE_ID': loaded,
             'EVIDENCE_DIR': (case_dir / 'evidence').as_posix(), 'SECRET_FILE': (case_dir / 'lab-secret').as_posix(),
             'INSTANCE_FILE': (case_dir / 'instance-id').as_posix(), 'LAB_PORT': str(lab_port),
             'KIBANA_PORT': str(kibana_port), 'ARKIME_PORT': str(arkime_port)}
         pid = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
-                       '-p', state['project'], 'up', '-d'], variables, case_dir / 'compose.log')
+                       '-p', compose_proj, 'up', '-d'], variables, case_dir / 'compose.log')
         _write_json(case_dir / 'up.json', {'pid': pid, 'identity': _identity(pid)})
+        if warm is not None:
+            shutil.rmtree(warm[0], ignore_errors=True)
     except BaseException:
         if not (case_dir / 'up.json').exists():
             if pid is not None:
@@ -478,20 +563,14 @@ def _stop(profile, root, case_id):
     if case_id is None:
         return result
     case_dir = _case_dir(root, case_id)
+    compose_proj = _compose_project(case_dir, case_id)
     result.update(case_id=case_id, project=project(case_id))
-    if os.path.lexists(case_dir / 'up.json') and _up_running(case_dir):
-        # A start still in progress would go on creating containers after `down`.
-        _terminate(_read_json(case_dir / 'up.json')['pid'])
-        deadline = time.monotonic() + 15
-        while _up_running(case_dir):
-            if time.monotonic() > deadline:
-                raise StackFailure('compose_up_still_running')
-            time.sleep(0.5)
-    answer = _docker(['compose', '-p', project(case_id), 'down', '-v', '--remove-orphans', '--timeout', '10'],
+    _stop_up_launcher(case_dir)
+    answer = _docker(['compose', '-p', compose_proj, 'down', '-v', '--remove-orphans', '--timeout', '10'],
                      DOWN_SECONDS)
     if answer.returncode:
         raise StackFailure('compose_down_failed')
-    label = 'label=com.docker.compose.project=' + project(case_id)
+    label = 'label=com.docker.compose.project=' + compose_proj
     for kind in ('container', 'volume', 'network'):
         listed = _docker([kind, 'ls', *(['-a'] if kind == 'container' else []), '-q', '--filter', label])
         if listed.returncode or listed.stdout.strip():
@@ -503,12 +582,12 @@ def _stop(profile, root, case_id):
     return result
 
 
-def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=None, wait=0):
+def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=None, wait=0, cold=False):
     """One lifecycle action on a case's container lab; returns the CLI's result dict, never raises.
 
     Without `case_id`, status and stop act on the last started case, and start loads `evidence_dir` (else the
     last started case's folder, else the bundled fixture). `wait` (seconds) keeps reading status after a start
-    until the lab is no longer starting.
+    until the lab is no longer starting. `cold` forces teardown before starting instead of reusing a warm stack.
     """
     try:
         if action not in ('status', 'start', 'stop'):
@@ -517,7 +596,7 @@ def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=Non
             raise StackFailure('invalid_profile')
         root = _root(state_dir)
         if action == 'start':
-            result = _start(profile, root, evidence_dir, case_id)
+            result = _start(profile, root, evidence_dir, case_id, cold=bool(cold))
             deadline = time.monotonic() + max(0, wait)
             while result['state'] == 'starting' and time.monotonic() < deadline:
                 time.sleep(2)
@@ -547,9 +626,10 @@ def main(argv=None):
     parser.add_argument('--case-id')
     parser.add_argument('--evidence-dir')
     parser.add_argument('--wait', type=int, default=0, help='start: seconds to keep reading status while starting')
+    parser.add_argument('--cold', action='store_true', help='start: tear down any running stack first instead of warm reuse')
     args = parser.parse_args(argv)
     result = invoke(args.action, state_dir=args.state_dir, case_id=args.case_id, evidence_dir=args.evidence_dir,
-                    wait=args.wait)
+                    wait=args.wait, cold=args.cold)
     print(json.dumps(result, ensure_ascii=True, allow_nan=False))
     return 1 if result['state'] == 'error' else 0
 

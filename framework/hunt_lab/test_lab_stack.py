@@ -332,6 +332,44 @@ class StackTests(unittest.TestCase):
         self.assertFalse(ports & {19340, 19341, 19342}, ports)
         self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
 
+    def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
+        self.invoke('start')
+        self.running()
+        first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
+
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+
+        switched = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual(switched['case_id'], 'team-med-902')
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        second_state = endpoints.container_state(self.root / 'team-med-902' / 'state.json')
+        self.assertEqual((second_state['lab_port'], second_state['kibana_port'], second_state['arkime_port']),
+                         first_ports)
+        self.assertEqual(second_state['project'], 'hunt-lab-team-med-902')
+        self.assertEqual((self.root / 'team-med-902' / 'compose-project').read_text(encoding='ascii').strip(),
+                         'hunt-lab-dns-lab-001')
+        argv_two, env_two, _log_two = self.launched[-1]
+        self.assertEqual(argv_two[-4:], ['-p', 'hunt-lab-dns-lab-001', 'up', '-d'])
+        self.assertEqual((env_two['PROJECT'], env_two['CASE_ID']), ('hunt-lab-dns-lab-001', 'team-med-902'))
+        self.assertTrue(any(call[:6] == ['compose', '-p', 'hunt-lab-dns-lab-001', 'exec', '-T', 'netns']
+                            for call in self.docker.calls))
+
+        # A real-data case (data_origin) or cold=True never reuses the warm synthetic stack.
+        real_ev = self.evidence()
+        case_real = json.loads((real_ev / 'case.json').read_text(encoding='utf-8'))
+        case_real['case_id'] = 'work-med-001'
+        case_real['data_origin'] = 'work-export'
+        (real_ev / 'case.json').write_text(json.dumps(case_real), encoding='utf-8')
+        self.invoke('start', evidence_dir=str(real_ev))
+        real_state = endpoints.container_state(self.root / 'work-med-001' / 'state.json')
+        self.assertNotEqual((real_state['lab_port'], real_state['kibana_port'], real_state['arkime_port']),
+                            first_ports)
+        self.assertTrue((self.root / 'team-med-902').exists())
+
     def test_stop_removes_the_project_and_its_state_and_ends_a_start_in_progress(self):
         self.invoke('start')
         self.running()

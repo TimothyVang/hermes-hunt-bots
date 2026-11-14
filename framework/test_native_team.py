@@ -14,7 +14,8 @@ class NativeTeamPolicyTests(unittest.TestCase):
         expected = {
             'framework-coordinator': ('claude-opus-5-5', 8, ['no_mcp', 'delegation', 'hunt_lab'], ['delegate_task']),
             'framework-researcher': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
-                                     ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields']),
+                                     ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields',
+                                      'hunt_lab_batch']),
             'framework-builder': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                   ['detection_test', 'elastic_aggregate']),
             'framework-reviewer': ('claude-opus-5-5', 6, ['no_mcp', 'hunt_lab'],
@@ -23,7 +24,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
                                     ['intel_lookup', 'elastic_aggregate']),
             'framework-network-analyst': ('claude-sonnet-5-5', 6, ['no_mcp', 'hunt_lab'],
                                           ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser',
-                                           'packet_fields']),
+                                           'packet_fields', 'hunt_lab_batch']),
         }
         for profile, (model, turns, toolsets, allowed_tools) in expected.items():
             settings = native_team.expected_settings(profile)
@@ -70,9 +71,10 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertEqual(owners['arkime_unique'], {'framework-network-analyst'})
         self.assertEqual(owners['lab_browser'], {'framework-network-analyst', 'framework-researcher'})
         self.assertEqual(owners['packet_fields'], {'framework-network-analyst', 'framework-researcher'})
+        self.assertEqual(owners['hunt_lab_batch'], {'framework-network-analyst', 'framework-researcher'})
         self.assertEqual(set(owners), {'delegate_task', 'hunt_lab_query', 'elastic_search', 'elastic_aggregate',
                                        'detection_test', 'intel_lookup', 'arkime_sessions', 'arkime_unique',
-                                       'lab_browser', 'packet_fields'})
+                                       'lab_browser', 'packet_fields', 'hunt_lab_batch'})
 
     def test_allowlists_are_the_plugins_ownership_map(self):
         # One definition: the installed plugin registers exactly these owners' tools.
@@ -104,8 +106,11 @@ class NativeTeamPolicyTests(unittest.TestCase):
         for profile, before in (
                 ('framework-researcher', ['elastic_search', 'elastic_aggregate']),
                 ('framework-researcher', ['elastic_search', 'elastic_aggregate', 'lab_browser']),
+                ('framework-researcher', ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields']),
                 ('framework-network-analyst', ['arkime_sessions', 'arkime_unique', 'hunt_lab_query']),
-                ('framework-network-analyst', ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser'])):
+                ('framework-network-analyst', ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser']),
+                ('framework-network-analyst', ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser',
+                                               'packet_fields'])):
             with self.subTest(profile=profile, before=before):
                 observed = native_team.expected_settings(profile)
                 observed['agent.allowed_tool_names'] = before
@@ -151,9 +156,10 @@ class NativeTeamPolicyTests(unittest.TestCase):
         self.assertIn('user_choice', disabled)
         self.assertIn('delegation', disabled)
         self.assertEqual(json.loads(written[('framework-network-analyst', 'agent.allowed_tool_names')]),
-                         ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields'])
+                         ['arkime_sessions', 'arkime_unique', 'hunt_lab_query', 'lab_browser', 'packet_fields',
+                          'hunt_lab_batch'])
         self.assertEqual(json.loads(written[('framework-researcher', 'agent.allowed_tool_names')]),
-                         ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields'])
+                         ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields', 'hunt_lab_batch'])
 
     def test_missing_or_conflicting_policy_caps_and_routes_are_not_ready(self):
         expected = native_team.expected_settings('framework-coordinator')
