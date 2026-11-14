@@ -42,6 +42,9 @@ Usage: python operator/drive_gates.py <practice_workflow_id> --delegated-by "<pe
        python operator/drive_gates.py <practice_workflow_id> --two-decisions --operator "<name>" [--card-summary]
 """
 import argparse
+import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -50,7 +53,9 @@ import secrets
 import shlex
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -235,7 +240,152 @@ def card_summary(kind, outputs):
     return summary if len(summary) <= SUMMARY_LIMIT else summary[:SUMMARY_LIMIT - 1] + '\u2026'
 
 
-def cli(*args):
+_ACTIVE_SESSION = ContextVar('drive_gates_temporal_session', default=None)
+_TERMINAL_FAILURE_STAGES = (
+    'needs_reconciliation', 'rejected', 'handoff_validation_rejected',
+    'output_limit_rejected', 'token_cap_exceeded', 'aborted', 'denied', 'timed_out',
+)
+
+
+def _load_temporal_sdk():
+    """Lazy-import temporalio and hermes_temporal; returns None when temporalio is absent."""
+    try:
+        from temporalio.client import Client, RPCError
+    except ImportError:
+        return None
+    if str(FRAMEWORK) not in sys.path:
+        sys.path.insert(0, str(FRAMEWORK))
+    from hermes_temporal.cli import DEFAULT_ADDRESS, _DECIDER_REFUSAL, _decider
+    from hermes_temporal.contracts import WorkflowDecision, validate_loopback_address
+    from hermes_temporal.practice import PracticeWorkflow
+    from hermes_temporal.workflows import HermesWorkflow
+    return SimpleNamespace(
+        Client=Client, RPCError=RPCError, DEFAULT_ADDRESS=DEFAULT_ADDRESS,
+        DECIDER_REFUSAL=_DECIDER_REFUSAL, decider=_decider,
+        WorkflowDecision=WorkflowDecision, validate_loopback_address=validate_loopback_address,
+        PracticeWorkflow=PracticeWorkflow, HermesWorkflow=HermesWorkflow,
+    )
+
+
+def _lane_address(sdk):
+    cmd = list(DEFAULT_LANE.temporal_cli())
+    if '--address' in cmd:
+        idx = cmd.index('--address')
+        if idx + 1 < len(cmd):
+            return sdk.validate_loopback_address(cmd[idx + 1])
+    return sdk.validate_loopback_address(sdk.DEFAULT_ADDRESS)
+
+
+def _parse_decision_cli_args(workflow_id, rest):
+    parser = argparse.ArgumentParser(prog='decision', add_help=False)
+    parser.add_argument('--step-id', required=True)
+    parser.add_argument('--phase', choices=('execute', 'review', 'reconcile'), required=True)
+    parser.add_argument('--choice', choices=('approve', 'deny', 'accept', 'abort'), required=True)
+    parser.add_argument('--decision-id', required=True)
+    parser.add_argument('--evidence-note', default='')
+    parser.add_argument('--decided-by')
+    parser.add_argument('--via', choices=('cli', 'slack', 'automated'))
+    parser.add_argument('--slack-user', default='')
+    ns = parser.parse_args(list(rest))
+    ns.workflow_id = workflow_id
+    return ns
+
+
+class _PersistentTemporalSession:
+    """Reuses one persistent Temporal gRPC client across polling/signalling instead of spawning Python per RPC."""
+
+    def __init__(self, sdk):
+        self._sdk = sdk
+        self._address = _lane_address(sdk)
+        self._loop = asyncio.new_event_loop()
+        self._client = None
+        self._thread = threading.Thread(target=self._run_loop, name='drive-gates-temporal', daemon=True)
+        self._thread.start()
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def close(self):
+        if not self._loop.is_running():
+            return
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
+        self._loop.close()
+
+    async def _ensure_client(self):
+        if self._client is None:
+            self._client = await self._sdk.Client.connect(self._address)
+        return self._client
+
+    async def _dispatch_once(self, args):
+        client = await self._ensure_client()
+        verb = args[0]
+        if verb == 'practice-status':
+            workflow_id = args[1]
+            handle = client.get_workflow_handle(workflow_id)
+            state = await handle.query(self._sdk.PracticeWorkflow.status)
+            execution = await handle.describe()
+            observed = {**vars(state), 'workflow_id': workflow_id, 'temporal_status': execution.status.name}
+            return json.loads(json.dumps(observed, default=lambda v: v.__dict__))
+        if verb == 'status':
+            workflow_id = args[1]
+            handle = client.get_workflow_handle(workflow_id)
+            state = await handle.query(self._sdk.HermesWorkflow.status)
+            execution = await handle.describe()
+            observed = {**vars(state), 'temporal_status': execution.status.name}
+            return json.loads(json.dumps(observed, default=lambda v: v.__dict__))
+        if verb == 'decision':
+            ns = _parse_decision_cli_args(args[1], args[2:])
+            if ns.phase == 'reconcile' and not ns.evidence_note.strip():
+                raise ValueError('reconciliation requires a nonempty --evidence-note')
+            decided_by, via = self._sdk.decider(ns)
+            if decided_by is None:
+                raise ValueError(self._sdk.DECIDER_REFUSAL)
+            item = self._sdk.WorkflowDecision(
+                ns.step_id, ns.phase, ns.choice, ns.decision_id, ns.evidence_note,
+                decided_by, via, ns.slack_user,
+            )
+            handle = client.get_workflow_handle(ns.workflow_id)
+            await handle.signal(self._sdk.HermesWorkflow.decision, item)
+            return {'workflow_id': ns.workflow_id, 'decision_id': ns.decision_id, 'signal_sent': True}
+        raise ValueError(f'unsupported Temporal command: {verb}')
+
+    def call(self, *args):
+        for attempt in range(3):
+            if attempt:
+                time.sleep(RPC_BACKOFF_SECONDS * attempt)
+            future = asyncio.run_coroutine_threadsafe(
+                asyncio.wait_for(self._dispatch_once(args), timeout=120), self._loop
+            )
+            try:
+                return future.result(timeout=125)
+            except TimeoutError:
+                self._client = None
+                log(f'{args[0]} timed out (attempt {attempt + 1}/3)')
+            except self._sdk.RPCError:
+                self._client = None
+                log(f'{args[0]} transient RPCError (attempt {attempt + 1}/3)')
+        raise RuntimeError(f'{args[0]} failed three times (timeout or RPCError)')
+
+
+@contextmanager
+def persistent_cli_session():
+    """Open a persistent Temporal client session when temporalio is installed; fall back to CLI otherwise."""
+    sdk = _load_temporal_sdk()
+    if sdk is None:
+        yield None
+        return
+    session = _PersistentTemporalSession(sdk)
+    token = _ACTIVE_SESSION.set(session)
+    try:
+        yield session
+    finally:
+        _ACTIVE_SESSION.reset(token)
+        session.close()
+
+
+def _cli_subprocess(*args):
     # Status reads are side-effect free and the workflow ignores a repeated decision
     # once its gate has passed, so retrying a slow or failed call cannot double-approve.
     # Live (2026-11-10): one transient RPCError from a loaded Temporal server ended a 13-minute hunt.
@@ -243,7 +393,7 @@ def cli(*args):
         if attempt:
             time.sleep(RPC_BACKOFF_SECONDS * attempt)
         try:
-            result = subprocess.run([*DEFAULT_LANE.temporal_cli(), *args], cwd=FRAMEWORK,
+            result = subprocess.run([*DEFAULT_LANE.temporal_cli(), *args], cwd=FRAMEWORK, check=False,
                                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
         except subprocess.TimeoutExpired:
             log(f'{args[0]} timed out (attempt {attempt + 1}/3)')
@@ -257,6 +407,16 @@ def cli(*args):
     if result.returncode:
         raise RuntimeError(f'{args[0]} exit {result.returncode}: {result.stderr.strip()[-300:]}')
     return json.loads(result.stdout)
+
+
+def cli(*args):
+    session = _ACTIVE_SESSION.get()
+    if session is not None:
+        return session.call(*args)
+    return _cli_subprocess(*args)
+
+
+_DEFAULT_CLI = cli
 
 
 def decide(args, child, step, phase, retry=0):
@@ -423,16 +583,34 @@ def parse_args(argv=None):
     return args
 
 
-def main(args):
-    out = GATE_RUNS / 'outputs' / args.workflow_id
-    out.mkdir(parents=True, exist_ok=True)
-    if args.operator:
-        log(f'TWO DECISIONS for {args.workflow_id}: operator {args.operator} approves the scope and accepts or '
-            'rejects the final report; every other gate is approved automatically under ADR 0002 and recorded '
-            'as automated, not as a human review.')
+def _handle_review_gate(args, out, child, step, steps, state):
+    if steps:
+        results = {item['execution_id']: item for item in state['results']}
+        reviews = [(item['step_id'], results.get(item['execution_id']))
+                   for item in steps if item['state'] == 'awaiting_review']
+        if not reviews:
+            log(f'STOP {child} {step}: no step is awaiting review; nothing was approved')
+            return False, None
     else:
-        log(f'DELEGATED APPROVALS for {args.workflow_id}: every execute and review gate is approved on behalf of '
-            f'{args.delegated_by} ({args.reason}). These approvals are not human reviews of the content.')
+        reviews = [(step, state['results'][-1])]
+    # Nothing of a wave is saved unless all of it can be approved, and nothing is approved unsaved.
+    for step_id, result in reviews:
+        if result is None or result['status'] != 'completed':
+            log(f'STOP {child} {step_id}: ' + (f'result {result["status"]}/{result["reason_code"]}'
+                                               if result else 'awaiting review without a result'))
+            return False, None
+    for step_id, result in reviews:
+        name = f"{child.rsplit(':', 1)[-1]}-{step_id}.txt"
+        (out / name).write_text(result['output'], encoding='utf-8')
+        log(f'{child} {step_id} output saved ({len(result["output"].encode())} bytes) -> {out / name}')
+    which = args.operator and operator_review(step, steps)
+    if which:
+        return True, wait_for_operator(args, child, step, which, out, reviews)
+    decide(args, child, step, 'review')
+    return True, None
+
+
+def _drive_loop(args, out):
     handled, dropped, gate = set(), set(), None
     while True:
         parent = cli('practice-status', args.workflow_id)
@@ -473,37 +651,31 @@ def main(args):
             decide(args, child, step, 'execute', retry)
             handled.add(key)
         elif stage == 'awaiting_review':
-            if steps:
-                results = {item['execution_id']: item for item in state['results']}
-                reviews = [(item['step_id'], results.get(item['execution_id']))
-                           for item in steps if item['state'] == 'awaiting_review']
-                if not reviews:
-                    log(f'STOP {child} {step}: no step is awaiting review; nothing was approved')
-                    return 1
-            else:
-                reviews = [(step, state['results'][-1])]
-            # Nothing of a wave is saved unless all of it can be approved, and nothing is approved unsaved.
-            for step_id, result in reviews:
-                if result is None or result['status'] != 'completed':
-                    log(f'STOP {child} {step_id}: ' + (f'result {result["status"]}/{result["reason_code"]}'
-                                                       if result else 'awaiting review without a result'))
-                    return 1
-            for step_id, result in reviews:
-                name = f"{child.rsplit(':', 1)[-1]}-{step_id}.txt"
-                (out / name).write_text(result['output'], encoding='utf-8')
-                log(f'{child} {step_id} output saved ({len(result["output"].encode())} bytes) -> {out / name}')
-            which = args.operator and operator_review(step, steps)
-            if which:
-                gate = wait_for_operator(args, child, step, which, out, reviews)
-            else:
-                decide(args, child, step, 'review')
+            ok, gate = _handle_review_gate(args, out, child, step, steps, state)
+            if not ok:
+                return 1
             handled.add(key)
-        elif stage in ('needs_reconciliation', 'rejected', 'handoff_validation_rejected',
-                       'output_limit_rejected', 'aborted', 'denied', 'timed_out'):
+        elif stage in _TERMINAL_FAILURE_STAGES:
             log(f'STOP {child} {step}: stage {stage}; no retry. ' + json.dumps(state)[:600])
             return 1
         else:
             time.sleep(3)
+
+
+def main(args):
+    out = GATE_RUNS / 'outputs' / args.workflow_id
+    out.mkdir(parents=True, exist_ok=True)
+    if args.operator:
+        log(f'TWO DECISIONS for {args.workflow_id}: operator {args.operator} approves the scope and accepts or '
+            'rejects the final report; every other gate is approved automatically under ADR 0002 and recorded '
+            'as automated, not as a human review.')
+    else:
+        log(f'DELEGATED APPROVALS for {args.workflow_id}: every execute and review gate is approved on behalf of '
+            f'{args.delegated_by} ({args.reason}). These approvals are not human reviews of the content.')
+    if cli is _DEFAULT_CLI:
+        with persistent_cli_session():
+            return _drive_loop(args, out)
+    return _drive_loop(args, out)
 
 
 if __name__ == '__main__':

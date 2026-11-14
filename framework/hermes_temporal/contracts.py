@@ -131,6 +131,8 @@ class WorkflowRequest:
     # Only an explicitly authorized tool-driven hunt over a DATA_ORIGINS case sets this;
     # synthetic_only must then be False. Defaults to synthetic so earlier histories deserialize unchanged.
     data_origin: str = SYNTHETIC
+    # Optional cumulative token budget across all executed steps (including retried/timed-out attempts).
+    max_total_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.data_origin not in (SYNTHETIC, *DATA_ORIGINS):
@@ -139,6 +141,8 @@ class WorkflowRequest:
             raise ValueError("this integration accepts synthetic-only workflows")
         if self.data_origin != SYNTHETIC and (self.synthetic_only is not False or self.tool_driven is not True):
             raise ValueError(f"a {self.data_origin} workflow must be tool_driven and not synthetic_only")
+        if self.max_total_tokens is not None and (type(self.max_total_tokens) is not int or self.max_total_tokens < 1):
+            raise ValueError("max_total_tokens must be a positive integer")
         limit = MAX_TEAM_STEPS if self.parallel is True else MAX_STEPS
         if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= limit:
             raise ValueError(f"steps must contain 1 through {limit} Hermes steps")

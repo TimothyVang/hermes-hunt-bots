@@ -91,6 +91,22 @@ _FINAL_HANDOFF_BYTES = 32768
 # Each consumed gate decision is recorded with who sent it. patched() is memoized per run, so a run whose
 # first decision was consumed by older code (replayed without the marker) records none, keeping replay exact.
 _DECIDER_PATCH = "gate-decider-v1"
+_CUMULATIVE_TOKEN_CAP_PATCH = "cumulative-token-cap-v1"
+
+
+def _validate_workflow_request(request: WorkflowRequest) -> None:
+    if not isinstance(request, WorkflowRequest):
+        raise ValueError("workflow input must be WorkflowRequest")
+    # Synthetic, or an explicitly authorized tool-driven hunt over a DATA_ORIGINS case; never mislabelled.
+    origin_ok = ((request.data_origin == SYNTHETIC and request.synthetic_only is True)
+                 or (request.data_origin in tuple(DATA_ORIGINS) and request.synthetic_only is False
+                     and request.tool_driven is True))
+    cap_ok = request.max_total_tokens is None or (
+        type(request.max_total_tokens) is int and request.max_total_tokens >= 1
+    )
+    if not origin_ok or not cap_ok or not 1 <= len(request.steps) <= (
+            MAX_TEAM_STEPS if request.parallel else MAX_STEPS):
+        raise ValueError("invalid workflow request")
 
 
 def _disclosed_target(cap: int, tighter: bool = False, tool_driven: bool = False) -> int:
@@ -313,18 +329,58 @@ class HermesWorkflow:
             return
         self._pending = item
 
+    def _serial_prompt(
+        self,
+        request: WorkflowRequest,
+        step: HermesStep,
+        output_caps: dict[str, int],
+        consumed: set[str],
+    ) -> tuple[str, bool]:
+        handoff = "".join(
+            f"{_OUTPUT_FRAME_PREFIX}{dependency}{_OUTPUT_FRAME_MIDDLE}"
+            f"{self._reviewed_outputs[dependency]}"
+            for dependency in step.depends_on
+        )
+        prompt = step.prompt + handoff
+        output_cap = output_caps.get(step.step_id)
+        if output_cap is not None:
+            # The disclosed target never has more digits than the cap, so the
+            # reserved disclosure bytes in _typed_output_caps remain an upper bound.
+            if workflow.patched(_SOFT_TARGET_PATCH):
+                disclosed = _disclosed_target(output_cap, tighter=workflow.patched(_TARGET_MARGIN_PATCH),
+                                              tool_driven=request.tool_driven and workflow.patched(_TOOL_TARGET_PATCH))
+            else:
+                disclosed = output_cap
+            prompt += _OUTPUT_CAP_PREFIX + str(disclosed) + _OUTPUT_CAP_SUFFIX
+        final_room = False
+        if output_cap is None and step.hunt_context is not None and workflow.patched(_TERMINAL_TARGET_PATCH):
+            # A structured step without a downstream consumer is still bounded by a
+            # whole-handoff limit; without a stated target, reports overran it.
+            final_room = step.step_id not in consumed and workflow.patched(_FINAL_ROOM_PATCH)
+            disclosed = _disclosed_target(_FINAL_HANDOFF_BYTES if final_room else MAX_HANDOFF_BYTES)
+            prompt += _OUTPUT_CAP_PREFIX + str(disclosed) + _OUTPUT_CAP_SUFFIX
+        return prompt, final_room
+
+    def _cumulative_tokens(self) -> int:
+        seen: set[str] = set()
+        total = 0
+        for result in (*self._results, *(item.result for item in self._handoff_rejections)):
+            if result.execution_id in seen:
+                continue
+            seen.add(result.execution_id)
+            if isinstance(result.usage, dict) and type(result.usage.get("total_tokens")) is int:
+                total += max(0, result.usage["total_tokens"])
+        return total
+
+    def _token_cap_exceeded(self, request: WorkflowRequest) -> bool:
+        if request.max_total_tokens is None or not workflow.patched(_CUMULATIVE_TOKEN_CAP_PATCH):
+            return False
+        return self._cumulative_tokens() > request.max_total_tokens
+
     @workflow.run
     async def run(self, request: WorkflowRequest) -> str:
         # The external contract validates before start; repeat essential bounds at workflow boundary.
-        if not isinstance(request, WorkflowRequest):
-            raise ValueError("workflow input must be WorkflowRequest")
-        # Synthetic, or an explicitly authorized tool-driven hunt over a DATA_ORIGINS case; never mislabelled.
-        origin_ok = ((request.data_origin == SYNTHETIC and request.synthetic_only is True)
-                     or (request.data_origin in tuple(DATA_ORIGINS) and request.synthetic_only is False
-                         and request.tool_driven is True))
-        if not origin_ok or not 1 <= len(request.steps) <= (
-                MAX_TEAM_STEPS if request.parallel else MAX_STEPS):
-            raise ValueError("invalid workflow request")
+        _validate_workflow_request(request)
         if request.parallel:
             self._step_states = _initial_step_states(request)
         output_caps: dict[str, int] = {}
@@ -332,8 +388,7 @@ class HermesWorkflow:
             try:
                 output_caps = _typed_output_caps(request)
             except ValueError:
-                self._terminal_status = self._stage = "rejected"
-                return self._terminal_status
+                return self._end("rejected")
         if request.parallel:
             return await self._run_waves(request, output_caps)
         consumed = {dependency for item in request.steps for dependency in item.depends_on}
@@ -343,68 +398,26 @@ class HermesWorkflow:
             self._pending = None
             self._phase = None
             if any(dependency not in self._reviewed_outputs for dependency in step.depends_on):
-                self._phase = None
-                self._terminal_status = self._stage = "rejected"
-                return self._terminal_status
-            handoff = "".join(
-                f"{_OUTPUT_FRAME_PREFIX}{dependency}{_OUTPUT_FRAME_MIDDLE}"
-                f"{self._reviewed_outputs[dependency]}"
-                for dependency in step.depends_on
-            )
-            prompt = step.prompt + handoff
-            output_cap = output_caps.get(step.step_id)
-            if output_cap is not None:
-                # The disclosed target never has more digits than the cap, so the
-                # reserved disclosure bytes in _typed_output_caps remain an upper bound.
-                if workflow.patched(_SOFT_TARGET_PATCH):
-                    disclosed = _disclosed_target(output_cap, tighter=workflow.patched(_TARGET_MARGIN_PATCH),
-                                                  tool_driven=request.tool_driven and workflow.patched(_TOOL_TARGET_PATCH))
-                else:
-                    disclosed = output_cap
-                prompt += _OUTPUT_CAP_PREFIX + str(disclosed) + _OUTPUT_CAP_SUFFIX
-            final_room = False
-            if output_cap is None and step.hunt_context is not None and workflow.patched(_TERMINAL_TARGET_PATCH):
-                # A structured step without a downstream consumer is still bounded by a
-                # whole-handoff limit; without a stated target, reports overran it.
-                final_room = step.step_id not in consumed and workflow.patched(_FINAL_ROOM_PATCH)
-                disclosed = _disclosed_target(_FINAL_HANDOFF_BYTES if final_room else MAX_HANDOFF_BYTES)
-                prompt += _OUTPUT_CAP_PREFIX + str(disclosed) + _OUTPUT_CAP_SUFFIX
+                return self._end("rejected")
+            prompt, final_room = self._serial_prompt(request, step, output_caps, consumed)
             if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
-                self._phase = None
-                self._terminal_status = self._stage = "rejected"
-                return self._terminal_status
+                return self._end("rejected")
             attempt_prompt = prompt
             while True:
-                execution_request = ExecutionRequest(self._execution_id, replace(step, prompt=attempt_prompt))
                 self._phase = "execute"
                 self._stage = "awaiting_execution_approval"
                 approval = await self._wait_for_decision(request.approval_timeout_seconds)
                 if approval is None:
-                    self._phase = None
-                    self._terminal_status = self._stage = "timed_out"
-                    return self._terminal_status
+                    return self._end("timed_out")
                 if approval.decision == "deny":
-                    self._phase = None
-                    self._terminal_status = self._stage = "rejected"
-                    return self._terminal_status
+                    return self._end("rejected")
 
                 self._phase = None
                 self._stage = "executing"
-                try:
-                    result = await workflow.execute_activity(
-                        _ACTIVITY_NAME,
-                        execution_request,
-                        result_type=ExecutionResult,
-                        start_to_close_timeout=timedelta(seconds=step.timeout_seconds + 70),
-                        schedule_to_close_timeout=timedelta(seconds=step.timeout_seconds + 140),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
-                    )
-                except ActivityError:
-                    # Activity failure, timeout, cancellation, and worker loss cannot prove non-dispatch.
-                    result = ExecutionResult("unknown", self._execution_id, "", "execution_error")
-                if not isinstance(result, ExecutionResult) or result.execution_id != self._execution_id:
-                    result = ExecutionResult("unknown", self._execution_id, "", "receipt_unknown")
+                result = await self._execute(self._execution_id, step, attempt_prompt)
                 self._results.append(result)
+                if self._token_cap_exceeded(request):
+                    return self._end("token_cap_exceeded")
                 if result.status == "completed" and step.step_id in output_caps:
                     try:
                         output_size = len(result.output.encode("utf-8"))
@@ -691,6 +704,67 @@ class HermesWorkflow:
                 sources, MAX_PROMPT_BYTES - len(prompt.encode("utf-8")) - len(tail.encode("utf-8")))
         return prompt + tail
 
+    def _record_wave_outcome(
+        self,
+        entry: _WaveEntry,
+        result: ExecutionResult,
+        *,
+        suffix: str,
+        output_caps: dict[str, int],
+        latest: dict[str, ExecutionResult],
+        handoffs: dict[str, dict[str, Any]],
+        endings: dict[str, str],
+        retries: list[_WaveEntry],
+    ) -> None:
+        index, step, prompt, final_room = entry
+        latest[step.step_id] = result
+        failure, ending = "", "rejected"
+        if result.status != "completed":
+            failure = result.reason_code
+        elif step.step_id in output_caps and len(result.output.encode("utf-8")) > output_caps[step.step_id]:
+            failure = ending = "output_limit_rejected"
+            if not suffix and workflow.patched(_OVERSIZE_RETRY_PATCH):
+                cap = output_caps[step.step_id]
+                size = len(result.output.encode("utf-8"))
+                reason = f"output_limit: {size} bytes exceed the cap of {cap} bytes"
+                retry_prompt = (prompt + _OVERSIZE_PREFIX + str(size) + _OVERSIZE_MIDDLE + str(cap)
+                                + _OVERSIZE_SUFFIX.format(target=cap // 2))
+                if len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+                    failure = "retry_prompt_too_large"
+                    self._handoff_rejections.append(HandoffRejection(step.step_id, reason, failure, result))
+                else:
+                    self._handoff_rejections.append(HandoffRejection(step.step_id, reason, "retried", result))
+                    del latest[step.step_id]
+                    retries.append((index, step, retry_prompt, final_room))
+                    return
+        elif step.hunt_context is not None:
+            try:
+                handoffs[step.step_id] = self._validated_handoff(step, result.output, final_room)
+            except _HANDOFF_ERRORS as exc:
+                reason = _rejection_reason(exc)
+                retry_prompt = prompt + _CORRECTION_PREFIX + reason + _correction_suffix()
+                if suffix:
+                    failure = "retry_exhausted"
+                elif len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+                    failure = "retry_prompt_too_large"
+                else:
+                    failure = "retried"
+                ending = "handoff_validation_rejected"
+                self._handoff_rejections.append(HandoffRejection(step.step_id, reason, failure, result))
+                if failure == "retried":
+                    del latest[step.step_id]
+                    retries.append((index, step, retry_prompt, final_room))
+                    return
+        if not failure:
+            self._mark(index, "awaiting_review")
+        elif step.optional:
+            self._mark(index, "dropped", reason=failure)
+        else:
+            endings[step.step_id] = ending
+            # An unknown outcome may still be running; it stays working until a human reconciles it.
+            if result.status != "unknown":
+                self._mark(index, "stopped", reason=failure)
+
     async def _run_wave(self, request: WorkflowRequest, output_caps: dict[str, int],
                         runnable: list[_WaveEntry]) -> str | None:
         """Take one wave from its execute gate through its review gate; a returned status is terminal."""
@@ -720,55 +794,19 @@ class HermesWorkflow:
                 for (_, step, prompt, _), execution_id in zip(entries, execution_ids)
             ))
             retries: list[_WaveEntry] = []
-            for (index, step, prompt, final_room), result in zip(entries, results):
-                latest[step.step_id] = result
-                failure, ending = "", "rejected"
-                if result.status != "completed":
-                    failure = result.reason_code
-                elif step.step_id in output_caps and len(result.output.encode("utf-8")) > output_caps[step.step_id]:
-                    failure = ending = "output_limit_rejected"
-                    if not suffix and workflow.patched(_OVERSIZE_RETRY_PATCH):
-                        cap = output_caps[step.step_id]
-                        size = len(result.output.encode("utf-8"))
-                        reason = f"output_limit: {size} bytes exceed the cap of {cap} bytes"
-                        retry_prompt = (prompt + _OVERSIZE_PREFIX + str(size) + _OVERSIZE_MIDDLE + str(cap)
-                                        + _OVERSIZE_SUFFIX.format(target=cap // 2))
-                        if len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
-                            failure = "retry_prompt_too_large"
-                            self._handoff_rejections.append(HandoffRejection(step.step_id, reason, failure, result))
-                        else:
-                            self._handoff_rejections.append(HandoffRejection(step.step_id, reason, "retried", result))
-                            del latest[step.step_id]
-                            retries.append((index, step, retry_prompt, final_room))
-                            continue
-                elif step.hunt_context is not None:
-                    try:
-                        handoffs[step.step_id] = self._validated_handoff(step, result.output, final_room)
-                    except _HANDOFF_ERRORS as exc:
-                        reason = _rejection_reason(exc)
-                        retry_prompt = prompt + _CORRECTION_PREFIX + reason + _correction_suffix()
-                        if suffix:
-                            failure = "retry_exhausted"
-                        elif len(retry_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
-                            failure = "retry_prompt_too_large"
-                        else:
-                            failure = "retried"
-                        ending = "handoff_validation_rejected"
-                        self._handoff_rejections.append(HandoffRejection(step.step_id, reason, failure, result))
-                        if failure == "retried":
-                            del latest[step.step_id]
-                            retries.append((index, step, retry_prompt, final_room))
-                            continue
-                if not failure:
-                    self._mark(index, "awaiting_review")
-                elif step.optional:
-                    self._mark(index, "dropped", reason=failure)
-                else:
-                    endings[step.step_id] = ending
-                    # An unknown outcome may still be running; it stays working until a human reconciles it.
-                    if result.status != "unknown":
-                        self._mark(index, "stopped", reason=failure)
+            for entry, result in zip(entries, results):
+                self._record_wave_outcome(
+                    entry, result, suffix=suffix, output_caps=output_caps,
+                    latest=latest, handoffs=handoffs, endings=endings, retries=retries,
+                )
             self._results[base:] = [latest[step.step_id] for _, step, _, _ in runnable if step.step_id in latest]
+            if self._token_cap_exceeded(request):
+                for retry_index, _, _, _ in retries:
+                    self._mark(retry_index, "stopped", reason="token_cap_exceeded")
+                for index, _, _, _ in runnable:
+                    if self._step_states[index].state == "awaiting_review":
+                        self._mark(index, "stopped", reason="token_cap_exceeded")
+                return self._end("token_cap_exceeded")
             entries = retries
         for index, step, _, _ in runnable:
             if step.step_id not in endings:

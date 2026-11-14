@@ -146,47 +146,29 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     task_queue="test-hermes",
                 )
 
-                async def wait_for_gate(stage: str, step_id: str):
-                    async def observe():
-                        while True:
-                            state = await handle.query(HermesWorkflow.status)
-                            if state.stage == stage and state.step_id == step_id:
-                                return state
-                            await asyncio.sleep(0.01)
-                    return await asyncio.wait_for(observe(), timeout=10)
-
+                wait_for_gate = lambda stage, step_id: _until(handle, lambda s: s.stage == stage and s.step_id == step_id)
                 await wait_for_gate("awaiting_execution_approval", "triage")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("review", "execute", "approve", "too-early"))
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("triage", "execute", "approve", "triage-execute"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("review", "execute", "approve", "too-early"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("triage", "execute", "approve", "triage-execute"))
                 first_review = await wait_for_gate("awaiting_review", "triage")
                 self.assertEqual(first_review.execution_id, "test-hermes-two-step-gates:0")
                 captured = io.StringIO()
                 with contextlib.redirect_stdout(captured):
-                    await _status(argparse.Namespace(
-                        address=env.client.service_client.config.target_host,
-                        workflow_id=handle.id,
-                    ))
+                    await _status(argparse.Namespace(address=env.client.service_client.config.target_host, workflow_id=handle.id))
                 observed = json.loads(captured.getvalue())
-                self.assertEqual(observed["results"][0]["execution_id"],
-                                 "test-hermes-two-step-gates:0")
+                self.assertEqual(observed["results"][0]["execution_id"], "test-hermes-two-step-gates:0")
                 self.assertEqual(observed["results"][0]["output"], "Synthetic finding.")
                 self.assertEqual(executions, ["triage"])
                 self.assertEqual(first_review.results, [
-                    ExecutionResult("completed", "test-hermes-two-step-gates:0",
-                                    "Synthetic finding.", "completed")
+                    ExecutionResult("completed", "test-hermes-two-step-gates:0", "Synthetic finding.", "completed")
                 ])
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("triage", "review", "approve", "triage-review"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("triage", "review", "approve", "triage-review"))
                 await wait_for_gate("awaiting_execution_approval", "review")
                 self.assertEqual(executions, ["triage"])
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("review", "execute", "approve", "review-execute"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("review", "execute", "approve", "review-execute"))
                 await wait_for_gate("awaiting_review", "review")
                 self.assertEqual(executions, ["triage", "review"])
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("review", "review", "approve", "review-accept"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("review", "review", "approve", "review-accept"))
                 self.assertEqual(await handle.result(), "completed")
                 final = await handle.query(HermesWorkflow.status)
                 self.assertEqual(final.stage, "completed")
@@ -224,31 +206,21 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     task_queue="test-hermes",
                     id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                 )
-                async def wait_for_execution_gate():
-                    while (await handle.query(HermesWorkflow.status)).stage != "awaiting_execution_approval":
-                        await asyncio.sleep(0.01)
-                await asyncio.wait_for(wait_for_execution_gate(), timeout=10)
+                await _until(handle, lambda s: s.stage == "awaiting_execution_approval")
                 await handle.signal(HermesWorkflow.decision, first_decision)
                 if first_decision.decision == "approve":
-                    status = await handle.query(HermesWorkflow.status)
-                    for _ in range(100):
-                        if status.stage in {"needs_reconciliation", "awaiting_review", "rejected"}:
-                            break
-                        await asyncio.sleep(0.01)
-                        status = await handle.query(HermesWorkflow.status)
+                    await _until(handle, lambda s: s.stage in {"needs_reconciliation", "awaiting_review", "rejected"})
                     await handle.signal(
                         HermesWorkflow.decision,
                         WorkflowDecision("step-1", "reconcile", "abort", "reconcile-1", "Aborted after synthetic review."),
                     )
-                result = await handle.result()
-                return result, calls
+                return await handle.result(), calls
 
     async def test_denied_execution_gate_never_dispatches_activity(self) -> None:
-        result, calls = await self._run(
-            None, WorkflowDecision("step-1", "execute", "deny", "deny-1")
-        )
+        result, calls = await self._run(None, WorkflowDecision("step-1", "execute", "deny", "deny-1"))
         self.assertEqual(result, "rejected")
         self.assertEqual(calls, 0)
+
     async def test_future_gate_signal_cannot_preapprove_current_step(self) -> None:
         calls = 0
 
@@ -263,49 +235,21 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 handle = await env.client.start_workflow(
                     HermesWorkflow.run,
                     WorkflowRequest([HermesStep("step-1", "synthetic fixture")], approval_timeout_seconds=30),
-                    id="test-hermes-stale-signal",
-                    task_queue="test-hermes",
+                    id="test-hermes-stale-signal", task_queue="test-hermes",
                     id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                 )
-                status = await handle.query(HermesWorkflow.status)
-                for _ in range(100):
-                    if status.stage == "awaiting_execution_approval":
-                        break
-                    await asyncio.sleep(0.01)
-                    status = await handle.query(HermesWorkflow.status)
-                await handle.signal(
-                    HermesWorkflow.decision,
-                    WorkflowDecision("step-2", "execute", "approve", "future-approval"),
-                )
-                await handle.signal(
-                    HermesWorkflow.decision,
-                    WorkflowDecision("step-1", "execute", "approve", "current-approval"),
-                )
-                await handle.signal(
-                    HermesWorkflow.decision,
-                    WorkflowDecision("step-1", "execute", "approve", "current-approval"),
-                )
-                await handle.signal(
-                    HermesWorkflow.decision,
-                    WorkflowDecision("step-1", "execute", "deny", "current-approval"),
-                )
-                status = await handle.query(HermesWorkflow.status)
-                for _ in range(100):
-                    if status.stage == "awaiting_review":
-                        break
-                    await asyncio.sleep(0.01)
-                    status = await handle.query(HermesWorkflow.status)
-                await handle.signal(
-                    HermesWorkflow.decision,
-                    WorkflowDecision("step-1", "review", "approve", "review-1"),
-                )
+                await _until(handle, lambda s: s.stage == "awaiting_execution_approval")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("step-2", "execute", "approve", "future-approval"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("step-1", "execute", "approve", "current-approval"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("step-1", "execute", "approve", "current-approval"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("step-1", "execute", "deny", "current-approval"))
+                await _until(handle, lambda s: s.stage == "awaiting_review")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("step-1", "review", "approve", "review-1"))
                 self.assertEqual(await handle.result(), "completed")
                 self.assertEqual(calls, 1)
 
     async def test_unknown_activity_outcome_is_not_retried_and_can_be_aborted(self) -> None:
-        result, calls = await self._run(
-            None, WorkflowDecision("step-1", "execute", "approve", "approve-1")
-        )
+        result, calls = await self._run(None, WorkflowDecision("step-1", "execute", "approve", "approve-1"))
         self.assertEqual(result, "aborted")
         self.assertEqual(calls, 1)
 
@@ -353,35 +297,21 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     id="test-hermes-unknown-handoff", task_queue="test-hermes-unknown-handoff",
                 )
 
-                async def gate(stage: str, step_id: str) -> None:
-                    async def observe() -> None:
-                        while True:
-                            state = await handle.query(HermesWorkflow.status)
-                            if state.stage == stage and state.step_id == step_id:
-                                return
-                            await asyncio.sleep(0.01)
-                    await asyncio.wait_for(observe(), timeout=10)
-
+                gate = lambda stage, step_id: _until(handle, lambda s: s.stage == stage and s.step_id == step_id)
                 await gate("awaiting_execution_approval", "uncertain")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("uncertain", "execute", "approve", "unknown-execute"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("uncertain", "execute", "approve", "unknown-execute"))
                 await gate("needs_reconciliation", "uncertain")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("uncertain", "reconcile", "accept", "unknown-accept",
-                                                     "The uncertain outcome was assessed."))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision(
+                    "uncertain", "reconcile", "accept", "unknown-accept", "The uncertain outcome was assessed."))
                 await gate("awaiting_review", "uncertain")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("uncertain", "review", "approve", "unknown-review"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("uncertain", "review", "approve", "unknown-review"))
                 await gate("awaiting_execution_approval", "independent")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("independent", "execute", "approve", "independent-execute"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("independent", "execute", "approve", "independent-execute"))
                 await gate("awaiting_review", "independent")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("independent", "review", "approve", "independent-review"))
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("independent", "review", "approve", "independent-review"))
                 self.assertEqual(await handle.result(), "rejected")
                 state = await handle.query(HermesWorkflow.status)
-                self.assertEqual((state.stage, state.step_id, state.execution_id),
-                                 ("rejected", "dependent", "test-hermes-unknown-handoff:2"))
+                self.assertEqual((state.stage, state.step_id, state.execution_id), ("rejected", "dependent", "test-hermes-unknown-handoff:2"))
                 self.assertEqual([result.status for result in state.results], ["unknown", "completed"])
         self.assertEqual(calls, [("uncertain", "synthetic"), ("independent", "separate")])
 
@@ -394,26 +324,16 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
             return ExecutionResult("completed", request.execution_id, "é" * 32768, "completed")
 
         async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(env.client, task_queue="test-hermes-handoff-limit",
-                              workflows=[HermesWorkflow], activities=[execute]):
+            async with Worker(env.client, task_queue="test-hermes-handoff-limit", workflows=[HermesWorkflow], activities=[execute]):
                 handle = await env.client.start_workflow(
                     HermesWorkflow.run,
-                    WorkflowRequest([HermesStep("first", "synthetic"),
-                                     HermesStep("next", "synthetic", depends_on=("first",))]),
+                    WorkflowRequest([HermesStep("first", "synthetic"), HermesStep("next", "synthetic", depends_on=("first",))]),
                     id="test-hermes-handoff-limit", task_queue="test-hermes-handoff-limit",
                 )
-                async def gate(stage: str) -> None:
-                    async def observe() -> None:
-                        while (await handle.query(HermesWorkflow.status)).stage != stage:
-                            await asyncio.sleep(0.01)
-                    await asyncio.wait_for(observe(), timeout=10)
-
-                await gate("awaiting_execution_approval")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "execute", "approve", "limit-execute"))
-                await gate("awaiting_review")
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "review", "approve", "limit-review"))
+                await _until(handle, lambda s: s.stage == "awaiting_execution_approval")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("first", "execute", "approve", "limit-execute"))
+                await _until(handle, lambda s: s.stage == "awaiting_review")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("first", "review", "approve", "limit-review"))
                 self.assertEqual(await handle.result(), "rejected")
                 self.assertEqual((await handle.query(HermesWorkflow.status)).step_id, "next")
         self.assertEqual(calls, ["first"])
@@ -433,27 +353,13 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
             HermesStep("independent", "base-independent", depends_on=("scope",)),
         ], approval_timeout_seconds=30)
         async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(env.client, task_queue="test-hermes-handoff",
-                              workflows=[HermesWorkflow], activities=[execute]):
-                handle = await env.client.start_workflow(
-                    HermesWorkflow.run, request, id="test-hermes-handoff-isolation",
-                    task_queue="test-hermes-handoff",
-                )
-                async def gate(stage, step_id):
-                    async def observe():
-                        while True:
-                            state = await handle.query(HermesWorkflow.status)
-                            if state.stage == stage and state.step_id == step_id:
-                                return
-                            await asyncio.sleep(0.01)
-                    await asyncio.wait_for(observe(), timeout=10)
+            async with Worker(env.client, task_queue="test-hermes-handoff", workflows=[HermesWorkflow], activities=[execute]):
+                handle = await env.client.start_workflow(HermesWorkflow.run, request, id="test-hermes-handoff-isolation", task_queue="test-hermes-handoff")
                 for step_id in ("scope", "source", "dependent", "independent"):
-                    await gate("awaiting_execution_approval", step_id)
-                    await handle.signal(HermesWorkflow.decision, WorkflowDecision(
-                        step_id, "execute", "approve", f"{step_id}-execute"))
-                    await gate("awaiting_review", step_id)
-                    await handle.signal(HermesWorkflow.decision, WorkflowDecision(
-                        step_id, "review", "approve", f"{step_id}-review"))
+                    await _until(handle, lambda s, sid=step_id: s.stage == "awaiting_execution_approval" and s.step_id == sid)
+                    await handle.signal(HermesWorkflow.decision, WorkflowDecision(step_id, "execute", "approve", f"{step_id}-execute"))
+                    await _until(handle, lambda s, sid=step_id: s.stage == "awaiting_review" and s.step_id == sid)
+                    await handle.signal(HermesWorkflow.decision, WorkflowDecision(step_id, "review", "approve", f"{step_id}-review"))
                 self.assertEqual(await handle.result(), "completed")
         prompts = dict(received)
         self.assertIn("result-scope", prompts["source"])
@@ -471,27 +377,16 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
             return ExecutionResult("completed", request.execution_id, "synthetic result", "completed")
 
         async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(env.client, task_queue="test-hermes-handoff-deny",
-                              workflows=[HermesWorkflow], activities=[execute]):
+            async with Worker(env.client, task_queue="test-hermes-handoff-deny", workflows=[HermesWorkflow], activities=[execute]):
                 handle = await env.client.start_workflow(
                     HermesWorkflow.run,
-                    WorkflowRequest([HermesStep("first", "synthetic"),
-                                     HermesStep("next", "synthetic", depends_on=("first",))]),
+                    WorkflowRequest([HermesStep("first", "synthetic"), HermesStep("next", "synthetic", depends_on=("first",))]),
                     id="test-hermes-unreviewed-handoff", task_queue="test-hermes-handoff-deny",
                 )
-                for _ in range(100):
-                    if (await handle.query(HermesWorkflow.status)).stage == "awaiting_execution_approval":
-                        break
-                    await asyncio.sleep(0.01)
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "execute", "approve", "first-execute"))
-                for _ in range(100):
-                    state = await handle.query(HermesWorkflow.status)
-                    if state.stage == "awaiting_review":
-                        break
-                    await asyncio.sleep(0.01)
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "review", "deny", "first-review"))
+                await _until(handle, lambda s: s.stage == "awaiting_execution_approval")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("first", "execute", "approve", "first-execute"))
+                await _until(handle, lambda s: s.stage == "awaiting_review")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("first", "review", "deny", "first-review"))
                 self.assertEqual(await handle.result(), "rejected")
         self.assertEqual(calls, ["first"])
 
@@ -504,20 +399,14 @@ class HermesWorkflowTests(unittest.IsolatedAsyncioTestCase):
             return ExecutionResult("failed", request.execution_id, "", "native_failed")
 
         async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(env.client, task_queue="test-hermes-handoff-failed",
-                              workflows=[HermesWorkflow], activities=[execute]):
+            async with Worker(env.client, task_queue="test-hermes-handoff-failed", workflows=[HermesWorkflow], activities=[execute]):
                 handle = await env.client.start_workflow(
                     HermesWorkflow.run,
-                    WorkflowRequest([HermesStep("first", "synthetic"),
-                                     HermesStep("next", "synthetic", depends_on=("first",))]),
+                    WorkflowRequest([HermesStep("first", "synthetic"), HermesStep("next", "synthetic", depends_on=("first",))]),
                     id="test-hermes-failed-handoff", task_queue="test-hermes-handoff-failed",
                 )
-                for _ in range(100):
-                    if (await handle.query(HermesWorkflow.status)).stage == "awaiting_execution_approval":
-                        break
-                    await asyncio.sleep(0.01)
-                await handle.signal(HermesWorkflow.decision,
-                                    WorkflowDecision("first", "execute", "approve", "first-execute"))
+                await _until(handle, lambda s: s.stage == "awaiting_execution_approval")
+                await handle.signal(HermesWorkflow.decision, WorkflowDecision("first", "execute", "approve", "first-execute"))
                 self.assertEqual(await handle.result(), "rejected")
         self.assertEqual(calls, ["first"])
 
@@ -2206,3 +2095,86 @@ class ParallelWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Not shown (prompt limit): ", frame)
         # Every follow-up's first claim comes before any second claim.
         self.assertLess(frame.index("follow-12 claim 0 "), frame.index("follow-1 claim 1 "))
+
+    def test_workflow_request_validates_optional_max_total_tokens(self) -> None:
+        step = HermesStep("one", "prompt")
+        self.assertIsNone(WorkflowRequest([step]).max_total_tokens)
+        self.assertEqual(WorkflowRequest([step], max_total_tokens=150000).max_total_tokens, 150000)
+        for bad in (0, -1, True, False, 1.5, "1000"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                WorkflowRequest([step], max_total_tokens=bad)  # type: ignore[arg-type]
+
+    async def test_cumulative_token_cap_stops_serial_and_parallel_runs_behind_patch_and_replays(self) -> None:
+        from temporalio import workflow as temporal_workflow
+        from unittest import mock
+        from .workflows import _CUMULATIVE_TOKEN_CAP_PATCH
+
+        def _usage(total: int) -> dict[str, int]:
+            return {"input_tokens": total - 10, "output_tokens": 10, "cache_read_tokens": 0,
+                    "cache_write_tokens": 0, "total_tokens": total, "duration_ms": 50}
+
+        real_patched = temporal_workflow.patched
+        for mode in ("new", "recorded-before"):
+            with self.subTest(kind="serial", mode=mode):
+                dispatched: list[str] = []
+
+                @activity.defn(name="execute_hermes_step")
+                async def serial_exec(req: ExecutionRequest) -> ExecutionResult:
+                    dispatched.append(req.step.step_id)
+                    tokens = 600 if req.step.step_id == "first" else 500
+                    return ExecutionResult("completed", req.execution_id, "ok", "completed", "s1", _usage(tokens))
+
+                req = WorkflowRequest([
+                    HermesStep("first", "synthetic"),
+                    HermesStep("second", "synthetic", depends_on=("first",)),
+                    HermesStep("third", "synthetic", depends_on=("second",)),
+                ], max_total_tokens=1000)
+                patch_ctx = mock.patch.object(
+                    temporal_workflow, "patched",
+                    lambda pid: False if pid == _CUMULATIVE_TOKEN_CAP_PATCH else real_patched(pid),
+                )
+                with patch_ctx if mode == "recorded-before" else contextlib.nullcontext():
+                    async with await WorkflowEnvironment.start_time_skipping() as env:
+                        q = f"test-token-cap-serial-{mode}"
+                        async with Worker(env.client, task_queue=q, workflows=[HermesWorkflow], activities=[serial_exec]):
+                            handle = await env.client.start_workflow(HermesWorkflow.run, req, id=q, task_queue=q)
+                            outcome = await self._approve_every_gate(handle)
+                            state = await handle.query(HermesWorkflow.status)
+                            history = await handle.fetch_history()
+                await Replayer(workflows=[HermesWorkflow]).replay_workflow(history)
+                if mode == "new":
+                    self.assertEqual(outcome, "token_cap_exceeded")
+                    self.assertEqual(dispatched, ["first", "second"])
+                    self.assertEqual([r.usage["total_tokens"] for r in state.results if r.usage], [600, 500])
+                else:
+                    self.assertEqual(outcome, "completed")
+                    self.assertEqual(dispatched, ["first", "second", "third"])
+
+        dispatched_wave: list[str] = []
+
+        @activity.defn(name="execute_hermes_step")
+        async def wave_exec(req: ExecutionRequest) -> ExecutionResult:
+            dispatched_wave.append(req.execution_id)
+            if req.step.step_id == "hunter-1" and not req.execution_id.endswith(":retry"):
+                bad = json.dumps(_handoff("hunter-1", "framework-researcher", evidence_ids=["bad-ref"]))
+                return ExecutionResult("completed", req.execution_id, bad, "completed", "s1", _usage(600))
+            good = json.dumps(_handoff(req.step.step_id, req.step.profile))
+            return ExecutionResult("completed", req.execution_id, good, "completed", "s2", _usage(500))
+
+        wave_req = WorkflowRequest([
+            HermesStep("hunter-1", "synthetic", "framework-researcher", hunt_context=_ontology_context()),
+            HermesStep("hunter-2", "synthetic", "framework-researcher", hunt_context=_ontology_context()),
+            HermesStep("lead", "synthetic", depends_on=("hunter-1", "hunter-2"), hunt_context=_ontology_context()),
+        ], parallel=True, max_total_tokens=1000)
+        async with self._started("test-token-cap-wave", wave_req, wave_exec) as (_, handle):
+            await self._decide(handle, "wave-1", "execute")
+            self.assertEqual(await handle.result(), "token_cap_exceeded")
+            wave_state = await handle.query(HermesWorkflow.status)
+            wave_history = await handle.fetch_history()
+        await Replayer(workflows=[HermesWorkflow]).replay_workflow(wave_history)
+        self.assertEqual([(s.step_id, s.state, s.reason) for s in wave_state.steps], [
+            ("hunter-1", "stopped", "token_cap_exceeded"),
+            ("hunter-2", "stopped", "token_cap_exceeded"),
+            ("lead", "not_reached", ""),
+        ])
+        self.assertEqual(len(dispatched_wave), 2)
