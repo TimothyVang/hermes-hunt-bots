@@ -18,9 +18,14 @@ from urllib.request import Request, urlopen
 EVENT_STORE = 'hunt-lab-events-v2'
 CASE_ALIAS = 'hunt-lab-case-events'
 DATA_VIEW_ID = 'hunt-lab-case-events'
+CASE_VIEW_PREFIX = 'hunt-lab-case-'
 TIME_FIELD = '@timestamp'
 CASE_ID = re.compile(r'[a-z0-9-]{3,64}')
 TIMEOUT = 60
+
+
+def case_view_id(case_id):
+    return CASE_VIEW_PREFIX + case_id
 
 
 def request(base, path, method='GET', data=None, kibana=False):
@@ -61,11 +66,18 @@ def configure(elastic, kibana, case, call=request):
     if not isinstance(case_id, str) or not CASE_ID.fullmatch(case_id):
         raise ValueError('invalid case_id')
     start, end = case_window(case)
-    # Re-adding an alias replaces its filter, so loading another case moves the alias to it atomically.
-    call(elastic, '/_aliases', 'POST', {'actions': [{'add': {
-        'index': EVENT_STORE, 'alias': CASE_ALIAS, 'filter': {'term': {'event.dataset': case_id}}}}]})
+    per_case_view = case_view_id(case_id)
+    case_filter = {'term': {'event.dataset': case_id}}
+    # Maintain both the active-case alias/data view and an idempotent per-case alias/data view on warm stacks.
+    call(elastic, '/_aliases', 'POST', {'actions': [
+        {'add': {'index': EVENT_STORE, 'alias': CASE_ALIAS, 'filter': case_filter}},
+        {'add': {'index': EVENT_STORE, 'alias': per_case_view, 'filter': case_filter}},
+    ]})
     call(kibana, '/api/data_views/data_view', 'POST', {'override': True, 'data_view': {
         'id': DATA_VIEW_ID, 'title': CASE_ALIAS, 'name': case_id + ' events', 'timeFieldName': TIME_FIELD}}, kibana=True)
+    call(kibana, '/api/data_views/data_view', 'POST', {'override': True, 'data_view': {
+        'id': per_case_view, 'title': per_case_view, 'name': case_id + ' events', 'timeFieldName': TIME_FIELD}},
+        kibana=True)
     call(kibana, '/api/data_views/default', 'POST', {'data_view_id': DATA_VIEW_ID, 'force': True}, kibana=True)
     call(kibana, '/api/kibana/settings', 'POST', {'changes': {
         'timepicker:timeDefaults': json.dumps({'from': start, 'to': end}),
@@ -74,6 +86,9 @@ def configure(elastic, kibana, case, call=request):
     view = call(kibana, '/api/data_views/data_view/' + DATA_VIEW_ID, kibana=True)['data_view']
     if view.get('title') != CASE_ALIAS or view.get('timeFieldName') != TIME_FIELD:
         raise ValueError('data view not applied')
+    case_view = call(kibana, '/api/data_views/data_view/' + per_case_view, kibana=True)['data_view']
+    if case_view.get('title') not in (per_case_view, CASE_ALIAS) or case_view.get('timeFieldName') != TIME_FIELD:
+        raise ValueError('per-case data view not applied')
     return call(elastic, '/' + CASE_ALIAS + '/_count', 'POST', {'query': {'range': {TIME_FIELD: {
         'gte': start, 'lte': end}}}})['count']
 

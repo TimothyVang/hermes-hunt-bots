@@ -25,11 +25,11 @@ class ReadyTest(unittest.TestCase):
 
 
 class SwitchTest(unittest.TestCase):
-    def test_switch_restarts_the_container_project(self):
+    def _run_switch(self, case_payload, extra_argv=()):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = Path(tmp) / 'evidence'
             evidence.mkdir()
-            (evidence / 'case.json').write_text('{"case_id": "lab-med-001"}', encoding='utf-8')
+            (evidence / 'case.json').write_text(json.dumps(case_payload), encoding='utf-8')
             commands = []
 
             def run(cmd, **kwargs):
@@ -37,23 +37,36 @@ class SwitchTest(unittest.TestCase):
                 action = cmd[cmd.index('hunt-lab') + 1]
                 result = ({'origin': 'container', 'state': 'stopped', 'reason': 'stopped', 'case_id': 'team-med-004'}
                           if action == 'stop' else
-                          {'origin': 'container', 'state': 'starting', 'reason': 'loading_case', 'case_id': 'lab-med-001'})
+                          {'origin': 'container', 'state': 'starting', 'reason': 'loading_case',
+                           'case_id': case_payload['case_id']})
                 return Mock(returncode=0, stdout=json.dumps(result) + '\n', stderr='')
             served = Mock(lab_url='http://127.0.0.1:41000', arkime_url='http://127.0.0.1:41002')
-            served.get.return_value = {'ready': True, 'event_count': 20931, 'case_id': 'lab-med-001'}
+            served.get.return_value = {'ready': True, 'event_count': 20931, 'case_id': case_payload['case_id']}
             with patch.object(switch_case.subprocess, 'run', run), \
                     patch.object(switch_case, 'resolve', return_value=served) as resolve, \
                     patch.object(switch_case.DEFAULT_LANE.__class__, 'hermes_exe', lambda self: 'hermes'), \
                     patch.object(switch_case.time, 'sleep'), \
-                    patch.object(sys, 'argv', ['switch_case.py', str(evidence)]), \
+                    patch.object(sys, 'argv', ['switch_case.py', *extra_argv, str(evidence)]), \
                     contextlib.redirect_stdout(io.StringIO()):
                 switch_case.main()
-        # Exactly these two hunt-lab calls: no other lab is chosen and no other child runs.
+            return commands, evidence.resolve(), resolve
+
+    def test_switch_reuses_warm_stack_for_synthetic_cases(self):
+        commands, evidence, resolve = self._run_switch({'case_id': 'lab-med-001'})
         hunt_lab = ['hermes', '-p', 'framework-network-analyst', 'hunt-lab']
-        self.assertEqual(commands, [hunt_lab + ['stop'],
-                                    hunt_lab + ['start', '--evidence-dir', str(evidence.resolve()),
+        self.assertEqual(commands, [hunt_lab + ['start', '--evidence-dir', str(evidence),
                                                 '--wait', str(switch_case.START_WAIT)]])
         resolve.assert_called_with(switch_case.DEFAULT_LANE.state_dir, 'lab-med-001', profile='hunt-board')
+
+    def test_switch_cold_flag_or_real_data_origin_restarts_the_container_project(self):
+        hunt_lab = ['hermes', '-p', 'framework-network-analyst', 'hunt-lab']
+        for payload, argv in (({'case_id': 'lab-med-001'}, ('--cold',)),
+                              ({'case_id': 'work-001', 'data_origin': 'work-export'}, ())):
+            with self.subTest(payload=payload, argv=argv):
+                commands, evidence, _resolve = self._run_switch(payload, argv)
+                self.assertEqual(commands, [hunt_lab + ['stop'],
+                                            hunt_lab + ['start', '--cold', '--evidence-dir', str(evidence),
+                                                        '--wait', str(switch_case.START_WAIT)]])
 
     def test_the_script_runs_main_when_executed(self):
         # work_hunt runs switch_case.py as a child process; without the entry point it exits 0 having done nothing.

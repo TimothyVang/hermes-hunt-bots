@@ -440,12 +440,14 @@ class ToolDrivenInputTests(unittest.TestCase):
         self.assertEqual(lab.paths(), ["/case"])
         self.assertEqual(lab.refused, [])
         self.assertEqual(raw["mode"], "tool_driven")
+        self.assertIs(raw["parallel"], True)
         self.assertEqual(raw["ontology"]["case_id"], "lab-med-001")
         [item] = raw["evidence"]
         self.assertEqual(item["locator"], "lab-med-001:summary/case")
         self.assertIn(TOOL_CASE["question"], item["content"])
         self.assertNotIn("evt-000001", json.dumps(raw))
         request = supplied_evidence_hunt(raw)
+        self.assertTrue(request.parallel)
         self.assertEqual(len(request.steps), 9)
         for step in request.steps:
             self.assertEqual(step.hunt_context["evidence_ids"], [item["source_id"]])

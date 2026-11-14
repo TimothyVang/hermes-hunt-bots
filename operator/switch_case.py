@@ -1,10 +1,11 @@
-"""Switch the lab to another case: stop the current case's container project, start one for the new case, and
-wait for the lab health API to report it.
+"""Switch the lab to another case: reuse an already-running warm synthetic stack (idempotent ingest + per-case
+Kibana data view + active-case refresh), or pass `--cold` (used automatically for real-data cases with `data_origin`)
+to tear down the project first, then wait for the lab health API to report the case ready.
 
 With no evidence_dir it only starts the last started case. The containers run detached from this process, so
 the lab stays up after it exits; `hermes -p framework-network-analyst hunt-lab stop` removes them.
 
-Usage: python operator/switch_case.py [<evidence_dir>]
+Usage: python operator/switch_case.py [--cold] [<evidence_dir>]
 """
 import argparse
 import json
@@ -84,19 +85,34 @@ def wait_ready(case_id, timeout=READY_SECONDS):
     return line
 
 
+def _requires_cold_isolation(case_path):
+    try:
+        meta = json.loads(Path(case_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return True
+    return not isinstance(meta, dict) or 'data_origin' in meta
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('evidence_dir', nargs='?', help='case evidence to load; omit to start the last started case')
+    ap.add_argument('--cold', action='store_true', help='stop the current container stack first instead of reusing a warm synthetic stack')
     args = ap.parse_args()
     # hunt-lab runs with another working directory, so resolve a caller-relative evidence path first.
     options = []
+    cold = bool(args.cold)
     if args.evidence_dir:
         evidence = Path(args.evidence_dir).resolve()
-        if not (evidence / 'case.json').is_file():
+        case_json = evidence / 'case.json'
+        if not case_json.is_file():
             ap.error(f'no case.json in {evidence}')
-        options = ['--evidence-dir', str(evidence)]
+        if _requires_cold_isolation(case_json):
+            cold = True
+        options = [*(['--cold'] if cold else []), '--evidence-dir', str(evidence)]
+    elif cold:
+        options = ['--cold']
     DEFAULT_LANE.hermes_exe()
-    if args.evidence_dir:
+    if cold:
         rc, st = lab('stop')
         if rc:
             raise SystemExit(f"stop failed: {st.get('reason')}")

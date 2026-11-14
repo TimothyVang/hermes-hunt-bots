@@ -10,8 +10,10 @@ from __future__ import annotations
 import atexit
 import base64
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import itertools
 import json
 import logging
@@ -29,8 +31,8 @@ from . import humanize
 from .actionability import CLICK_ACTIONABLE
 from .browser_policy import (KIBANA_INDEX, LabScope, Refused, check_expression, decide, document_allowed,
                              kibana_window, origin)
-from .endpoints import SECRET_HEADER, QueryFailure, endpoint
-from .query_adapter import _case_id, _failure, _schema, serving_lab
+from .endpoints import RUN_ID, SECRET_HEADER, QueryFailure, caller_env, endpoint
+from .query_adapter import _case_id, _failure, _require_owner, _schema, serving_lab
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,8 @@ RISON_SAFE = "!'(),:*@$-._~/"
 _LOG = logging.getLogger(__name__)
 STATE_FILE = 'session.json'
 AUDIT_FILE = 'audit.jsonl'
+RUNS_DIR = 'runs'
+STEP_ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}')
 # Each successful action's final viewport, kept for the transcript thumbnail; the oldest beyond FRAMES_KEPT are dropped.
 FRAMES_DIR = 'frames'
 FRAMES_KEPT = 200
@@ -737,7 +741,8 @@ class BrowserSession:
 
     def state(self):
         lab, arkime, kibana = self.origins()
-        return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
+        return {'pid': self.pid, 'ws_url': self.ws_url, 'case_id': self.scope.case_id,
+                'secret_sha256': _secret_digest(self.scope.lab_secret), 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
                 'pointer': list(self.pointer), 'last_used': self.last_used, **_shape(self.window, self.demo)}
 
@@ -752,6 +757,8 @@ class BrowserSession:
                 self.process.wait(5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        with contextlib.suppress(OSError):
+            (self.root / 'user-data' / 'DevToolsActivePort').unlink(missing_ok=True)
 
 
 def _demo_window(window):
@@ -899,9 +906,39 @@ def _write_state(root, value):
     os.replace(temp, root / STATE_FILE)
 
 
+def _demo_path(root):
+    root = Path(root)
+    base = root.parent.parent.parent if root.parent.name == RUNS_DIR else root.parent
+    return base / DEMO_FILE
+
+
+def _secret_digest(secret):
+    """Fingerprint of the lab secret a browser was launched under; session.json never holds the secret itself."""
+    return hashlib.sha256(('lab-browser:' + (secret or '')).encode()).hexdigest()
+
+
+def _step_folder_name(run_id, step_id):
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', step_id).strip('-')[:24] or 'step'
+    digest = hashlib.sha256(f'{run_id}\0{step_id}'.encode()).hexdigest()[:12]
+    return f'{slug}-{digest}'
+
+
+def session_root(profile_root, environ=None):
+    """Browser state folder for one call: `<profile_root>/runs/<slug>-<hash12>` when HUNT_RUN_ID and HUNT_STEP_ID are
+    set, else `<profile_root>` directly."""
+    env = caller_env(environ)
+    run_id = env.get('HUNT_RUN_ID') or ''
+    step_id = env.get('HUNT_STEP_ID') or ''
+    if not run_id or not step_id:
+        return Path(profile_root), None, None
+    if not RUN_ID.fullmatch(run_id) or not STEP_ID.fullmatch(step_id):
+        raise QueryFailure('invalid_run_id')
+    return Path(profile_root) / RUNS_DIR / _step_folder_name(run_id, step_id), run_id, step_id
+
+
 def _start(root, scope):
     root.mkdir(parents=True, exist_ok=True)
-    demo = read_demo(root.parent / DEMO_FILE)
+    demo = read_demo(_demo_path(root))
     state = _read_state(root)
     if state and _owned(state.get('ws_url')):
         # Reuse only a browser launched the way the marker asks for now: a headless browser reattached
@@ -909,6 +946,8 @@ def _start(root, scope):
         window = _wanted_window(demo)
         wanted = _shape(window, demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
+                 and state.get('case_id') == scope.case_id
+                 and state.get('secret_sha256') == _secret_digest(scope.lab_secret)
                  and (state.get('lab_origin'), state.get('arkime_origin'), state.get('kibana_origin')) == scope.origins
                  and {key: state.get(key) for key in wanted} == wanted)
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
@@ -951,14 +990,17 @@ def _session(root, scope):
         session = _SESSIONS.get(key)
         # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
         # the operator's marker still asks for the mode it was launched in.
-        demo = read_demo(Path(root).parent / DEMO_FILE)
-        if (session is not None and session.alive() and session.origins() == scope.origins
+        demo = read_demo(_demo_path(root))
+        if (session is not None and session.alive()
+                and session.scope.case_id == scope.case_id and session.scope.lab_secret == scope.lab_secret
+                and session.origins() == scope.origins
                 and _shape(session.window, session.demo) == _shape(_wanted_window(demo), demo)):
             session.scope = scope
             return session
         if session is not None:
             _forget(key)
         session = _SESSIONS[key] = _start(root, scope)
+        session.scope = scope
         if _watchdog is None:
             _watchdog = threading.Thread(target=_idle_watch, daemon=True, name='lab-browser-idle')
             _watchdog.start()
@@ -975,10 +1017,15 @@ def shutdown():
 atexit.register(shutdown)
 
 
-def _audit(root, entry):
+def _audit(root, entry, *, mirror_root=None):
     line = json.dumps(entry, ensure_ascii=True, separators=(',', ':'))
-    with _AUDIT, open(root / AUDIT_FILE, 'a', encoding='utf-8') as stream:
-        stream.write(line + '\n')
+    with _AUDIT:
+        with open(root / AUDIT_FILE, 'a', encoding='utf-8') as stream:
+            stream.write(line + '\n')
+        if mirror_root is not None and Path(mirror_root) != Path(root):
+            Path(mirror_root).mkdir(parents=True, exist_ok=True)
+            with open(Path(mirror_root) / AUDIT_FILE, 'a', encoding='utf-8') as stream:
+                stream.write(line + '\n')
 
 
 def _final_frame(session, root, action):
@@ -1016,6 +1063,7 @@ def call(arguments, *, state_dir, profile, browser_root=None):
     """Run one lab_browser action for `profile`; returns JSON-safe data or a fixed error code."""
     session, command, case_id, outcome = None, None, None, None
     try:
+        _require_owner(profile, 'lab_browser')
         command = parse_command(arguments)
         case_id = _case_id(arguments)
         served = serving_lab(state_dir, profile, case_id)
@@ -1026,7 +1074,8 @@ def call(arguments, *, state_dir, profile, browser_root=None):
             scope = LabScope.from_case(served.case, served.lab_url, endpoint(served.arkime_url), kibana, served.secret)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise QueryFailure('lab_invalid_response') from None
-        root = Path(browser_root) if browser_root else Path(state_dir).parent / 'hunt-lab-browser' / profile
+        profile_root = Path(browser_root) if browser_root else Path(state_dir).parent / 'hunt-lab-browser' / profile
+        root, run_id, step_id = session_root(profile_root)
         session = _session(root, scope)
         with session.lock:
             blocked_before = session.blocked
@@ -1043,7 +1092,7 @@ def call(arguments, *, state_dir, profile, browser_root=None):
             except CdpError:
                 outcome = {'ok': False, 'profile': profile, 'error': 'browser_command_failed'}
             _write_state(root, session.state())
-            _audit(root, {
+            audit_entry = {
                 'time': datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
                 't': int(time.time() * 1000), 'profile': profile, 'case_id': case_id, 'action': command.action,
                 'page': session.page_name, 'ref': command.ref, 'key': command.key, 'direction': command.direction,
@@ -1051,7 +1100,11 @@ def call(arguments, *, state_dir, profile, browser_root=None):
                 'entered': session.entered,
                 'url': (outcome.get('result') or {}).get('url'), 'blocked': session.blocked - blocked_before,
                 'requests': list(session.requests)[-20:], 'demo': session.demo.marker,
-                'ok': outcome['ok'], 'error': outcome.get('error')})
+                'ok': outcome['ok'], 'error': outcome.get('error')}
+            if run_id is not None and step_id is not None:
+                audit_entry['run_id'] = run_id
+                audit_entry['step_id'] = step_id
+            _audit(root, audit_entry, mirror_root=profile_root)
         return _bounded(outcome) if outcome['ok'] else outcome
     except QueryFailure as exc:
         return _failure(profile, exc)

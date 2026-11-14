@@ -1,11 +1,13 @@
 """drive_gates behavior that an unattended loop round depends on."""
 import argparse
+import asyncio
 import copy
 import hashlib
 import io
 import json
 import re
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -628,6 +630,139 @@ class CliRetryTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'status exit 2'):
                 dg.cli('status', CHILD)
         self.assertEqual(len(calls), 1)
+
+    def test_token_cap_exceeded_stage_stops_the_driver_without_retrying(self):
+        code, decisions, _, messages = drive([wave(
+            'token_cap_exceeded', [SCOPE, step('evidence', 'stopped', 'x:evidence', 'token_cap_exceeded')],
+            [SCOPE_RESULT, result('x:evidence', 'ok')])])
+        self.assertEqual((code, decisions), (1, []))
+        self.assertTrue(messages[-1].startswith(f'STOP {CHILD} wave-2: stage token_cap_exceeded; no retry. '))
+
+    def test_persistent_session_reuses_one_temporal_client_and_falls_back_when_sdk_missing(self):
+        class FakeRPCError(Exception):
+            pass
+
+        connect_calls = []
+        signals = []
+
+        class FakeHandle:
+            def __init__(self, workflow_id):
+                self.workflow_id = workflow_id
+
+            async def query(self, fn):
+                if fn == 'practice_status_q':
+                    return SimpleNamespace(stage='running_round', child_workflow_id=CHILD)
+                return SimpleNamespace(
+                    stage='awaiting_execution_approval', step_id='wave-1', execution_id=None,
+                    results=[SimpleNamespace(status='completed', execution_id='x:0', output='ok', reason_code='completed')],
+                    handoff_rejections=[], steps=[], decisions=[],
+                )
+
+            async def describe(self):
+                return SimpleNamespace(status=SimpleNamespace(name='RUNNING'))
+
+            async def signal(self, _fn, item):
+                signals.append(item)
+
+        class FakeClient:
+            @staticmethod
+            async def connect(address):
+                connect_calls.append(address)
+                if len(connect_calls) == 1:
+                    raise FakeRPCError('transient startup busy')
+                return FakeClient()
+
+            def get_workflow_handle(self, workflow_id):
+                return FakeHandle(workflow_id)
+
+        fake_sdk = SimpleNamespace(
+            Client=FakeClient, RPCError=FakeRPCError, DEFAULT_ADDRESS='127.0.0.1:7233',
+            DECIDER_REFUSAL='bad decider', decider=lambda ns: (ns.decided_by or 'Ada', ns.via or 'automated'),
+            WorkflowDecision=lambda *a: a, validate_loopback_address=lambda addr: addr,
+            PracticeWorkflow=SimpleNamespace(status='practice_status_q'),
+            HermesWorkflow=SimpleNamespace(status='hermes_status_q', decision='hermes_decision_sig'),
+        )
+        with patch.object(dg, '_load_temporal_sdk', return_value=fake_sdk), \
+                patch.object(dg.subprocess, 'run', side_effect=AssertionError('must not spawn CLI')), \
+                patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            with dg.persistent_cli_session():
+                parent = dg.cli('practice-status', 'loop-wf')
+                state = dg.cli('status', CHILD)
+                sent = dg.cli('decision', CHILD, '--step-id', 'wave-1', '--phase', 'execute',
+                              '--choice', 'approve', '--decision-id', 'd1', '--evidence-note', 'ok',
+                              '--decided-by', 'Ada', '--via', 'automated')
+        self.assertEqual(parent['child_workflow_id'], CHILD)
+        self.assertEqual(state['results'][0]['execution_id'], 'x:0')
+        self.assertEqual(sent['signal_sent'], True)
+        self.assertEqual(len(connect_calls), 2, 'one retry after FakeRPCError, then reused for all 3 calls')
+        self.assertEqual(len(signals), 1)
+
+        ok = SimpleNamespace(returncode=0, stdout='{"stage": "completed", "temporal_status": "COMPLETED"}', stderr='')
+        with patch.object(dg, '_load_temporal_sdk', return_value=None), \
+                patch.object(dg.subprocess, 'run', return_value=ok) as sub_run:
+            with dg.persistent_cli_session():
+                fallback = dg.cli('practice-status', 'loop-wf')
+        self.assertEqual(fallback['stage'], 'completed')
+        self.assertEqual(sub_run.call_count, 1)
+
+        timeout_attempts = []
+
+        class TimeoutThenOkClient:
+            @staticmethod
+            async def connect(address):
+                timeout_attempts.append(('connect', threading.current_thread().name, address))
+                return TimeoutThenOkClient()
+
+            def get_workflow_handle(self, _wid):
+                class H:
+                    async def query(self, _fn):
+                        timeout_attempts.append(('query', threading.current_thread().name))
+                        if sum(1 for item in timeout_attempts if item[0] == 'query') == 1:
+                            await asyncio.sleep(5)
+                        return SimpleNamespace(stage='running_round', child_workflow_id=CHILD)
+
+                    async def describe(self):
+                        return SimpleNamespace(status=SimpleNamespace(name='RUNNING'))
+                return H()
+
+        timeout_sdk = SimpleNamespace(
+            Client=TimeoutThenOkClient, RPCError=FakeRPCError, DEFAULT_ADDRESS='127.0.0.1:7233',
+            validate_loopback_address=lambda addr: addr,
+            PracticeWorkflow=SimpleNamespace(status='practice_status_q'),
+        )
+        with patch.object(dg._PersistentTemporalSession, '_rpc_timeout', 0.05), \
+                patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+            session = dg._PersistentTemporalSession(timeout_sdk)
+            try:
+                recovered = session.call('practice-status', 'loop-wf')
+            finally:
+                session.close()
+                session.close()
+        self.assertEqual(recovered['child_workflow_id'], CHILD)
+        self.assertEqual([item[0] for item in timeout_attempts], ['connect', 'query', 'connect', 'query'])
+        self.assertTrue(all(item[1] == 'drive-gates-temporal' for item in timeout_attempts))
+
+        cancelled_futures = []
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                raise dg.concurrent.futures.TimeoutError()
+
+            def cancel(self):
+                cancelled_futures.append(True)
+
+        session2 = dg._PersistentTemporalSession(timeout_sdk)
+        try:
+            with patch.object(dg.asyncio, 'run_coroutine_threadsafe', side_effect=lambda coro, _loop: (coro.close(), FakeFuture())[1]), \
+                    patch.object(dg.time, 'sleep'), patch.object(dg, 'log'):
+                with self.assertRaises(RuntimeError):
+                    session2.call('practice-status', 'loop-wf')
+            self.assertEqual(len(cancelled_futures), 3)
+            with patch.object(session2._thread, 'join'), patch.object(session2._thread, 'is_alive', return_value=True):
+                session2.close()
+                self.assertFalse(session2._loop.is_closed())
+        finally:
+            session2.close()
 
 
 if __name__ == '__main__':

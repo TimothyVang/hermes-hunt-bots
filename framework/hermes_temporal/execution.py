@@ -7,7 +7,8 @@ independent receipt stores. Losing that file loses the dispatch protection.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from contextlib import closing
+from contextlib import closing, suppress
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -16,8 +17,18 @@ import re
 import sqlite3
 import subprocess
 import threading
+from typing import Callable
 
 from .contracts import MAX_DIAGNOSTIC_CHARS, ExecutionRequest, ExecutionResult
+from .transport import (
+    GatewayNotAvailable,
+    PROFILE_MAX_TURNS,
+    hunt_env_for_request,
+    invoke_gateway,
+    profile_max_turns,
+    step_toolsets,
+    validate_loopback_ws_url,
+)
 
 PROFILES = frozenset({
     'framework-coordinator', 'framework-researcher', 'framework-builder',
@@ -25,7 +36,7 @@ PROFILES = frozenset({
 })
 MAX_PROMPT_BYTES = 65536
 MAX_OUTPUT_BYTES = 65536
-MAX_TURNS = 32
+MAX_TURNS = PROFILE_MAX_TURNS['framework-coordinator']
 # Raw stream-json stdout of one step; a tool-heavy step emits far more than its final text.
 MAX_STREAM_BYTES = 16 * 1024 * 1024
 # A result line still fits when all MAX_OUTPUT_BYTES of its text are \uXXXX escapes; longer lines are dropped unparsed.
@@ -86,8 +97,9 @@ _SECRETS = (
 _LONG_RUN = re.compile(r'[A-Za-z0-9+/=_-]{32,}')
 _USAGE_FIELDS = (('input_tokens', 'input'), ('output_tokens', 'output'), ('cache_read_tokens', 'cache_read'),
                  ('cache_write_tokens', 'cache_write'), ('total_tokens', 'total'))
-_ADDED_RECEIPT_COLUMNS = ('usage', 'session_id', 'diagnostic')
+_ADDED_RECEIPT_COLUMNS = ('usage', 'session_id', 'diagnostic', 'input_id')
 _STEP_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z')
+_ACTIVE_CHECKPOINT: ContextVar[Callable[[str, str], None] | None] = ContextVar('_ACTIVE_CHECKPOINT', default=None)
 
 
 @dataclass(frozen=True)
@@ -103,6 +115,9 @@ class ExecutionConfig:
     visible_sessions: bool = False
     # Run Hermes with stream-json output so each result carries token counts and wall time.
     record_usage: bool = False
+    # Optional loopback gateway WS override (otherwise discovered via the profile/root control socket).
+    gateway_ws_url: str | None = None
+    gateway_ticket: str | None = None
 
 
 def _result(request: ExecutionRequest, status: str, reason: str, output: str = '',
@@ -112,22 +127,34 @@ def _result(request: ExecutionRequest, status: str, reason: str, output: str = '
                            reason_code=reason, session_id=session_id, usage=usage, diagnostic=diagnostic)
 
 
+def _valid_toolsets(toolsets: object) -> bool:
+    return toolsets is None or (
+        isinstance(toolsets, tuple) and bool(toolsets)
+        and all(isinstance(item, str) and _STEP_ID.fullmatch(item) is not None for item in toolsets)
+        and len(toolsets) == len(set(toolsets))
+    )
+
+
 def _valid_request(request: ExecutionRequest) -> bool:
     try:
         step = request.step
         return (isinstance(request.execution_id, str) and bool(request.execution_id)
                 and len(request.execution_id.encode('utf-8')) <= 512
+                and type(request.record_usage) is bool
                 and isinstance(step.step_id, str) and _STEP_ID.fullmatch(step.step_id) is not None
                 and isinstance(step.prompt, str) and bool(step.prompt.strip())
                 and len(step.prompt.encode('utf-8')) <= MAX_PROMPT_BYTES
                 and step.profile in PROFILES and type(step.timeout_seconds) is int
-                and 1 <= step.timeout_seconds <= 3600)
+                and 1 <= step.timeout_seconds <= 3600
+                and _valid_toolsets(step.toolsets))
     except (AttributeError, TypeError, UnicodeError):
         return False
 
 
 def _valid_config(config: ExecutionConfig) -> bool:
     try:
+        if config.gateway_ws_url is not None:
+            validate_loopback_ws_url(config.gateway_ws_url)
         paths = [config.executable, config.hermes_home, config.working_directory, config.receipt_db]
         if not all(isinstance(p, str) and p and Path(p).is_absolute() for p in paths):
             return False
@@ -153,9 +180,11 @@ def _valid_config(config: ExecutionConfig) -> bool:
 
 def _fingerprint(request: ExecutionRequest) -> str:
     step = request.step
-    fields = [step.step_id, step.prompt, step.profile, step.timeout_seconds]
+    fields: list[object] = [step.step_id, step.prompt, step.profile, step.timeout_seconds]
     if step.hunt_context is not None:
         fields.append(step.hunt_context)
+    if step.toolsets is not None:
+        fields.append(list(step.toolsets))
     data = json.dumps(fields, ensure_ascii=True, sort_keys=True,
                       separators=(',', ':')).encode('ascii')
     return hashlib.sha256(data).hexdigest()
@@ -167,20 +196,22 @@ def _missing_receipt_columns(db: sqlite3.Connection) -> list[str]:
 
 
 class ReceiptStore:
-    """Reserve in an immediate, fully synchronous transaction before dispatch."""
+    """Reserve and checkpoint in WAL mode before dispatch so concurrent waves never block."""
     def __init__(self, path: str):
         self.path = path
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        db = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        db.execute('PRAGMA journal_mode=WAL')
         db.execute('PRAGMA synchronous=FULL')
+        db.execute('PRAGMA busy_timeout=30000')
         db.execute('CREATE TABLE IF NOT EXISTS receipts ('
                    'execution_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, '
                    'status TEXT NOT NULL, reason TEXT NOT NULL, output TEXT NOT NULL, '
-                   'usage TEXT, session_id TEXT, diagnostic TEXT)')
+                   'usage TEXT, session_id TEXT, diagnostic TEXT, input_id TEXT)')
         if _missing_receipt_columns(db):
-            # Workers may open an older five- or seven-column database together; recheck under the
-            # write lock so each column is added once.
+            # Workers may open an older five-, seven-, or eight-column database together; recheck
+            # under the write lock so each column is added once.
             db.execute('BEGIN IMMEDIATE')
             for column in _missing_receipt_columns(db):
                 db.execute(f'ALTER TABLE receipts ADD COLUMN {column} TEXT')
@@ -208,21 +239,41 @@ class ReceiptStore:
         return _result(request, 'unknown', 'previous_dispatch_unknown', session_id=session_id, usage=usage,
                        diagnostic=diagnostic)
 
+    def checkpoint_session(self, execution_id: str, session_id: str, input_id: str) -> None:
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            cursor = db.execute(
+                'UPDATE receipts SET session_id = ?, input_id = ? WHERE execution_id = ? AND status = ?',
+                (session_id, input_id, execution_id, 'reserved'),
+            )
+            if cursor.rowcount != 1:
+                db.execute('ROLLBACK')
+                raise RuntimeError('receipt state changed')
+            db.execute('COMMIT')
+
+    def checkpointed(self, execution_id: str) -> tuple[str | None, str | None]:
+        with closing(self._connect()) as db:
+            row = db.execute('SELECT session_id, input_id FROM receipts WHERE execution_id = ?',
+                             (execution_id,)).fetchone()
+        return (None, None) if row is None else (row[0], row[1])
+
     def finish(self, result: ExecutionResult) -> None:
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
-            cursor = db.execute('UPDATE receipts SET status = ?, reason = ?, output = ?, usage = ?, session_id = ?, '
-                                'diagnostic = ? WHERE execution_id = ? AND status = ?',
-                                (result.status, result.reason_code, result.output,
-                                 None if result.usage is None else json.dumps(result.usage, sort_keys=True),
-                                 result.session_id, result.diagnostic, result.execution_id, 'reserved'))
+            cursor = db.execute(
+                'UPDATE receipts SET status = ?, reason = ?, output = ?, usage = ?, '
+                'session_id = COALESCE(?, session_id), diagnostic = ? WHERE execution_id = ? AND status = ?',
+                (result.status, result.reason_code, result.output,
+                 None if result.usage is None else json.dumps(result.usage, sort_keys=True),
+                 result.session_id, result.diagnostic, result.execution_id, 'reserved'),
+            )
             if cursor.rowcount != 1:
                 db.execute('ROLLBACK')
                 raise RuntimeError('receipt state changed')
             db.execute('COMMIT')
 
 
-def _environment(home: str, executable: str) -> dict[str, str]:
+def _environment(home: str, executable: str, request: ExecutionRequest | None = None) -> dict[str, str]:
     # All user-specific discovery paths stay inside the explicitly approved home.
     root = Path(home).resolve()
     base = root / '.temporal-process'
@@ -244,6 +295,8 @@ def _environment(home: str, executable: str) -> dict[str, str]:
     env.update({'HERMES_HOME': str(root), 'HERMES_REAL_HOME': env['HOME'],
                 'USERPROFILE': env['HOME'], 'TEMP': env['TMP'], 'TMPDIR': env['TMP'],
                 'PYTHONIOENCODING': 'utf-8'})
+    if request is not None:
+        env.update(hunt_env_for_request(request))
     # Do not inherit user PATH or provider secrets. Permit the explicit binary's
     # directory and conventional system tools, but never the current directory.
     system_root = os.environ.get('SYSTEMROOT')
@@ -307,6 +360,21 @@ def _usage(record: dict) -> dict | None:
     usage['duration_ms'] = record.get('duration_ms')
     if any(type(value) is not int or value < 0 for value in usage.values()):
         return None
+    aux = record.get('auxiliary_usage')
+    if isinstance(aux, dict):
+        for counters in aux.values():
+            if not isinstance(counters, dict):
+                continue
+            inp = counters.get('input_tokens', 0)
+            out = counters.get('output_tokens', 0)
+            cr = counters.get('cache_read_tokens', 0)
+            cw = counters.get('cache_write_tokens', 0)
+            if all(type(v) is int and v >= 0 for v in (inp, out, cr, cw)):
+                usage['input_tokens'] += inp
+                usage['output_tokens'] += out
+                usage['cache_read_tokens'] += cr
+                usage['cache_write_tokens'] += cw
+                usage['total_tokens'] += inp + out
     return usage
 
 
@@ -376,20 +444,35 @@ def _diagnostic(exit_code: int, tail: bytes, cut: bool) -> str:
 
 
 def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
+    try:
+        result = invoke_gateway(config, request, checkpoint=_ACTIVE_CHECKPOINT.get(), redact_fn=_redact)
+    except GatewayNotAvailable:
+        return _invoke_cli(config, request)
+    if result.reason_code in _DIAGNOSED_REASONS:
+        declined = _declined(config.hermes_home, request.step.profile, result.session_id)
+        if declined is not None:
+            return replace(result, diagnostic=f'exit code 1: {declined}')
+    return result
+
+
+def _invoke_cli(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResult:
     step = request.step
     command = [config.executable, '-p', step.profile, 'chat', '--oneshot', '--quiet',
                '--query-file', '-', '--source', 'cli' if config.visible_sessions is True else 'tool',
-               '--max-turns', str(MAX_TURNS)]
+               '--max-turns', str(profile_max_turns(step.profile))]
+    toolsets = step_toolsets(step)
+    if toolsets is not None:
+        command += ['--toolsets', ','.join(toolsets)]
     stream = None
     limit = MAX_OUTPUT_BYTES
-    if config.record_usage is True:
+    if config.record_usage is True or request.record_usage is True:
         command += ['--format', 'stream-json']
         stream = _ResultStream()
         limit = MAX_STREAM_BYTES
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, cwd=config.working_directory,
-                                   env=_environment(config.hermes_home, config.executable), shell=False)
+                                   env=_environment(config.hermes_home, config.executable, request), shell=False)
     except (OSError, ValueError):
         return _result(request, 'failed', 'launch_failed')
     write_error = threading.Event()
@@ -472,7 +555,8 @@ def _invoke(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
             process.kill()
         except OSError:
             pass
-        process.wait()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
     reader.join(timeout=1)
     writer.join(timeout=1)
     if timed_out:
@@ -547,11 +631,16 @@ def execute(config: ExecutionConfig, request: ExecutionRequest) -> ExecutionResu
         return _result(request, 'failed', 'receipt_unavailable')
     if existing is not None:
         return existing
+    token = _ACTIVE_CHECKPOINT.set(
+        lambda session_id, input_id: store.checkpoint_session(request.execution_id, session_id, input_id)
+    )
     try:
         result = _invoke(config, request)
     except Exception:
         # Once reserved, an unexpected failure cannot establish non-dispatch.
         result = _result(request, 'unknown', 'execution_error')
+    finally:
+        _ACTIVE_CHECKPOINT.reset(token)
     try:
         store.finish(result)
     except (sqlite3.Error, OSError, RuntimeError):
