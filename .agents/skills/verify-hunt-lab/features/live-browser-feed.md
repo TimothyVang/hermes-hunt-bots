@@ -14,14 +14,14 @@ During a hunt, a bot calls `lab_browser`, and the operator watches the live MJPE
 
 ## Driving it with control-hunt-lab
 
-Preconditions: Isolated `<hermes-home>` with `hermes_temporal.board` running with `--hermes-home <hermes-home>` (and an active `lab_browser` session when checking rendered JPEG frames on `/live/<profile>.jpg`).
+Preconditions: Isolated `<hermes-home>` with `hermes_temporal.board` running with `--hermes-home <hermes-home>`, and an active `lab_browser` session streaming JPEG frames when probing `--profile` or `/live/<profile>.jpg`.
 
 1. Action: Inspect `lab_browser` audit trails in `<hermes-home>`.
    Command: `python .agents/skills/verify-hunt-lab/control-hunt-lab.py logs --hermes-home <hermes-home>`
-   Observable result: JSON `"ok": true` listing each bot profile's `audit.jsonl` tail.
+   Observable result: JSON `"ok": true` listing each bot profile's `audit.jsonl` tail in `browser_audits`.
 2. Action: Probe `/live/<profile>.mjpg` via `verify-hunt-command`'s `board-probe`.
    Command: `python .agents/skills/verify-hunt-command/control-hunt-command.py board-probe --port <board-port> --profile framework-network-analyst`
-   Observable result: `live_stream.ok` is `true` with `status: 200` and `multipart/x-mixed-replace`.
+   Observable result: `live_stream.ok` is `true` with `status: 200`, `jpeg_frame: true`, and `multipart/x-mixed-replace`.
 
 ## Gotchas
 

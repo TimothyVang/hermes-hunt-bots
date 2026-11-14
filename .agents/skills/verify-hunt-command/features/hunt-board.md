@@ -16,14 +16,14 @@ Click **Hunt Board** in the left sidebar (`#/hunt-board`) or run **Open Hunt Boa
 
 ## Driving it with control-hunt-command
 
-Preconditions: Temporal workflow running on `127.0.0.1:7233` (or active `hermes_temporal.board` server) and isolated `<hermes-home>` with `framework-network-analyst` lab state.
+Preconditions: Temporal workflow running on `127.0.0.1:7233` (or active `hermes_temporal.board` server) and isolated `<hermes-home>` with `framework-network-analyst` lab state (plus an active `lab_browser` screencast session when passing `--profile` to `board-probe`).
 
 1. Action: Check active loopback boards and plugin health.
    Command: `python .agents/skills/verify-hunt-command/control-hunt-command.py doctor --python <lock-python> --hermes-home <hermes-home>`
    Observable result: JSON `"ok": true` with `active_boards` listing any live board ports.
-2. Action: Start or attach the board in UI (`Start & attach board` with `Workflow ID`), then probe `/state.json` and the analyst MJPEG stream.
+2. Action: Start or attach the board in UI (`Start & attach board` with `Workflow ID`), then probe `/state.json` and (when an active `lab_browser` session is streaming frames) the analyst MJPEG stream; omit `--profile` when probing `/state.json` before a browser frame has streamed.
    Command: `python .agents/skills/verify-hunt-command/control-hunt-command.py board-probe --port <port> --profile framework-network-analyst`
-   Observable result: `"ok": true`, `"live_enabled": true`, and `live_stream.content_type` containing `multipart/x-mixed-replace` with `status: 200` (no `404`).
+   Observable result: `"ok": true`, `board.live_enabled` is `true`, and `live_stream` reports `status: 200`, `jpeg_frame: true`, and `content_type` containing `multipart/x-mixed-replace` (no `404`).
 3. Action: Save board state evidence.
    Command: `python .agents/skills/verify-hunt-command/control-hunt-command.py snapshot --port <port> --out <evidence-dir>/hunt-board.json`
    Observable result: Snapshot persisted at `<evidence-dir>/hunt-board.json`.

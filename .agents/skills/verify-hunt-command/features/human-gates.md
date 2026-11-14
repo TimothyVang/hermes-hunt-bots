@@ -23,7 +23,7 @@ Preconditions: A Temporal `HermesWorkflow` or `PracticeWorkflow` paused at `awai
    Observable result: `"ok": true` with `argv` containing `--decided-by Alice Analyst --via cli` and `--evidence-note`.
 2. Action: In Hunt Command Desktop (`#/cybersecurity-workspace`), click **Load gate status**, fill **Operator name** and **What did you check?**, and click **Approve gate** (or run `gate-decide` without `--dry-run` to test the CLI seam).
    Command: `python .agents/skills/verify-hunt-command/control-hunt-command.py snapshot --port <board-port> --out <evidence-dir>/post-gate-decision.json`
-   Observable result: `run.child.decisions` records the decision with `decided_by: "Alice Analyst"` and `via: "cli"`, and the workflow advances past the gate.
+   Observable result: `board.decisions` records the decision with `decided_by: "Alice Analyst"` and `via: "cli"`, and `board.stage` advances past the gate.
 
 ## Gotchas
 
