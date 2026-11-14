@@ -8,18 +8,24 @@ Temporal lab-input export, live browser screencast verification, and cleanup.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRAMEWORK_DIR = REPO_ROOT / "framework"
+
+
+def _load_endpoints():
+    fw = str(FRAMEWORK_DIR)
+    if fw not in sys.path:
+        sys.path.insert(0, fw)
+    return importlib.import_module("hunt_lab.endpoints")
 
 
 def _emit(payload: dict, exit_code: int = 0) -> int:
@@ -57,6 +63,8 @@ def _run_py(python_exe: Path, argv: list[str], env_extra: dict[str, str] | None 
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
         check=False,
     )
@@ -67,7 +75,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     docker_bin = shutil.which("docker")
     docker_ready = False
     if docker_bin:
-        probe = subprocess.run([docker_bin, "info"], capture_output=True, text=True, timeout=10, check=False)
+        probe = subprocess.run(
+            [docker_bin, "info"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
         docker_ready = probe.returncode == 0
     fixture_case = FRAMEWORK_DIR / "hunt_lab" / "fixtures" / "dns-lab-001" / "case.json"
     hermes_home = Path(args.hermes_home).resolve() if args.hermes_home else None
@@ -135,25 +151,57 @@ def cmd_launch(args: argparse.Namespace) -> int:
     }, 0 if res.returncode == 0 else 1)
 
 
+def _resolve_query_target(args: argparse.Namespace, endpoints):
+    state_dir = None
+    if getattr(args, "state_dir", None):
+        state_dir = Path(args.state_dir).resolve()
+    elif getattr(args, "hermes_home", None):
+        state_dir = Path(args.hermes_home).resolve() / "profiles" / endpoints.LAB_OWNER / "hunt-lab-vm"
+
+    if state_dir is not None:
+        served = endpoints.resolve(state_dir, getattr(args, "case_id", None), profile=args.profile)
+        if getattr(args, "lab_url", None):
+            checked_url = endpoints.endpoint(args.lab_url)
+            if checked_url != served.lab_url:
+                raise endpoints.QueryFailure("case_endpoint_mismatch", served.lab_url)
+        return served.lab_url, served.origin, served.instance, served.secret
+
+    if getattr(args, "lab_url", None):
+        base_url = endpoints.endpoint(args.lab_url)
+        secret = args.secret if getattr(args, "secret", None) is not None else os.environ.get("HUNT_LAB_SECRET")
+        return base_url, "direct", getattr(args, "instance", None), secret
+
+    return None, None, None, None
+
+
 def cmd_query(args: argparse.Namespace) -> int:
-    if not args.lab_url.startswith("http://127.0.0.1:"):
-        return _emit({"ok": False, "error": "lab_url must be http://127.0.0.1:<port> (Rule 2)."}, 1)
-    url = args.lab_url.rstrip("/") + "/" + args.endpoint.lstrip("/")
-    req = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json", "X-Hermes-Profile": args.profile},
-        method="GET",
-    )
+    endpoints = _load_endpoints()
     try:
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            payload = json.loads(resp.read(524288).decode("utf-8"))
-            if args.out:
-                target = Path(args.out).resolve()
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            return _emit({"ok": resp.status == 200, "status": resp.status, "data": payload})
-    except (OSError, ValueError, urllib.error.URLError) as exc:
-        return _emit({"ok": False, "error": str(exc), "url": url}, 1)
+        base_url, origin, instance, secret = _resolve_query_target(args, endpoints)
+        if not base_url:
+            return _emit({
+                "ok": False,
+                "error": "Pass --hermes-home (or --state-dir) to resolve the active lab with X-Hunt-Lab-Secret, or --lab-url with --secret.",
+            }, 1)
+        endpoint_path = "/" + args.endpoint.lstrip("/")
+        payload = endpoints.get(
+            base_url,
+            endpoint_path,
+            args.profile,
+            timeout=10.0,
+            instance=instance,
+            secret=secret,
+        )
+    except endpoints.QueryFailure as exc:
+        return _emit({"ok": False, "error": str(exc), "detail": exc.detail}, 1)
+
+    result = {"ok": True, "lab_url": base_url, "origin": origin, "data": payload}
+    if args.out:
+        target = Path(args.out).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        result["saved_to"] = str(target)
+    return _emit(result)
 
 
 def cmd_lab_input(args: argparse.Namespace) -> int:
@@ -175,7 +223,7 @@ def cmd_lab_input(args: argparse.Namespace) -> int:
     res = _run_py(lock_py, argv)
     if res.returncode != 0:
         return _emit({"ok": False, "exit_code": res.returncode, "stderr": res.stderr.strip()}, 1)
-    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    parsed = json.loads(out_file.read_text(encoding="utf-8-sig"))
     return _emit({
         "ok": True,
         "out": str(out_file),
@@ -186,7 +234,19 @@ def cmd_lab_input(args: argparse.Namespace) -> int:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
-    return cmd_query(argparse.Namespace(lab_url=args.lab_url, endpoint="/health", profile="hunt-board", out=args.out))
+    return cmd_query(
+        argparse.Namespace(
+            hermes_home=args.hermes_home,
+            state_dir=args.state_dir,
+            case_id=args.case_id,
+            lab_url=args.lab_url,
+            secret=args.secret,
+            instance=args.instance,
+            endpoint="/health",
+            profile="hunt-board",
+            out=args.out,
+        )
+    )
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
@@ -195,7 +255,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
     audits = []
     if browser_root.is_dir():
         for audit_file in sorted(browser_root.glob("*/audit.jsonl")):
-            lines = audit_file.read_text(encoding="utf-8", errors="replace").splitlines()[-args.lines:]
+            lines = audit_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()[-args.lines:]
             audits.append({"profile": audit_file.parent.name, "file": str(audit_file), "tail": lines})
     return _emit({"ok": True, "browser_audits": audits})
 
@@ -243,8 +303,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_launch.add_argument("--dry-run", action="store_true")
     p_launch.set_defaults(func=cmd_launch)
 
-    p_query = sub.add_parser("query", help="Issue a bounded read-only GET against a loopback lab endpoint.")
-    p_query.add_argument("--lab-url", required=True, help="Loopback lab URL (http://127.0.0.1:<port>).")
+    p_query = sub.add_parser("query", help="Issue an authenticated, bounded read-only GET against a loopback lab endpoint.")
+    p_query.add_argument("--hermes-home", help="Isolated HERMES_HOME used to resolve the active lab and its X-Hunt-Lab-Secret.")
+    p_query.add_argument("--state-dir", help="Explicit analyst hunt-lab-vm state directory.")
+    p_query.add_argument("--case-id", help="Optional case ID when resolving from --hermes-home or --state-dir.")
+    p_query.add_argument("--lab-url", help="Optional loopback lab URL (http://127.0.0.1:<port>) validated via hunt_lab.endpoints.")
+    p_query.add_argument("--secret", help="Optional X-Hunt-Lab-Secret when querying --lab-url without state resolution.")
+    p_query.add_argument("--instance", help="Optional expected X-Hunt-Lab-Instance header.")
     p_query.add_argument("--endpoint", default="/health", help="Endpoint path (e.g. /health, /activity, /es/search?q=*).")
     p_query.add_argument("--profile", default="framework-network-analyst")
     p_query.add_argument("--out", help="Optional artifact path to write JSON response.")
@@ -260,8 +325,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_inp.add_argument("--dry-run", action="store_true")
     p_inp.set_defaults(func=cmd_lab_input)
 
-    p_snap = sub.add_parser("snapshot", help="Capture lab /health JSON snapshot to an evidence file.")
-    p_snap.add_argument("--lab-url", required=True)
+    p_snap = sub.add_parser("snapshot", help="Capture authenticated lab /health JSON snapshot to an evidence file.")
+    p_snap.add_argument("--hermes-home", help="Isolated HERMES_HOME used to resolve the active lab and its X-Hunt-Lab-Secret.")
+    p_snap.add_argument("--state-dir", help="Explicit analyst hunt-lab-vm state directory.")
+    p_snap.add_argument("--case-id", help="Optional case ID when resolving from --hermes-home or --state-dir.")
+    p_snap.add_argument("--lab-url", help="Optional loopback lab URL (http://127.0.0.1:<port>).")
+    p_snap.add_argument("--secret", help="Optional X-Hunt-Lab-Secret when querying --lab-url directly.")
+    p_snap.add_argument("--instance", help="Optional expected X-Hunt-Lab-Instance header.")
     p_snap.add_argument("--out", required=True)
     p_snap.set_defaults(func=cmd_snapshot)
 

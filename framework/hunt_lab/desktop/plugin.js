@@ -449,7 +449,8 @@ const BOARD = '/hunt-board';
 const BOARD_URL = 'http://127.0.0.1:8790/';
 const BOARD_COMMAND = 'python -m hermes_temporal.board --workflow-id <practice id> --input <lab input JSON> --lab-state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm --hermes-home <hermes-home> --port 8790';
 const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,128}$/;
-const board = atom({
+const SAFE_LOOPBACK_ADDR = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
+const INITIAL_BOARD_STATE = Object.freeze({
   shown: false,
   nonce: 0,
   url: BOARD_URL,
@@ -458,25 +459,39 @@ const board = atom({
   workflowId: '',
   address: '127.0.0.1:7233',
   inputPath: '',
-  port: '8790',
+  port: '',
   busy: false,
   message: ''
 });
+const board = atom({ ...INITIAL_BOARD_STATE });
 
 function parseOptionalPort(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return undefined;
+  const text = String(raw ?? '').trim();
+  if (!text || text === '0') return undefined;
   const num = Number(text);
   return Number.isInteger(num) && num >= 1 && num <= 65535 ? num : null;
 }
 
+function validLoopbackAddress(raw) {
+  const value = String(raw || '').trim();
+  const match = SAFE_LOOPBACK_ADDR.exec(value);
+  if (!match) return '';
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? `127.0.0.1:${port}` : '';
+}
+
 function publishWorkflowHandoff(workflowId, address) {
   if (typeof globalThis === 'undefined') return;
-  if (typeof workflowId === 'string' && SAFE_WORKFLOW_ID.test(workflowId.trim())) {
-    globalThis.__HUNT_COMMAND_WORKFLOW_ID__ = workflowId.trim();
-  }
-  if (typeof address === 'string' && address.trim()) {
-    globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ = address.trim();
+  const cleanWid = typeof workflowId === 'string' && SAFE_WORKFLOW_ID.test(workflowId.trim()) ? workflowId.trim() : '';
+  const cleanAddr = validLoopbackAddress(address) || '127.0.0.1:7233';
+  if (!cleanWid && cleanAddr === '127.0.0.1:7233') return;
+  const nextSeq = (Number(globalThis.__HUNT_COMMAND_HANDOFF__?.seq) || 0) + 1;
+  const handoff = { seq: nextSeq, workflowId: cleanWid, address: cleanAddr };
+  globalThis.__HUNT_COMMAND_HANDOFF__ = handoff;
+  if (cleanWid) globalThis.__HUNT_COMMAND_WORKFLOW_ID__ = cleanWid;
+  globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ = cleanAddr;
+  if (typeof globalThis.__HUNT_COMMAND_ON_HANDOFF__ === 'function') {
+    globalThis.__HUNT_COMMAND_ON_HANDOFF__(handoff);
   }
 }
 
@@ -526,7 +541,8 @@ async function attachActiveBoard({ reveal = true } = {}) {
       || found.find(item => item.managed)
       || found[0];
     const validUrl = loopbackUrl(picked.url) || BOARD_URL;
-    publishWorkflowHandoff(picked.workflowId || wanted, picked.address || board.get().address);
+    const nextAddress = validLoopbackAddress(picked.address) || board.get().address;
+    publishWorkflowHandoff(picked.workflowId || wanted, nextAddress);
     board.set({
       ...board.get(),
       busy: false,
@@ -534,6 +550,7 @@ async function attachActiveBoard({ reveal = true } = {}) {
       url: validUrl,
       managed: Boolean(picked.managed),
       workflowId: board.get().workflowId || picked.workflowId || '',
+      address: nextAddress,
       port: String(picked.port || parsedPort || 8790),
       shown: reveal ? true : board.get().shown,
       nonce: reveal ? board.get().nonce + 1 : board.get().nonce + 1,
@@ -578,13 +595,15 @@ async function startManagedBoard() {
       board.set({ ...board.get(), busy: false, message: reply?.error || 'Hunt Board failed to start.' });
       return;
     }
-    publishWorkflowHandoff(workflowId, reply.board.address || current.address);
+    const nextAddress = validLoopbackAddress(reply.board.address) || current.address;
+    publishWorkflowHandoff(workflowId, nextAddress);
     board.set({
       ...board.get(),
       busy: false,
       url: validUrl,
       managed: true,
       boards: [reply.board],
+      address: nextAddress,
       port: String(reply.board.port),
       shown: true,
       nonce: board.get().nonce + 1,
@@ -601,7 +620,7 @@ async function stopManagedBoard() {
   board.set({ ...current, busy: true, message: 'Stopping Desktop-managed Hunt Board…' });
   try {
     await host.huntWorkbench?.stopBoard?.();
-    board.set({ ...board.get(), busy: false, managed: false, shown: false, message: 'Stopped Desktop-managed Hunt Board.' });
+    board.set({ ...board.get(), busy: false, managed: false, port: '', shown: false, message: 'Stopped Desktop-managed Hunt Board.' });
   } catch {
     board.set({ ...board.get(), busy: false, message: 'Failed to stop Hunt Board.' });
   }
@@ -609,11 +628,14 @@ async function stopManagedBoard() {
 
 function HuntBoard() {
   const current = useValue(board);
+  const frameRef = useRef(null);
   const CopyButton = hermesSdk.CopyButton;
   const activeUrl = loopbackUrl(current.url) || BOARD_URL;
   useEffect(() => {
     if (!current.shown || typeof window === 'undefined') return undefined;
     const onMessage = event => {
+      const frame = frameRef.current;
+      if (!frame || (frame.contentWindow && event.source !== frame.contentWindow)) return;
       const payload = event?.data;
       if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
       publishWorkflowHandoff(payload.workflowId || board.get().workflowId, board.get().address);
@@ -651,8 +673,8 @@ function HuntBoard() {
         onChange: event => board.set({ ...board.get(), inputPath: event.target.value })
       }),
       jsx('input', {
-        className: 'hc-input', 'aria-label': 'Board port', placeholder: '8790',
-        style: { width: '74px' }, value: current.port, disabled: current.busy,
+        className: 'hc-input', 'aria-label': 'Board port', placeholder: 'auto (8790)',
+        style: { width: '96px' }, value: current.port, disabled: current.busy,
         onChange: event => board.set({ ...board.get(), port: event.target.value })
       }),
       button('Start & attach board', startManagedBoard, { disabled: current.busy, primary: true, small: true, glyph: 'play' }),
@@ -662,11 +684,15 @@ function HuntBoard() {
           const next = loopbackUrl(event.target.value);
           if (!next) return;
           const match = current.boards.find(item => loopbackUrl(item.url) === next);
+          const nextAddr = validLoopbackAddress(match?.address) || board.get().address;
+          const nextWid = match?.workflowId || board.get().workflowId;
+          publishWorkflowHandoff(nextWid, nextAddr);
           board.set({
             ...board.get(),
             url: next,
             managed: Boolean(match?.managed),
-            workflowId: match?.workflowId || board.get().workflowId,
+            workflowId: nextWid,
+            address: nextAddr,
             port: match?.port ? String(match.port) : board.get().port,
             shown: true,
             nonce: board.get().nonce + 1
@@ -681,7 +707,7 @@ function HuntBoard() {
     ] }),
     jsx('div', { className: 'hc-frame', children: current.shown
       ? jsx(SandboxedFrame, {
-        src: activeUrl, sandbox: 'allow-scripts', title: 'Live hunt board',
+        ref: frameRef, src: activeUrl, sandbox: 'allow-scripts', title: 'Live hunt board',
         style: { flex: '1 1 auto', width: '100%', height: '100%', minHeight: 0, border: '0', display: 'block' }
       }, `${activeUrl}:${current.nonce}`)
       : jsxs('div', { className: 'hc-empty', children: [
@@ -878,6 +904,8 @@ const HUNT_COMMAND_THEME = {
 export default {
   id: 'hunt-lab', name: 'Hunting Lab', defaultEnabled: true,
   register(ctx) {
+    state.set({ routes: [], selected: '', busy: false, result: null, code: null, operation: null, observedAt: null, message: INITIAL_MESSAGE });
+    board.set({ ...INITIAL_BOARD_STATE, boards: [] });
     ctx.register({ id: 'page', area: ROUTES_AREA, data: { path: PAGE }, render: () => jsx(HuntingLab, {}) });
     ctx.register({ id: 'sidebar', area: SIDEBAR_NAV_AREA, data: { path: PAGE, label: 'Hunting Lab', codicon: 'beaker' } });
     ctx.register({ id: 'open', area: PALETTE_AREA, data: { id: 'hunt-lab.open', label: 'Open Hunting Lab', run: () => host.navigate(PAGE) } });

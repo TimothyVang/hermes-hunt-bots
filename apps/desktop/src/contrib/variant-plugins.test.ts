@@ -29,6 +29,8 @@ async function discover(modules: typeof huntModules) {
 describe('variant-bundled plugins', () => {
   afterEach(() => {
     cleanup()
+    delete (globalThis as Record<string, unknown>).__HUNT_COMMAND_HANDOFF__
+    delete (globalThis as Record<string, unknown>).__HUNT_COMMAND_ON_HANDOFF__
     delete (globalThis as Record<string, unknown>).__HUNT_COMMAND_WORKFLOW_ID__
     delete (globalThis as Record<string, unknown>).__HUNT_COMMAND_TEMPORAL_ADDRESS__
     vi.restoreAllMocks()
@@ -210,13 +212,12 @@ describe('variant-bundled plugins', () => {
     fireEvent.click(screen.getByRole('button', { name: /Start & attach board/i }))
 
     await waitFor(() => {
-      expect(startBoardSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          address: '127.0.0.1:7233',
-          port: 8790,
-          workflowId: 'practice-dns-001'
-        })
-      )
+      expect(startBoardSpy).toHaveBeenCalledWith({
+        address: '127.0.0.1:7233',
+        inputPath: undefined,
+        port: undefined,
+        workflowId: 'practice-dns-001'
+      })
     })
 
     await waitFor(() => {
@@ -362,6 +363,165 @@ describe('variant-bundled plugins', () => {
       expect(screen.queryByText('Bot-written, unverified:')).toBeNull()
       expect(screen.queryByText(/MUST NEVER DISPLAY ON PUBLIC DATASET/)).toBeNull()
       expect(screen.getByText(/wave-1 \(review\): approve · decided_by=Alice Analyst · via=cli/)).toBeTruthy()
+    })
+  })
+
+  it('verifies Hunt Board iframe postMessage source and propagates non-7233 address + second-workflow handoffs cleanly', async () => {
+    vi.spyOn(host.huntWorkbench, 'startBoard')
+      .mockResolvedValueOnce({
+        board: {
+          address: '127.0.0.1:58288',
+          caseId: 'dns-tunnel-001',
+          childWorkflowId: 'wf-1-round-001',
+          liveEnabled: true,
+          liveProfiles: ['framework-network-analyst'],
+          managed: true,
+          mode: 'tool_driven',
+          port: 54321,
+          url: 'http://127.0.0.1:54321/',
+          workflowId: 'wf-1'
+        },
+        ok: true
+      })
+      .mockResolvedValueOnce({
+        board: {
+          address: '127.0.0.1:59111',
+          caseId: 'beaconing-002',
+          childWorkflowId: 'wf-2-round-001',
+          liveEnabled: true,
+          liveProfiles: ['framework-network-analyst'],
+          managed: true,
+          mode: 'tool_driven',
+          port: 54322,
+          url: 'http://127.0.0.1:54322/',
+          workflowId: 'wf-2'
+        },
+        ok: true
+      })
+
+    const gateStatusSpy = vi
+      .spyOn(host.huntWorkbench, 'gateStatus')
+      .mockResolvedValueOnce({
+        ok: true,
+        status: {
+          address: '127.0.0.1:58288',
+          caseId: 'dns-tunnel-001',
+          childWorkflowId: 'wf-1-round-001',
+          completedRounds: 0,
+          currentRound: 1,
+          dataOrigin: 'synthetic',
+          decisions: [],
+          openGate: null,
+          parentStage: 'running_round',
+          roundsRequested: 1,
+          stage: 'completed',
+          steps: [],
+          syntheticOnly: true,
+          temporalStatus: 'COMPLETED',
+          unverifiedBotSummary: null,
+          workflowId: 'wf-1'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: {
+          address: '127.0.0.1:59111',
+          caseId: 'beaconing-002',
+          childWorkflowId: 'wf-2-round-001',
+          completedRounds: 0,
+          currentRound: 1,
+          dataOrigin: 'synthetic',
+          decisions: [],
+          openGate: null,
+          parentStage: 'running_round',
+          roundsRequested: 1,
+          stage: 'awaiting_review',
+          steps: [],
+          syntheticOnly: true,
+          temporalStatus: 'RUNNING',
+          unverifiedBotSummary: null,
+          workflowId: 'wf-2'
+        }
+      })
+
+    const navigateSpy = vi.spyOn(host, 'navigate').mockImplementation(() => undefined)
+    const { registry } = await discover(huntModules)
+
+    const routeEntries = registry.getArea('routes') as unknown as ReadonlyArray<{
+      data: { path: string }
+      render?: () => ReactNode
+    }>
+
+    const boardPage = routeEntries.find(item => item.data.path === '/hunt-board')
+    const workspacePage = routeEntries.find(item => item.data.path === '/cybersecurity-workspace')
+
+    render(createElement('div', null, boardPage?.render?.(), workspacePage?.render?.()))
+
+    fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-1' } })
+    fireEvent.change(screen.getByLabelText('Temporal address'), { target: { value: '127.0.0.1:58288' } })
+    fireEvent.click(screen.getByRole('button', { name: /Start & attach board/i }))
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:58288')
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-1')
+    })
+
+    // Zero RPC until operator explicitly clicks Load gate status.
+    expect(gateStatusSpy).not.toHaveBeenCalled()
+
+    // Spoofed postMessage from window (not the SandboxedFrame contentWindow) must be ignored.
+    navigateSpy.mockClear()
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hunt-board:open-human-gates', workflowId: 'spoofed-wf' },
+        source: window
+      })
+    )
+    expect(navigateSpy).not.toHaveBeenCalled()
+    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-1')
+
+    // Genuine postMessage from the embedded Hunt Board iframe contentWindow is honored.
+    const iframe = screen.getByTitle('Live hunt board') as HTMLIFrameElement
+    expect(iframe.contentWindow).toBeTruthy()
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hunt-board:open-human-gates', workflowId: 'wf-1' },
+        source: iframe.contentWindow
+      })
+    )
+    expect(navigateSpy).toHaveBeenCalledWith('/cybersecurity-workspace')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+
+    await waitFor(() => {
+      expect(gateStatusSpy).toHaveBeenCalledWith({
+        address: '127.0.0.1:58288',
+        workflowId: 'wf-1'
+      })
+      expect(screen.getByText(/dns-tunnel-001 · origin=synthetic/)).toBeTruthy()
+    })
+
+    // Second workflow handoff overrides wf-1 + 127.0.0.1:58288, clears stale wf-1 status card, and fires zero RPC until clicked.
+    fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-2' } })
+    fireEvent.change(screen.getByLabelText('Temporal address'), { target: { value: '127.0.0.1:59111' } })
+    fireEvent.click(screen.getByRole('button', { name: /Start & attach board/i }))
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59111')
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-2')
+      expect(screen.queryByText(/dns-tunnel-001 · origin=synthetic/)).toBeNull()
+    })
+
+    expect(gateStatusSpy).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+
+    await waitFor(() => {
+      expect(gateStatusSpy).toHaveBeenCalledWith({
+        address: '127.0.0.1:59111',
+        workflowId: 'wf-2'
+      })
+      expect(screen.getByText(/beaconing-002 · origin=synthetic/)).toBeTruthy()
     })
   })
 })

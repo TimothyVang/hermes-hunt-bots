@@ -268,25 +268,69 @@ function validNote(raw) {
   }
   return normalized;
 }
-function readHandoffWorkflowId() {
-  if (typeof globalThis === 'undefined') return '';
-  const value = globalThis.__HUNT_COMMAND_WORKFLOW_ID__;
-  return typeof value === 'string' && SAFE_WORKFLOW.test(value.trim()) ? value.trim() : '';
-}
-function readHandoffAddress() {
-  if (typeof globalThis === 'undefined') return '';
-  const value = globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__;
-  return typeof value === 'string' && validLoopback(value) ? validLoopback(value) : '';
-}
-const gateState = atom({
+const INITIAL_GATE_MESSAGE = 'Enter a Temporal workflow ID and click Load gate status to review or decide open human gates.';
+const INITIAL_GATE_STATE = Object.freeze({
   address: '127.0.0.1:7233',
   workflowId: '',
   operatorName: '',
   checkNote: '',
   busy: false,
   status: null,
-  message: 'Enter a Temporal workflow ID and click Load gate status to review or decide open human gates.'
+  message: INITIAL_GATE_MESSAGE
 });
+const gateState = atom({ ...INITIAL_GATE_STATE });
+// Track monotonic handoff sequence numbers via nanostores rather than importing react hooks,
+// because framework/desktop/test-plugin.mjs links only @hermes/plugin-sdk and react/jsx-runtime.
+let consumedHandoffSeq = 0;
+let consumedLegacyKey = '';
+function applyHandoffTarget(nextWorkflowId, nextAddress) {
+  const latest = gateState.get();
+  const workflowId = nextWorkflowId || latest.workflowId;
+  const address = nextAddress || latest.address || '127.0.0.1:7233';
+  if (workflowId === latest.workflowId && address === latest.address) return;
+  gateState.set({
+    ...latest,
+    workflowId,
+    address,
+    status: null,
+    message: workflowId
+      ? `Ready to inspect ${workflowId} on ${address}. Click Load gate status.`
+      : INITIAL_GATE_MESSAGE
+  });
+}
+function syncWorkflowHandoff() {
+  if (typeof globalThis === 'undefined') return;
+  const raw = globalThis.__HUNT_COMMAND_HANDOFF__;
+  if (!raw) consumedHandoffSeq = 0;
+  if (raw && typeof raw === 'object' && Number.isInteger(raw.seq) && raw.seq > 0) {
+    if (raw.seq !== consumedHandoffSeq) {
+      consumedHandoffSeq = raw.seq;
+      const wf = typeof raw.workflowId === 'string' && SAFE_WORKFLOW.test(raw.workflowId.trim()) ? raw.workflowId.trim() : '';
+      const addr = validLoopback(raw.address) || '127.0.0.1:7233';
+      applyHandoffTarget(wf, addr);
+    }
+    return;
+  }
+  const legacyWf = typeof globalThis.__HUNT_COMMAND_WORKFLOW_ID__ === 'string'
+    && SAFE_WORKFLOW.test(globalThis.__HUNT_COMMAND_WORKFLOW_ID__.trim())
+    ? globalThis.__HUNT_COMMAND_WORKFLOW_ID__.trim()
+    : '';
+  const legacyAddr = typeof globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ === 'string'
+    ? (validLoopback(globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__) || '')
+    : '';
+  if (!legacyWf && !legacyAddr) {
+    consumedLegacyKey = '';
+    return;
+  }
+  const legacyKey = `${legacyWf}@${legacyAddr}`;
+  if (legacyKey !== consumedLegacyKey) {
+    consumedLegacyKey = legacyKey;
+    applyHandoffTarget(legacyWf, legacyAddr || '127.0.0.1:7233');
+  }
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.__HUNT_COMMAND_ON_HANDOFF__ = () => syncWorkflowHandoff();
+}
 function factRows(items) {
   return jsx('dl', {className:'hw-facts', children:items.flatMap(([term, value]) => [
     jsx('dt', {children:term}, `${term}-dt`),
@@ -294,18 +338,18 @@ function factRows(items) {
   ])}, 'facts');
 }
 function HumanGatesPanel() {
+  syncWorkflowHandoff();
   const current = useValue(gateState);
-  const effectiveWorkflowId = current.workflowId || readHandoffWorkflowId();
-  const effectiveAddress = current.address || readHandoffAddress() || '127.0.0.1:7233';
   const loadStatus = async () => {
+    syncWorkflowHandoff();
     const latest = gateState.get();
     if (latest.busy) return;
     if (!host.huntWorkbench || typeof host.huntWorkbench.gateStatus !== 'function') {
       gateState.set({...latest,message:'Local Temporal gate workbench is unavailable in this Desktop build.'});
       return;
     }
-    const workflowId = (latest.workflowId || readHandoffWorkflowId()).trim();
-    const address = validLoopback(latest.address || readHandoffAddress() || '127.0.0.1:7233');
+    const workflowId = latest.workflowId.trim();
+    const address = validLoopback(latest.address);
     if (!address) {
       gateState.set({...latest,message:'Temporal address must stay on 127.0.0.1:<port>.'});
       return;
@@ -395,12 +439,12 @@ function HumanGatesPanel() {
     jsx('div', {className:'hw-gate-fields', children:[
       jsx('input', {
         type:'text', className:'hw-input', 'aria-label':'Temporal loopback address', placeholder:'127.0.0.1:7233',
-        style:{width:'148px'}, value:effectiveAddress, disabled:current.busy,
+        style:{width:'148px'}, value:current.address, disabled:current.busy,
         onChange:event=>gateState.set({...gateState.get(),address:event.target.value})
       }, 'addr'),
       jsx('input', {
         type:'text', className:'hw-input', 'aria-label':'Workflow ID', placeholder:'Workflow ID (e.g. practice-dns-001)',
-        style:{flex:'1 1 220px'}, value:effectiveWorkflowId, disabled:current.busy,
+        style:{flex:'1 1 220px'}, value:current.workflowId, disabled:current.busy,
         onChange:event=>gateState.set({...gateState.get(),workflowId:event.target.value})
       }, 'wid'),
       jsx('button', {
@@ -556,6 +600,14 @@ function workspace(ctx) {
 export default {
   id:'cybersecurity-workspace', name:'Cybersecurity workspace', defaultEnabled:true,
   register(ctx) {
+    consumedHandoffSeq = 0;
+    consumedLegacyKey = '';
+    screenState.set({ routes: [], selected: '', message: '' });
+    gateState.set({ ...INITIAL_GATE_STATE });
+    if (typeof globalThis !== 'undefined') {
+      globalThis.__HUNT_COMMAND_ON_HANDOFF__ = () => syncWorkflowHandoff();
+    }
+    syncWorkflowHandoff();
     ctx.register({id:'workspace',area:ROUTES_AREA,data:{path:'/cybersecurity-workspace'},render:()=>workspace(ctx)});
     ctx.register({id:'nav',area:SIDEBAR_NAV_AREA,data:{path:'/cybersecurity-workspace',label:'Cybersecurity workspace',codicon:'shield'}});
     ctx.register({id:'open',area:PALETTE_AREA,data:{id:'cybersecurity-workspace.open',label:'Open cybersecurity workspace',run:()=>host.navigate('/cybersecurity-workspace')}});

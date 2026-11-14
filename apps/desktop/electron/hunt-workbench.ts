@@ -139,6 +139,7 @@ export interface HuntWorkbenchDeps {
   execPath?: string
   hermesHome: () => string
   huntEnabled: boolean
+  isPortBindable?: (port: number) => Promise<boolean>
   isWindows?: boolean
   log?: (message: string) => void
   nowUtc?: () => string
@@ -767,6 +768,21 @@ function defaultAllocateFreePort(): Promise<number> {
   })
 }
 
+export function defaultIsPortBindable(port: number): Promise<boolean> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return Promise.resolve(false)
+  }
+
+  return new Promise(resolve => {
+    const server = net.createServer()
+    server.unref()
+    server.once('error', () => resolve(false))
+    server.listen(port, '127.0.0.1', () => {
+      server.close(() => resolve(true))
+    })
+  })
+}
+
 export function defaultProbeBoardPort(port: number, managedPort: null | number): Promise<HuntBoardDescriptor | null> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return Promise.resolve(null)
@@ -885,6 +901,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
   const isWindows = deps.isWindows ?? process.platform === 'win32'
   const runPython = deps.runPythonCommand ?? defaultRunPythonCommand
   const allocatePort = deps.allocateFreePort ?? defaultAllocateFreePort
+  const checkPortBindable = deps.isPortBindable ?? defaultIsPortBindable
   const probePort = deps.probeBoardPort ?? defaultProbeBoardPort
   const nowUtc = deps.nowUtc ?? defaultNowUtc
   const log = deps.log ?? (() => undefined)
@@ -1178,21 +1195,17 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
   }
 
   const pickTargetBoardPort = async (requestedPort?: number): Promise<{ error?: string; port?: number }> => {
-    const rawPort = requestedPort !== undefined && Number.isInteger(requestedPort) ? Number(requestedPort) : DEFAULT_BOARD_PORT
+    if (requestedPort === undefined) {
+      const defaultFree = await checkPortBindable(DEFAULT_BOARD_PORT)
 
-    if (rawPort < 0 || rawPort > 65535) {
+      return { port: defaultFree ? DEFAULT_BOARD_PORT : await allocatePort() }
+    }
+
+    if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) {
       return { error: 'Port must be between 1 and 65535 (or 0 for automatic loopback port).' }
     }
 
-    if (rawPort === 0) {
-      return { port: await allocatePort() }
-    }
-
-    if (rawPort === DEFAULT_BOARD_PORT && requestedPort === undefined && (await probePort(DEFAULT_BOARD_PORT, null))) {
-      return { port: await allocatePort() }
-    }
-
-    return { port: rawPort }
+    return { port: requestedPort === 0 ? await allocatePort() : requestedPort }
   }
 
   const awaitBoardStartup = (child: ChildProcess): Promise<{ error?: string; port?: number; url?: string }> =>

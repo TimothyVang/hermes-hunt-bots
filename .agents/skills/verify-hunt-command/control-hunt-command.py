@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+import importlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,32 @@ DESKTOP_DIR = REPO_ROOT / "apps" / "desktop"
 FRAMEWORK_DIR = REPO_ROOT / "framework"
 DEFAULT_BOARD_PORT = 8790
 DEFAULT_TEMPORAL_ADDR = "127.0.0.1:7233"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+_LOOPBACK_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirect(),
+)
+
+
+def _strict_loopback_address(raw: str) -> str | None:
+    fw = str(FRAMEWORK_DIR)
+    if fw not in sys.path:
+        sys.path.insert(0, fw)
+    contracts = importlib.import_module("hermes_temporal.contracts")
+    try:
+        checked = contracts.validate_loopback_address(str(raw or "").strip())
+    except ValueError:
+        return None
+    host, _, port_str = checked.rpartition(":")
+    if host != "127.0.0.1" or port_str.startswith("0"):
+        return None
+    return f"127.0.0.1:{int(port_str)}"
 
 
 def _emit(payload: dict, exit_code: int = 0) -> int:
@@ -69,7 +96,7 @@ def _probe_board(port: int) -> dict | None:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
+        with _LOOPBACK_OPENER.open(req, timeout=5.0) as resp:
             server_hdr = resp.headers.get("Server", "")
             if resp.status != 200 or not server_hdr.startswith("HuntBoard"):
                 return None
@@ -109,6 +136,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ["git", "-C", str(DESKTOP_DIR), "status", "--porcelain", "--", "assets"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=15,
         check=False,
     ).stdout.strip()
@@ -121,7 +150,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if hermes_home and (hermes_home / "hunt-board").is_dir():
         for item in sorted((hermes_home / "hunt-board").glob("board-*.json")):
             try:
-                raw = json.loads(item.read_text(encoding="utf-8"))
+                raw = json.loads(item.read_text(encoding="utf-8-sig"))
                 if isinstance(raw.get("port"), int):
                     seen_ports.add(raw["port"])
             except (OSError, ValueError):
@@ -185,6 +214,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 
 def cmd_board_probe(args: argparse.Namespace) -> int:
+    if args.port < 1 or args.port > 65535:
+        return _emit({"ok": False, "error": "Board port must be 1..65535 (Rule 2)."}, 1)
     info = _probe_board(args.port)
     if not info:
         return _emit({
@@ -200,7 +231,7 @@ def cmd_board_probe(args: argparse.Namespace) -> int:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with _LOOPBACK_OPENER.open(req, timeout=3.0) as resp:
                 ctype = resp.headers.get("Content-Type", "")
                 chunk = resp.read(44)
                 live_check = {
@@ -221,8 +252,9 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    if not args.address.startswith("127.0.0.1:"):
-        return _emit({"ok": False, "error": "Temporal address must use 127.0.0.1:<port> (Rule 2)."}, 1)
+    address = _strict_loopback_address(args.address)
+    if not address:
+        return _emit({"ok": False, "error": "Temporal address must use 127.0.0.1:<1..65535> (Rule 2)."}, 1)
     operator = args.operator.strip()
     note = args.note.strip()
     if not operator or len(operator) > 200:
@@ -233,7 +265,7 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
     evidence_note = f"Decided by {operator} via Hunt Command Desktop at {utc_iso}. Checked: {note}"
     argv = [
         str(lock_py), "-m", "hermes_temporal.cli",
-        "--address", args.address,
+        "--address", address,
         "decision", args.workflow_id,
         "--step-id", args.step_id,
         "--phase", args.phase,
@@ -251,6 +283,8 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
         env={**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR)},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )
@@ -263,6 +297,8 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
+    if args.port < 1 or args.port > 65535:
+        return _emit({"ok": False, "error": "Board port must be 1..65535 (Rule 2)."}, 1)
     state = _probe_board(args.port)
     out = {"ok": state is not None, "board": state}
     if args.out and state is not None:
@@ -280,7 +316,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
         return _emit({"ok": True, "logs": [], "note": f"No logs directory at {log_dir}"})
     entries = []
     for log_file in sorted(log_dir.glob("*.log")):
-        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-args.lines:]
+        lines = log_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()[-args.lines:]
         entries.append({"file": str(log_file), "tail": lines})
     return _emit({"ok": True, "logs": entries})
 
@@ -289,7 +325,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     pid_file = Path(args.pid_file).resolve()
     if not pid_file.is_file():
         return _emit({"ok": True, "stopped": False, "reason": f"No PID file at {pid_file}; evidence preserved."})
-    data = json.loads(pid_file.read_text(encoding="utf-8"))
+    data = json.loads(pid_file.read_text(encoding="utf-8-sig"))
     pid = int(data["pid"])
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "would_stop_pid": pid, "pid_file": str(pid_file)})

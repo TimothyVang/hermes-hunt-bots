@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -9,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   createHuntWorkbench,
+  defaultIsPortBindable,
   defaultProbeBoardPort,
   formatDesktopEvidenceNote,
   normalizeCheckNote,
@@ -48,7 +50,7 @@ function fakeChildProcess(url?: string, exitCode?: number, stderrText = '') {
 
 describe('hunt-workbench', () => {
   const tempDirs: string[] = []
-  const servers: http.Server[] = []
+  const servers: net.Server[] = []
 
   afterEach(async () => {
     for (const server of servers.splice(0)) {
@@ -189,28 +191,28 @@ describe('hunt-workbench', () => {
     const analystDir = path.join(home, 'profiles', 'framework-network-analyst')
     fs.mkdirSync(path.join(analystDir, 'hunt-lab-vm'), { recursive: true })
 
+    // Occupy 127.0.0.1:8790 with a plain non-board TCP server (if not already held on the host)
+    // to prove omitted `port` falls back dynamically via TCP bind detection, not HTTP HuntBoard probing.
+    const blocker = net.createServer()
+
+    const boundBlocker = await new Promise<boolean>(resolve => {
+      blocker.once('error', () => resolve(false))
+      blocker.listen(8790, '127.0.0.1', () => resolve(true))
+    })
+
+    if (boundBlocker) {
+      servers.push(blocker)
+    }
+
+    expect(await defaultIsPortBindable(8790)).toBe(false)
+
     const pythonCalls: string[][] = []
     const boardSpawns: string[][] = []
 
     const wb = createHuntWorkbench({
-      allocateFreePort: async () => 54321,
       hermesHome: () => home,
       huntEnabled: true,
-      probeBoardPort: async port =>
-        port === DEFAULT_OCCUPIED
-          ? ({
-              address: '127.0.0.1:7233',
-              caseId: 'other',
-              childWorkflowId: null,
-              liveEnabled: true,
-              liveProfiles: [],
-              managed: false,
-              mode: 'tool_driven',
-              port,
-              url: `http://127.0.0.1:${port}/`,
-              workflowId: 'other'
-            } as any)
-          : null,
+      probeBoardPort: async () => null,
       resolvePython: async () => ({ frameworkRoot: '/repo/framework', pythonExe: '/repo/framework/.venv-temporal/bin/python' }),
       runPythonCommand: async (_rt, args) => {
         pythonCalls.push(args)
@@ -230,10 +232,11 @@ describe('hunt-workbench', () => {
       }
     })
 
-    const DEFAULT_OCCUPIED = 8790
     const started = await wb.startBoard({ workflowId: 'practice-dns-001' })
     expect(started.ok).toBe(true)
-    expect(started.board?.url).toBe('http://127.0.0.1:54321/')
+    expect(started.board?.port).not.toBe(8790)
+    expect(started.board?.port).toBeGreaterThan(0)
+    expect(started.board?.url).toBe(`http://127.0.0.1:${started.board?.port}/`)
     expect(pythonCalls[0]).toContain('lab-input')
     expect(pythonCalls[0]).toContain('--tool-driven')
     expect(boardSpawns[0]).toContain('--lab-state-dir')

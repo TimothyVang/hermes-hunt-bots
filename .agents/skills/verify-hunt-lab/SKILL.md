@@ -53,7 +53,7 @@ Follow the target journey in `features/README.md`:
 Persist `/health`, `/activity`, exported `lab-input` JSON, and `lab_browser` audit tails into an explicit `<evidence-dir>`:
 
 ```powershell
-python .agents/skills/verify-hunt-lab/control-hunt-lab.py snapshot --lab-url <lab-url> --out <evidence-dir>/lab-health.json
+python .agents/skills/verify-hunt-lab/control-hunt-lab.py snapshot --hermes-home <isolated-hermes-home> --out <evidence-dir>/lab-health.json
 python .agents/skills/verify-hunt-lab/control-hunt-lab.py logs --hermes-home <isolated-hermes-home>
 ```
 
