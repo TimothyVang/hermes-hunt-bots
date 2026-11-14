@@ -145,9 +145,11 @@ class LabStub:
     state.json beside the analyst's state dir its callers read that secret from."""
 
     def __init__(self, case_id=CASE):
-        case = {'case_id': case_id, 'question': 'synthetic', 'time_range_utc': WINDOW}
+        self.case = {'case_id': case_id, 'question': 'synthetic', 'time_range_utc': WINDOW}
         self.case_id = case_id
+        self.secret = LAB_SECRET
         self.state_dir = Path(tempfile.mkdtemp()) / 'hunt-lab-vm'
+        stub = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -155,9 +157,9 @@ class LabStub:
 
             def do_GET(self):
                 profile = self.headers.get('X-Hermes-Profile')
-                expected = endpoints.caller_secret(LAB_SECRET, profile)
+                expected = endpoints.caller_secret(stub.secret, profile)
                 allowed = expected is not None and self.headers.get(endpoints.SECRET_HEADER) == expected
-                data = json.dumps(case if allowed else {'error': 'caller_not_authorized'}).encode()
+                data = json.dumps(stub.case if allowed else {'error': 'caller_not_authorized'}).encode()
                 self.send_response(200 if allowed else 401)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
@@ -977,6 +979,58 @@ class ParallelStepIsolationTests(unittest.TestCase):
             gw_root, gw_run, gw_step = lab_browser.session_root(self.profile_root)
         self.assertEqual((gw_run, gw_step), ('wf-gw:round:001', 'followup-1'))
         self.assertEqual(gw_root.parent, self.profile_root / 'runs')
+
+    def test_warm_switch_same_ports_different_case_never_reuses_previous_case_dom_or_state(self):
+        fake_case_a = FakeBrowser(text='case-a confidential telemetry')
+        fake_case_b = FakeBrowser(text='about:blank clean browser')
+        launched = []
+        browsers = iter([fake_case_a, fake_case_b, FakeBrowser(text='reattached clean browser')])
+
+        def launch_stub(root, sc, demo):
+            launched.append(sc.case_id)
+            return lab_browser.BrowserSession(root, sc, next(browsers), ws_url='ws://127.0.0.1:1/devtools/browser/x',
+                                              pid=1, rng=random.Random(7), sleep=lambda _s: None, demo=demo)
+
+        with patch.object(lab_browser, '_launch', side_effect=launch_stub), \
+                patch.object(lab_browser, '_WebSocket', side_effect=lambda _u: FakeBrowser()), \
+                patch.object(lab_browser, '_owned', return_value=True):
+            res_a = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws01'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+            self.assertTrue(res_a['ok'], res_a)
+            self.assertEqual(json.loads((self.profile_root / 'session.json').read_text(encoding='utf-8'))['case_id'], CASE)
+
+            # Simulate warm switch on identical ports to case-two-002 with a new secret.
+            self.lab.case = {'case_id': 'case-two-002', 'question': 'Synthetic second case.',
+                             'time_range_utc': {'start_inclusive': '2025-10-14T04:30:00Z',
+                                                'end_exclusive': '2025-10-14T06:30:00Z'}}
+            new_secret = 'cd' * 32
+            self.lab.secret = new_secret
+            state_path = self.lab.state_dir.parent / endpoints.CONTAINER_STATE / 'case-two-002' / 'state.json'
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            old_state = json.loads(
+                (self.lab.state_dir.parent / endpoints.CONTAINER_STATE / CASE / 'state.json').read_text(encoding='utf-8'))
+            old_state.update(case_id='case-two-002', project='hunt-lab-case-two-002', secret=new_secret)
+            state_path.write_text(json.dumps(old_state), encoding='utf-8')
+
+            # 1. In-memory _SESSIONS cache must close case-a's browser and launch a fresh one for case-two-002.
+            res_b = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+            self.assertTrue(res_b['ok'], res_b)
+            self.assertEqual(launched, [CASE, 'case-two-002'])
+            self.assertNotIn('case-a confidential telemetry', res_b['result']['text'])
+
+            # 2. On-disk session.json reattach (_start) must also reject a state file written for a different case_id.
+            stale_disk = json.loads((self.profile_root / 'session.json').read_text(encoding='utf-8'))
+            stale_disk['case_id'] = CASE
+            (self.profile_root / 'session.json').write_text(json.dumps(stale_disk), encoding='utf-8')
+            lab_browser._SESSIONS.clear()
+            res_b2 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b2['ok'], res_b2)
+            self.assertEqual(launched, [CASE, 'case-two-002', 'case-two-002'])
 
     def test_non_owner_profiles_are_refused_before_any_browser_starts(self):
         for profile in ('framework-reviewer', 'framework-builder', 'framework-librarian', 'framework-coordinator', None):

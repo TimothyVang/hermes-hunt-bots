@@ -24,6 +24,7 @@ Ports are three free loopback ports, or, when HUNT_LAB_PORTS is `<first>-<last>`
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -455,7 +456,8 @@ def _warm_stack(root, incoming_case_id):
     if not root.is_dir():
         return None
     for other_dir in sorted(root.iterdir()):
-        if not other_dir.is_dir() or other_dir.name == incoming_case_id:
+        if (not other_dir.is_dir() or other_dir.name == incoming_case_id
+                or not endpoints.CASE_ID.fullmatch(other_dir.name)):
             continue
         try:
             other_state = endpoints.container_state(other_dir / 'state.json')
@@ -483,6 +485,21 @@ def _stop_up_launcher(case_dir):
             time.sleep(0.5)
 
 
+def _chmod_retry(func, path, *_):
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o700)
+        func(path)
+
+
+def _force_rmtree(path):
+    if not os.path.lexists(path):
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_chmod_retry)
+    else:
+        shutil.rmtree(path, onerror=_chmod_retry)
+
+
 def _prepare_warm_switch(warm_dir, compose_proj, loaded, meta):
     _stop_up_launcher(warm_dir)
     if meta.get('network_capture') != 'none':
@@ -491,18 +508,54 @@ def _prepare_warm_switch(warm_dir, compose_proj, loaded, meta):
         if purged.returncode:
             raise StackFailure('arkime_purge_failed')
     # Stop and remove case-bound containers before touching warm_dir so bind mounts release and _status sees loading_case.
-    removed = _docker(['compose', '-p', compose_proj, 'rm', '-f', '-s', 'lab', *ONE_SHOTS], DOWN_SECONDS)
+    removed = _docker(['compose', '-p', compose_proj, 'rm', '-f', '-s', 'lab', 'arkime', *ONE_SHOTS], DOWN_SECONDS)
     if removed.returncode:
         raise StackFailure('warm_reset_failed')
 
 
 def _retire_warm_dir(warm_dir):
     (warm_dir / 'state.json').unlink(missing_ok=True)
+    retired = warm_dir.parent / f'.retired-{warm_dir.name}-{uuid.uuid4().hex[:8]}'
+    try:
+        os.replace(warm_dir, retired)
+    except OSError:
+        retired = warm_dir
     for _ in range(20):
-        shutil.rmtree(warm_dir, ignore_errors=True)
-        if not os.path.lexists(warm_dir):
+        _force_rmtree(retired)
+        if not os.path.lexists(retired):
             return
         time.sleep(0.05)
+
+
+def _compose_variables(case_dir, case_id, compose_proj, lab_port, kibana_port, arkime_port):
+    return {
+        'PROJECT': compose_proj, 'LAB_IMAGE': lab_image(), 'CASE_ID': case_id,
+        'EVIDENCE_DIR': (case_dir / 'evidence').as_posix(), 'SECRET_FILE': (case_dir / 'lab-secret').as_posix(),
+        'INSTANCE_FILE': (case_dir / 'instance-id').as_posix(), 'LAB_PORT': str(lab_port),
+        'KIBANA_PORT': str(kibana_port), 'ARKIME_PORT': str(arkime_port)}
+
+
+def _restore_warm_stack(warm_dir, warm_state, compose_proj):
+    variables = _compose_variables(warm_dir, warm_state['case_id'], compose_proj,
+                                   warm_state['lab_port'], warm_state['kibana_port'], warm_state['arkime_port'])
+    try:
+        restored = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
+                            '-p', compose_proj, 'up', '-d'], variables, warm_dir / 'compose.log')
+        _write_json(warm_dir / 'up.json', {'pid': restored, 'identity': _identity(restored)})
+    except OSError:
+        _retire_warm_dir(warm_dir)
+
+
+def _project_shared_by_other_case(root, case_dir, compose_proj):
+    if not root.is_dir():
+        return False
+    for other in root.iterdir():
+        if (other == case_dir or not other.is_dir() or not endpoints.CASE_ID.fullmatch(other.name)
+                or not (other / 'state.json').is_file()):
+            continue
+        if _compose_project(other, other.name) == compose_proj:
+            return True
+    return False
 
 
 def _start(profile, root, evidence_dir, case_id, *, cold=False):
@@ -532,6 +585,7 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
     warm = None if (cold or 'data_origin' in meta) else _warm_stack(root, loaded)
     case_dir.mkdir()
     pid = None
+    warm_reset = False
     try:
         endpoints.owner_only(case_dir)
         _stage(files, case_dir / 'evidence')
@@ -543,12 +597,10 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
         _write_new(case_dir / 'instance-id', (instance + '\n').encode('ascii'), mounted)
         if warm is not None:
             warm_dir, warm_state, compose_proj = warm
-            lab_port = warm_state['lab_port']
-            kibana_port = warm_state['kibana_port']
-            arkime_port = warm_state['arkime_port']
+            lab_port, kibana_port, arkime_port = (
+                warm_state['lab_port'], warm_state['kibana_port'], warm_state['arkime_port'])
             if compose_proj != project(loaded):
                 _write_new(case_dir / COMPOSE_PROJECT_FILE, (compose_proj + '\n').encode('ascii'))
-            _prepare_warm_switch(warm_dir, compose_proj, loaded, meta)
         else:
             compose_proj = project(loaded)
             lab_port, kibana_port, arkime_port = _ports(_recorded_ports(root))
@@ -556,22 +608,23 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
                  'arkime_port': arkime_port, 'started_at': time.time()}
         _write_new(case_dir / 'state.json', json.dumps(state, sort_keys=True).encode('ascii'))
-        variables = {
-            'PROJECT': compose_proj, 'LAB_IMAGE': lab_image(), 'CASE_ID': loaded,
-            'EVIDENCE_DIR': (case_dir / 'evidence').as_posix(), 'SECRET_FILE': (case_dir / 'lab-secret').as_posix(),
-            'INSTANCE_FILE': (case_dir / 'instance-id').as_posix(), 'LAB_PORT': str(lab_port),
-            'KIBANA_PORT': str(kibana_port), 'ARKIME_PORT': str(arkime_port)}
+        if warm is not None:
+            _prepare_warm_switch(warm_dir, compose_proj, loaded, meta)
+            warm_reset = True
+        variables = _compose_variables(case_dir, loaded, compose_proj, lab_port, kibana_port, arkime_port)
         pid = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
                        '-p', compose_proj, 'up', '-d'], variables, case_dir / 'compose.log')
         _write_json(case_dir / 'up.json', {'pid': pid, 'identity': _identity(pid)})
-        _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
         if warm is not None:
             _retire_warm_dir(warm[0])
+        _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
     except BaseException:
         if not (case_dir / 'up.json').exists():
             if pid is not None:
                 _terminate(pid)
-            shutil.rmtree(case_dir, ignore_errors=True)
+            _force_rmtree(case_dir)
+            if warm_reset:
+                _restore_warm_stack(*warm)
         raise
     return _status(profile, root, loaded)
 
@@ -584,16 +637,17 @@ def _stop(profile, root, case_id):
     compose_proj = _compose_project(case_dir, case_id)
     result.update(case_id=case_id, project=project(case_id))
     _stop_up_launcher(case_dir)
-    answer = _docker(['compose', '-p', compose_proj, 'down', '-v', '--remove-orphans', '--timeout', '10'],
-                     DOWN_SECONDS)
-    if answer.returncode:
-        raise StackFailure('compose_down_failed')
-    label = 'label=com.docker.compose.project=' + compose_proj
-    for kind in ('container', 'volume', 'network'):
-        listed = _docker([kind, 'ls', *(['-a'] if kind == 'container' else []), '-q', '--filter', label])
-        if listed.returncode or listed.stdout.strip():
-            raise StackFailure('stack_remains')
-    shutil.rmtree(case_dir, ignore_errors=True)
+    if not _project_shared_by_other_case(root, case_dir, compose_proj):
+        answer = _docker(['compose', '-p', compose_proj, 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                         DOWN_SECONDS)
+        if answer.returncode:
+            raise StackFailure('compose_down_failed')
+        label = 'label=com.docker.compose.project=' + compose_proj
+        for kind in ('container', 'volume', 'network'):
+            listed = _docker([kind, 'ls', *(['-a'] if kind == 'container' else []), '-q', '--filter', label])
+            if listed.returncode or listed.stdout.strip():
+                raise StackFailure('stack_remains')
+    _force_rmtree(case_dir)
     if os.path.lexists(case_dir):
         raise StackFailure('container_state_remains')
     result['reason'] = 'stopped'

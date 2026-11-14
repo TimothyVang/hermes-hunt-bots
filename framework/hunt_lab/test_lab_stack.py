@@ -118,8 +118,8 @@ class FakeDocker:
         if arguments[:1] == ['compose'] and 'exec' in arguments:
             return subprocess.CompletedProcess(arguments, self.exec_code, '', '')
         if arguments[:1] == ['compose'] and 'rm' in arguments:
-            if self.rm_code == 0:
-                for svc in ('lab', *lab_stack.ONE_SHOTS):
+            if self.rm_code == 0 and '-s' in arguments:
+                for svc in arguments[arguments.index('-s') + 1:]:
                     self.services.pop(svc, None)
             return subprocess.CompletedProcess(arguments, self.rm_code, '', '')
         if arguments[:1] == ['compose'] and 'down' in arguments:
@@ -341,11 +341,15 @@ class StackTests(unittest.TestCase):
         self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
 
     def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
-        self.invoke('start')
+        first_ev = self.evidence()
+        self.invoke('start', evidence_dir=str(first_ev))
         self.running()
-        # Even if old lab exited or an old one-shot failed while warm core services stayed up, warm switch resets cleanly.
         self.docker.services['lab'] = ('exited', 0)
+        self.docker.services['arkime'] = ('exited', 1)
         self.docker.services['kibana-setup'] = ('exited', 2)
+        ro_evidence = self.root / 'dns-lab-001' / 'evidence' / 'case.json'
+        os.chmod(ro_evidence, 0o444)
+        self.addCleanup(lambda: os.chmod(ro_evidence, 0o600) if ro_evidence.exists() else None)
         first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
         first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
 
@@ -354,7 +358,6 @@ class StackTests(unittest.TestCase):
         case_two['case_id'] = 'team-med-902'
         (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
 
-        # If Arkime purge, warm container reset, or compose launch fails before up.json, warm_dir stays intact and case_dir rolls back.
         self.docker.exec_code = 1
         res = self.invoke('start', evidence_dir=str(second_ev))
         self.assertEqual((res['state'], res['reason']), ('error', 'arkime_purge_failed'))
@@ -368,16 +371,29 @@ class StackTests(unittest.TestCase):
         self.assertFalse((self.root / 'team-med-902').exists())
         self.docker.rm_code = 0
 
-        with patch.object(lab_stack, '_launch', side_effect=OSError('spawn failed')):
+        calls_seen = []
+
+        def fail_once_then_restore(argv, variables, log_path):
+            calls_seen.append(lab_stack._child_env(variables)['CASE_ID'])
+            if len(calls_seen) == 1:
+                raise OSError('spawn failed')
+            return 7777
+
+        with patch.object(lab_stack, '_launch', side_effect=fail_once_then_restore):
             self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'stack_io_error')
+        self.assertEqual(calls_seen, ['team-med-902', 'dns-lab-001'])
         self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
+        self.assertEqual(json.loads((self.root / 'dns-lab-001' / 'up.json').read_text(encoding='utf-8'))['pid'], 7777)
         self.assertFalse((self.root / 'team-med-902').exists())
         self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'dns-lab-001')
 
+        self.running()
+        self.docker.services['arkime'] = ('exited', 1)
         switched = self.invoke('start', evidence_dir=str(second_ev))
         self.assertEqual((switched['state'], switched['reason'], switched['case_id']),
                          ('starting', 'loading_case', 'team-med-902'))
         self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith('.retired-')], [])
         second_state = endpoints.container_state(self.root / 'team-med-902' / 'state.json')
         self.assertEqual((second_state['lab_port'], second_state['kibana_port'], second_state['arkime_port']),
                          first_ports)
@@ -389,8 +405,17 @@ class StackTests(unittest.TestCase):
         self.assertEqual((env_two['PROJECT'], env_two['CASE_ID']), ('hunt-lab-dns-lab-001', 'team-med-902'))
         self.assertTrue(any(call[:8] == ['compose', '-p', 'hunt-lab-dns-lab-001', 'exec', '-T', 'netns', 'python3', '-B']
                             for call in self.docker.calls))
-        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'rm', '-f', '-s', 'lab', *lab_stack.ONE_SHOTS],
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'rm', '-f', '-s', 'lab', 'arkime', *lab_stack.ONE_SHOTS],
                       self.docker.calls)
+
+        # Stopping a retired/stale case folder whose compose project is actively shared by team-med-902 never runs compose down.
+        (self.root / 'dns-lab-001').mkdir()
+        downs_before = [c for c in self.docker.calls if 'down' in c]
+        stopped_old = self.invoke('stop', case_id='dns-lab-001')
+        self.assertEqual((stopped_old['state'], stopped_old['reason']), ('stopped', 'stopped'))
+        self.assertEqual([c for c in self.docker.calls if 'down' in c], downs_before)
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
 
         # A real-data case (data_origin) or cold=True never reuses the warm synthetic stack.
         real_ev = self.evidence()

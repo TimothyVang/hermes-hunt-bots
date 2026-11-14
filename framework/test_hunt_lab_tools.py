@@ -269,6 +269,27 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual((big['ok'], big['error']), (False, 'batch_response_too_large'))
         self.guest.overrides.pop('/es/search', None)
 
+        # Per-item lab_http_400 or lab_response_too_large (>512 KiB single response) is isolated per item without aborting siblings.
+        for bad_override, expected_item_err in (
+                ((400, {'error': 'invalid_query'}, {}), 'lab_http_400'),
+                ((200, b'{"case_id":"' + CASE.encode('ascii') + b'","x":"' + b'a' * (512 * 1024) + b'"}', {}),
+                 'lab_response_too_large'),
+        ):
+            with self.subTest(expected_item_err=expected_item_err):
+                self.guest.overrides['/es/search'] = bad_override
+                partial = self.call('hunt_lab_batch', {
+                    'case_id': CASE,
+                    'queries': [
+                        {'tool': 'elastic_search', 'arguments': {'q': 'bad'}},
+                        {'tool': 'elastic_aggregate', 'arguments': {'field': 'host.name', 'size': 10}},
+                    ],
+                }, profile='framework-researcher')
+                self.assertTrue(partial['ok'], partial)
+                self.assertEqual((partial['results'][0]['ok'], partial['results'][0]['error']),
+                                 (False, expected_item_err))
+                self.assertTrue(partial['results'][1]['ok'], partial['results'])
+                self.guest.overrides.pop('/es/search', None)
+
     def test_hunt_run_id_environment_is_forwarded_to_guest(self):
         self.guest.run_ids.clear()
         with patch.dict(os.environ, {'HUNT_RUN_ID': 'wf-42:round:001'}, clear=False):

@@ -730,6 +730,26 @@ class ScreencastTest(unittest.TestCase):
         record.copy_audit(merged, self.root / 'browsers', T0, T0 + 10)
         self.assertEqual(merged.read_text(encoding='utf-8').splitlines(), [old_audit])
 
+        # 4. Already-attached live browser stays attached even after state_file / port_file exceed staleness cutoffs.
+        idle_step = self.root / 'browsers' / TH / 'runs' / 'idle-step-333333333333'
+        (idle_step / 'user-data').mkdir(parents=True)
+        idle_port = idle_step / 'user-data' / 'DevToolsActivePort'
+        idle_ws = 'ws://127.0.0.1:9404/devtools/browser/live-idle'
+        idle_port.write_text('9404\n/devtools/browser/live-idle\n', encoding='ascii')
+        idle_state = idle_step / 'session.json'
+        idle_state.write_text(json.dumps({'ws_url': idle_ws, 'main_target': 'T1'}), encoding='utf-8')
+        fake_cdp = FakeBrowser([])
+        sinks = []
+        stream = core.Stream(TH, self.root / 'browsers', lambda *a: sinks.append(a), lambda _u: fake_cdp,
+                             session_dir=idle_step)
+        stream.poll()
+        self.assertTrue(stream.attached)
+        os.utime(idle_port, (old_wall, old_wall))
+        os.utime(idle_state, (old_wall, old_wall))
+        stream.poll()
+        self.assertTrue(stream.attached)
+        stream.detach()
+
 
 if __name__ == '__main__':
     unittest.main()

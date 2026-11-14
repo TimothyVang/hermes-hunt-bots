@@ -159,13 +159,18 @@ class Stream:
             state = {}
         except (OSError, ValueError):
             return self.key
+        live_client = (self.client is not None and self.key is not None
+                       and not self.lost.is_set() and not self.client.closed.is_set())
         now_wall = time.time()
         ws, target = (state.get('ws_url'), state.get('main_target')) if isinstance(state, dict) else (None, None)
         named = isinstance(ws, str) and bool(ws) and isinstance(target, str) and bool(target)
-        if named and self.is_run_dir and state_mtime is not None and now_wall - state_mtime > STALE_RUN_STATE_SECONDS:
+        if (named and self.is_run_dir and state_mtime is not None
+                and now_wall - state_mtime > STALE_RUN_STATE_SECONDS
+                and not (live_client and (ws, target) == self.key)):
             named = False
         if live and (not named or ws != live):
-            if port_mtime is not None and now_wall - port_mtime > STALE_PORT_SECONDS:
+            if (port_mtime is not None and now_wall - port_mtime > STALE_PORT_SECONDS
+                    and not (live_client and live == self.key[0])):
                 live = None
             else:
                 return live, None

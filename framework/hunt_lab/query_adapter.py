@@ -480,7 +480,7 @@ def batch_lab(arguments, *, state_dir, profile):
                         raise QueryFailure('lab_invalid_response')
                     entry = {'tool': tool_name, 'ok': True, 'result': result}
             except QueryFailure as exc:
-                if str(exc) not in ('lab_http_400', 'lab_http_503'):
+                if str(exc) not in ('lab_http_400', 'lab_http_503', 'lab_response_too_large'):
                     raise
                 entry = {'tool': tool_name, 'ok': False, 'error': str(exc)}
                 if exc.detail:

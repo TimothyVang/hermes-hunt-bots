@@ -741,7 +741,8 @@ class BrowserSession:
 
     def state(self):
         lab, arkime, kibana = self.origins()
-        return {'pid': self.pid, 'ws_url': self.ws_url, 'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
+        return {'pid': self.pid, 'ws_url': self.ws_url, 'case_id': self.scope.case_id,
+                'lab_origin': lab, 'arkime_origin': arkime, 'kibana_origin': kibana,
                 'main_target': self.main_target, 'page': self.page_name, 'refs': self.refs,
                 'pointer': list(self.pointer), 'last_used': self.last_used, **_shape(self.window, self.demo)}
 
@@ -940,6 +941,7 @@ def _start(root, scope):
         window = _wanted_window(demo)
         wanted = _shape(window, demo)
         fresh = (time.time() - (state.get('last_used') or 0) < IDLE_SECONDS
+                 and state.get('case_id') == scope.case_id
                  and (state.get('lab_origin'), state.get('arkime_origin'), state.get('kibana_origin')) == scope.origins
                  and {key: state.get(key) for key in wanted} == wanted)
         session = BrowserSession(root, scope, _WebSocket(state['ws_url']), ws_url=state['ws_url'],
@@ -983,13 +985,16 @@ def _session(root, scope):
         # A long-lived tool host (the gateway) keeps its browser between calls; reuse it only while
         # the operator's marker still asks for the mode it was launched in.
         demo = read_demo(_demo_path(root))
-        if (session is not None and session.alive() and session.origins() == scope.origins
+        if (session is not None and session.alive()
+                and session.scope.case_id == scope.case_id and session.scope.lab_secret == scope.lab_secret
+                and session.origins() == scope.origins
                 and _shape(session.window, session.demo) == _shape(_wanted_window(demo), demo)):
             session.scope = scope
             return session
         if session is not None:
             _forget(key)
         session = _SESSIONS[key] = _start(root, scope)
+        session.scope = scope
         if _watchdog is None:
             _watchdog = threading.Thread(target=_idle_watch, daemon=True, name='lab-browser-idle')
             _watchdog.start()
