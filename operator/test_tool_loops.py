@@ -214,7 +214,8 @@ class StubLab:
 
             def do_GET(self):
                 url = urlsplit(self.path)
-                if self.headers.get(endpoints.SECRET_HEADER) != lab.secret:
+                expected = endpoints.caller_secret(lab.secret, self.headers.get('X-Hermes-Profile'))
+                if self.headers.get(endpoints.SECRET_HEADER) != expected:
                     status, body = 401, {'error': 'caller_not_authorized'}
                 else:
                     lab.paths.append(url.path)

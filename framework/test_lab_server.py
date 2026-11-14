@@ -107,7 +107,8 @@ class ServerCase(unittest.TestCase):
             connection.close()
 
     def request(self, path, method='GET', profile=None, run_id=None):
-        token = lab_server.profile_secret(SECRET, profile) if profile in lab_server.PROFILES else SECRET
+        token = (lab_server.profile_secret(SECRET, profile)
+                 if (profile in lab_server.PROFILES or profile == lab_server.BOARD_PROFILE) else SECRET)
         headers = {lab_server.SECRET_HEADER: token,
                    **({'X-Hermes-Profile': profile} if profile else {}),
                    **({lab_server.RUN_ID_HEADER: run_id} if run_id else {})}
@@ -571,6 +572,11 @@ class CallerTests(ServerCase):
                                  (403, {'error': 'tool_not_owned'}))
         self.assertEqual(self.request('/view', profile='framework-builder'), (403, {'error': 'tool_not_owned'}))
         self.assertEqual(self.request('/case', profile='framework-builder'), (200, CASE))
+        board_key = lab_server.profile_secret(SECRET, lab_server.BOARD_PROFILE)
+        self.assertEqual(self.exchange('/activity?after=0', 'GET', {
+            lab_server.SECRET_HEADER: board_key, 'X-Hermes-Profile': lab_server.BOARD_PROFILE})[0], 200)
+        self.assertEqual(self.exchange('/activity?after=0', 'GET', {
+            lab_server.SECRET_HEADER: SECRET, 'X-Hermes-Profile': lab_server.BOARD_PROFILE})[0], 200)
 
     def test_the_console_takes_the_secret_from_its_url_and_data_routes_never_do(self):
         self.elastic.response = es_hits([{'event': {'id': 'evt-000001'}, 'message': 'hello'}])

@@ -4,6 +4,7 @@ Run from framework/: python -B -m unittest hunt_lab.test_lab_stack
 With Docker installed, the compose checks also read Docker's own rendering of the file (`docker compose config`).
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
@@ -16,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -389,6 +391,7 @@ class StackTests(unittest.TestCase):
         self.docker.exec_code = 1
         res = self.invoke('start', evidence_dir=str(second_ev))
         self.assertEqual((res['state'], res['reason']), ('error', 'arkime_purge_failed'))
+        self.assertEqual(self.terminated, [])
         self.assertTrue((self.root / 'dns-lab-001' / 'state.json').is_file())
         self.assertFalse((self.root / 'team-med-902').exists())
         self.docker.exec_code = 0
@@ -471,6 +474,103 @@ class StackTests(unittest.TestCase):
         self.assertNotEqual((real_state['lab_port'], real_state['kibana_port'], real_state['arkime_port']),
                             first_ports)
         self.assertTrue((self.root / 'team-med-902').exists())
+
+    def test_post_spawn_up_json_error_retires_previous_case_without_rollback(self):
+        self.invoke('start')
+        self.running()
+        self.terminated.clear()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        real_write_json = lab_stack._write_json
+
+        def fail_on_up_json(path, value):
+            if Path(path).name == 'up.json':
+                raise OSError('up.json write failed')
+            real_write_json(path, value)
+
+        launched_before = len(self.launched)
+        with patch.object(lab_stack, '_write_json', side_effect=fail_on_up_json):
+            res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual(res['reason'], 'stack_io_error')
+        self.assertEqual([env['CASE_ID'] for _a, env, _l in self.launched[launched_before:]], ['team-med-902'])
+        self.assertEqual(self.terminated, [4242])
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+
+    def test_data_origin_case_colliding_with_shared_warm_project_gets_distinct_compose_project(self):
+        self.invoke('start')
+        self.running()
+        first_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        first_ports = (first_state['lab_port'], first_state['kibana_port'], first_state['arkime_port'])
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        self.invoke('start', evidence_dir=str(second_ev))
+        self.running()
+
+        # Now team-med-902 owns compose project hunt-lab-dns-lab-001; a real-data dns-lab-001 must not clobber it.
+        colliding_ev = self.evidence()
+        case_colliding = json.loads((colliding_ev / 'case.json').read_text(encoding='utf-8'))
+        case_colliding['case_id'] = 'dns-lab-001'
+        case_colliding['data_origin'] = 'work-export'
+        (colliding_ev / 'case.json').write_text(json.dumps(case_colliding), encoding='utf-8')
+        res = self.invoke('start', evidence_dir=str(colliding_ev))
+        self.assertEqual((res['state'], res['case_id']), ('starting', 'dns-lab-001'))
+        colliding_state = endpoints.container_state(self.root / 'dns-lab-001' / 'state.json')
+        expected_proj = f"hunt-lab-dns-lab-001-{colliding_state['instance'][:8]}"
+        self.assertEqual(colliding_state['project'], 'hunt-lab-dns-lab-001')
+        self.assertRegex(expected_proj, lab_stack.COMPOSE_PROJECT_RE)
+        self.assertEqual((self.root / 'dns-lab-001' / 'compose-project').read_text(encoding='ascii').strip(),
+                         expected_proj)
+        self.assertEqual(self.launched[-1][0][-4:], ['-p', expected_proj, 'up', '-d'])
+        self.assertNotEqual(
+            (colliding_state['lab_port'], colliding_state['kibana_port'], colliding_state['arkime_port']),
+            first_ports)
+        stopped = self.invoke('stop', case_id='dns-lab-001')
+        self.assertEqual(stopped['reason'], 'stopped')
+        self.assertIn(['compose', '-p', expected_proj, 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
+
+    def test_concurrent_starts_serialize_per_root_and_never_share_ports(self):
+        self.invoke('start')
+        self.running()
+        ev_two, ev_three = self.evidence(), self.evidence()
+        for folder, cid in ((ev_two, 'team-med-902'), (ev_three, 'team-med-903')):
+            meta = json.loads((folder / 'case.json').read_text(encoding='utf-8'))
+            meta['case_id'] = cid
+            (folder / 'case.json').write_text(json.dumps(meta), encoding='utf-8')
+
+        def slow_launch(argv, variables, log_path):
+            time.sleep(0.04)
+            self.launched.append((argv, lab_stack._child_env(variables), log_path))
+            self.running()
+            return 5151
+
+        with patch.object(lab_stack, '_launch', side_effect=slow_launch), ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(self.invoke, 'start', evidence_dir=str(ev_two))
+            f2 = pool.submit(self.invoke, 'start', evidence_dir=str(ev_three))
+            r1, r2 = f1.result(timeout=15), f2.result(timeout=15)
+        self.assertNotEqual(r1['state'], 'error', r1)
+        self.assertNotEqual(r2['state'], 'error', r2)
+        states = endpoints.container_states(self.state_dir)
+        self.assertEqual(len(states), 1, states)
+        all_ports = [s[k] for s in states for k in ('lab_port', 'kibana_port', 'arkime_port')]
+        self.assertEqual(len(all_ports), len(set(all_ports)))
+
+        # Contention on the OS file lock surfaces stack_busy once DOWN_SECONDS expires.
+        fd = os.open(self.root / '.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_BINARY', 0), 0o600)
+        lab_stack._try_lock_fd(fd)
+        try:
+            with patch.object(lab_stack, 'DOWN_SECONDS', 0.06):
+                busy = self.invoke('stop')
+            self.assertEqual((busy['state'], busy['reason']), ('error', 'stack_busy'))
+        finally:
+            lab_stack._unlock_fd(fd)
+            os.close(fd)
 
     def test_stop_removes_the_project_and_its_state_and_ends_a_start_in_progress(self):
         self.invoke('start')

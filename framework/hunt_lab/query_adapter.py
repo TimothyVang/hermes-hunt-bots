@@ -449,6 +449,14 @@ def _serialized_size(payload):
     return len(json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(',', ':')).encode('ascii'))
 
 
+def _cap_batch_item_result(tool_name, result):
+    if (tool_name == 'arkime_unique' and isinstance(result.get('values'), list)
+            and len(result['values']) > BATCH_MAX_ITEM_SIZE):
+        result['values'] = result['values'][:BATCH_MAX_ITEM_SIZE]
+        result['returned'] = BATCH_MAX_ITEM_SIZE
+        result['truncated'] = True
+
+
 def batch_lab(arguments, *, state_dir, profile):
     """Execute up to 5 read-only, caller-owned sub-queries against one resolved case with a 96 KiB cap."""
     try:
@@ -478,6 +486,7 @@ def batch_lab(arguments, *, state_dir, profile):
                                         TOOL_TIMEOUTS.get(tool_name, DEFAULT_TIMEOUT))
                     if result.pop('case_id', None) != case_id:
                         raise QueryFailure('lab_invalid_response')
+                    _cap_batch_item_result(tool_name, result)
                     entry = {'tool': tool_name, 'ok': True, 'result': result}
             except QueryFailure as exc:
                 if str(exc) not in ('lab_http_400', 'lab_http_503', 'lab_response_too_large'):
@@ -525,7 +534,7 @@ BATCH_SCHEMA = _schema(
     'hunt_lab_batch',
     'Run up to 5 independent read-only lab queries in one turn against the loaded case. '
     'Each item names a read-only tool owned by your profile (excluding packet_fields and lab_browser) '
-    'with size, length or limit capped at 25 per item and total output capped at 96 KiB. '
+    'with size, length, limit or arkime_unique values capped at 25 per item and total output capped at 96 KiB. '
     'Use this to fan out independent aggregations, pivot searches or session checks in a single step.',
     {
         'queries': {
@@ -545,7 +554,9 @@ BATCH_SCHEMA = _schema(
                     },
                     'arguments': {
                         'type': 'object',
-                        'description': 'Tool arguments (without case_id, or matching case_id); size/length/limit must be <= 25.',
+                        'description': (
+                            'Tool arguments (without case_id, or matching case_id); '
+                            'size/length/limit must be <= 25 (and arkime_unique returns at most 25 values).'),
                     },
                 },
             },

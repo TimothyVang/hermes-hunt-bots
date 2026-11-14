@@ -99,8 +99,8 @@ def profile_secret(secret, profile):
 
 
 def caller_secret(secret, profile):
-    """Caller token for `profile`: bot profiles hold only their HMAC subkey; operator/board keep the lab secret."""
-    if profile in FRAMEWORK_PROFILES:
+    """Caller token for `profile`: bot profiles and `hunt-board` hold only their HMAC subkey; `None` keeps `secret`."""
+    if profile in FRAMEWORK_PROFILES or profile == BOARD_PROFILE:
         return profile_secret(secret, profile)
     return secret
 
@@ -323,7 +323,8 @@ def container_states(state_dir, case_id=None):
         names = [case_id] if CASE_ID.fullmatch(case_id) else []
     else:
         try:
-            names = sorted(child.name for child in root.iterdir() if child.is_dir())
+            names = sorted(child.name for child in root.iterdir()
+                           if child.is_dir() and not child.name.startswith('.'))
         except FileNotFoundError:
             return []
         except OSError:

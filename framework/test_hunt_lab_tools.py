@@ -230,6 +230,11 @@ class ToolCallTests(unittest.TestCase):
         self.assertEqual([r[0] for r in self.guest.requests], ['/case', '/es/search', '/es/aggs'])
         self.assertEqual(self.guest.requests[1][1]['size'], '25')
 
+        self.guest.overrides['/arkime/unique'] = (200, {
+            'case_id': CASE, 'field': 'ip.dst',
+            'values': [{'value': f'10.0.0.{i}', 'packets': i} for i in range(40)],
+            'returned': 40, 'truncated': False,
+        }, {})
         analyst_ok = self.call('hunt_lab_batch', {
             'case_id': CASE,
             'queries': [
@@ -238,8 +243,14 @@ class ToolCallTests(unittest.TestCase):
                 {'tool': 'hunt_lab_query', 'arguments': {'dataset': 'events', 'limit': 25}},
             ],
         }, profile=ANALYST)
+        self.guest.overrides.pop('/arkime/unique', None)
         self.assertTrue(analyst_ok['ok'], analyst_ok)
         self.assertEqual(len(analyst_ok['results']), 3)
+        uniq_res = analyst_ok['results'][1]['result']
+        self.assertEqual((len(uniq_res['values']), uniq_res['returned'], uniq_res['truncated']), (25, 25, True))
+        self.assertEqual(endpoints.caller_secret('a' * 64, 'hunt-board'),
+                         endpoints.profile_secret('a' * 64, 'hunt-board'))
+        self.assertEqual(endpoints.caller_secret('a' * 64, None), 'a' * 64)
 
         self.guest.requests.clear()
         for bad_args, expected_err in (
