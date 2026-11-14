@@ -325,6 +325,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
+import { registerHuntWorkbenchIpc } from './hunt-workbench'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
@@ -6560,12 +6561,11 @@ import {
   DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
-  percentToZoomLevel,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
-  zoomLevelToPercent,
   zoomWiringForWindowKind
 } from './zoom'
+import { registerZoomIpc } from './zoom-ipc'
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -14308,27 +14308,8 @@ ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
   wakeIndicatorController.setState(state)
 })
 
-// --- Text size (zoom) -------------------------------------------------------
-// The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
-// shortcuts and the View menu. Reads and writes target the asking window.
 registerPreparedSubmissions()
-
-ipcMain.handle('hermes:zoom:get', event => {
-  const window = BrowserWindow.fromWebContents(event.sender)
-
-  const level = window && !window.isDestroyed() ? window.webContents.getZoomLevel() : DEFAULT_ZOOM_LEVEL
-
-  return { level, percent: zoomLevelToPercent(level) }
-})
-ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
-  const window = BrowserWindow.fromWebContents(event.sender)
-
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
-})
+registerZoomIpc(setAndPersistZoomLevel)
 
 // --- Pet overlay (pop-out mascot) — see pet-overlay-ipc.ts. ---------------
 registerPetOverlayIpc({
@@ -14336,6 +14317,14 @@ registerPetOverlayIpc({
   getPetOverlayWindow: () => petOverlayWindow,
   openPetOverlay,
   closePetOverlay
+})
+
+const huntWorkbenchIpc = registerHuntWorkbenchIpc(ipcMain, {
+  activeHermesRoot: ACTIVE_HERMES_ROOT,
+  hermesHome: () => HERMES_HOME,
+  huntEnabled: Boolean(PRODUCT_IDENTITY.hunt),
+  log: rememberLog,
+  sourceRepoRoot: SOURCE_REPO_ROOT
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
@@ -16478,6 +16467,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16504,9 +16494,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16520,9 +16512,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 
@@ -18165,6 +18159,7 @@ app.on('before-quit', event => {
 
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  huntWorkbenchIpc.dispose()
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.

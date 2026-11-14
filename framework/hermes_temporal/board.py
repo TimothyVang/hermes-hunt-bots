@@ -17,6 +17,7 @@ import asyncio
 import importlib.util
 import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -476,14 +477,22 @@ def _step_track(step_ids: list[str], child: dict | None) -> list[tuple[str, str,
     return track
 
 
+def _gate_decisions(child: dict | None) -> list[dict]:
+    items = child.get("decisions") if isinstance(child, dict) and isinstance(child.get("decisions"), list) else []
+    keys = ("step_id", "phase", "decision", "decision_id", "decided_by", "via", "slack_user")
+    return [{key: (_text(item.get(key)) or "") for key in keys} for item in items if isinstance(item, dict)]
+
+
 def _run_summary(parent: dict | None, child: dict | None, step_views: list[dict]) -> dict:
     parent_keys = ("workflow_id", "stage", "temporal_status", "round_index", "rounds",
                    "completed_rounds", "last_result", "child_workflow_id")
-    child_keys = ("stage", "step_id", "execution_id", "temporal_status")
+    child_keys = ("workflow_id", "stage", "step_id", "execution_id", "temporal_status")
     usages = [usage for usage in map(_usage, _results(child)) if usage]
+    child_summary = ({**{key: child.get(key) for key in child_keys}, "decisions": _gate_decisions(child)}
+                     if isinstance(child, dict) else None)
     return {
         "parent": {key: parent.get(key) for key in parent_keys} if isinstance(parent, dict) else None,
-        "child": {key: child.get(key) for key in child_keys} if isinstance(child, dict) else None,
+        "child": child_summary,
         "usage_total": {key: sum(usage[key] for usage in usages) for key in USAGE_KEYS} if usages else None,
         "dropped": [{"step_id": view["step_id"], "reason": view["reason"]} for view in step_views
                     if view["state"] == "dropped"],
@@ -967,7 +976,26 @@ class TemporalObserver:
                 # SDK/server exception text may contain deployment details; report the type only.
                 raise ObservationError(f"Temporal unreachable ({type(exc).__name__})", False) from None
         try:
-            parent = await self._status(self._workflow_id, PracticeWorkflow.status)
+            handle = self._client.get_workflow_handle(self._workflow_id)
+            execution = await asyncio.wait_for(handle.describe(), _QUERY_TIMEOUT_SECONDS)
+            if execution.workflow_type == "HermesWorkflow":
+                child = await self._status(self._workflow_id, HermesWorkflow.status, execution=execution)
+                child["workflow_id"] = self._workflow_id
+                child["activity_spans"] = await self._activity_spans(self._workflow_id, child)
+                parent = {
+                    "workflow_id": self._workflow_id,
+                    "child_workflow_id": self._workflow_id,
+                    "stage": child.get("stage"),
+                    "round_index": 1,
+                    "rounds": 1,
+                    "completed_rounds": 1 if child.get("temporal_status") == "COMPLETED" else 0,
+                    "stop_requested": False,
+                    "temporal_status": child.get("temporal_status"),
+                    "start_time": child.get("start_time"),
+                    "close_time": child.get("close_time"),
+                }
+                return parent, child
+            parent = await self._status(self._workflow_id, PracticeWorkflow.status, execution=execution)
             parent["workflow_id"] = self._workflow_id
         except Exception as exc:
             self._client = None
@@ -983,10 +1011,11 @@ class TemporalObserver:
             child["activity_spans"] = await self._activity_spans(child_id, child)
         return parent, child
 
-    async def _status(self, workflow_id: str, query) -> dict:
+    async def _status(self, workflow_id: str, query, *, execution: Any = None) -> dict:
         handle = self._client.get_workflow_handle(workflow_id)
         state = await asyncio.wait_for(handle.query(query), _QUERY_TIMEOUT_SECONDS)
-        execution = await asyncio.wait_for(handle.describe(), _QUERY_TIMEOUT_SECONDS)
+        if execution is None:
+            execution = await asyncio.wait_for(handle.describe(), _QUERY_TIMEOUT_SECONDS)
         status = execution.status.name if execution.status is not None else None
         times = {key: value.isoformat() if value is not None else None
                  for key, value in (("start_time", execution.start_time), ("close_time", execution.close_time))}
@@ -1235,6 +1264,35 @@ _MJPEG_BOUNDARY = "huntboardframe"
 def browser_root(hermes_home: str | Path) -> Path:
     """The lane's lab_browser folder, as operator/lab_paths.py Lane.browser_root derives it."""
     return Path(hermes_home) / "profiles" / "framework-network-analyst" / "hunt-lab-browser"
+
+
+def board_registry_dir(hermes_home: str | Path | None = None,
+                       lab_state_dir: str | Path | None = None) -> Path | None:
+    """Loopback discovery directory inside HERMES_HOME so Hunt Command Desktop can attach dynamic ports."""
+    if hermes_home:
+        return Path(hermes_home) / "hunt-board"
+    if lab_state_dir:
+        state_path = Path(lab_state_dir)
+        if state_path.parent.name == "framework-network-analyst" and state_path.parent.parent.name == "profiles":
+            return state_path.parent.parent.parent / "hunt-board"
+    return None
+
+
+def _write_board_entry(registry_dir: Path | None, payload: dict[str, Any]) -> Path | None:
+    """Write a token-free loopback board descriptor; best-effort cleanup on server exit."""
+    if registry_dir is None:
+        return None
+    try:
+        registry_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        entry = registry_dir / f"board-{payload['port']}.json"
+        temp = registry_dir / f".board-{payload['port']}-{os.getpid()}.tmp"
+        temp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(temp, 0o600)
+        temp.replace(entry)
+        return entry
+    except OSError:
+        return None
 
 
 class LiveBrowsers:
@@ -1536,12 +1594,30 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if live is not None:
         live.start()
-    print(json.dumps({"url": f"http://{BIND_HOST}:{server.server_address[1]}/", "status": "serving"}), flush=True)
+    port = server.server_address[1]
+    url = f"http://{BIND_HOST}:{port}/"
+    entry = _write_board_entry(board_registry_dir(args.hermes_home, args.lab_state_dir), {
+        "url": url,
+        "port": port,
+        "pid": os.getpid(),
+        "workflow_id": args.workflow_id,
+        "address": args.address,
+        "case_id": initial["case"]["case_id"],
+        "mode": initial["mode"],
+        "live": live is not None,
+        "started_at": _utc_now(),
+    })
+    print(json.dumps({"url": url, "status": "serving"}), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if entry is not None:
+            try:
+                entry.unlink(missing_ok=True)
+            except OSError:
+                pass
         if live is not None:
             live.close()
         server.server_close()

@@ -21,8 +21,7 @@
 import { computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped, getApiRequestConnection } from '@/api/client'
-import { mutateSessionFenced } from '@/api/sessions'
+import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -46,7 +45,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
-import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
@@ -103,26 +102,27 @@ import {
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
-import type { PaginatedSessions, UsageStats } from '@/types/hermes'
-
-import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+import type { UsageStats } from '@/types/hermes'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { huntWorkbench } from './hunt-workbench'
 import { i18nHost } from './i18n'
+import {
+  type NativeScreenConnectionKind,
+  type NativeScreenOpenResult,
+  openNativeScreen
+} from './native-screen'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
+  listPersistedSessions,
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
   pluginRouteStillRegistered,
-  requestPluginProfile
+  requestPluginProfile,
+  setPersistedSessionHidden
 } from './profile-request'
-import {
-  openNativeScreen,
-  type NativeScreenConnectionKind,
-  type NativeScreenOpenResult
-} from './native-screen'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
@@ -130,9 +130,10 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
+export type * from './hunt-workbench'
+export type { NativeScreenConnectionKind, NativeScreenOpenResult, NativeScreenProvider } from './native-screen'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
-export type { NativeScreenConnectionKind, NativeScreenOpenResult, NativeScreenProvider } from './native-screen'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -1383,6 +1384,7 @@ export const host = {
     ) {
       return { status: 'route_not_registered' }
     }
+
     const selectedRoute = { ...route }
 
     if (typeof host.openWorkspace !== 'function') {
@@ -1500,76 +1502,12 @@ export const host = {
 
   /** Read persisted sessions from a profile's owning source without dialing
    *  that profile's gateway. The source primary opens state.db directly. */
-  listPersistedSessions: async (
-    route: PluginProfileRoute | null,
-    options: { profile: string; limit?: number }
-  ): Promise<PaginatedSessions> => {
-    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
-      throw new Error('Profile route must include connectionId, profile, and targetProfile')
-    }
-
-    const profile = options.profile.trim()
-
-    if (!profile) {
-      throw new Error('Persisted session reads require a profile')
-    }
-
-    const limit = Math.min(500, Math.max(0, options.limit ?? 200))
-
-    const query = new URLSearchParams({
-      limit: String(limit),
-      offset: '0',
-      min_messages: '0',
-      archived: 'exclude',
-      order: 'created',
-      profile
-    })
-
-    return hermesApi<PaginatedSessions>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/profiles/sessions?${query.toString()}`,
-      timeoutMs: 60_000
-    })
-  },
+  listPersistedSessions,
 
   /** Mutate the durable hidden flag through the source primary. Keeping the
    *  owner profile in the body (not request.profile) prevents Electron from
    *  starting a profile backend merely to reconcile persisted visibility. */
-  setPersistedSessionHidden: async (
-    route: PluginProfileRoute | null,
-    options: { sessionId: string; profile: string; hidden: boolean }
-  ): Promise<{ ok: boolean; hidden: boolean }> => {
-    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
-      throw new Error('Profile route must include connectionId, profile, and targetProfile')
-    }
-
-    const profile = options.profile.trim()
-
-    if (!profile || !options.sessionId.trim()) {
-      throw new Error('Persisted session updates require a profile and session id')
-    }
-
-    // Null keeps the window's v1 route (a remote primary stays remote).
-    const scope = { connectionId: route?.connectionId || getApiRequestConnection() }
-    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
-    const payload = { hidden: options.hidden, profile }
-
-    return mutateSessionFenced(
-      JSON.stringify([scope, options.sessionId, payload]),
-      () =>
-        hermesApi<SessionMutationSnapshot>({
-          ...scope,
-          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
-        }),
-      identity =>
-        hermesApi<{ ok: boolean; hidden: boolean }>({
-          ...scope,
-          path,
-          method: 'PATCH',
-          body: { ...payload, ...identity }
-        })
-    )
-  },
+  setPersistedSessionHidden,
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
@@ -1597,6 +1535,9 @@ export const host = {
   traceIdentityChange,
 
   composer: composerHost,
+
+  /** Hunt Command local loopback workbench bridge (Hunt Board attach/start + governed Human Gates). */
+  huntWorkbench,
 
   /** Chromium's custom spell-check dictionary, one validated word per call. */
   spellcheck: spellcheckHost,

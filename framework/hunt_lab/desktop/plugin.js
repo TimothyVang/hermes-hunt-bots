@@ -70,8 +70,12 @@ const CSS = `
 .hc-more summary .hc-i{color:var(--hc-ink3)}
 .hc-more[open] summary .hc-i{transform:rotate(90deg)}
 .hc-more ul{margin:0;padding:0 16px 12px 36px;display:grid;gap:4px;font-size:12px;line-height:16px;color:var(--hc-ink2)}
+.hc-board-ctrl{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 24px;background:var(--ui-bg-chrome);border-bottom:.5px solid var(--hc-line2)}
+.hc-input{height:28px;padding:0 10px;border:0;border-radius:8px;background:var(--hc-raised);box-shadow:inset 0 0 0 .5px var(--hc-line1);color:var(--hc-ink1);font-family:var(--hc-mono);font-size:12px;min-width:0}
+.hc-input:focus-visible{outline:1px solid var(--hc-accent);outline-offset:1px}
+.hc-board-msg{font-size:12px;line-height:16px;color:var(--hc-ink3);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hc-frame{flex:1 1 auto;min-height:0;display:flex}
-.hc-empty{margin:auto;width:min(640px,100%);padding:24px 32px;display:flex;flex-direction:column;gap:12px}
+.hc-empty{margin:auto;width:min(680px,100%);padding:24px 32px;display:flex;flex-direction:column;gap:12px}
 .hc-empty h2{margin:0;font-size:15px;line-height:22px;font-weight:600}
 .hc-empty p{margin:0;color:var(--hc-ink2)}
 .hc-cmd{display:flex;align-items:center;gap:8px;min-width:0}
@@ -86,6 +90,7 @@ const CSS = `
 .hc-card-b .hc-facts.wide{grid-template-columns:120px minmax(0,1fr)}
 .hc-thumb{flex:none;width:168px;height:100px;border-radius:8px;overflow:hidden;background:#0a0a0a;box-shadow:inset 0 0 0 .5px var(--hc-line2)}
 .hc-thumb img{display:block;width:100%;height:100%;object-fit:cover;object-position:top left}
+.hc-thumb-miss{flex:none;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:6px;width:168px;padding:8px 10px;border-radius:8px;background:var(--hc-fill2);box-shadow:inset 0 0 0 .5px var(--hc-line2);font-size:11px;line-height:14px;color:var(--hc-ink3)}
 `;
 // React 19 hoists and de-duplicates this sheet by href, whichever surface renders first.
 const sheet = () => jsx('style', { href: 'hunt-command-lab-ui', precedence: 'default', children: CSS });
@@ -175,19 +180,28 @@ function localRoutes(inventory) {
 async function discover() {
   if (state.get().busy) return;
   state.set({ ...state.get(), busy: true, result: null, code: null, operation: null, observedAt: null, selected: '', routes: [], message: 'Reading registered local routes…' });
+  let autoRoute = null;
   try {
     if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
       state.set({ ...state.get(), message: 'unsupported_version: this Desktop build lacks connection-scoped profile CLI requests.' });
       return;
     }
     const routes = localRoutes(await host.profileRoutes());
-    state.set({ ...state.get(), routes, message: routes.length
-      ? 'Choose one local framework profile. Duplicate local owners and all remote routes are excluded.'
-      : 'No unambiguous local framework profiles are registered. No remote or active-profile fallback was attempted.' });
+    autoRoute = routes.length === 1
+      ? routes[0]
+      : (routes.find(route => route.targetProfile === 'framework-network-analyst') ?? null);
+    state.set({ ...state.get(), routes, selected: autoRoute ? key(autoRoute) : '', message: autoRoute
+      ? `Selected ${autoRoute.targetProfile}; reading lab status…`
+      : routes.length
+        ? 'Choose one local framework profile. Duplicate local owners and all remote routes are excluded.'
+        : 'No unambiguous local framework profiles are registered. No remote or active-profile fallback was attempted.' });
   } catch {
     state.set({ ...state.get(), message: 'route_discovery_failed: registered local profile routes could not be read. No lab operation was attempted.' });
   } finally {
     state.set({ ...state.get(), busy: false });
+  }
+  if (autoRoute) {
+    await operate('status');
   }
 }
 
@@ -429,33 +443,250 @@ function HuntingLab() {
 }
 
 // Live hunt board: a read-only page served by `python -m hermes_temporal.board` on a
-// fixed loopback port. It is embedded only after an explicit click, in an opaque-origin
+// loopback port. It is embedded or started only after an explicit click, in an opaque-origin
 // sandbox, and shows only real workflow status and the bots' recorded outputs.
 const BOARD = '/hunt-board';
 const BOARD_URL = 'http://127.0.0.1:8790/';
-const BOARD_COMMAND = 'python -m hermes_temporal.board --workflow-id <practice id> --input <lab input JSON> --port 8790';
-const board = atom({ shown: false, nonce: 0 });
+const BOARD_COMMAND = 'python -m hermes_temporal.board --workflow-id <practice id> --input <lab input JSON> --lab-state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm --hermes-home <hermes-home> --port 8790';
+const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const board = atom({
+  shown: false,
+  nonce: 0,
+  url: BOARD_URL,
+  managed: false,
+  boards: [],
+  workflowId: '',
+  address: '127.0.0.1:7233',
+  inputPath: '',
+  port: '8790',
+  busy: false,
+  message: ''
+});
+
+function parseOptionalPort(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return undefined;
+  const num = Number(text);
+  return Number.isInteger(num) && num >= 1 && num <= 65535 ? num : null;
+}
+
+function publishWorkflowHandoff(workflowId, address) {
+  if (typeof globalThis === 'undefined') return;
+  if (typeof workflowId === 'string' && SAFE_WORKFLOW_ID.test(workflowId.trim())) {
+    globalThis.__HUNT_COMMAND_WORKFLOW_ID__ = workflowId.trim();
+  }
+  if (typeof address === 'string' && address.trim()) {
+    globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ = address.trim();
+  }
+}
+
+function openHumanGatesForBoard() {
+  const current = board.get();
+  publishWorkflowHandoff(current.workflowId, current.address);
+  host.navigate('/cybersecurity-workspace');
+}
+
+async function attachActiveBoard({ reveal = true } = {}) {
+  const current = board.get();
+  if (current.busy) return;
+  const workbench = host.huntWorkbench;
+  if (!workbench || typeof workbench.discoverBoards !== 'function') {
+    board.set({
+      ...current,
+      shown: reveal ? true : current.shown,
+      nonce: reveal ? current.nonce + 1 : current.nonce,
+      message: 'Local Hunt Board discovery is unavailable in this Desktop build; using http://127.0.0.1:8790/.'
+    });
+    return;
+  }
+  const parsedPort = parseOptionalPort(current.port);
+  if (parsedPort === null) {
+    board.set({ ...current, message: 'Port must be between 1 and 65535.' });
+    return;
+  }
+  board.set({ ...current, busy: true, message: 'Discovering active loopback Hunt Board…' });
+  try {
+    const reply = await workbench.discoverBoards(parsedPort ? { port: parsedPort } : undefined);
+    if (!reply?.ok) {
+      board.set({ ...board.get(), busy: false, message: reply?.error || 'Loopback Hunt Board discovery failed.' });
+      return;
+    }
+    const found = Array.isArray(reply.boards) ? reply.boards.filter(item => loopbackUrl(item?.url)) : [];
+    if (!found.length) {
+      board.set({
+        ...board.get(),
+        busy: false,
+        boards: [],
+        message: 'No active loopback Hunt Board found. Enter a workflow ID and click Start & attach board.'
+      });
+      return;
+    }
+    const wanted = board.get().workflowId.trim();
+    const picked = (wanted && found.find(item => item.workflowId === wanted || item.childWorkflowId === wanted))
+      || found.find(item => item.managed)
+      || found[0];
+    const validUrl = loopbackUrl(picked.url) || BOARD_URL;
+    publishWorkflowHandoff(picked.workflowId || wanted, picked.address || board.get().address);
+    board.set({
+      ...board.get(),
+      busy: false,
+      boards: found,
+      url: validUrl,
+      managed: Boolean(picked.managed),
+      workflowId: board.get().workflowId || picked.workflowId || '',
+      port: String(picked.port || parsedPort || 8790),
+      shown: reveal ? true : board.get().shown,
+      nonce: reveal ? board.get().nonce + 1 : board.get().nonce + 1,
+      message: `Attached Hunt Board at ${validUrl.slice(0, -1)}${picked.workflowId ? ` (${picked.workflowId})` : ''}${picked.liveEnabled ? ' · live browser stream ready' : ''}.`
+    });
+  } catch {
+    board.set({ ...board.get(), busy: false, message: 'Loopback Hunt Board discovery failed.' });
+  }
+}
+
+async function startManagedBoard() {
+  const current = board.get();
+  if (current.busy) return;
+  const workbench = host.huntWorkbench;
+  if (!workbench || typeof workbench.startBoard !== 'function') {
+    board.set({
+      ...current,
+      message: 'Local Hunt Board launcher is unavailable in this Desktop build. Run the command below, then click Show board.'
+    });
+    return;
+  }
+  const workflowId = current.workflowId.trim();
+  if (!SAFE_WORKFLOW_ID.test(workflowId)) {
+    board.set({ ...current, message: 'Enter a valid Temporal workflow ID (for example practice-dns-001) before starting Hunt Board.' });
+    return;
+  }
+  const parsedPort = parseOptionalPort(current.port);
+  if (parsedPort === null) {
+    board.set({ ...current, message: 'Port must be between 1 and 65535.' });
+    return;
+  }
+  board.set({ ...current, busy: true, message: `Starting loopback Hunt Board for ${workflowId}…` });
+  try {
+    const reply = await workbench.startBoard({
+      workflowId,
+      address: current.address.trim() || undefined,
+      inputPath: current.inputPath.trim() || undefined,
+      port: parsedPort
+    });
+    const validUrl = reply?.ok ? loopbackUrl(reply.board?.url) : null;
+    if (!reply?.ok || !validUrl) {
+      board.set({ ...board.get(), busy: false, message: reply?.error || 'Hunt Board failed to start.' });
+      return;
+    }
+    publishWorkflowHandoff(workflowId, reply.board.address || current.address);
+    board.set({
+      ...board.get(),
+      busy: false,
+      url: validUrl,
+      managed: true,
+      boards: [reply.board],
+      port: String(reply.board.port),
+      shown: true,
+      nonce: board.get().nonce + 1,
+      message: `Started and attached Hunt Board at ${validUrl.slice(0, -1)} (${reply.board.mode === 'tool_driven' ? 'tool-driven + live MJPEG ready' : 'inline'}).`
+    });
+  } catch {
+    board.set({ ...board.get(), busy: false, message: 'Hunt Board failed to start.' });
+  }
+}
+
+async function stopManagedBoard() {
+  const current = board.get();
+  if (current.busy) return;
+  board.set({ ...current, busy: true, message: 'Stopping Desktop-managed Hunt Board…' });
+  try {
+    await host.huntWorkbench?.stopBoard?.();
+    board.set({ ...board.get(), busy: false, managed: false, shown: false, message: 'Stopped Desktop-managed Hunt Board.' });
+  } catch {
+    board.set({ ...board.get(), busy: false, message: 'Failed to stop Hunt Board.' });
+  }
+}
 
 function HuntBoard() {
   const current = useValue(board);
   const CopyButton = hermesSdk.CopyButton;
+  const activeUrl = loopbackUrl(current.url) || BOARD_URL;
+  useEffect(() => {
+    if (!current.shown || typeof window === 'undefined') return undefined;
+    const onMessage = event => {
+      const payload = event?.data;
+      if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
+      publishWorkflowHandoff(payload.workflowId || board.get().workflowId, board.get().address);
+      host.navigate('/cybersecurity-workspace');
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [current.shown]);
   return jsxs('div', { className: 'hc-root hc-page', children: [sheet(),
     pageBar('Hunt Board', [
-      jsx('span', { className: 'hc-mono hc-ink3', children: BOARD_URL.slice(0, -1) }, 'url'),
+      jsx('span', { className: 'hc-mono hc-ink3', children: activeUrl.slice(0, -1) }, 'url'),
       jsx('span', { className: 'hc-sub', children: '· loaded on click, read-only' }, 'note')
     ], [
+      button('Human gates', openHumanGatesForBoard, { small: true }),
+      current.managed ? button('Stop board', stopManagedBoard, { disabled: current.busy, small: true, glyph: 'circleStop' }) : null,
       current.shown ? button('Hide', () => board.set({ ...board.get(), shown: false }), { small: true }) : null,
-      button(current.shown ? 'Reload' : 'Show board', () => board.set({ shown: true, nonce: current.nonce + 1 }), { small: true, primary: !current.shown }),
-      link('Open in browser', BOARD_URL, true)
+      button('Attach active board', () => attachActiveBoard({ reveal: true }), { disabled: current.busy, small: true }),
+      button(current.shown ? 'Reload' : 'Show board', () => board.set({ ...board.get(), shown: true, nonce: current.nonce + 1 }), { disabled: current.busy, small: true }),
+      link('Open in browser', activeUrl, true)
     ]),
+    jsxs('div', { className: 'hc-board-ctrl', role: 'toolbar', 'aria-label': 'Hunt Board launcher', children: [
+      jsx('input', {
+        className: 'hc-input', 'aria-label': 'Workflow ID', placeholder: 'Workflow ID (e.g. practice-dns-001)',
+        style: { width: '210px' }, value: current.workflowId, disabled: current.busy,
+        onChange: event => board.set({ ...board.get(), workflowId: event.target.value })
+      }),
+      jsx('input', {
+        className: 'hc-input', 'aria-label': 'Temporal address', placeholder: '127.0.0.1:7233',
+        style: { width: '132px' }, value: current.address, disabled: current.busy,
+        onChange: event => board.set({ ...board.get(), address: event.target.value })
+      }),
+      jsx('input', {
+        className: 'hc-input', 'aria-label': 'Board input JSON (optional)', placeholder: 'Optional --input JSON path (blank = auto tool-driven)',
+        style: { width: '280px' }, value: current.inputPath, disabled: current.busy,
+        onChange: event => board.set({ ...board.get(), inputPath: event.target.value })
+      }),
+      jsx('input', {
+        className: 'hc-input', 'aria-label': 'Board port', placeholder: '8790',
+        style: { width: '74px' }, value: current.port, disabled: current.busy,
+        onChange: event => board.set({ ...board.get(), port: event.target.value })
+      }),
+      button('Start & attach board', startManagedBoard, { disabled: current.busy, primary: true, small: true, glyph: 'play' }),
+      current.boards.length > 1 ? jsx('select', {
+        className: 'hc-input', 'aria-label': 'Active loopback boards', value: activeUrl,
+        onChange: event => {
+          const next = loopbackUrl(event.target.value);
+          if (!next) return;
+          const match = current.boards.find(item => loopbackUrl(item.url) === next);
+          board.set({
+            ...board.get(),
+            url: next,
+            managed: Boolean(match?.managed),
+            workflowId: match?.workflowId || board.get().workflowId,
+            port: match?.port ? String(match.port) : board.get().port,
+            shown: true,
+            nonce: board.get().nonce + 1
+          });
+        },
+        children: current.boards.map(item => jsx('option', {
+          value: loopbackUrl(item.url) || BOARD_URL,
+          children: `127.0.0.1:${item.port} · ${item.workflowId || 'board'}`
+        }, String(item.port)))
+      }) : null,
+      current.message ? jsx('span', { className: 'hc-board-msg', role: 'status', 'aria-live': 'polite', children: current.message }) : null
+    ] }),
     jsx('div', { className: 'hc-frame', children: current.shown
       ? jsx(SandboxedFrame, {
-        src: BOARD_URL, sandbox: 'allow-scripts', title: 'Live hunt board',
+        src: activeUrl, sandbox: 'allow-scripts', title: 'Live hunt board',
         style: { flex: '1 1 auto', width: '100%', height: '100%', minHeight: 0, border: '0', display: 'block' }
-      }, String(current.nonce))
+      }, `${activeUrl}:${current.nonce}`)
       : jsxs('div', { className: 'hc-empty', children: [
         jsx('h2', { children: 'Board hidden' }),
-        jsx('p', { children: 'Start the board server, then click Show board. Nothing is fetched until you do. The board shows only what the bots wrote; approvals are recorded separately.' }),
+        jsx('p', { children: 'Click Attach active board to connect to a running Hunt Board on loopback, or enter a workflow ID above and click Start & attach board (automatically passes --lab-state-dir and --hermes-home so live MJPEG previews stream cleanly). Nothing is fetched until you click.' }),
         jsxs('div', { className: 'hc-cmd', children: [
           jsx('code', { children: BOARD_COMMAND }),
           CopyButton ? jsx(CopyButton, { text: BOARD_COMMAND, appearance: 'icon', label: 'Copy start command' }) : null
@@ -467,14 +698,18 @@ function HuntBoard() {
 // lab_browser chat card: the call's action, its arguments or result fields, and a small window onto
 // that bot's real lab browser. While the call runs it shows the hunt board's live MJPEG stream of the
 // bot's browser; once it finishes, the final frame lab_browser saved (result.image_path), else the
-// board's latest frame. A thumbnail that cannot load is left out rather than drawn empty.
-const LIVE_URL = 'http://127.0.0.1:8790/live/';
+// board's latest frame. When the board runs on a dynamic loopback port, attaching it updates every card.
 const LIVE_RETRY_MS = 5000;
 // The board's own /live/<profile> path pattern.
 const LIVE_PROFILE = /^[a-z0-9-]+$/;
 // lab_browser argument fields, in the order a reader needs them.
 const ARG_FIELDS = ['page', 'url', 'q', 'expression', 'text', 'key', 'direction', 'ref'];
 const str = value => (typeof value === 'string' ? value : '');
+
+function liveBaseUrl(urlValue) {
+  const valid = loopbackUrl(urlValue) || BOARD_URL;
+  return new URL('live/', valid).href;
+}
 
 // The call's own profile: lab_browser stamps it on every result; while running, the profile that owns this chat.
 function callProfile(result, chatProfile) {
@@ -483,22 +718,41 @@ function callProfile(result, chatProfile) {
 }
 
 function LiveThumb({ profile }) {
+  const currentBoard = useValue(board);
+  const liveBase = liveBaseUrl(currentBoard.url);
   const [attempt, setAttempt] = useState(0);
   const [down, setDown] = useState(false);
+  useEffect(() => {
+    setDown(false);
+    setAttempt(n => n + 1);
+  }, [liveBase, currentBoard.nonce]);
   useEffect(() => {
     if (!down) return undefined;
     const timer = setTimeout(() => { setDown(false); setAttempt(n => n + 1); }, LIVE_RETRY_MS);
     return () => clearTimeout(timer);
   }, [down]);
-  if (!profile || down) return null;
-  return jsx('div', { className: 'hc-thumb', children: jsx('img', { src: `${LIVE_URL}${profile}.mjpg?attempt=${attempt}`,
-    alt: `Live lab browser of ${profile}`, onError: () => setDown(true) }, attempt) });
+  if (!profile) return null;
+  if (down) {
+    return typeof host.huntWorkbench?.discoverBoards === 'function'
+      ? jsxs('div', { className: 'hc-thumb-miss', children: [
+        jsx('span', { children: 'Live stream offline' }),
+        button('Attach board', () => attachActiveBoard({ reveal: false }), { disabled: currentBoard.busy, small: true })
+      ] })
+      : null;
+  }
+  return jsx('div', { className: 'hc-thumb', children: jsx('img', { src: `${liveBase}${profile}.mjpg?attempt=${attempt}`,
+    alt: `Live lab browser of ${profile}`, onError: () => setDown(true) }, `${liveBase}:${attempt}`) });
 }
 
 function FinalThumb({ imagePath, profile, resolveImageUrl }) {
+  const currentBoard = useValue(board);
+  const liveBase = liveBaseUrl(currentBoard.url);
   // undefined: resolving; null: no local frame, use the board's.
   const [local, setLocal] = useState(undefined);
   const [boardDown, setBoardDown] = useState(false);
+  useEffect(() => {
+    setBoardDown(false);
+  }, [liveBase, currentBoard.nonce]);
   useEffect(() => {
     let current = true;
     setLocal(undefined);
@@ -509,9 +763,16 @@ function FinalThumb({ imagePath, profile, resolveImageUrl }) {
   const image = local
     ? jsx('img', { src: local, alt: 'Final lab browser frame', onError: () => setLocal(null) })
     : local === null && profile && !boardDown
-      ? jsx('img', { src: `${LIVE_URL}${profile}.jpg`, alt: `Latest lab browser frame of ${profile}`, onError: () => setBoardDown(true) })
+      ? jsx('img', { src: `${liveBase}${profile}.jpg`, alt: `Latest lab browser frame of ${profile}`, onError: () => setBoardDown(true) })
       : null;
-  return image ? jsx('div', { className: 'hc-thumb', children: image }) : null;
+  if (image) return jsx('div', { className: 'hc-thumb', children: image });
+  if (local === null && profile && boardDown && typeof host.huntWorkbench?.discoverBoards === 'function') {
+    return jsxs('div', { className: 'hc-thumb-miss', children: [
+      jsx('span', { children: 'Board frame offline' }),
+      button('Attach board', () => attachActiveBoard({ reveal: false }), { disabled: currentBoard.busy, small: true })
+    ] });
+  }
+  return null;
 }
 
 const clock = milliseconds => {

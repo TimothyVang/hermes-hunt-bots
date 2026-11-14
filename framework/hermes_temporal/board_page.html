@@ -883,7 +883,15 @@ function gateCard(w){
     card.appendChild(h("div", "sm mut", s.name + " also requested " + plural(decisions.length, "decision") + " in its handoff:", {style:"margin:0 0 6px"}));
     const ol = h("ol"); decisions.slice(0, 2).forEach((d, i) => ol.appendChild(add(h("li"), clip(d, 3, "gd:" + s.step_id + ":" + i)))); card.appendChild(ol);
   }
-  card.appendChild(add(h("div", "row sm mut", null, {style:"gap:6px"}), icon("arrow-up-right"), "Decide in Hermes \u2192 Human gates. This board is read-only."));
+  const gateHint = add(h("div", "row sm mut", null, {style:"gap:6px"}), icon("arrow-up-right"), "Decide in Hunt Command \u2192 Human gates. This board is read-only.");
+  if (typeof window !== "undefined" && window.parent && window.parent !== window){
+    gateHint.style.cursor = "pointer";
+    gateHint.addEventListener("click", () => {
+      const wid = state && state.run && state.run.parent && state.run.parent.workflow_id ? String(state.run.parent.workflow_id) : "";
+      window.parent.postMessage({type:"hunt-board:open-human-gates", workflowId:wid}, "*");
+    });
+  }
+  card.appendChild(gateHint);
   return card;
 }
 function waveRowEl(r, on){
@@ -1038,7 +1046,7 @@ function renderCaseDetails(sel){
   if (GATE.has(s.state)){
     const at = span.open_since_ms !== null && span.open_since_ms !== undefined ? span.open_since_ms : stepSince(s);
     add(gs, add(h("div", "row", null, {style:"gap:8px"}), stEl("blocked", words(s.state)), at !== null ? add(h("span", "sm mut"), "since ", h("span", "mono", hms(at))) : null));
-    gs.appendChild(add(h("div", "sm mut", null, {style:"margin-top:6px"}), (nw ? "Wave " + nw.wave + " waits for the gate decision. " : "The hunt waits for the gate decision. ") + "Decide in Hermes ", h("span", "sec", "\u2192 Human gates"), "."));
+    gs.appendChild(add(h("div", "sm mut", null, {style:"margin-top:6px"}), (nw ? "Wave " + nw.wave + " waits for the gate decision. " : "The hunt waits for the gate decision. ") + "Decide in Hunt Command ", h("span", "sec", "\u2192 Human gates"), "."));
   } else {
     const other = idx.waveList.find((x) => x.steps.some((y) => GATE.has(y.state)));
     const t = h("div", "sm mut");
@@ -1458,7 +1466,7 @@ function renderInbox(){
       h("p", "wrap", (s.state === "awaiting_review" ? "The handoff waits for review." : "Waits for approval to start.") + (nw ? " " + waveRep(nw).name + " in wave " + nw.wave + " waits for the gate decision." : "") + (dec ? " " + plural(dec, "requested decision") + " in its handoff." : ""),
         {style:"margin:4px 0 0;font-size:14px;line-height:20px;color:var(--ink-2)"}),
       flagEl(s, "sm sec wrap", "div", "margin-top:6px"),
-      h("div", "sm mut", "Decide in Hermes \u2192 Human gates", {style:"margin-top:10px"})));
+      h("div", "sm mut", "Decide in Hunt Command \u2192 Human gates", {style:"margin-top:10px"})));
     card.addEventListener("click", () => openAgent(s));
     m.appendChild(card);
   }

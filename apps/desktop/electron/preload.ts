@@ -520,6 +520,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
     }
   },
+  huntWorkbench: {
+    discoverBoards: options => ipcRenderer.invoke('hermes:hunt:boards:discover', options),
+    startBoard: request => ipcRenderer.invoke('hermes:hunt:boards:start', request),
+    stopBoard: () => ipcRenderer.invoke('hermes:hunt:boards:stop'),
+    gateStatus: request => ipcRenderer.invoke('hermes:hunt:gates:status', request),
+    decideGate: request => ipcRenderer.invoke('hermes:hunt:gates:decide', request)
+  },
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),
