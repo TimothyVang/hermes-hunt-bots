@@ -1,5 +1,5 @@
 import { host, TOOL_CARD_AREA } from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -466,10 +466,8 @@ describe('variant-bundled plugins', () => {
       expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-1')
     })
 
-    // Zero RPC until operator explicitly clicks Load gate status.
     expect(gateStatusSpy).not.toHaveBeenCalled()
 
-    // Spoofed postMessage from window (not the SandboxedFrame contentWindow) must be ignored.
     navigateSpy.mockClear()
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -480,8 +478,26 @@ describe('variant-bundled plugins', () => {
     expect(navigateSpy).not.toHaveBeenCalled()
     expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-1')
 
-    // Genuine postMessage from the embedded Hunt Board iframe contentWindow is honored.
     const iframe = screen.getByTitle('Live hunt board') as HTMLIFrameElement
+    Object.defineProperty(iframe, 'contentWindow', { configurable: true, value: null })
+    expect(iframe.contentWindow).toBeNull()
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hunt-board:open-human-gates', workflowId: 'null-spoof-wf' },
+        source: null
+      })
+    )
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hunt-board:open-human-gates', workflowId: 'null-spoof-wf' },
+        source: window
+      })
+    )
+    expect(navigateSpy).not.toHaveBeenCalled()
+    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-1')
+
+    Reflect.deleteProperty(iframe, 'contentWindow')
     expect(iframe.contentWindow).toBeTruthy()
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -501,7 +517,6 @@ describe('variant-bundled plugins', () => {
       expect(screen.getByText(/dns-tunnel-001 · origin=synthetic/)).toBeTruthy()
     })
 
-    // Second workflow handoff overrides wf-1 + 127.0.0.1:58288, clears stale wf-1 status card, and fires zero RPC until clicked.
     fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-2' } })
     fireEvent.change(screen.getByLabelText('Temporal address'), { target: { value: '127.0.0.1:59111' } })
     fireEvent.click(screen.getByRole('button', { name: /Start & attach board/i }))
@@ -523,5 +538,217 @@ describe('variant-bundled plugins', () => {
       })
       expect(screen.getByText(/beaconing-002 · origin=synthetic/)).toBeTruthy()
     })
+
+    vi.spyOn(host.huntWorkbench, 'discoverBoards').mockResolvedValueOnce({
+      boards: [
+        {
+          address: '127.0.0.1:59333',
+          caseId: 'lateral-003',
+          childWorkflowId: 'wf-attached-round-001',
+          liveEnabled: true,
+          liveProfiles: ['framework-network-analyst'],
+          managed: false,
+          mode: 'tool_driven',
+          port: 54323,
+          url: 'http://127.0.0.1:54323/',
+          workflowId: 'wf-attached'
+        }
+      ],
+      ok: true
+    })
+
+    fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-stale' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Attach active board' }))
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText('Workflow ID')[0] as HTMLInputElement).value).toBe('wf-attached')
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-attached')
+      expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59333')
+    })
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Human gates' })[0])
+    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-attached')
+  })
+
+  it('guards HumanGatesPanel against target edits, stale gateStatus responses, and unrecorded or failed refreshes', async () => {
+    type GateStatusReply = Awaited<ReturnType<typeof host.huntWorkbench.gateStatus>>
+    type GateStatusPayload = NonNullable<GateStatusReply['status']>
+    let resolveDeferredWf1!: (value: GateStatusReply) => void
+
+    const makeOpenStatus = (workflowId: string, address: string, caseId: string): GateStatusPayload => ({
+      address,
+      caseId,
+      childWorkflowId: `${workflowId}-round-001`,
+      completedRounds: 0,
+      currentRound: 1,
+      dataOrigin: 'synthetic',
+      decisions: [],
+      openGate: {
+        choices: ['approve', 'deny'],
+        gateKind: 'scope',
+        label: 'Human Gate 1 of 2: Scope & Framing Review',
+        phase: 'review',
+        stepId: 'wave-1',
+        waitingSteps: ['scope'],
+        wave: 1
+      },
+      parentStage: 'running_round',
+      roundsRequested: 1,
+      stage: 'awaiting_review',
+      steps: [],
+      syntheticOnly: true,
+      temporalStatus: 'RUNNING',
+      unverifiedBotSummary: null,
+      workflowId
+    })
+
+    const gateStatusSpy = vi
+      .spyOn(host.huntWorkbench, 'gateStatus')
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveDeferredWf1 = resolve
+          })
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        status: makeOpenStatus('wf-2', '127.0.0.1:17233', 'active-case-2')
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3')
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: {
+          ...makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3'),
+          decisions: [],
+          openGate: null,
+          stage: 'completed',
+          temporalStatus: 'COMPLETED'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3')
+      })
+      .mockResolvedValueOnce({
+        error: 'Temporal unavailable',
+        ok: false
+      })
+
+    const decideGateSpy = vi
+      .spyOn(host.huntWorkbench, 'decideGate')
+      .mockResolvedValueOnce({
+        decidedAtUtc: '2026-11-14T06:00:00Z',
+        decidedBy: 'Alice Analyst',
+        decisionId: 'dec-unrecorded-1',
+        ok: true,
+        via: 'cli',
+        workflowId: 'wf-3-round-001'
+      })
+      .mockResolvedValueOnce({
+        decidedAtUtc: '2026-11-14T06:01:00Z',
+        decidedBy: 'Alice Analyst',
+        decisionId: 'dec-refresh-fail-2',
+        ok: true,
+        via: 'cli',
+        workflowId: 'wf-3-round-001'
+      })
+
+    const { registry } = await discover(huntModules)
+
+    const routeEntries = registry.getArea('routes') as unknown as ReadonlyArray<{
+      data: { path: string }
+      render?: () => ReactNode
+    }>
+
+    const workspacePage = routeEntries.find(item => item.data.path === '/cybersecurity-workspace')
+    render(createElement('div', null, workspacePage?.render?.()))
+
+    fireEvent.change(screen.getByLabelText('Workflow ID'), { target: { value: 'wf-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+    expect(gateStatusSpy).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      ;(globalThis as Record<string, unknown>).__HUNT_COMMAND_HANDOFF__ = {
+        address: '127.0.0.1:17233',
+        seq: 77,
+        workflowId: 'wf-2'
+      }
+      ;((globalThis as Record<string, unknown>).__HUNT_COMMAND_ON_HANDOFF__ as (() => void) | undefined)?.()
+    })
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Workflow ID') as HTMLInputElement).value).toBe('wf-2')
+      expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:17233')
+    })
+
+    await act(async () => {
+      resolveDeferredWf1({
+        ok: true,
+        status: makeOpenStatus('wf-1', '127.0.0.1:7233', 'stale-case-1')
+      })
+      await Promise.resolve()
+    })
+    expect(screen.queryByText(/stale-case-1/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve gate' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/active-case-2 · origin=synthetic/)).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
+    })
+
+    fireEvent.change(screen.getByLabelText('Temporal loopback address'), { target: { value: '127.0.0.1:27233' } })
+    expect(screen.queryByRole('button', { name: 'Approve gate' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Load gate status' })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Workflow ID'), { target: { value: 'wf-3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/active-case-3 · origin=synthetic/)).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
+    })
+
+    fireEvent.change(screen.getByLabelText('Operator name'), { target: { value: 'Alice Analyst' } })
+    fireEvent.change(screen.getByLabelText('What did you check?'), { target: { value: 'Verified scope boundaries' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve gate' }))
+
+    await waitFor(() => {
+      expect(decideGateSpy).toHaveBeenCalledWith({
+        address: '127.0.0.1:27233',
+        checkNote: 'Verified scope boundaries',
+        childWorkflowId: 'wf-3-round-001',
+        choice: 'approve',
+        operatorName: 'Alice Analyst',
+        phase: 'review',
+        stepId: 'wave-1'
+      })
+      expect(
+        screen.getByText(
+          /Decision signal sent \(dec-unrecorded-1\), but dec-unrecorded-1 was not recorded in workflow state\./
+        )
+      ).toBeTruthy()
+    })
+
+    expect(screen.queryByText(/^Recorded /)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh gate status' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve gate' }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/workflow refresh failed\. Click Load gate status before deciding again\./)).toBeTruthy()
+    })
+
+    expect(screen.queryByRole('button', { name: 'Approve gate' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Load gate status' })).toBeTruthy()
   })
 })

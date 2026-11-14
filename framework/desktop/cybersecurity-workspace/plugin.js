@@ -283,15 +283,21 @@ const gateState = atom({ ...INITIAL_GATE_STATE });
 // because framework/desktop/test-plugin.mjs links only @hermes/plugin-sdk and react/jsx-runtime.
 let consumedHandoffSeq = 0;
 let consumedLegacyKey = '';
+let gateRequestSeq = 0;
+function exactLoopback(raw) {
+  return typeof raw === 'string' && raw.trim() ? validLoopback(raw) : null;
+}
 function applyHandoffTarget(nextWorkflowId, nextAddress) {
   const latest = gateState.get();
   const workflowId = nextWorkflowId || latest.workflowId;
   const address = nextAddress || latest.address || '127.0.0.1:7233';
   if (workflowId === latest.workflowId && address === latest.address) return;
+  gateRequestSeq += 1;
   gateState.set({
     ...latest,
     workflowId,
     address,
+    busy: false,
     status: null,
     message: workflowId
       ? `Ready to inspect ${workflowId} on ${address}. Click Load gate status.`
@@ -340,6 +346,25 @@ function factRows(items) {
 function HumanGatesPanel() {
   syncWorkflowHandoff();
   const current = useValue(gateState);
+  const updateTargetFields = patch => {
+    const latest = gateState.get();
+    const nextAddress = Object.prototype.hasOwnProperty.call(patch, 'address') ? patch.address : latest.address;
+    const nextWorkflowId = Object.prototype.hasOwnProperty.call(patch, 'workflowId') ? patch.workflowId : latest.workflowId;
+    const matchesLoaded = Boolean(
+      latest.status
+      && exactLoopback(nextAddress) === latest.status.address
+      && String(nextWorkflowId || '').trim() === latest.status.workflowId
+    );
+    gateRequestSeq += 1;
+    gateState.set({
+      ...latest,
+      address: nextAddress,
+      workflowId: nextWorkflowId,
+      busy: false,
+      status: matchesLoaded ? latest.status : null,
+      message: matchesLoaded ? latest.message : INITIAL_GATE_MESSAGE
+    });
+  };
   const loadStatus = async () => {
     syncWorkflowHandoff();
     const latest = gateState.get();
@@ -358,9 +383,11 @@ function HumanGatesPanel() {
       gateState.set({...latest,address,workflowId,message:'Enter a valid workflow ID (for example practice-dns-001) first.'});
       return;
     }
+    const reqSeq = ++gateRequestSeq;
     gateState.set({...latest,address,workflowId,busy:true,message:`Querying Temporal workflow ${workflowId} on ${address}…`});
     try {
       const reply = await host.huntWorkbench.gateStatus({ address, workflowId });
+      if (reqSeq !== gateRequestSeq) return;
       if (!reply?.ok || !reply.status) {
         gateState.set({...gateState.get(),busy:false,status:null,message:reply?.error || 'Could not query Temporal workflow status.'});
         return;
@@ -368,6 +395,7 @@ function HumanGatesPanel() {
       const openLabel = reply.status.openGate ? reply.status.openGate.label : `No open human gate (${reply.status.stage || 'idle'})`;
       gateState.set({...gateState.get(),busy:false,status:reply.status,message:`Loaded ${workflowId}: ${openLabel}.`});
     } catch {
+      if (reqSeq !== gateRequestSeq) return;
       gateState.set({...gateState.get(),busy:false,status:null,message:'Temporal gate status query failed.'});
     }
   };
@@ -380,9 +408,9 @@ function HumanGatesPanel() {
       gateState.set({...latest,message:'Local Temporal gate decision runner is unavailable in this Desktop build.'});
       return;
     }
-    const address = validLoopback(latest.address || status.address);
-    if (!address) {
-      gateState.set({...latest,message:'Temporal address must stay on 127.0.0.1:<port>.'});
+    const editedAddress = exactLoopback(latest.address);
+    if (!editedAddress || editedAddress !== status.address || latest.workflowId.trim() !== status.workflowId) {
+      gateState.set({...latest,status:null,message:'Target workflow or loopback address changed. Click Load gate status before deciding.'});
       return;
     }
     const operatorName = validOperator(latest.operatorName);
@@ -399,10 +427,12 @@ function HumanGatesPanel() {
       gateState.set({...latest,message:'No active round workflow ID is attached to receive this decision.'});
       return;
     }
+    const reqSeq = ++gateRequestSeq;
     gateState.set({...latest,busy:true,message:`Recording ${choice} decision on ${openGate.stepId} (${openGate.phase})…`});
+    let reply;
     try {
-      const reply = await host.huntWorkbench.decideGate({
-        address,
+      reply = await host.huntWorkbench.decideGate({
+        address: status.address,
         childWorkflowId: status.childWorkflowId,
         stepId: openGate.stepId,
         phase: openGate.phase,
@@ -410,26 +440,58 @@ function HumanGatesPanel() {
         operatorName,
         checkNote
       });
-      if (!reply?.ok) {
-        gateState.set({...gateState.get(),busy:false,message:reply?.error || 'Human gate decision failed.'});
-        return;
+    } catch {
+      if (reqSeq === gateRequestSeq) {
+        gateState.set({...gateState.get(),busy:false,message:'Human gate decision failed.'});
       }
-      const refreshed = await host.huntWorkbench.gateStatus({ address, workflowId: status.workflowId });
+      return;
+    }
+    if (reqSeq !== gateRequestSeq) return;
+    if (!reply?.ok) {
+      gateState.set({...gateState.get(),busy:false,message:reply?.error || 'Human gate decision failed.'});
+      return;
+    }
+    let refreshed = null;
+    try {
+      refreshed = await host.huntWorkbench.gateStatus({ address: status.address, workflowId: status.workflowId });
+    } catch {
+      refreshed = null;
+    }
+    if (reqSeq !== gateRequestSeq) return;
+    if (!refreshed?.ok || !refreshed.status) {
       gateState.set({
         ...gateState.get(),
         busy: false,
         checkNote: '',
-        status: refreshed?.ok && refreshed.status ? refreshed.status : status,
-        message: `Recorded ${choice} by ${reply.decidedBy || operatorName} via cli (${reply.decisionId || 'recorded'}).`
+        status: null,
+        message: 'Decision signal sent, but workflow refresh failed. Click Load gate status before deciding again.'
       });
-    } catch {
-      gateState.set({...gateState.get(),busy:false,message:'Human gate decision failed.'});
+      return;
     }
+    const recorded = Boolean(
+      reply.decisionId
+      && Array.isArray(refreshed.status.decisions)
+      && refreshed.status.decisions.some(item => item && item.decisionId === reply.decisionId)
+    );
+    gateState.set({
+      ...gateState.get(),
+      busy: false,
+      checkNote: recorded ? '' : gateState.get().checkNote,
+      status: refreshed.status,
+      message: recorded
+        ? `Recorded ${choice} by ${reply.decidedBy || operatorName} via cli (${reply.decisionId}).`
+        : `Decision signal sent (${reply.decisionId || 'unconfirmed'}), but ${reply.decisionId || 'decision'} was not recorded in workflow state.`
+    });
   };
   const status = current.status;
   const openGate = status?.openGate || null;
   const syntheticAllowed = Boolean(status && status.syntheticOnly === true && status.dataOrigin === 'synthetic');
-  const readyToDecide = !current.busy && Boolean(openGate && validOperator(current.operatorName) && validNote(current.checkNote));
+  const targetMatchesStatus = Boolean(
+    status
+    && exactLoopback(current.address) === status.address
+    && current.workflowId.trim() === status.workflowId
+  );
+  const readyToDecide = !current.busy && targetMatchesStatus && Boolean(openGate && validOperator(current.operatorName) && validNote(current.checkNote));
   const choices = Array.isArray(openGate?.choices) ? openGate.choices : [];
   const approveChoice = choices.includes('accept') ? 'accept' : 'approve';
   const rejectChoice = choices.includes('abort') ? 'abort' : 'deny';
@@ -440,12 +502,12 @@ function HumanGatesPanel() {
       jsx('input', {
         type:'text', className:'hw-input', 'aria-label':'Temporal loopback address', placeholder:'127.0.0.1:7233',
         style:{width:'148px'}, value:current.address, disabled:current.busy,
-        onChange:event=>gateState.set({...gateState.get(),address:event.target.value})
+        onChange:event=>updateTargetFields({address:event.target.value})
       }, 'addr'),
       jsx('input', {
         type:'text', className:'hw-input', 'aria-label':'Workflow ID', placeholder:'Workflow ID (e.g. practice-dns-001)',
         style:{flex:'1 1 220px'}, value:current.workflowId, disabled:current.busy,
-        onChange:event=>gateState.set({...gateState.get(),workflowId:event.target.value})
+        onChange:event=>updateTargetFields({workflowId:event.target.value})
       }, 'wid'),
       jsx('button', {
         type:'button', className:'hw-btn sm primary', onClick:loadStatus, disabled:current.busy,
@@ -602,6 +664,7 @@ export default {
   register(ctx) {
     consumedHandoffSeq = 0;
     consumedLegacyKey = '';
+    gateRequestSeq += 1;
     screenState.set({ routes: [], selected: '', message: '' });
     gateState.set({ ...INITIAL_GATE_STATE });
     if (typeof globalThis !== 'undefined') {

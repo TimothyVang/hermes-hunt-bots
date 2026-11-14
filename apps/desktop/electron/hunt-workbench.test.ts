@@ -371,4 +371,111 @@ describe('hunt-workbench', () => {
       'Decided by Alice Operator via Hunt Command Desktop at 2026-11-14T05:35:00Z. Checked: Reviewed case scope and confirmed time window.'
     ])
   })
+
+  it('cancels in-flight board startup on overlapping startBoard or dispose without orphaning children or temp inputs', async () => {
+    const home = makeTempDir()
+    tempDirs.push(home)
+    const analystDir = path.join(home, 'profiles', 'framework-network-analyst')
+    fs.mkdirSync(path.join(analystDir, 'hunt-lab-vm'), { recursive: true })
+
+    const exportedTempFiles: string[] = []
+    const spawnedChildren: Array<EventEmitter & { kill: () => void; killed: boolean; stderr: PassThrough; stdout: PassThrough }> = []
+
+    const wb = createHuntWorkbench({
+      hermesHome: () => home,
+      huntEnabled: true,
+      isPortBindable: async () => true,
+      probeBoardPort: async () => null,
+      resolvePython: async () => ({ frameworkRoot: '/repo/framework', pythonExe: '/repo/framework/.venv-temporal/bin/python' }),
+      runPythonCommand: async (_rt, args) => {
+        const outIdx = args.indexOf('--output')
+
+        if (outIdx >= 0) {
+          const outFile = args[outIdx + 1]
+          exportedTempFiles.push(outFile)
+          fs.writeFileSync(outFile, JSON.stringify({ mode: 'tool_driven', synthetic_only: true }))
+        }
+
+        return { code: 0, stderr: '', stdout: '{"status":"exported"}' }
+      },
+      spawnBoardProcess: (_rt, args) => {
+        const child = new EventEmitter() as EventEmitter & {
+          kill: () => void
+          killed: boolean
+          stderr: PassThrough
+          stdout: PassThrough
+        }
+
+        child.stdout = new PassThrough()
+        child.stderr = new PassThrough()
+        child.killed = false
+
+        child.kill = () => {
+          child.killed = true
+          child.emit('close', 0)
+        }
+
+        spawnedChildren.push(child)
+        const wid = args[args.indexOf('--workflow-id') + 1]
+        const portArg = args[args.indexOf('--port') + 1]
+
+        if (wid === 'wf-second') {
+          setImmediate(() => {
+            child.stdout.write(`${JSON.stringify({ status: 'serving', url: `http://127.0.0.1:${portArg}/` })}\n`)
+          })
+        }
+
+        return child as any
+      }
+    })
+
+    const firstPromise = wb.startBoard({ port: 8892, workflowId: 'wf-first' })
+
+    await new Promise<void>(resolve => {
+      const check = () => {
+        if (spawnedChildren.length >= 1) {
+          resolve()
+        } else {
+          setImmediate(check)
+        }
+      }
+
+      check()
+    })
+
+    const secondPromise = wb.startBoard({ port: 8893, workflowId: 'wf-second' })
+    const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise])
+
+    expect(firstResult).toEqual({ error: 'Board startup cancelled.', ok: false })
+    expect(spawnedChildren[0].killed).toBe(true)
+    expect(fs.existsSync(exportedTempFiles[0])).toBe(false)
+
+    expect(secondResult.ok).toBe(true)
+    expect(secondResult.board?.workflowId).toBe('wf-second')
+    expect(fs.existsSync(exportedTempFiles[1])).toBe(true)
+
+    const thirdPromise = wb.startBoard({ port: 8894, workflowId: 'wf-third' })
+
+    await new Promise<void>(resolve => {
+      const check = () => {
+        if (spawnedChildren.length >= 3) {
+          resolve()
+        } else {
+          setImmediate(check)
+        }
+      }
+
+      check()
+    })
+
+    expect(spawnedChildren[1].killed).toBe(true)
+    expect(fs.existsSync(exportedTempFiles[1])).toBe(false)
+
+    wb.dispose()
+    const thirdResult = await thirdPromise
+
+    expect(thirdResult).toEqual({ error: 'Board startup cancelled.', ok: false })
+    expect(spawnedChildren[2].killed).toBe(true)
+    expect(fs.existsSync(exportedTempFiles[2])).toBe(false)
+  })
 })

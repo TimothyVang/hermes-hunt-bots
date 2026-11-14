@@ -9,6 +9,7 @@ PID-scoped cleanup that never kills unrelated processes or deletes captured evid
 from __future__ import annotations
 
 import argparse
+import ctypes
 from datetime import UTC, datetime
 import importlib
 import json
@@ -180,8 +181,143 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a venv with framework/requirements-hunt.lock installed."
     elif not checks["desktop_assets_clean"]:
-        remediation = "Restore apps/desktop/assets with `git -C apps/desktop checkout -- assets` before packing."
+        remediation = (
+            "Inspect `git -C apps/desktop status -- assets` and remove unintended pack outputs "
+            "without discarding tracked edits."
+        )
     return _emit({"ok": ok, "checks": checks, "remediation": remediation}, 0 if ok else 1)
+
+
+class _WinFileTime(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+
+def _windows_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
+    kernel32.GetProcessTimes.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_WinFileTime),
+        ctypes.POINTER(_WinFileTime),
+        ctypes.POINTER(_WinFileTime),
+        ctypes.POINTER(_WinFileTime),
+    ]
+    kernel32.GetProcessTimes.restype = ctypes.c_int
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+
+    handle = kernel32.OpenProcess(0x1000, 0, pid)
+    if not handle:
+        return ("inaccessible", None) if ctypes.get_last_error() == 5 else ("dead", None)
+    try:
+        exit_code = ctypes.c_uint32(0)
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
+            return ("dead", None)
+        creation = _WinFileTime()
+        exit_ft = _WinFileTime()
+        kernel_ft = _WinFileTime()
+        user_ft = _WinFileTime()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_ft),
+            ctypes.byref(kernel_ft),
+            ctypes.byref(user_ft),
+        ):
+            return ("inaccessible", None)
+        buf_len = ctypes.c_uint32(4096)
+        buf = ctypes.create_unicode_buffer(buf_len.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_len)):
+            return ("inaccessible", None)
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        return ("alive", {"binary": str(Path(buf.value).resolve()), "create_time": str(ticks)})
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _posix_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ("dead", None)
+    except PermissionError:
+        return ("inaccessible", None)
+
+    stat_path = Path(f"/proc/{pid}/stat")
+    exe_path = Path(f"/proc/{pid}/exe")
+    if stat_path.is_file():
+        try:
+            raw_stat = stat_path.read_text(encoding="utf-8", errors="replace")
+            after_comm = raw_stat.rsplit(")", 1)[1].split()
+            if after_comm[0] == "Z":
+                return ("dead", None)
+            resolved_exe = str(Path(os.readlink(exe_path)).resolve())
+            return ("alive", {"binary": resolved_exe, "create_time": after_comm[19]})
+        except (IndexError, OSError):
+            return ("inaccessible", None)
+
+    ps_time = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+        check=False,
+    )
+    ps_comm = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "comm="],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+        check=False,
+    )
+    lstart = ps_time.stdout.strip()
+    comm = ps_comm.stdout.strip()
+    if ps_time.returncode != 0 or not lstart:
+        return ("dead", None)
+    if not comm:
+        return ("inaccessible", None)
+    resolved_comm = str(Path(comm).resolve()) if Path(comm).is_absolute() else comm
+    return ("alive", {"binary": resolved_comm, "create_time": lstart})
+
+
+def _process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
+    if pid <= 0:
+        return ("dead", None)
+    if os.name == "nt":
+        return _windows_process_identity(pid)
+    return _posix_process_identity(pid)
+
+
+def _norm_exe(raw: str) -> str:
+    resolved = str(Path(raw).resolve()) if Path(raw).is_absolute() else raw
+    return os.path.normcase(resolved)
+
+
+def _pid_matches_recorded(ident: dict[str, str] | None, expected_binary: str, expected_create: str) -> bool:
+    if not ident or not expected_binary or not expected_create:
+        return False
+    if ident.get("create_time") != expected_create:
+        return False
+    actual_bin = ident.get("binary", "")
+    if not actual_bin:
+        return False
+    if Path(actual_bin).is_absolute() or os.name == "nt":
+        return _norm_exe(actual_bin) == _norm_exe(expected_binary)
+    return Path(actual_bin).name == Path(expected_binary).name
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
@@ -208,8 +344,17 @@ def cmd_launch(args: argparse.Namespace) -> int:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "HERMES_HOME": str(hermes_home)}
     proc = subprocess.Popen(cmd, cwd=str(DESKTOP_DIR), env=env)
+    _state, ident = _process_identity(proc.pid)
     pid_file = evidence_dir / "hunt-command.pid"
-    pid_file.write_text(json.dumps({"pid": proc.pid, "hermes_home": str(hermes_home)}), encoding="utf-8")
+    pid_file.write_text(
+        json.dumps({
+            "pid": proc.pid,
+            "hermes_home": str(hermes_home),
+            "binary": str(binary.resolve()),
+            "create_time": ident["create_time"] if ident else "",
+        }),
+        encoding="utf-8",
+    )
     return _emit({"ok": True, "pid": proc.pid, "pid_file": str(pid_file), "hermes_home": str(hermes_home)})
 
 
@@ -327,14 +472,26 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         return _emit({"ok": True, "stopped": False, "reason": f"No PID file at {pid_file}; evidence preserved."})
     data = json.loads(pid_file.read_text(encoding="utf-8-sig"))
     pid = int(data["pid"])
+    expected_binary = str(data.get("binary") or "")
+    expected_create = str(data.get("create_time") or "")
+    state, ident = _process_identity(pid)
+    if state == "dead":
+        if args.dry_run:
+            return _emit({"ok": True, "dry_run": True, "stopped": False, "pid": pid, "pid_file": str(pid_file)})
+        pid_file.unlink(missing_ok=True)
+        return _emit({"ok": True, "stopped": False, "pid": pid, "evidence_preserved": True})
+    if state != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
+        return _emit({"ok": False, "stopped": False, "pid": pid, "reason": "pid_identity_mismatch"}, 1)
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "would_stop_pid": pid, "pid_file": str(pid_file)})
     stopped = False
     try:
         os.kill(pid, signal.SIGTERM)
         stopped = True
-    except OSError:
+    except ProcessLookupError:
         stopped = False
+    except OSError as exc:
+        return _emit({"ok": False, "stopped": False, "pid": pid, "error": str(exc)}, 1)
     pid_file.unlink(missing_ok=True)
     return _emit({"ok": True, "stopped": stopped, "pid": pid, "evidence_preserved": True})
 

@@ -135,14 +135,36 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
     hermes_home = Path(args.hermes_home).resolve()
-    argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "start", "--home", str(hermes_home)]
+    env_extra: dict[str, str] | None = None
     if args.case:
-        argv.extend(["--case", str(Path(args.case).resolve())])
-    if args.hermes:
-        argv.extend(["--hermes", args.hermes])
+        case_dir = str(Path(args.case).resolve())
+        state_dir = str(hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-vm")
+        if args.hermes:
+            hermes_bin = shutil.which(args.hermes) or args.hermes
+            argv = [hermes_bin, "-p", "framework-network-analyst", "hunt-lab", "start", "--evidence-dir", case_dir]
+            env_extra = {"HERMES_HOME": str(hermes_home)}
+        else:
+            argv = [str(lock_py), "-m", "hunt_lab.lab_stack", "start", "--state-dir", state_dir, "--evidence-dir", case_dir]
+    else:
+        argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "start", "--home", str(hermes_home)]
+        if args.hermes:
+            argv.extend(["--hermes", args.hermes])
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "argv": argv})
-    res = _run_py(lock_py, argv)
+    if args.case and args.hermes:
+        res = subprocess.run(
+            argv,
+            cwd=str(FRAMEWORK_DIR),
+            env={**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR), **(env_extra or {})},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+    else:
+        res = _run_py(lock_py, argv, env_extra=env_extra)
     return _emit({
         "ok": res.returncode == 0,
         "exit_code": res.returncode,

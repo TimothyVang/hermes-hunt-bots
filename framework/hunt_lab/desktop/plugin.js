@@ -549,7 +549,7 @@ async function attachActiveBoard({ reveal = true } = {}) {
       boards: found,
       url: validUrl,
       managed: Boolean(picked.managed),
-      workflowId: board.get().workflowId || picked.workflowId || '',
+      workflowId: picked.workflowId || board.get().workflowId || '',
       address: nextAddress,
       port: String(picked.port || parsedPort || 8790),
       shown: reveal ? true : board.get().shown,
@@ -635,7 +635,7 @@ function HuntBoard() {
     if (!current.shown || typeof window === 'undefined') return undefined;
     const onMessage = event => {
       const frame = frameRef.current;
-      if (!frame || (frame.contentWindow && event.source !== frame.contentWindow)) return;
+      if (!frame || !frame.contentWindow || event.source !== frame.contentWindow) return;
       const payload = event?.data;
       if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
       publishWorkflowHandoff(payload.workflowId || board.get().workflowId, board.get().address);
