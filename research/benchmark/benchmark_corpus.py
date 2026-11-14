@@ -65,11 +65,13 @@ def _fail(code, field):
     raise BenchmarkError(code, field) from None
 
 
-def _source_digests():
+def _source_digests(workflow_path=None):
     """The same frozen sources and encodings that `load_experiment` verifies."""
+    from benchmark import _resolve_workflow_path
     root = HERE / 'benchmarks'
+    wpath = _resolve_workflow_path(workflow_path)
     return {'coverage_sha256': digest_bytes(canonical_bytes(load_json(root / 'coverage.json'))),
-            'workflow_sha256': digest_bytes(canonical_bytes(load_json(root / 'team-workflow.json'))),
+            'workflow_sha256': digest_bytes(canonical_bytes(load_json(wpath))),
             'prompt_contract_sha256': digest_bytes((root / 'prompt-contract.txt').read_bytes())}
 
 
@@ -116,12 +118,21 @@ def public_prompt_bytes(evidence, evidence_dir):
     embedded verbatim. Every real prompt is at least this long: the contract,
     role, stage and predecessor outputs are added on top.
     """
-    public = {key: value for key, value in evidence.items() if key != 'files'}
-    public['files'] = []
+    contents = {}
     for entry in evidence['files']:
         data = confined_file(evidence_dir, entry['path'], 'files').read_bytes()
         if digest_bytes(data) != entry['sha256'] or len(data) != entry['byte_count']:
             _fail('digest_mismatch', 'files')
+        contents[entry['path']] = data
+    return prompt_projection_bytes(evidence, contents)
+
+
+def prompt_projection_bytes(evidence, contents):
+    """`public_prompt_bytes` for in-memory file bytes (`contents`: path -> bytes), for importers before writing."""
+    public = {key: value for key, value in evidence.items() if key != 'files'}
+    public['files'] = []
+    for entry in evidence['files']:
+        data = contents[entry['path']]
         try:
             content, encoding = data.decode('utf-8'), 'utf-8'
         except UnicodeDecodeError:
@@ -156,7 +167,8 @@ def check_prompt_sizes(cases, budgets, team, context_tokens=None):
 
 
 def build_corpus_experiment(cases_dir, team_path, experiment_id, repetitions, output,
-                            seed=DEFAULT_SEED, holdout_registry=None, context_tokens=None):
+                            seed=DEFAULT_SEED, holdout_registry=None, context_tokens=None,
+                            workflow_path=None):
     from benchmark import load_experiment
     if context_tokens is not None:
         _integer(context_tokens, 'context_tokens', 1)
@@ -178,7 +190,7 @@ def build_corpus_experiment(cases_dir, team_path, experiment_id, repetitions, ou
         'pricing_snapshot': team_file.get('pricing_snapshot', {
             'as_of_utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
             'currency': 'USD', 'rates': []}),
-    }, **_source_digests())
+    }, **_source_digests(workflow_path))
     data = canonical_bytes(experiment)
     # Validate the exact bytes in place (references resolve against the cases
     # root), then create the requested file; it never exists unvalidated.
@@ -186,7 +198,7 @@ def build_corpus_experiment(cases_dir, team_path, experiment_id, repetitions, ou
     try:
         with staging.open('xb') as stream:
             stream.write(data)
-        loaded = load_experiment(staging, root)
+        loaded = load_experiment(staging, root, workflow_path=workflow_path)
     finally:
         if os.path.lexists(staging):
             staging.unlink()

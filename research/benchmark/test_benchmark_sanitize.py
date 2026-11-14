@@ -51,6 +51,53 @@ class SanitizeTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertRedacted(text, 'password', secret)
 
+    def test_bots_password_arguments(self):
+        """Command-line password forms seen in public SOC-exercise exports (invented values)."""
+        cases = (('net1 user /add svcbackdoor Winter2026!', 'Winter2026!'),
+                 ('"C:\\Windows\\system32\\net.exe" user /add svcbackdoor Winter2026!', 'Winter2026!'),
+                 ('net.exe user /domain /add svcbackdoor "Winter 2026"', 'Winter 2026'),
+                 ('net user /active:yes svcbackdoor Winter2026! /domain', 'Winter2026!'),
+                 ('C:\\tools\\rar.exe a -r -pWinter2026 out.rar C:\\data', 'Winter2026'),
+                 ('rar a -hpWinter2026 -m5 out.rar notes.txt', 'Winter2026'),
+                 ('7z.exe a -tzip -pWinter2026 out.zip C:\\data', 'Winter2026'),
+                 ('zip -r -P Winter2026 out.zip /srv/data', 'Winter2026'),
+                 ('mysql -uroot -pWinter2026 inventory', 'Winter2026'),
+                 ('useradd -ou 0 -g 0 -M -s /bin/bash svcx -p Winter2026.example', 'Winter2026.example'),
+                 ('client --password Winter2026 --host db9', 'Winter2026'),
+                 ('client --password=Winter2026 --host db9', 'Winter2026'),
+                 ('action=do_login&quick_username=ann&quick_password=Winter2026&quick_remember=yes', 'Winter2026'),
+                 ('module=user-users&action=add&password=Winter2026&confirm_password=Winter2026x', 'Winter2026'),
+                 ('regcheck2=true&username=ann&password=Winter2026&password2=Winter2026', 'Winter2026'),
+                 ('passwd2=Winter2026&newpassword=Winter2026', 'Winter2026'),
+                 ('/admin/index.php?x=%22%26username%3Dann%26password%3DWinter2026%26confirm_password%3DWinter2026'
+                  '%26email%3Da%2540b', 'Winter2026'),
+                 ('chrome.exe "http://x/?a=%%22%%26password%%3DWinter2026%%26email%%3Db"', 'Winter2026'),
+                 ('Connect-Thing -User svc -Password Winter2026!', 'Winter2026!'))
+        for text, secret in cases:
+            with self.subTest(text=text):
+                self.assertRedacted(text, 'password', secret)
+        # Option-only and prompting forms stay as they are.
+        for text in ('net user /add svcbackdoor', 'net user svcbackdoor /active:yes', 'net user svcbackdoor * /add',
+                     'unrar x -p- archive.rar', 'rar a -r -ep1 out.rar data', 'client --password-file /run/x',
+                     'zip -r out.zip data', '/bin/sh -p_8089_restart', 'find / -perm -4000', 'bypass=1',
+                     'compass=north'):
+            with self.subTest(text=text):
+                out, report = self.clean(text)
+                self.assertEqual((out, report['redactions']), (text, {}))
+
+    def test_aws_keys_in_json_and_key_files(self):
+        secret = 'Zx9/InventedSecretKeyMaterial0000000000+'
+        self.assertEqual(len(secret), 40)
+        cases = (('{"AccessKeyId": "AKIAINVENTED0000TEST", "SecretAccessKey": "' + secret + '"}', secret),
+                 ('[default]\naws_access_key_id = AKIAINVENTED0000TEST\naws_secret_access_key = ' + secret, secret),
+                 ('secret_key: ' + secret, secret))
+        for text, value in cases:
+            with self.subTest(text=text[:30]):
+                out = self.assertRedacted(text, 'aws_secret_key', value)
+                if 'AKIA' in text:
+                    self.assertNotIn('AKIAINVENTED0000TEST', out)
+                    self.assertIn('[REDACTED:aws_access_key]', out)
+
     def test_hashes_tickets_keys_and_tokens(self):
         nt = '0123456789abcdef0123456789abcdef'
         pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEinventedKEYmaterial\n-----END RSA PRIVATE KEY-----'
@@ -134,6 +181,22 @@ class SanitizeTest(unittest.TestCase):
             self.assertIn(expected, out)
         self.assertEqual(scan_leaks(out, ['analyst', 'labhost09', 'LABDOM', '192.0.2.10', 'operator1']), [])
         self.assertEqual(report['pseudonymized'], 11)
+
+    def test_sids_joined_by_underscore_or_word_suffix_are_pseudonymized(self):
+        sid = 'S-1-5-21-1111111111-2222222222-3333333333-1107'
+        cases = (('\\REGISTRY\\USER\\' + sid + '_Classes', '\\REGISTRY\\USER\\' + fake('sid', sid) + '_Classes'),
+                 (sid + '-MergedResources-0', fake('sid', sid) + '-MergedResources-0'),
+                 ('Global\\UsGthrFltPipeMssGthrPipe_' + sid + '10_ 1',
+                  'Global\\UsGthrFltPipeMssGthrPipe_' + fake('sid', sid + '10') + '_ 1'))
+        for text, expected in cases:
+            with self.subTest(text=text):
+                out, _ = self.clean(text)
+                self.assertEqual(out, expected)
+                self.assertNotIn('1111111111-2222222222', out)
+        # A SID glued to letters or followed by another number group is not a SID token.
+        for text in ('XS-1-5-21-1111111111-2222222222-3333333333-1107', sid + '-5-6', sid + 'abc'):
+            with self.subTest(text=text):
+                self.assertEqual(self.clean(text)[0], text)
 
     def test_known_identities_and_guids_use_the_callers_kinds(self):
         known = KnownIdentities({'user': ['analyst'], 'netbios': ['labhost09'], 'dns': ['labhost09.lab.example.test'],

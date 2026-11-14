@@ -28,10 +28,12 @@ ROLE_IDS = ('framework-coordinator', 'framework-researcher',
             'framework-builder', 'framework-reviewer')
 STAGE_KEYS = ('scope', 'endpoint_evidence', 'network_evidence', 'hypotheses',
               'analysis', 'review', 'handoff')
-# `human_attested` (the default when absent), an unreviewed importer proposal, or
-# a mechanical consensus of two independent agent drafts; a cohort control that
-# every score carries, never upgraded to attested. Allowed for every split.
-TRUTH_ATTESTATIONS = ('human_attested', 'unreviewed_proposal', 'agent_consensus')
+# `human_attested` (the default when absent), `publisher_labels` (mechanical
+# ground truth derived from dataset-publisher event/step labels), an unreviewed
+# importer proposal, or a mechanical consensus of two independent agent drafts;
+# a cohort control that every score carries, never upgraded to attested.
+TRUTH_ATTESTATIONS = ('human_attested', 'publisher_labels', 'unreviewed_proposal', 'agent_consensus')
+NARRATIVE_ADAPTERS = ('langchain', 'openai_http')
 # Runs are fully automatic: every validated stage output advances without a
 # human gate, recorded under this distinct actor/note, never as an approval.
 AUTO_ADVANCE_ACTOR = 'benchmark-auto-advance'
@@ -605,32 +607,41 @@ def _sophistication(value, difficulty):
     tier = int(value['band'][1])
     if (tier == 0) != difficulty['control'] or (tier == 0 and steps) or (tier == 1 and (not steps or value['edges'])) or (tier >= 2 and (len(steps) < 2 or not value['edges'])):
         _fail('rubric_mismatch', field + '.band')
-    used = {item['boundary_id'] for item in steps.values()}
-    if tier in (1, 2) and (len({item['asset_id'] for item in steps.values()}) != 1 or len(used) != 1):
-        _fail('rubric_mismatch', field + '.band')
-    chain = list(steps.values())
-    if tier >= 2:
-        # The tier describes one causally linked chain; other independent atomic
-        # steps may coexist but never raise the tier.
-        edged = {step for edge in value['edges'] for step in edge}
-        linked = {min(edged)}
-        remaining = edged - linked
-        while remaining:
-            added = {right for left, right in value['edges'] if left in linked}
-            added.update(left for left, right in value['edges'] if right in linked)
-            added &= remaining
-            if not added:
-                _fail('rubric_mismatch', field + '.edges')
-            linked.update(added)
-            remaining.difference_update(added)
-        chain = [steps[step] for step in sorted(linked)]
-    chain_boundaries = {item['boundary_id'] for item in chain}
-    kinds = {boundaries[item]['kind'] for item in chain_boundaries}
-    if tier >= 3 and (len({item['asset_id'] for item in chain}) < 2 or len(chain_boundaries) < 2 or not kinds.intersection({'identity', 'privilege'})):
-        _fail('rubric_mismatch', field + '.band')
-    if tier >= 4 and (not kinds.intersection({'segment', 'domain'}) or not any(item['phase'] in ('persistence', 'reentry') for item in chain)):
-        _fail('rubric_mismatch', field + '.band')
-    if tier == 5 and (not ({'on-prem', 'cloud'}.issubset(kinds) or {'it', 'ot'}.issubset(kinds)) or not any(difficulty['factors'][key]['score'] > 0 for key in ('gaps', 'ambiguity'))):
+    if tier < 2:
+        return
+    # The tier describes the strongest causally linked chain. Real recordings carry
+    # concurrent activity: other chains and atomic steps, on any asset, may coexist
+    # but never raise the tier.
+    neighbours = {}
+    for left, right in value['edges']:
+        neighbours.setdefault(left, set()).add(right)
+        neighbours.setdefault(right, set()).add(left)
+    chains, seen = [], set()
+    for start in sorted(neighbours):
+        if start in seen:
+            continue
+        component, pending = set(), [start]
+        while pending:
+            step = pending.pop()
+            if step not in component:
+                component.add(step)
+                pending.extend(neighbours[step] - component)
+        seen |= component
+        chains.append([steps[step] for step in component])
+
+    def supports(chain):
+        chain_boundaries = {item['boundary_id'] for item in chain}
+        kinds = {boundaries[item]['kind'] for item in chain_boundaries}
+        if tier >= 3 and (len({item['asset_id'] for item in chain}) < 2 or len(chain_boundaries) < 2
+                          or not kinds.intersection({'identity', 'privilege'})):
+            return False
+        if tier >= 4 and (not kinds.intersection({'segment', 'domain'})
+                          or not any(item['phase'] in ('persistence', 'reentry') for item in chain)):
+            return False
+        return tier < 5 or (({'on-prem', 'cloud'}.issubset(kinds) or {'it', 'ot'}.issubset(kinds))
+                            and any(difficulty['factors'][key]['score'] > 0 for key in ('gaps', 'ambiguity')))
+
+    if not any(supports(chain) for chain in chains):
         _fail('rubric_mismatch', field + '.band')
 
 
@@ -658,9 +669,92 @@ def _public_path(value, field):
         _fail('truth_public_overlap', field)
 
 
+class EventIdSet:
+    """O(1) membership over inline public events plus an optional contiguous query_store range."""
+
+    def __init__(self, inline_ids, query_store=None):
+        self._inline = frozenset(inline_ids)
+        if query_store is None:
+            self._prefix = None
+            self._width = 0
+            self._count = 0
+            self._pattern = None
+        else:
+            self._prefix = query_store['event_id_prefix']
+            self._width = query_store['event_id_width']
+            self._count = query_store['event_count']
+            self._pattern = re.compile(re.escape(self._prefix) + r'([0-9]+)\Z')
+
+    def __contains__(self, item):
+        if item in self._inline:
+            return True
+        if self._pattern is None or type(item) is not str:
+            return False
+        match = self._pattern.fullmatch(item)
+        if match is None:
+            return False
+        digits = match.group(1)
+        if len(digits) < self._width or (len(digits) > self._width and digits.startswith('0')):
+            return False
+        index = int(digits)
+        return 1 <= index <= self._count
+
+    def contains_all(self, items):
+        return all(item in self for item in items)
+
+    def __and__(self, other):
+        return {item for item in other if item in self}
+
+    def __rand__(self, other):
+        return {item for item in other if item in self}
+
+    def __rsub__(self, other):
+        return {item for item in other if item not in self}
+
+    def total_bound(self):
+        return len(self._inline) + self._count
+
+    def enumerate_small(self, limit):
+        if self._count > limit or len(self._inline) > limit:
+            return None
+        combined = set(self._inline)
+        if self._prefix is not None:
+            fmt = '{}{:0' + str(self._width) + 'd}'
+            for index in range(1, self._count + 1):
+                combined.add(fmt.format(self._prefix, index))
+        return sorted(combined) if len(combined) <= limit else None
+
+
+def bundle_event_ids(public_bundle):
+    """Exact valid event_id membership set for inline and query-track public bundles."""
+    return EventIdSet((item['event_id'] for item in public_bundle['events']),
+                      public_bundle.get('query_store'))
+
+
+def _validate_query_store(value, paths, root, sources=None, source_windows=None):
+    field = 'public_bundle.query_store'
+    _fields(value, {'path', 'byte_count', 'sha256', 'event_count', 'event_id_prefix',
+                    'event_id_width', 'ioc_count'}, field)
+    _public_path(value['path'], field + '.path')
+    if value['path'].casefold() in paths:
+        _fail('duplicate_item', field + '.path')
+    _integer(value['byte_count'], field + '.byte_count', 4096)
+    _digest(value['sha256'], field + '.sha256')
+    _integer(value['event_count'], field + '.event_count', 1)
+    _id(value['event_id_prefix'], field + '.event_id_prefix')
+    if value['event_id_prefix'][-1:].isdigit():
+        _fail('invalid_identifier', field + '.event_id_prefix')
+    _integer(value['event_id_width'], field + '.event_id_width', 1, 16)
+    _integer(value['ioc_count'], field + '.ioc_count', 0)
+    if root is not None:
+        from benchmark_query import verify_query_store
+        path = confined_file(root, value['path'], field + '.path')
+        verify_query_store(path, value, sources=sources, source_windows=source_windows)
+
+
 def validate_public_bundle(value, root=None):
     field = 'public_bundle'
-    _fields(value, {'schema_version', 'case_id', 'window_utc', 'assets', 'sources', 'events', 'known_gaps', 'files', 'assessment_questions'}, field, {'unassessed_asset_ids'})
+    _fields(value, {'schema_version', 'case_id', 'window_utc', 'assets', 'sources', 'events', 'known_gaps', 'files', 'assessment_questions'}, field, {'unassessed_asset_ids', 'query_store'})
     _version(value['schema_version'], field + '.schema_version')
     if type(value['case_id']) is not str or not _CASE_ID.fullmatch(value['case_id']):
         _fail('invalid_identifier', field + '.case_id')
@@ -713,6 +807,9 @@ def validate_public_bundle(value, root=None):
                 _fail('file_unreadable', field + '.files')
             if len(data) != item['byte_count'] or digest_bytes(data) != item['sha256']:
                 _fail('evidence_digest_mismatch', field + '.files')
+    if 'query_store' in value:
+        _validate_query_store(value['query_store'], paths, root,
+                              sources=sources, source_windows=source_windows)
     events = _unique_objects(value['events'], 'event_id', field + '.events')
     previous = None
     for event in events.values():
@@ -800,7 +897,7 @@ def validate_truth(value, public_bundle=None):
         if value['evidence_manifest_sha256'] != digest_bytes(canonical_bytes(public_bundle)):
             _fail('evidence_digest_mismatch', field + '.evidence_manifest_sha256')
         assets = {item['asset_id'] for item in public_bundle['assets']}
-        events = {item['event_id'] for item in public_bundle['events']}
+        events = bundle_event_ids(public_bundle)
         questions = {item['question_id'] for item in public_bundle['assessment_questions']}
         outer = _window(public_bundle['window_utc'], 'public_bundle.window_utc')
     # Lazy: benchmark_attack imports this module. Pinned ATT&CK identity; revoked
@@ -826,7 +923,7 @@ def validate_truth(value, public_bundle=None):
             if key in seen:
                 _fail('duplicate_item', field + '.steps.support_sets')
             seen.add(key)
-            if events is not None and not ids.issubset(events):
+            if events is not None and not events.contains_all(ids):
                 _fail('unknown_reference', field + '.steps.support_sets')
         _digest(step['source_receipt_sha256'], field + '.steps.source_receipt_sha256')
     _edges(value['edges'], steps, field + '.edges')
@@ -857,7 +954,7 @@ def validate_truth(value, public_bundle=None):
             if ids in groups:
                 _fail('duplicate_item', field + '.lookalike_event_ids')
             groups.add(ids)
-            if events is not None and not ids.issubset(events):
+            if events is not None and not events.contains_all(ids):
                 _fail('unknown_reference', field + '.lookalike_event_ids')
             if ids & support:
                 _fail('lookalike_support_overlap', field + '.lookalike_event_ids')
@@ -868,7 +965,7 @@ def validate_truth(value, public_bundle=None):
         if value.get('attestation') != 'agent_consensus':
             _fail('disputed_without_consensus', field + '.disputed_event_ids')
         disputed = _strings(value['disputed_event_ids'], field + '.disputed_event_ids', _id, True)
-        if events is not None and not disputed.issubset(events):
+        if events is not None and not events.contains_all(disputed):
             _fail('unknown_reference', field + '.disputed_event_ids')
         if disputed & (support | lookalike):
             _fail('disputed_support_overlap', field + '.disputed_event_ids')
@@ -900,11 +997,12 @@ def _base_url(value, field):
 def route_is_paid(spec):
     """Derive paid status from the route, never from a deployment label.
 
-    Only an `openai`-protocol langchain route to literal-loopback HTTP
-    (127.0.0.0/8 or ::1) is unpaid; hostnames such as `localhost` and every
-    other route, including the typesafe checker, are treated as paid.
+    Only an `openai`-protocol narrative route (`langchain` or `openai_http`) to
+    literal-loopback HTTP (127.0.0.0/8 or ::1) is unpaid; hostnames such as
+    `localhost` and every other route, including the typesafe checker, are
+    treated as paid.
     """
-    if spec.get('adapter') != 'langchain' or spec.get('provider') != 'openai':
+    if spec.get('adapter') not in NARRATIVE_ADAPTERS or spec.get('provider') != 'openai':
         return True
     try:
         url = urlsplit(spec.get('base_url') or '')
@@ -920,6 +1018,8 @@ def call_cost_bound(budget, spec, rates):
     rate (USD per million tokens) bounds input by `max_prompt_bytes` and output
     by `max_output_tokens` (the byte-capped typesafe checker uses
     `max_response_bytes`): a UTF-8 byte count is an upper bound on tokens.
+    For `openai_http`, up to 4 query-track turns (including bounded tool-result
+    bytes) may execute inside one stage call, so rate bounds cover all 4 turns.
     """
     if not route_is_paid(spec):
         return 0.0
@@ -930,6 +1030,13 @@ def call_cost_bound(budget, spec, rates):
     if len(matches) != 1:
         return None
     output = spec['max_output_tokens'] if spec['max_output_tokens'] is not None else budget['max_response_bytes']
+    if spec.get('adapter') == 'openai_http':
+        # 4 rounds max; cumulative prompt history + up to 12 * 24 KiB tool replies + prior outputs.
+        max_query_bytes = 12 * 24576
+        worst_input = 4 * (budget['max_prompt_bytes'] + max_query_bytes + 3 * output)
+        worst_output = 4 * output
+        return (matches[0]['input_per_million'] * worst_input
+                + matches[0]['output_per_million'] * worst_output) / 1000000
     return (matches[0]['input_per_million'] * budget['max_prompt_bytes']
             + matches[0]['output_per_million'] * output) / 1000000
 
@@ -944,8 +1051,10 @@ def _checker_origin(value, field):
 
 def _model(value, field, checker=False):
     _fields(value, {'adapter', 'provider', 'model_requested', 'base_url', 'credential_env', 'parameters', 'timeout_seconds', 'max_output_tokens', 'expected_model_ids'}, field)
-    _enum(value['adapter'], ('typesafe',) if checker else ('langchain',), field + '.adapter')
+    _enum(value['adapter'], ('typesafe',) if checker else NARRATIVE_ADAPTERS, field + '.adapter')
     _enum(value['provider'], ('typesafe',) if checker else ('openai', 'anthropic'), field + '.provider')
+    if value['adapter'] == 'openai_http' and value['provider'] != 'openai':
+        _fail('unsupported_parameter', field + '.provider')
     _text(value['model_requested'], field + '.model_requested')
     _base_url(value['base_url'], field + '.base_url')
     if checker:
@@ -1196,7 +1305,10 @@ def stage_output_schema(stage_key, evidence):
     local_id = {'type': 'string', 'pattern': _SCHEMA_ID}
     probability = {'type': 'number', 'minimum': 0, 'maximum': 1}
     timestamp = {'type': 'string', 'pattern': _SCHEMA_TIMESTAMP}
-    event_ids = {'type': 'array', 'items': _schema_identifier(item['event_id'] for item in evidence['events'])}
+    small_events = bundle_event_ids(evidence).enumerate_small(SCHEMA_ENUM_LIMIT)
+    event_item = ({'type': 'string', 'enum': small_events}
+                  if small_events else {'type': 'string', 'pattern': _SCHEMA_ID})
+    event_ids = {'type': 'array', 'items': event_item}
     claim = _schema_object({
         'claim_id': local_id, 'kind': _schema_choice(('observation', 'inference', 'hypothesis')),
         'text': text, 'event_ids': event_ids})
@@ -1222,3 +1334,24 @@ def stage_output_schema(stage_key, evidence):
             'items': _schema_object({'question_id': _schema_identifier(questions),
                                      'probability_suspicious': _schema_nullable(probability)})}
     return _schema_object(properties)
+
+
+WORKFLOW_DEPENDENCIES = {
+    'scope': [], 'endpoint_evidence': ['scope'], 'network_evidence': ['scope'],
+    'hypotheses': ['scope'],
+    'analysis': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses'],
+    'review': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses', 'analysis'],
+    'handoff': ['scope', 'endpoint_evidence', 'network_evidence', 'hypotheses', 'analysis', 'review'],
+}
+WORKFLOW_LEDGER_ROLES = dict(zip(WORKFLOW_DEPENDENCIES, (
+    'coordinator', 'researcher', 'researcher', 'researcher', 'builder', 'reviewer', 'coordinator',
+)))
+
+
+def validate_benchmark_workflow(template):
+    tasks = template['tasks']
+    if ([task['key'] for task in tasks] != list(WORKFLOW_DEPENDENCIES)
+            or any(task['depends_on'] != WORKFLOW_DEPENDENCIES[task['key']]
+                   or task['role'] != WORKFLOW_LEDGER_ROLES[task['key']] for task in tasks)):
+        _fail('invalid_workflow', 'workflow')
+    return template

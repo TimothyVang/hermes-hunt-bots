@@ -2,7 +2,6 @@
 import contextlib
 import copy
 from concurrent.futures import ThreadPoolExecutor
-import datetime as dt
 import io
 import json
 import multiprocessing
@@ -550,11 +549,21 @@ def hook(event, args):
 
 sys.addaudithook(hook)
 from benchmark import main
+from benchmark_contracts import canonical_bytes, digest_bytes, load_json
+novel_wf = os.path.join(here, 'benchmarks', 'team-workflow-novel-apt.json')
+novel_exp_path = os.path.join(bundle, 'examples', 'experiment-novel-apt.json')
+novel_exp = dict(load_json(os.path.join(bundle, 'examples', 'experiment.json')),
+                 experiment_id='exp-novel-apt-audit',
+                 workflow_sha256=digest_bytes(canonical_bytes(load_json(novel_wf))))
+with open(novel_exp_path, 'wb') as out:
+    out.write(canonical_bytes(novel_exp))
 with contextlib.redirect_stdout(io.StringIO()):
     codes = [main(['--state-root', state, 'init', '--experiment',
                    os.path.join(bundle, 'examples', 'experiment-graduated.json'),
                    '--bundle-root', bundle, '--truth', os.path.join(bundle, 'fixtures')]),
-             main(['--state-root', state, 'status', '--experiment', experiment_id])]
+             main(['--state-root', state, 'status', '--experiment', experiment_id]),
+             main(['validate', '--experiment', novel_exp_path, '--bundle-root', bundle,
+                   '--workflow', 'benchmarks/team-workflow-novel-apt.json'])]
 print(json.dumps({'codes': codes, 'opened': sorted(opened)}))
 '''
 
@@ -589,7 +598,7 @@ class SourceSnapshotTests(unittest.TestCase):
                                 capture_output=True, text=True, cwd=self.temp.name, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         audit = json.loads(result.stdout)
-        self.assertEqual(audit['codes'], [0, 0])
+        self.assertEqual(audit['codes'], [0, 0, 0])
         modules, data = set(), set()
         for path in audit['opened']:
             parent, name = path.rpartition('/')[::2]

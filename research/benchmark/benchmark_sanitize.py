@@ -4,9 +4,11 @@ Content fields are hunting evidence, so they reach the hunter instead of being d
 value passes `sanitize_text`, in this order:
 
 1. Normalise to `str` (bytes are decoded as strict UTF-8). NUL is refused; newlines are kept.
-2. Secrets become `[REDACTED:<kind>]`: password-style arguments and literals, NTLM/LM hashes, Kerberos tickets and
-   keys, private-key PEM blocks, AWS access keys and secret keys, JWTs, `Authorization:`/`Cookie:` header values,
-   URL and connection-string passwords. A PowerShell `-EncodedCommand` payload (any unambiguous prefix such as
+2. Secrets become `[REDACTED:<kind>]`: password-style arguments and literals (`-Password`, `--password`, `/p:`,
+   `-p` after credential tools, archiver `-p<pass>`/`-hp<pass>`/`-P <pass>`, `net user [/add] <name> <pass>`),
+   NTLM/LM hashes, Kerberos tickets and keys, private-key PEM blocks, AWS access keys and secret keys, JWTs,
+   `Authorization:`/`Cookie:` header values, URL and connection-string passwords. A PowerShell `-EncodedCommand`
+   payload (any unambiguous prefix such as
    `-e`/`-enc`) is decoded to scan for secrets; a payload whose decoded text holds one becomes
    `[REDACTED:encoded_secret]`. Otherwise, with `encoded_payloads='preview'` (default), a UTF-16LE payload becomes
    `[ENCODED_COMMAND utf16le_chars=N sha256=<16 hex of the decoded bytes>] decoded_preview="<first 512 decoded
@@ -55,7 +57,13 @@ _PS_ENCODED = re.compile(
     r'(?i)(?<![\w-])([-/]e(?:c|n(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?)?)?)?)?)?)?)?\s+)'
     r'([A-Za-z0-9+/]{16,}={0,2})(?![A-Za-z0-9+/=])')
 _TOOLS_DASH_P = (r'sshpass|runas|psexec(?:64)?|paexec|net1?|plink|pscp|smbclient|winexe|crackmapexec|cme|'
-                 r'wmiexec|smbexec|atexec|dcomexec|mysql|mysqldump')
+                 r'wmiexec|smbexec|atexec|dcomexec|mysql|mysqldump|useradd|usermod')
+# Archivers take the password glued to the switch (`rar a -pSECRET`, `-hpSECRET` also encrypts headers,
+# `7z a -pSECRET`); zip/unzip take `-P SECRET`.
+_ARCHIVERS_GLUED_P = r'rar|winrar|unrar|7z|7za|7zr|7zg'
+_ARCHIVERS_SPACED_P = r'zip|unzip'
+# `net user` options (`/add`, `/domain`, `/active:yes`) may precede the account name and its password.
+_NET_USER_OPTIONS = r'(?:/[a-z]+(?::[^\s"/;&|]*)?\s+)*'
 _SECRET_RULES = (
     ('private_key', re.compile(r'-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----.*?(?:-----END \1PRIVATE KEY-----|\Z)',
                                re.S), 0),
@@ -72,7 +80,7 @@ _SECRET_RULES = (
                              r'\s*[:=]?\s*["\']?|[-/]{0,2}(?:nt|lm)\s*[:=]\s*["\']?)([0-9a-f]{32})(?![0-9a-f])'), 2),
     ('ntlm_hash', re.compile(r'(?i)(?<=:)[0-9a-f]{32}(?=:|\s|$|["\'])'), 0),
     ('aws_access_key', re.compile(r'(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])'), 0),
-    ('aws_secret_key', re.compile(r'(?i)((?:aws_?secret_?access_?key|secret_?access_?key|aws_?secret_?key|secretkey|'
+    ('aws_secret_key', re.compile(r'(?i)((?:aws_?secret_?access_?key|secret_?access_?key|aws_?secret_?key|secret_?key|'
                                   r'secret-access-key)["\']?\s*[:=\s]\s*["\']?)([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])'),
      2),
     ('password', re.compile(r'(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@\'"]+:)([^@\s/\'"]+)(?=@)'), 2),
@@ -81,24 +89,45 @@ _SECRET_RULES = (
     ('password', re.compile(r'(' + _QUOTED + r')(?=\s*\|\s*ConvertTo-SecureString\b)', re.I), 1),
     ('password', re.compile(r'(?i)(?<![\w-])(-(?:password|passwd|pass|pw)(?:\s*:\s*|\s+))(' + _QUOTED +
                             r'|(?![$(@])[^\s"\'|;)]+)'), 2),
+    ('password', re.compile(r'(?i)(?<![\w-])(--(?:password|passwd|pass|pwd)(?:\s*=\s*|\s+))(' + _QUOTED +
+                            r'|(?![$(@-])[^\s"\'|;)]+)'), 2),
     ('password', re.compile(r'(?i)(?<![\w/\\.:-])(/(?:p|pass|password|pwd|passwd)\s*:)(' + _QUOTED +
                             r'|[^\s"\']+)'), 2),
     ('password', re.compile(r'(?i)(?<![\w.-])((?:' + _TOOLS_DASH_P + r')(?:\.exe|\.py)?\b[^\r\n|;&]*?\s-p\s*)(' +
                             _QUOTED + r'|[^\s"\']+)'), 2),
-    ('password', re.compile(r'(?i)(?<![\w.-])(net1?(?:\.exe)?\s+user\s+(?:"[^"\r\n]*"|[^\s"/;&|]+)\s+)(?![/*])(' +
-                            r'"[^"\r\n]*"|[^\s"/;&|]+)'), 2),
-    ('password', re.compile(r'(?i)(?<![\w.-])(net1?(?:\.exe)?\s+use\s+(?:[a-z*]:\s+)?\\\\[^\s";&|]+\s+)(?![/*])(' +
-                            r'"[^"\r\n]*"|[^\s"/;&|]+)'), 2),
+    ('password', re.compile(r'(?i)(?<![\w.-])((?:' + _ARCHIVERS_GLUED_P + r')(?:\.exe)?\b[^\r\n|;&]*?\s-h?p)(' +
+                            _QUOTED + r'|[^\s"\'-][^\s"\']*)'), 2),
+    ('password', re.compile(r'(?<![\w.-])((?i:' + _ARCHIVERS_SPACED_P + r')(?i:\.exe)?\b[^\r\n|;&]*?\s-P\s+)(' +
+                            _QUOTED + r'|[^\s"\'-][^\s"\']*)'), 2),
+    # `"C:\Windows\system32\net.exe" user /add <name> <password>`: the image path may be quoted.
+    ('password', re.compile(r'(?i)(?<![\w.-])(net1?(?:\.exe)?["\']?\s+user\s+' + _NET_USER_OPTIONS +
+                            r'(?:"[^"\r\n]*"|[^\s"/;&|]+)\s+)(?![/*])(' + r'"[^"\r\n]*"|[^\s"/;&|]+)'), 2),
+    ('password', re.compile(r'(?i)(?<![\w.-])(net1?(?:\.exe)?["\']?\s+use\s+(?:[a-z*]:\s+)?\\\\[^\s";&|]+\s+)'
+                            r'(?![/*])("[^"\r\n]*"|[^\s"/;&|]+)'), 2),
+    # The same assignment percent-encoded inside a URL (`%26password%3D<pw>%26…`, an XSS/CSRF payload in a query
+    # string, `%%26…` when cmd.exe-escaped): the key may follow an encoded separator and the value runs to the next
+    # encoded separator.
+    ('password', re.compile(r'(?i)(?:(?<=%[0-9a-f]{2})|(?<![\w.%-]))((?:[a-z0-9]+[_.-])*'
+                            r'(?:old|new|confirm|verify|current|re)?(?:password|passwd|pwd|pass|passphrase|passcode|'
+                            r'secret)[0-9]*(?:[_.-][a-z0-9]+)*%%?3D)((?:%%?(?!26|22|27|3b|2c|20)[0-9a-f]{2}|'
+                            r'[^&\s"\';%<>])+)'), 2),
 )
-# password=/pwd=: connection strings, URLs, arguments. A PowerShell `$password = ...` assignment is redacted only
-# when it assigns a string literal.
-_ASSIGNED_PASSWORD = re.compile(r'(?i)(?<![\w])(\$?)((?:password|passwd|pwd)\s*=(?!=)\s*)(' + _QUOTED +
-                                r'|[^;\s"\'&]+)')
+# password=/pwd=: connection strings, URLs, arguments, form posts. The key may carry `_`/`-`/`.` joined words around
+# the password word (`quick_password=`, `confirm_password=`, `new-passwd=`, `client_secret=`), a glued old/new/confirm
+# prefix (`newpassword=`) and a digit suffix (`password2=`, `passwd2=`). A PowerShell `$password = ...` assignment is
+# redacted only when it assigns a string literal.
+_ASSIGNED_PASSWORD = re.compile(r'(?i)(?<![\w.-])(\$?)((?:[a-z0-9]+[_.-])*(?:old|new|confirm|verify|current|re)?'
+                                r'(?:password|passwd|pwd|pass|passphrase|passcode|secret)[0-9]*(?:[_.-][a-z0-9]+)*'
+                                r'\s*=(?!=)\s*)(' + _QUOTED + r'|[^;\s"\'&]+)')
 _CONNECTION_CONTEXT = re.compile(r'(?i)(?:server|data source|uid|user id|initial catalog|provider|database)\s*=')
 
 # --------------------------------------------------------------- identities
 
-_SID = re.compile(r'(?i)(?<![\w-])S-1-(?:5-21(?:-[0-9]+){3}(?:-[0-9]+)?|12-1(?:-[0-9]+){4})(?![\w-])')
+# A SID may be joined by `_` or followed by `-<word>`: registry values write `S-1-5-21-…-1107_Classes` and
+# `S-1-5-21-…-1108-MergedResources…`, search pipes `…PIPE_S-1-5-21-…_` (inspected in OTRF APT29 Sysmon 1/13).
+# Only an adjacent letter/digit or a further `-<digits>` group is refused.
+_SID = re.compile(r'(?i)(?<![A-Za-z0-9-])S-1-(?:5-21(?:-[0-9]+){3}(?:-[0-9]+)?|12-1(?:-[0-9]+){4})'
+                  r'(?![A-Za-z0-9]|-[0-9])')
 _UNC = re.compile(r'(?<![\\\w:/.$%-])(\\\\(?:\\\\)?)([A-Za-z0-9][A-Za-z0-9_.-]{0,254})(?=\\|/|\s|$|["\'])')
 _PROFILE = re.compile(r'(?i)(?<![\w])((?:Users|home)(?:\\\\|\\|/))([^\\/:*?"<>|\r\n\t]+?)(?=\\|/|"|\'|\s|$)')
 _ACCOUNT = re.compile(r'(?<![\w.\\/$%@-])([A-Za-z0-9][A-Za-z0-9-]{0,14})\\([A-Za-z0-9][A-Za-z0-9._-]{0,63}\$?)'

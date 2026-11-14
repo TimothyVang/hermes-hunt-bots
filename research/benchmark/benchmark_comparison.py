@@ -263,6 +263,9 @@ def _measurements(rows):
             'local_energy_cost_usd': _measurement([receipt.get('cost', {}).get('local_energy_cost_usd') for receipt in receipts]),
             'provider_reported_usage': {key: _measurement([receipt.get('usage', {}).get(key) for receipt in receipts])
                                         for key in ('input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens')},
+            'query_store_usage': {key: _measurement([(receipt.get('query_usage') or {}).get(key) for receipt in receipts])
+                                  for key in ('queries_executed', 'rows_returned_total',
+                                              'bytes_returned_total', 'ioc_lookups')},
             'evidence_checker_calls': sum(call.get('spec', {}).get('component') == 'evidence_checker' for call in calls)}
 
 
@@ -567,8 +570,9 @@ def build_comparison(snapshot):
                             'Mechanical adjudication applies deterministic rules, not human verdicts: its status is '
                             'mechanical, claim semantic support and correct control dispositions are '
                             'not_measured_mechanical, and it is never compared or ranked with human adjudication.',
-                            'Truth marked unreviewed_proposal is an unreviewed proposed answer key, and truth '
-                            'marked agent_consensus is two independent AI drafts merged mechanically; neither is a '
+                            'Truth marked publisher_labels is derived mechanically from dataset-publisher labels, '
+                            'truth marked unreviewed_proposal is an unreviewed proposed answer key, and truth '
+                            'marked agent_consensus is two independent AI drafts merged mechanically; none is a '
                             'human attestation, and findings citing only agent_consensus disputed records are '
                             'ignored; truth attestation and truth freeze are cohort controls.',
                             'Concurrent calls (timing_contended) share hosts and providers; elapsed times are '

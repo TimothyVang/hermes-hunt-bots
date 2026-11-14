@@ -993,5 +993,226 @@ class ConsensusCurationTest(unittest.TestCase):
         self.assertFalse((self.root / 'signed-2.json').exists())
 
 
+COMPOUND_RECORDS = SAMPLE / 'sample_compound_lab_2026-01-02.json'
+COMPOUND_README = SAMPLE / 'sample-compound-README.md'
+WINDOW = ('2026-01-02T10:01:00+00:00', '2026-01-02T10:02:00+00:00')
+HOST_A, HOST_B, HOST_DC = 'labhost11.lab.example.test', 'labhost12.lab.example.test', 'labdc01.lab.example.test'
+# Original line -> host of the INVENTED compound sample (line 12 is blank; lines 1 and 13 are outside WINDOW;
+# lines 3, 5 and 9 are event types the live-collector profile does not collect).
+LINE_HOSTS = {2: HOST_A, 4: HOST_B, 6: HOST_A, 7: HOST_B, 8: HOST_DC, 10: HOST_B, 11: HOST_B}
+
+
+class CompoundImportTest(unittest.TestCase):
+    """Multi-host compound recordings imported as explicit UTC partitions (INVENTED sample, no downloads)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.fields = otrf.load_field_map()
+        self.dataset = self.zip_records(COMPOUND_RECORDS.read_bytes())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def zip_records(self, data, name='sample_compound_lab.zip'):
+        path = self.root / name
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(COMPOUND_RECORDS.name, data)
+        return path
+
+    def scan(self, window=WINDOW, profile='live-collector', dataset=None):
+        return otrf.scan_compound(dataset or self.dataset, COMPOUND_README, self.fields, window, profile)
+
+    def draft(self, scan=None, partition=WINDOW, **kwargs):
+        kwargs.setdefault('draft_os_family', 'windows-client')
+        return otrf.build_compound_case(scan or self.scan(), self.fields, SALT, partition, **kwargs)
+
+    def assertCode(self, code, call, *args, **kwargs):
+        with self.assertRaises(BenchmarkError) as caught:
+            call(*args, **kwargs)
+        self.assertEqual(caught.exception.code, code)
+        return caught.exception
+
+    def proposal(self, outputs, **changes):
+        """A curation built from the draft template: one sufficient step on host B, benign controls elsewhere."""
+        value = decode_json(outputs['evaluator/curation-template.json'])['curation']
+        window = value['partition_window']
+        value.update({'status': otrf.PROPOSAL_STATUS, 'note': 'Invented compound proposal.', 'attack_release': 'v20',
+                      'coverage': {'os': ['windows-client', 'windows-server'], 'execution_platform': ['virtual-machine'],
+                                   'network': ['ipv4'], 'identity_domain': ['ad-single-domain'],
+                                   'operational_domain': ['enterprise-it'], 'dns_domain': ['internal-authoritative'],
+                                   'telemetry': ['windows-security', 'sysmon']},
+                      'steps': [{'step_id': 'step-1', 'technique_id': 'T1033', 'asset': {'hostname': HOST_B},
+                                 'window_utc': {'start_inclusive': '2026-01-02T10:01:30Z',
+                                                'end_exclusive': '2026-01-02T10:01:31Z'},
+                                 'execution_outcome': 'succeeded', 'observability': 'sufficient',
+                                 'support_sets': [[{'line': 11}]], 'boundary_id': 'boundary-host', 'phase': 'initial'}],
+                      'controls': [{'control_id': 'control-' + str(index), 'asset': {'hostname': host},
+                                    'window_utc': window, 'expected_disposition': 'benign'}
+                                   for index, host in enumerate((HOST_A, HOST_DC))],
+                      'sophistication': {'band': 'S1', 'boundaries': [{'boundary_id': 'boundary-host', 'kind': 'host'}],
+                                         'preconditions': [], 'emulation_limitations': [], 'group_ids': [],
+                                         'source_references': []},
+                      'source_references': ['https://example.test/compound-sample/sample_compound_lab.zip']})
+        value.update(changes)
+        path = self.root / 'proposal-{}.json'.format(len(list(self.root.glob('proposal-*.json'))))
+        path.write_bytes(canonical_bytes(value))
+        return path
+
+    def test_partition_keeps_every_host_and_states_every_exclusion(self):
+        scan = self.scan()
+        self.assertEqual(scan['clock']['offset_seconds'], -14400)
+        self.assertEqual(scan['hosts'], sorted([HOST_A, HOST_B, HOST_DC]))
+        _, outputs = self.draft(scan)
+        bundle = validate_public_bundle(decode_json(outputs['public/evidence.json']))
+        locators = decode_json(outputs['evaluator/locators.json'])['events']
+        # Multi-host attribution: each event sits on the asset of the computer that logged it, one asset per host.
+        self.assertEqual({item['line']: item['hostname'].casefold() for item in locators.values()}, LINE_HOSTS)
+        asset_of = {}
+        for event in bundle['events']:
+            asset_of.setdefault(locators[event['event_id']]['hostname'].casefold(), set()).add(event['asset_id'])
+        self.assertEqual({host: len(ids) for host, ids in asset_of.items()}, {HOST_A: 1, HOST_B: 1, HOST_DC: 1})
+        self.assertEqual(len({next(iter(ids)) for ids in asset_of.values()}), 3)
+        self.assertEqual(len(bundle['assets']), 3)
+        self.assertEqual(len(bundle['assessment_questions']), 3)
+        self.assertEqual(bundle['window_utc'], {'start_inclusive': '2026-01-02T10:01:00.000000+00:00',
+                                                'end_exclusive': '2026-01-02T10:02:00.000000+00:00'})
+        report = decode_json(outputs['evaluator/import-report.json'])
+        self.assertEqual(report['counts']['not_imported'],
+                         {'blank_line': 1, 'outside_partition_window': 2, 'collection_profile_filter': 3})
+        self.assertEqual(report['partition']['excluded_by_host'], {HOST_A: 2, HOST_B: 0, HOST_DC: 0})
+        self.assertEqual(report['partition']['imported_line_ranges'], '2,4,6-8,10-11')
+        self.assertEqual(report['collection_profile']['excluded_by_host'],
+                         {HOST_A: {'Microsoft-Windows-Sysmon/Operational:10': 1}, HOST_B: {'Security:4658': 1},
+                          HOST_DC: {'Microsoft-Windows-Windows Firewall With Advanced Security/Firewall:2004': 1}})
+        reasons = sorted(gap['reason'].split(':', 1)[0] for gap in bundle['known_gaps'])
+        self.assertEqual(reasons, ['collection_profile_filter'] * 3 + ['outside_partition_window'])
+        firewall = [gap for gap in bundle['known_gaps'] if 'Firewall' in gap['reason']]
+        self.assertEqual([gap['source_id'] for gap in firewall], [None])
+        # records.jsonl is an index of the imported original lines, in original order.
+        index = [decode_json(line) for line in outputs['public/records.jsonl'].splitlines()]
+        self.assertEqual([item['line'] for item in index], sorted(LINE_HOSTS))
+        self.assertEqual({item['event_id'] for item in index}, {event['event_id'] for event in bundle['events']})
+        self.assertEqual({event['locator']['record_id'] for event in bundle['events']},
+                         {str(line) for line in LINE_HOSTS})
+        template = decode_json(outputs['evaluator/curation-template.json'])['curation']
+        self.assertEqual((template['partition_window'], template['collection_profile']),
+                         (bundle['window_utc'], 'live-collector'))
+        public = outputs['public/evidence.json'].decode('utf-8').casefold() + outputs['public/records.jsonl'].decode()
+        for name in ('sample_compound_lab', 'sample-actor', 'sample actor', 'labhost11', 'labuser1', '192.0.2.11'):
+            self.assertNotIn(name, public)
+
+    def test_curated_partition_binds_window_profile_and_family(self):
+        _, draft = self.draft()
+        case_id, outputs = self.draft(curation_path=self.proposal(draft), draft_os_family=None)
+        scenario = decode_json(outputs['scenario.json'])
+        self.assertEqual(scenario['family_id'], 'otrf-compound-sample-actor-sample-compound-lab')
+        self.assertRegex(scenario['scenario_id'], r'\Aotrf-compound-sample-actor-sample-compound-lab-p[0-9a-f]{12}\Z')
+        self.assertTrue(any(item.startswith('Derived partition 2026-01-02T10:01:00') and 'live-collector' in item
+                            for item in scenario['sophistication']['emulation_limitations']))
+        truth = decode_json(outputs['evaluator/truth.json'])
+        self.assertEqual(sorted(truth['assessment_labels'].values()), [0, 0, 1])
+        # Another partition of the same recording is another case of the same bootstrap family.
+        other_id, other = self.draft(partition=('2026-01-02T10:01:00+00:00', '2026-01-02T10:01:40+00:00'))
+        self.assertNotEqual(other_id, case_id)
+        # Window, profile and support must match the import exactly.
+        moved = dict(decode_json(draft['evaluator/curation-template.json'])['curation']['partition_window'],
+                     end_exclusive='2026-01-02T10:01:59Z')
+        self.assertCode('partition_mismatch', self.draft, curation_path=self.proposal(draft, partition_window=moved),
+                        draft_os_family=None)
+        no_profile = self.proposal(draft)
+        value = decode_json(no_profile.read_bytes())
+        value.pop('collection_profile')
+        no_profile.write_bytes(canonical_bytes(value))
+        error = self.assertCode('partition_mismatch', self.draft, curation_path=no_profile, draft_os_family=None)
+        self.assertEqual(error.field, 'curation.collection_profile')
+        outside = self.proposal(draft)
+        value = decode_json(outside.read_bytes())
+        value['steps'][0]['support_sets'] = [[{'line': 13}]]
+        outside.write_bytes(canonical_bytes(value))
+        self.assertCode('support_record_not_imported', self.draft, curation_path=outside, draft_os_family=None)
+        filtered = self.proposal(draft)
+        value = decode_json(filtered.read_bytes())
+        value['steps'][0]['support_sets'] = [[{'line': 3}]]
+        filtered.write_bytes(canonical_bytes(value))
+        self.assertCode('support_record_not_imported', self.draft, curation_path=filtered, draft_os_family=None)
+        # A partitioned curation never imports as a whole atomic recording.
+        atomic = dict(json.loads(NX_CURATION.read_text('utf-8')), partition_window=moved)
+        (self.root / 'atomic.json').write_bytes(canonical_bytes(atomic))
+        self.assertCode('partition_mismatch', otrf.build_case, NX_DATASET, NX_METADATA, self.fields, SALT,
+                        curation_path=self.root / 'atomic.json')
+
+    def test_oversized_partition_is_refused_and_plan_splits_contiguously(self):
+        scan = self.scan()
+        _, outputs = self.draft(scan, max_public_bytes=None)
+        whole = decode_json(outputs['evaluator/import-report.json'])['public_bytes']['prompt_projection']
+        self.assertCode('public_bundle_too_large', self.draft, scan, max_public_bytes=whole - 1)
+        self.assertCode('invalid_limit', self.draft, scan, max_public_bytes=otrf.MAX_PUBLIC_BYTES + 1)
+        code, _, stderr = run_cli('compound', '--dataset', self.dataset, '--metadata', COMPOUND_README,
+                                  '--window-start', WINDOW[0], '--window-end', WINDOW[1],
+                                  '--collection-profile', 'live-collector', '--draft-os-family', 'windows-client',
+                                  '--max-public-bytes', whole - 1, '--output', self.root / 'too-large')
+        self.assertEqual((code, stderr), (2, 'error: public_bundle_too_large: partition\n'))
+        self.assertFalse((self.root / 'too-large').exists())
+        plan = otrf.plan_compound(scan, self.fields, whole - 1, salt=SALT)
+        self.assertGreaterEqual(len(plan['partitions']), 2)
+        self.assertEqual(plan['unpublishable'], [])
+        windows = [item['window_utc'] for item in plan['partitions']]
+        self.assertEqual(windows[0]['start_inclusive'], '2026-01-02T10:01:00.000000+00:00')
+        self.assertEqual(windows[-1]['end_exclusive'], '2026-01-02T10:02:00.000000+00:00')
+        for left, right in zip(windows, windows[1:]):
+            self.assertEqual(left['end_exclusive'], right['start_inclusive'])
+        for item in plan['partitions']:
+            self.assertLessEqual(item['prompt_bytes'], whole - 1)
+            case = (item['window_utc']['start_inclusive'], item['window_utc']['end_exclusive'])
+            self.draft(scan, partition=case, max_public_bytes=whole - 1)
+        self.assertEqual(sum(item['records_kept'] for item in plan['partitions']), len(LINE_HOSTS))
+        self.assertEqual(sum(item['records_profile_excluded'] for item in plan['partitions']), 3)
+        # A second that cannot fit alone is stated as unpublishable, never sampled.
+        tiny = otrf.plan_compound(scan, self.fields, 1000, salt=SALT)
+        self.assertEqual(tiny['partitions'], [])
+        self.assertEqual(sum(item['records_kept'] for item in tiny['unpublishable']), len(LINE_HOSTS))
+
+    def test_compound_input_refusals(self):
+        self.assertCode('invalid_window', self.scan, window=(WINDOW[1], WINDOW[0]))
+        self.assertCode('no_supported_records', self.draft,
+                        self.scan(window=('2026-01-02T10:05:00+00:00', '2026-01-02T10:06:00+00:00')),
+                        partition=('2026-01-02T10:05:00+00:00', '2026-01-02T10:06:00+00:00'))
+        self.assertCode('invalid_window', self.draft, partition=('2026-01-02T10:00:00+00:00', WINDOW[1]))
+        self.assertCode('invalid_choice', self.scan, profile='everything')
+        renamed = self.zip_records(COMPOUND_RECORDS.read_bytes(), name='other_recording.zip')
+        self.assertCode('metadata_dataset_mismatch', self.scan, dataset=renamed)
+        self.assertCode('unsupported_dataset_layout', self.scan, dataset=COMPOUND_RECORDS)
+        lines = COMPOUND_RECORDS.read_bytes().split(b'\n')
+        record = decode_json(lines[3])
+        record['host'] = 'second-collector.example.test'
+        lines[3] = canonical_bytes(record)
+        two = self.zip_records(b'\n'.join(lines), name='sample_compound_lab.zip')
+        self.assertCode('multiple_collectors', self.scan, dataset=two)
+
+    def test_consensus_keeps_partition_and_profile_and_refuses_profile_conflict(self):
+        import benchmark_consensus
+        _, draft = self.draft()
+        case_dir = otrf.write_outputs(self.root / 'draft', 'case-0000', draft)
+        a = self.proposal(draft, note='Draft A of the invented compound sample.')
+        b = self.proposal(draft, note='Draft B of the invented compound sample.')
+        output = self.root / 'consensus.json'
+        benchmark_consensus.merge(a, b, case_dir / 'evaluator' / 'locators.json',
+                                  case_dir / 'evaluator' / 'curation-template.json', output)
+        merged, _ = otrf.load_curation(output)
+        self.assertEqual((merged['attestation'], merged['collection_profile']), ('agent_consensus', 'live-collector'))
+        _, outputs = self.draft(curation_path=output, draft_os_family=None)
+        self.assertEqual(decode_json(outputs['evaluator/truth.json'])['attestation'], 'agent_consensus')
+        conflicting = self.proposal(draft, note='Draft C without a profile.')
+        value = decode_json(conflicting.read_bytes())
+        value.pop('collection_profile')
+        conflicting.write_bytes(canonical_bytes(value))
+        with self.assertRaises(BenchmarkError) as caught:
+            benchmark_consensus.merge(a, conflicting, case_dir / 'evaluator' / 'locators.json',
+                                      case_dir / 'evaluator' / 'curation-template.json', self.root / 'conflict.json')
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ('draft_conflict', 'curation.collection_profile'))
+
+
 if __name__ == '__main__':
     unittest.main()
