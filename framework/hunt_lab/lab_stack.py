@@ -223,8 +223,10 @@ def _recorded_ports(root):
     """The ports every container lab's state.json under `root` records."""
     ports = set()
     for case_dir in root.iterdir() if root.is_dir() else ():
+        if not case_dir.is_dir() or case_dir.name.startswith('.'):
+            continue
         try:
-            state = endpoints.container_state(case_dir / 'state.json') if case_dir.is_dir() else None
+            state = endpoints.container_state(case_dir / 'state.json')
         except endpoints.QueryFailure:
             state = None
         if state is not None:
@@ -611,18 +613,83 @@ def _reset_warm_services(compose_proj):
         raise StackFailure('warm_reset_failed')
 
 
-def _retire_warm_dir(warm_dir):
+def _stash_warm_dir(warm_dir):
     retired = warm_dir.parent / f'.retired-{warm_dir.name}-{uuid.uuid4().hex[:8]}'
-    try:
-        os.replace(warm_dir, retired)
-    except OSError:
-        retired = warm_dir
-    (retired / 'state.json').unlink(missing_ok=True)
+    for attempt in range(20):
+        try:
+            os.replace(warm_dir, retired)
+            return retired
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.025)
+    return retired
+
+
+def _cleanup_retired_dir(retired):
+    with contextlib.suppress(OSError):
+        (retired / 'state.json').unlink(missing_ok=True)
     for _ in range(20):
-        _force_rmtree(retired)
+        with contextlib.suppress(OSError):
+            _force_rmtree(retired)
         if not os.path.lexists(retired):
             return
         time.sleep(0.05)
+
+
+def _restore_last_file(last_path, prev_last):
+    with contextlib.suppress(OSError):
+        if prev_last is None:
+            last_path.unlink(missing_ok=True)
+            return
+        if last_path.is_file() and last_path.read_bytes() == prev_last:
+            return
+        temporary = last_path.with_name('.write-' + uuid.uuid4().hex)
+        try:
+            _write_new(temporary, prev_last)
+            os.replace(temporary, last_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        while chunk := handle.read(65536):
+            digest.update(chunk)
+    return digest.digest()
+
+
+def _staged_evidence_matches(case_dir, files):
+    evidence_root = case_dir / 'evidence'
+    try:
+        if not evidence_root.is_dir():
+            return False
+        expected = dict(files)
+        if {entry.name for entry in evidence_root.iterdir()} != set(expected):
+            return False
+        for name, source in expected.items():
+            staged = evidence_root / name
+            if not staged.is_file() or staged.is_symlink():
+                return False
+            if os.path.samefile(staged, source):
+                continue
+            if staged.stat().st_size != source.stat().st_size or _sha256_file(staged) != _sha256_file(source):
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def _verify_existing_case_dir(case_dir, files):
+    try:
+        existing = endpoints.container_state(case_dir / 'state.json') if case_dir.is_dir() else None
+    except endpoints.QueryFailure:
+        raise StackFailure('container_state_invalid') from None
+    if existing is None:
+        raise StackFailure('container_state_invalid')
+    if not _staged_evidence_matches(case_dir, files):
+        raise StackFailure('case_conflict')
 
 
 def _compose_variables(case_dir, case_id, compose_proj, lab_port, kibana_port, arkime_port):
@@ -698,11 +765,32 @@ def _stop_all_cases(profile, root):
                 _stop(profile, root, existing.name)
 
 
+def _rollback_pre_spawn(case_dir, last_path, last_attempted, prev_last, retired, warm, warm_reset):
+    _force_rmtree(case_dir)
+    if last_attempted:
+        _restore_last_file(last_path, prev_last)
+    if retired is not None:
+        for _ in range(20):
+            try:
+                os.replace(retired, warm[0])
+                break
+            except PermissionError:
+                time.sleep(0.025)
+            except OSError:
+                break
+    if warm_reset and warm[0].is_dir():
+        _restore_warm_stack(*warm)
+
+
 def _start_locked(root, case_dir, loaded, folder, files, meta, *, cold=False):
+    last_path = root / 'last.json'
+    prev_last = last_path.read_bytes() if last_path.is_file() else None
     warm = None if (cold or 'data_origin' in meta) else _warm_stack(root, loaded)
     case_dir.mkdir()
     pid = None
     warm_reset = False
+    last_attempted = False
+    retired = None
     try:
         endpoints.owner_only(case_dir)
         _stage(files, case_dir / 'evidence')
@@ -718,41 +806,49 @@ def _start_locked(root, case_dir, loaded, folder, files, meta, *, cold=False):
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
                  'arkime_port': arkime_port, 'started_at': time.time()}
         _write_new(case_dir / 'state.json', json.dumps(state, sort_keys=True).encode('ascii'))
+        last_attempted = True
+        _write_json(last_path, {'case_id': loaded, 'evidence_dir': str(folder)})
         if warm is not None:
             _purge_arkime_case(compose_proj, loaded, meta)
             _stop_up_launcher(warm[0])
             # Once the previous launcher or containers are touched, restore warm on any pre-spawn failure.
             warm_reset = True
             _reset_warm_services(compose_proj)
+            retired = _stash_warm_dir(warm[0])
         variables = _compose_variables(case_dir, loaded, compose_proj, lab_port, kibana_port, arkime_port)
         pid = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
                        '-p', compose_proj, 'up', '-d'], variables, case_dir / 'compose.log')
-        if warm is not None:
-            _retire_warm_dir(warm[0])
-        _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
+        if retired is not None:
+            _cleanup_retired_dir(retired)
         _write_json(case_dir / 'up.json', {'pid': pid, 'identity': _identity(pid)})
     except BaseException:
         if pid is None:
-            _force_rmtree(case_dir)
-            if warm_reset:
-                _restore_warm_stack(*warm)
+            _rollback_pre_spawn(case_dir, last_path, last_attempted, prev_last, retired, warm, warm_reset)
+        else:
+            _terminate(pid)
         raise
 
 
-def _start(profile, root, evidence_dir, case_id, *, cold=False):
+def _start(profile, root, evidence_dir, case_id, *, cold=False, active_case=None):
     if case_id is not None:
         _case_dir(root, case_id)
     resolved = _evidence(evidence_dir) if evidence_dir is not None else None
     if resolved is not None and case_id is not None and case_id != resolved[0]:
         raise StackFailure('case_mismatch')
+    if resolved is not None and active_case is not None:
+        active_case[0] = resolved[0]
     if not available():
         raise StackFailure('docker_unavailable')
     with _lifecycle_lock(root):
         loaded, folder, files, meta = resolved if resolved is not None else _default_start_evidence(root, case_id)
+        if active_case is not None:
+            active_case[0] = loaded
         case_dir = _case_dir(root, loaded)
         if cold:
             _stop_all_cases(profile, root)
-        if not os.path.lexists(case_dir):
+        if os.path.lexists(case_dir):
+            _verify_existing_case_dir(case_dir, files)
+        else:
             _start_locked(root, case_dir, loaded, folder, files, meta, cold=cold)
     return _status(profile, root, loaded)
 
@@ -789,6 +885,7 @@ def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=Non
     last started case's folder, else the bundled fixture). `wait` (seconds) keeps reading status after a start
     until the lab is no longer starting. `cold` forces teardown before starting instead of reusing a warm stack.
     """
+    active_case = [case_id]
     try:
         if action not in ('status', 'start', 'stop'):
             raise StackFailure('invalid_action')
@@ -796,7 +893,7 @@ def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=Non
             raise StackFailure('invalid_profile')
         root = _root(state_dir)
         if action == 'start':
-            result = _start(profile, root, evidence_dir, case_id, cold=bool(cold))
+            result = _start(profile, root, evidence_dir, case_id, cold=bool(cold), active_case=active_case)
             deadline = time.monotonic() + max(0, wait)
             while result['state'] == 'starting' and time.monotonic() < deadline:
                 time.sleep(2)
@@ -805,22 +902,24 @@ def invoke(action, *, state_dir, profile=PROFILE, case_id=None, evidence_dir=Non
         if action == 'status':
             if case_id is None:
                 case_id = (_last(root) or {}).get('case_id')
+                active_case[0] = case_id
             return _status(profile, root, case_id)
         with _lifecycle_lock(root):
             if case_id is None:
                 case_id = (_last(root) or {}).get('case_id')
+                active_case[0] = case_id
             return _stop(profile, root, case_id)
     except StackFailure as failure:
         result = _base(profile)
-        result.update(state='error', reason=failure.args[0], case_id=case_id)
+        result.update(state='error', reason=failure.args[0], case_id=active_case[0])
         return result
     except case_files.CaseError:
         result = _base(profile)
-        result.update(state='error', reason='invalid_state_dir', case_id=case_id)
+        result.update(state='error', reason='invalid_state_dir', case_id=active_case[0])
         return result
     except OSError:
         result = _base(profile)
-        result.update(state='error', reason='stack_io_error', case_id=case_id)
+        result.update(state='error', reason='stack_io_error', case_id=active_case[0])
         return result
 
 

@@ -534,7 +534,9 @@ BATCH_SCHEMA = _schema(
     'hunt_lab_batch',
     'Run up to 5 independent read-only lab queries in one turn against the loaded case. '
     'Each item names a read-only tool owned by your profile (excluding packet_fields and lab_browser) '
-    'with size, length, limit or arkime_unique values capped at 25 per item and total output capped at 96 KiB. '
+    'with size (elastic_search and elastic_aggregate terms), length, limit, intel_lookup values and '
+    'arkime_unique returned values capped at 25 per item (@timestamp date_histogram buckets span the case '
+    'window bounded by MAX_HISTOGRAM_BUCKETS=2000) and total output capped at 96 KiB. '
     'Use this to fan out independent aggregations, pivot searches or session checks in a single step.',
     {
         'queries': {
@@ -556,7 +558,9 @@ BATCH_SCHEMA = _schema(
                         'type': 'object',
                         'description': (
                             'Tool arguments (without case_id, or matching case_id); '
-                            'size/length/limit must be <= 25 (and arkime_unique returns at most 25 values).'),
+                            'size (elastic_search and elastic_aggregate terms), length, limit, intel_lookup values '
+                            'and arkime_unique returned values are capped at 25 per item (@timestamp date_histogram '
+                            'buckets are bounded by MAX_HISTOGRAM_BUCKETS=2000 and the 96 KiB batch cap).'),
                     },
                 },
             },

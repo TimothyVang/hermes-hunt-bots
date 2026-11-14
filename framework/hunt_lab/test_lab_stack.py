@@ -490,14 +490,105 @@ class StackTests(unittest.TestCase):
                 raise OSError('up.json write failed')
             real_write_json(path, value)
 
+        def spawn_incoming(argv, variables, log_path):
+            self.launched.append((argv, lab_stack._child_env(variables), log_path))
+            return 4343
+
         launched_before = len(self.launched)
-        with patch.object(lab_stack, '_write_json', side_effect=fail_on_up_json):
+        with patch.object(lab_stack, '_launch', side_effect=spawn_incoming), \
+                patch.object(lab_stack, '_write_json', side_effect=fail_on_up_json):
             res = self.invoke('start', evidence_dir=str(second_ev))
-        self.assertEqual(res['reason'], 'stack_io_error')
+        self.assertEqual((res['state'], res['reason'], res['case_id']), ('error', 'stack_io_error', 'team-med-902'))
         self.assertEqual([env['CASE_ID'] for _a, env, _l in self.launched[launched_before:]], ['team-med-902'])
-        self.assertEqual(self.terminated, [4242])
+        self.assertEqual(self.terminated, [4242, 4343])
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'team-med-902')
         self.assertTrue((self.root / 'team-med-902' / 'state.json').is_file())
         self.assertFalse((self.root / 'dns-lab-001').exists())
+        stopped = self.invoke('stop')
+        self.assertEqual((stopped['state'], stopped['reason'], stopped['case_id']),
+                         ('stopped', 'stopped', 'team-med-902'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual(endpoints.container_states(self.state_dir), [])
+
+    def test_pre_spawn_last_json_and_locked_warm_dir_errors_roll_back_cleanly(self):
+        self.invoke('start')
+        self.running()
+        self.terminated.clear()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        real_write_json = lab_stack._write_json
+
+        def fail_on_last_json(path, value):
+            if Path(path).name == 'last.json':
+                raise OSError('last.json write failed')
+            real_write_json(path, value)
+
+        launched_before = len(self.launched)
+        with patch.object(lab_stack, '_write_json', side_effect=fail_on_last_json):
+            res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((res['state'], res['reason'], res['case_id']), ('error', 'stack_io_error', 'team-med-902'))
+        self.assertEqual(self.launched[launched_before:], [])
+        self.assertEqual(self.terminated, [])
+        self.assertEqual([s['case_id'] for s in endpoints.container_states(self.state_dir)], ['dns-lab-001'])
+        self.assertEqual(self.invoke('status')['case_id'], 'dns-lab-001')
+
+        # A concurrent reader holding warm_dir/state.json without FILE_SHARE_DELETE blocks pre-spawn stash,
+        # rolls back last.json and restores dns-lab-001 without ever spawning team-med-902 or duplicating ports.
+        launched_before = len(self.launched)
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.CreateFileW(str(self.root / 'dns-lab-001' / 'state.json'),
+                                        0x80000000, 0x3, None, 3, 0, None)
+            self.assertNotIn(handle, (None, wintypes.HANDLE(-1).value))
+            try:
+                with patch.object(lab_stack.time, 'sleep'):
+                    locked_res = self.invoke('start', evidence_dir=str(second_ev))
+            finally:
+                kernel.CloseHandle(handle)
+        else:
+            with patch.object(lab_stack.time, 'sleep'), \
+                    patch.object(lab_stack.os, 'replace', side_effect=PermissionError('busy')):
+                locked_res = self.invoke('start', evidence_dir=str(second_ev))
+        self.assertEqual((locked_res['state'], locked_res['reason'], locked_res['case_id']),
+                         ('error', 'stack_io_error', 'team-med-902'))
+        self.assertEqual([env['CASE_ID'] for _a, env, _l in self.launched[launched_before:]], ['dns-lab-001'])
+        self.assertEqual([s['case_id'] for s in endpoints.container_states(self.state_dir)], ['dns-lab-001'])
+        self.assertEqual(json.loads((self.root / 'last.json').read_text(encoding='utf-8'))['case_id'], 'dns-lab-001')
+        stopped = self.invoke('stop')
+        self.assertEqual((stopped['state'], stopped['reason'], stopped['case_id']),
+                         ('stopped', 'stopped', 'dns-lab-001'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual(endpoints.container_states(self.state_dir), [])
+
+    def test_same_case_id_start_is_idempotent_for_matching_evidence_and_refuses_mismatched_evidence(self):
+        self.invoke('start')
+        self.running()
+        matching_copy = self.evidence()
+        again = self.invoke('start', evidence_dir=str(matching_copy))
+        self.assertEqual((again['state'], again['case_id']), ('starting', 'dns-lab-001'))
+        self.assertEqual(len(self.launched), 1)
+
+        mismatched = self.evidence()
+        meta = json.loads((mismatched / 'case.json').read_text(encoding='utf-8'))
+        meta['data_origin'] = 'work-export'
+        (mismatched / 'case.json').write_text(json.dumps(meta), encoding='utf-8')
+        refused = self.invoke('start', evidence_dir=str(mismatched))
+        self.assertEqual((refused['state'], refused['reason'], refused['case_id']),
+                         ('error', 'case_conflict', 'dns-lab-001'))
+        self.assertEqual(len(self.launched), 1)
+        staged = json.loads((self.root / 'dns-lab-001' / 'evidence' / 'case.json').read_text(encoding='utf-8'))
+        self.assertNotIn('data_origin', staged)
 
     def test_data_origin_case_colliding_with_shared_warm_project_gets_distinct_compose_project(self):
         self.invoke('start')
