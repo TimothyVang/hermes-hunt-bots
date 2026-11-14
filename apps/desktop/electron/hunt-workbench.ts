@@ -1168,6 +1168,12 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
       return { error: 'Port must be between 1 and 65535 (or 0 for automatic loopback port).' }
     }
 
+    if (request?.port !== undefined && request.port !== 0 && managedBoard?.port === request.port) {
+      return {
+        error: `Port ${request.port} is already in use by the running Hunt Board; omit port (or pass 0) for zero-downtime replacement, or stop the current board first.`
+      }
+    }
+
     return { address, caseId, rawOrigin, workflowId }
   }
 
@@ -1238,7 +1244,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
   const pickTargetBoardPort = async (requestedPort?: number): Promise<{ error?: string; port?: number }> => {
     if (requestedPort === undefined) {
-      const defaultFree = await checkPortBindable(DEFAULT_BOARD_PORT)
+      const defaultFree = managedBoard?.port !== DEFAULT_BOARD_PORT && (await checkPortBindable(DEFAULT_BOARD_PORT))
 
       return { port: defaultFree ? DEFAULT_BOARD_PORT : await allocatePort() }
     }
@@ -1571,38 +1577,6 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
         return abortTracker('Board startup cancelled.')
       }
 
-      if (request?.port !== undefined && request.port !== 0 && managedBoard?.port === request.port) {
-        if (fileExists(prepared.runtime.pythonExe)) {
-          const check = await runPython(
-            prepared.runtime,
-            [
-              '-c',
-              'import sys; from hermes_temporal.cli import _strict_input; from hermes_temporal.board import build_state; raise SystemExit(2 if build_state(_strict_input(sys.argv[1]), None, None)["input_errors"] else 0)',
-              prepared.inputPath
-            ],
-            { timeoutMs: 8000 }
-          )
-
-          if (boardLifecycleEpoch !== tracker.epoch) {
-            return abortTracker('Board startup cancelled.')
-          }
-
-          if (check.code !== 0) {
-            return abortTracker(check.stderr.trim() || 'error: input is not a readable supplied-evidence hunt')
-          }
-        }
-
-        const samePortOld = retireManagedBoard()
-
-        if (samePortOld) {
-          await waitForChildExit(samePortOld, 3000)
-        }
-
-        if (boardLifecycleEpoch !== tracker.epoch) {
-          return abortTracker('Board startup cancelled.')
-        }
-      }
-
       const portChoice = await pickTargetBoardPort(request?.port)
 
       if (boardLifecycleEpoch !== tracker.epoch) {
@@ -1611,6 +1585,12 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
       if (portChoice.port === undefined) {
         return abortTracker(portChoice.error ?? 'Invalid port.')
+      }
+
+      if (managedBoard?.port === portChoice.port) {
+        return abortTracker(
+          `Port ${portChoice.port} is already in use by the running Hunt Board; omit port (or pass 0) for zero-downtime replacement, or stop the current board first.`
+        )
       }
 
       const boardArgs = buildBoardArgs(

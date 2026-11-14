@@ -523,6 +523,12 @@ describe('hunt-workbench', () => {
     expect(spawned).toHaveLength(1)
     expect(spawned[0].killed).toBe(false)
 
+    const samePortBusy = await wb.startBoard({ inputPath: inlineFile, port: 8895, workflowId: 'wf-replacement' })
+    expect(samePortBusy.ok).toBe(false)
+    expect(samePortBusy.error).toMatch(/Port 8895 is already in use by the running Hunt Board/)
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].killed).toBe(false)
+
     const missingInput = await wb.startBoard({
       inputPath: path.join(home, 'does-not-exist.json'),
       port: 8896,

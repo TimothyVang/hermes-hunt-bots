@@ -560,7 +560,6 @@ async function attachActiveBoard({ reveal = true } = {}) {
       address: nextAddress,
       attachedWorkflowId,
       attachedAddress: nextAddress,
-      port: String(picked.port || parsedPort || 8790),
       shown: reveal ? true : board.get().shown,
       nonce: reveal ? board.get().nonce + 1 : board.get().nonce + 1,
       message: `Attached Hunt Board at ${validUrl.slice(0, -1)}${picked.workflowId ? ` (${picked.workflowId})` : ''}${picked.liveEnabled ? ' · live browser stream ready' : ''}.`
@@ -615,7 +614,7 @@ async function startManagedBoard() {
       address: nextAddress,
       attachedWorkflowId: workflowId,
       attachedAddress: nextAddress,
-      port: String(reply.board.port),
+      port: parsedPort ? String(reply.board.port) : '',
       shown: true,
       nonce: board.get().nonce + 1,
       message: `Started and attached Hunt Board at ${validUrl.slice(0, -1)} (${reply.board.mode === 'tool_driven' ? 'tool-driven + live MJPEG ready' : 'inline'}).`
@@ -720,7 +719,6 @@ function HuntBoard() {
             address: nextAddr,
             attachedWorkflowId: nextWid,
             attachedAddress: nextAddr,
-            port: match?.port ? String(match.port) : board.get().port,
             shown: true,
             nonce: board.get().nonce + 1
           });

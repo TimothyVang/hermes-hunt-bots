@@ -388,18 +388,49 @@ def cmd_launch(args: argparse.Namespace) -> int:
             "ok": False,
             "error": f"Packed Hunt Command binary missing at {binary}. Run `npm run pack:hunt` in apps/desktop first.",
         }, 1)
+    pid_file = evidence_dir / "hunt-command.pid"
+    if pid_file.is_file():
+        try:
+            existing = json.loads(pid_file.read_text(encoding="utf-8-sig"))
+            existing_pid = int(existing["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return _emit({
+                "ok": False,
+                "error": f"Existing PID file {pid_file} is unreadable; inspect or clean it up before launching again.",
+            }, 1)
+        ex_state, ex_ident = _process_identity(existing_pid)
+        if ex_state == "inaccessible" or (
+            ex_state == "alive"
+            and _pid_matches_recorded(ex_ident, str(existing.get("binary") or ""), str(existing.get("create_time") or ""))
+        ):
+            return _emit({
+                "ok": False,
+                "error": (
+                    f"Hunt Command is already running (pid={existing_pid}) in {pid_file}; "
+                    f"run `cleanup --pid-file {pid_file}` or use a fresh --evidence-dir."
+                ),
+            }, 1)
     hermes_home.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "HERMES_HOME": str(hermes_home)}
     proc = subprocess.Popen(cmd, cwd=str(DESKTOP_DIR), env=env)
     _state, ident = _process_identity(proc.pid)
-    pid_file = evidence_dir / "hunt-command.pid"
+    if _state != "alive" or not ident or not ident.get("create_time"):
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return _emit({
+            "ok": False,
+            "error": "Launched process exited or could not record verified process identity.",
+        }, 1)
     pid_file.write_text(
         json.dumps({
             "pid": proc.pid,
             "hermes_home": str(hermes_home),
             "binary": str(binary.resolve()),
-            "create_time": ident["create_time"] if ident else "",
+            "create_time": ident["create_time"],
         }),
         encoding="utf-8",
     )
