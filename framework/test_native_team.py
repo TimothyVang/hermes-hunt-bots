@@ -56,9 +56,11 @@ class NativeTeamPolicyTests(unittest.TestCase):
             self.assertNotIn('hunt_lab', native_team._disabled_toolset_requirements(profile))
             if profile == 'framework-coordinator':
                 self.assertNotIn('tools.tool_search.enabled', settings)
+                self.assertNotIn('terminal.client_env_passthrough', settings)
             else:
                 # Tool Search would hide plugin tools behind bridges the allowlist strips.
                 self.assertEqual(settings['tools.tool_search.enabled'], 'off')
+                self.assertEqual(settings['terminal.client_env_passthrough'], ['HUNT_RUN_ID', 'HUNT_STEP_ID'])
 
     def test_every_host_tool_has_an_owner_and_only_the_analyst_keeps_hunt_lab_query(self):
         owners = {}
@@ -93,13 +95,18 @@ class NativeTeamPolicyTests(unittest.TestCase):
             observed['agent.allowed_tool_names'] = (
                 ['hunt_lab_query'] if profile == 'framework-network-analyst' else [])
             observed['platform_toolsets.cli'] = ['no_mcp']
+            observed['terminal.client_env_passthrough'] = []
             observed['agent.disabled_toolsets'] = native_team._disabled_toolset_requirements(profile) + ['hunt_lab']
             status = native_team.validate_observed(profile, observed)
             self.assertEqual(status['agent.allowed_tool_names'], 'needs_explicit_configuration')
             self.assertEqual(status['platform_toolsets.cli'], 'needs_explicit_configuration')
+            self.assertEqual(status['terminal.client_env_passthrough'], 'needs_explicit_configuration')
             self.assertEqual(status['agent.disabled_toolsets'], 'needs_explicit_configuration')
             observed['agent.allowed_tool_names'] = ['terminal']
             self.assertEqual(native_team.validate_observed(profile, observed)['agent.allowed_tool_names'],
+                             'custom_configuration_conflict')
+            observed['terminal.client_env_passthrough'] = ['CUSTOM_VAR']
+            self.assertEqual(native_team.validate_observed(profile, observed)['terminal.client_env_passthrough'],
                              'custom_configuration_conflict')
 
     def test_earlier_reviewed_tool_policies_upgrade_to_add_new_tools(self):
@@ -129,6 +136,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
             if profile != 'framework-coordinator':
                 observed['agent.allowed_tool_names'] = (
                     ['hunt_lab_query'] if profile == 'framework-network-analyst' else [])
+                observed['terminal.client_env_passthrough'] = []
                 if profile != 'framework-network-analyst':
                     observed['platform_toolsets.cli'] = ['no_mcp']
                     del observed['tools.tool_search.enabled']
@@ -160,6 +168,9 @@ class NativeTeamPolicyTests(unittest.TestCase):
                           'hunt_lab_batch'])
         self.assertEqual(json.loads(written[('framework-researcher', 'agent.allowed_tool_names')]),
                          ['elastic_search', 'elastic_aggregate', 'lab_browser', 'packet_fields', 'hunt_lab_batch'])
+        self.assertNotIn(('framework-coordinator', 'terminal.client_env_passthrough'), written)
+        self.assertEqual(json.loads(written[('framework-researcher', 'terminal.client_env_passthrough')]),
+                         ['HUNT_RUN_ID', 'HUNT_STEP_ID'])
 
     def test_missing_or_conflicting_policy_caps_and_routes_are_not_ready(self):
         expected = native_team.expected_settings('framework-coordinator')
@@ -428,8 +439,9 @@ class NativeTeamPolicyTests(unittest.TestCase):
             self.assertNotIn('hunt_lab', config['agent']['disabled_toolsets'])
             self.assertEqual(config['platform_toolsets']['cli'], ['no_mcp', 'hunt_lab'])
             self.assertEqual(config['tools'], {'tool_search': {'enabled': 'off'}})
+            self.assertEqual(config['terminal'], {'client_env_passthrough': ['HUNT_RUN_ID', 'HUNT_STEP_ID']})
             self.assertEqual(set(config), {'model', 'fallback_providers', 'fallback_model',
-                                           'agent', 'platform_toolsets', 'tools'})
+                                           'agent', 'platform_toolsets', 'tools', 'terminal'})
 
     def test_initialize_serializes_strict_coordinator_routes_and_tools(self):
         with tempfile.TemporaryDirectory() as root:
@@ -437,6 +449,7 @@ class NativeTeamPolicyTests(unittest.TestCase):
             native_team.initialize('framework-coordinator', root)
             config = json.loads((profile_dir / 'config.yaml').read_text(encoding='utf-8'))
             self.assertEqual(config['agent']['allowed_tool_names'], ['delegate_task'])
+            self.assertNotIn('terminal', config)
             self.assertNotIn('allowed_profiles', config['delegation'])
             self.assertEqual(config['delegation']['backend'], 'profile_routes')
             self.assertEqual(config['delegation']['backends']['profile_routes']['profiles'],

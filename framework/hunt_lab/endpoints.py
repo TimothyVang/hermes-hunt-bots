@@ -137,6 +137,18 @@ def _guest_error(exc):
     return code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else None
 
 
+def caller_env(environ=None):
+    """Active turn environment: explicit `environ` when given, else a local gateway session's
+    bound client toolchain env, else `os.environ`."""
+    if environ is not None:
+        return environ
+    try:
+        from agent.session_client_env import bound_client_env, tool_env
+    except ImportError:
+        return os.environ
+    return os.environ if bound_client_env() is None else tool_env()
+
+
 def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None, secret=None, run_id=None):
     """One bounded GET of a JSON object from a loopback lab; no proxies or redirects.
 
@@ -152,7 +164,7 @@ def get(base, path, profile=None, timeout=DEFAULT_TIMEOUT, *, instance=None, sec
     if secret is not None:
         headers[SECRET_HEADER] = secret
     if run_id is None and profile in FRAMEWORK_PROFILES:
-        run_id = os.environ.get('HUNT_RUN_ID')
+        run_id = caller_env().get('HUNT_RUN_ID')
     scoped_run_id = valid_run_id(run_id)
     if scoped_run_id is not None:
         headers[RUN_ID_HEADER] = scoped_run_id

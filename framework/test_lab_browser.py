@@ -944,6 +944,40 @@ class ParallelStepIsolationTests(unittest.TestCase):
                          [('wf-1:round:001', 'followup-1', 'host.name:ws01', 'on'),
                           ('wf-1:round:001', 'followup-2', 'host.name:ws02', 'on')])
 
+    def test_session_root_bounds_max_path_length_is_injective_and_close_cleans_port_file(self):
+        long_env = {'HUNT_RUN_ID': 'r' * 60 + ':' + 'w' * 67, 'HUNT_STEP_ID': 'followup-network-analyst-' + 's' * 103}
+        long_root, _, _ = lab_browser.session_root(self.profile_root, long_env)
+        self.assertLessEqual(len(long_root.name), 37)
+        self.assertLess(len(str(long_root / 'user-data' / 'DevToolsActivePort')), 240)
+        # Distinct (run_id, step_id) pairs that share naive '--' or '_3a_' joins never collide.
+        r1, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a--b', 'HUNT_STEP_ID': 'c'})
+        r2, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a', 'HUNT_STEP_ID': 'b--c'})
+        r3, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a:b', 'HUNT_STEP_ID': 'c'})
+        r4, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a_3a_b', 'HUNT_STEP_ID': 'c'})
+        self.assertEqual(len({r1, r2, r3, r4}), 4)
+        # BrowserSession.close() removes leftover Chromium DevToolsActivePort files.
+        (long_root / 'user-data').mkdir(parents=True)
+        port_file = long_root / 'user-data' / 'DevToolsActivePort'
+        port_file.write_text('9222\n/devtools/browser/x\n', encoding='ascii')
+        fake = FakeBrowser()
+        sess = session(fake, self.lab.url, long_root)
+        sess.close()
+        self.assertFalse(port_file.exists())
+        # Gateway bound_client_env() scopes session_root even when daemon os.environ has no HUNT_* keys.
+        import sys
+        repo_root = str(Path(lab_browser.__file__).resolve().parents[2])
+        added = repo_root not in sys.path
+        if added:
+            sys.path.insert(0, repo_root)
+            self.addCleanup(lambda: sys.path.remove(repo_root) if repo_root in sys.path else None)
+        from agent.session_client_env import client_env_scope
+        clean_env = {k: v for k, v in os.environ.items() if k not in ('HUNT_RUN_ID', 'HUNT_STEP_ID')}
+        with patch.dict(os.environ, clean_env, clear=True), \
+                client_env_scope({'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1'}, local=True):
+            gw_root, gw_run, gw_step = lab_browser.session_root(self.profile_root)
+        self.assertEqual((gw_run, gw_step), ('wf-gw:round:001', 'followup-1'))
+        self.assertEqual(gw_root.parent, self.profile_root / 'runs')
+
     def test_non_owner_profiles_are_refused_before_any_browser_starts(self):
         for profile in ('framework-reviewer', 'framework-builder', 'framework-librarian', 'framework-coordinator', None):
             with self.subTest(profile=profile), \

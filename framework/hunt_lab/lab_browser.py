@@ -10,8 +10,10 @@ from __future__ import annotations
 import atexit
 import base64
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import itertools
 import json
 import logging
@@ -29,7 +31,7 @@ from . import humanize
 from .actionability import CLICK_ACTIONABLE
 from .browser_policy import (KIBANA_INDEX, LabScope, Refused, check_expression, decide, document_allowed,
                              kibana_window, origin)
-from .endpoints import RUN_ID, SECRET_HEADER, QueryFailure, endpoint
+from .endpoints import RUN_ID, SECRET_HEADER, QueryFailure, caller_env, endpoint
 from .query_adapter import _case_id, _failure, _require_owner, _schema, serving_lab
 
 
@@ -754,6 +756,8 @@ class BrowserSession:
                 self.process.wait(5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        with contextlib.suppress(OSError):
+            (self.root / 'user-data' / 'DevToolsActivePort').unlink(missing_ok=True)
 
 
 def _demo_window(window):
@@ -907,21 +911,23 @@ def _demo_path(root):
     return base / DEMO_FILE
 
 
-def _safe_segment(value):
-    return re.sub(r'[^A-Za-z0-9_.-]', lambda match: f'_{ord(match.group(0)):02x}_', value)
+def _step_folder_name(run_id, step_id):
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', step_id).strip('-')[:24] or 'step'
+    digest = hashlib.sha256(f'{run_id}\0{step_id}'.encode()).hexdigest()[:12]
+    return f'{slug}-{digest}'
 
 
 def session_root(profile_root, environ=None):
-    """Browser state folder for one call: `<profile_root>/runs/<run>--<step>` when HUNT_RUN_ID and HUNT_STEP_ID are
+    """Browser state folder for one call: `<profile_root>/runs/<slug>-<hash12>` when HUNT_RUN_ID and HUNT_STEP_ID are
     set, else `<profile_root>` directly."""
-    env = os.environ if environ is None else environ
+    env = caller_env(environ)
     run_id = env.get('HUNT_RUN_ID') or ''
     step_id = env.get('HUNT_STEP_ID') or ''
     if not run_id or not step_id:
         return Path(profile_root), None, None
     if not RUN_ID.fullmatch(run_id) or not STEP_ID.fullmatch(step_id):
         raise QueryFailure('invalid_run_id')
-    return Path(profile_root) / RUNS_DIR / f'{_safe_segment(run_id)}--{_safe_segment(step_id)}', run_id, step_id
+    return Path(profile_root) / RUNS_DIR / _step_folder_name(run_id, step_id), run_id, step_id
 
 
 def _start(root, scope):

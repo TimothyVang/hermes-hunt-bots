@@ -483,6 +483,28 @@ def _stop_up_launcher(case_dir):
             time.sleep(0.5)
 
 
+def _prepare_warm_switch(warm_dir, compose_proj, loaded, meta):
+    _stop_up_launcher(warm_dir)
+    if meta.get('network_capture') != 'none':
+        purged = _docker(['compose', '-p', compose_proj, 'exec', '-T', 'netns', 'python3', '-B', '-c',
+                          _PURGE_ARKIME_CASE, loaded])
+        if purged.returncode:
+            raise StackFailure('arkime_purge_failed')
+    # Stop and remove case-bound containers before touching warm_dir so bind mounts release and _status sees loading_case.
+    removed = _docker(['compose', '-p', compose_proj, 'rm', '-f', '-s', 'lab', *ONE_SHOTS], DOWN_SECONDS)
+    if removed.returncode:
+        raise StackFailure('warm_reset_failed')
+
+
+def _retire_warm_dir(warm_dir):
+    (warm_dir / 'state.json').unlink(missing_ok=True)
+    for _ in range(20):
+        shutil.rmtree(warm_dir, ignore_errors=True)
+        if not os.path.lexists(warm_dir):
+            return
+        time.sleep(0.05)
+
+
 def _start(profile, root, evidence_dir, case_id, *, cold=False):
     if evidence_dir is None:
         last = _last(root)
@@ -526,11 +548,7 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
             arkime_port = warm_state['arkime_port']
             if compose_proj != project(loaded):
                 _write_new(case_dir / COMPOSE_PROJECT_FILE, (compose_proj + '\n').encode('ascii'))
-            _stop_up_launcher(warm_dir)
-            (warm_dir / 'state.json').unlink(missing_ok=True)
-            if meta.get('network_capture') != 'none':
-                _docker(['compose', '-p', compose_proj, 'exec', '-T', 'netns', 'python3', '-c',
-                         _PURGE_ARKIME_CASE, loaded])
+            _prepare_warm_switch(warm_dir, compose_proj, loaded, meta)
         else:
             compose_proj = project(loaded)
             lab_port, kibana_port, arkime_port = _ports(_recorded_ports(root))
@@ -538,7 +556,6 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
                  'instance': instance, 'secret': secret, 'lab_port': lab_port, 'kibana_port': kibana_port,
                  'arkime_port': arkime_port, 'started_at': time.time()}
         _write_new(case_dir / 'state.json', json.dumps(state, sort_keys=True).encode('ascii'))
-        _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
         variables = {
             'PROJECT': compose_proj, 'LAB_IMAGE': lab_image(), 'CASE_ID': loaded,
             'EVIDENCE_DIR': (case_dir / 'evidence').as_posix(), 'SECRET_FILE': (case_dir / 'lab-secret').as_posix(),
@@ -547,8 +564,9 @@ def _start(profile, root, evidence_dir, case_id, *, cold=False):
         pid = _launch(['docker', 'compose', '--ansi', 'never', '--progress', 'plain', '-f', str(COMPOSE_FILE),
                        '-p', compose_proj, 'up', '-d'], variables, case_dir / 'compose.log')
         _write_json(case_dir / 'up.json', {'pid': pid, 'identity': _identity(pid)})
+        _write_json(root / 'last.json', {'case_id': loaded, 'evidence_dir': str(folder)})
         if warm is not None:
-            shutil.rmtree(warm[0], ignore_errors=True)
+            _retire_warm_dir(warm[0])
     except BaseException:
         if not (case_dir / 'up.json').exists():
             if pid is not None:

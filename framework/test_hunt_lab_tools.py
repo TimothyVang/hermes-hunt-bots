@@ -811,6 +811,33 @@ class RegistrationTests(unittest.TestCase):
             denied = json.loads(ctx.tools['elastic_search'][2]({'case_id': CASE}))
         self.assertEqual(denied, {'ok': False, 'profile': 'framework-builder', 'error': 'tool_not_owned'})
 
+    def test_gateway_bound_client_env_supplies_hunt_run_id_without_os_environ(self):
+        repo_root = str(Path(query_adapter.__file__).resolve().parents[2])
+        added = repo_root not in sys.path
+        if added:
+            sys.path.insert(0, repo_root)
+            self.addCleanup(lambda: sys.path.remove(repo_root) if repo_root in sys.path else None)
+        from agent.session_client_env import accept_client_env, client_env_scope
+        import native_team
+        cfg = {'terminal': {'client_env_passthrough': native_team.expected_settings('framework-researcher')
+                            ['terminal.client_env_passthrough']}}
+        accepted = accept_client_env({'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1',
+                                      'UNLISTED_EXTRA': 'dropped'}, cfg, local=True)
+        self.assertEqual(accepted, {'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1'})
+        guest = GuestStub()
+        self.addCleanup(guest.close)
+        analyst = self.root / 'profiles' / ANALYST
+        stack_guest(analyst, guest)
+        clean_env = {k: v for k, v in os.environ.items() if k not in ('HUNT_RUN_ID', 'HUNT_STEP_ID')}
+        with patch.dict(os.environ, clean_env, clear=True), client_env_scope(accepted, local=True):
+            result = query_adapter.call('elastic_search', {'case_id': CASE, 'q': 'host.name:ws01'},
+                                        state_dir=analyst / 'hunt-lab-vm', profile='framework-researcher')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(guest.run_ids, ['wf-gw:round:001', 'wf-gw:round:001'])
+        # A non-local client session must not spoof host toolchain passthrough variables.
+        with patch.dict(os.environ, clean_env, clear=True), client_env_scope(accepted, local=False):
+            self.assertEqual(endpoints.caller_env(), {})
+
     def test_every_plugin_tool_has_an_owner_and_the_coordinator_registers_none(self):
         owned = {tool for tools in query_adapter.TOOL_OWNERSHIP.values() for tool in tools}
         self.assertEqual(owned & PLUGIN_TOOLS, PLUGIN_TOOLS)

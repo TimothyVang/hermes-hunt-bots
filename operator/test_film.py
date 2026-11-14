@@ -4,6 +4,7 @@ Run from the repository root: python -m unittest discover -s operator -p "test_*
 """
 import base64
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -681,6 +682,53 @@ class ScreencastTest(unittest.TestCase):
         merged = self.root / 'merged-audit.jsonl'
         record.copy_audit(merged, self.root / 'browsers', T0, T0 + 10)
         self.assertEqual(merged.read_text(encoding='utf-8').splitlines(), [line_b, line_a])
+
+    def test_stale_devtools_port_stale_run_state_and_dead_endpoint_backoff_do_not_stall_watcher(self):
+        # 1. Stale root DevToolsActivePort (>120s) without matching session.json is ignored.
+        stale_port_dir = self.root / 'browsers' / TH / 'user-data'
+        stale_port_dir.mkdir(parents=True)
+        stale_port = stale_port_dir / 'DevToolsActivePort'
+        stale_port.write_text('9401\n/devtools/browser/stale-root\n', encoding='ascii')
+        old_wall = time.time() - 3600
+        os.utime(stale_port, (old_wall, old_wall))
+
+        # 2. Historical runs/<old-step> (>900s) is ignored by Stream._wanted() while copy_audit still reads its audit.jsonl.
+        old_step = self.root / 'browsers' / TH / 'runs' / 'old-step-111111111111'
+        (old_step / 'user-data').mkdir(parents=True)
+        old_step_port = old_step / 'user-data' / 'DevToolsActivePort'
+        old_step_port.write_text('9402\n/devtools/browser/stale-run\n', encoding='ascii')
+        old_step_state = old_step / 'session.json'
+        old_step_state.write_text(json.dumps({'ws_url': 'ws://127.0.0.1:9402/devtools/browser/stale-run', 'main_target': 'T'}),
+                                  encoding='utf-8')
+        os.utime(old_step_port, (old_wall, old_wall))
+        os.utime(old_step_state, (old_wall, old_wall))
+        old_audit = audit(T0 + 3, TH, query='host.name:archive', entered='typed')
+        (old_step / 'audit.jsonl').write_text(old_audit + '\n', encoding='utf-8')
+
+        # 3. Fresh dead endpoint backs off instead of retrying on every poll tick.
+        dead_step = self.root / 'browsers' / TH / 'runs' / 'dead-step-222222222222'
+        dead_step.mkdir(parents=True)
+        dead_ws = 'ws://127.0.0.1:9403/devtools/browser/crashed'
+        (dead_step / 'session.json').write_text(json.dumps({'ws_url': dead_ws, 'main_target': 'TD'}), encoding='utf-8')
+
+        attempts = []
+
+        def connect(url):
+            attempts.append(url)
+            raise ConnectionRefusedError(url)
+
+        watcher = screencast.Watcher(self.root / 'sc-stale', root=self.root / 'browsers', profiles=(TH,),
+                                     connect=connect, poll=0.02).start()
+        try:
+            self.wait_for(lambda: len(attempts) >= 1)
+            time.sleep(0.25)
+        finally:
+            watcher.stop()
+        # Only the fresh dead endpoint was tried once inside the 0.25s window (2.0s backoff), never the stale ones.
+        self.assertEqual(attempts, [dead_ws])
+        merged = self.root / 'stale-merged-audit.jsonl'
+        record.copy_audit(merged, self.root / 'browsers', T0, T0 + 10)
+        self.assertEqual(merged.read_text(encoding='utf-8').splitlines(), [old_audit])
 
 
 if __name__ == '__main__':
