@@ -14,7 +14,6 @@ import argparse
 import bz2
 import csv
 import datetime as dt
-import io
 import json
 from pathlib import Path
 import re
@@ -52,30 +51,6 @@ _APT29_GROUP_SPECS = {
 
 def _fail(code, field='query_apt'):
     raise BenchmarkError(code, field) from None
-
-
-class _BoundedBinaryReader(io.RawIOBase):
-    """Wrap a compressed stream to enforce a strict cumulative byte limit."""
-
-    def __init__(self, raw_stream, max_bytes, field='archive_stream'):
-        self._raw = raw_stream
-        self._max = max_bytes
-        self._seen = 0
-        self._field = field
-
-    def readable(self):
-        return True
-
-    def readinto(self, b):
-        data = self._raw.read(len(b))
-        if not data:
-            return 0
-        self._seen += len(data)
-        if self._seen > self._max:
-            _fail('member_too_large', self._field)
-        n = len(data)
-        b[:n] = data
-        return n
 
 
 # ---------------------------------------------------------------------------
@@ -885,127 +860,149 @@ def import_fullapt_query_case(
     step_groups = {}
     subsampled = False
 
-    with tarfile.open(tp, 'r:gz') as tf:
-        for mem in tf:
-            if not mem.isfile() or not mem.name.endswith('-labeled.csv') or 'sysmon' not in mem.name:
-                continue
-            if run_substr and run_substr not in mem.name:
-                continue
-            validate_archive_member_name(mem.name, tp.name)
-            if mem.size > 2 * 1024 * 1024 * 1024:
-                _fail('member_too_large', mem.name)
-            chosen_member_name = mem.name
-            raw_mem = tf.extractfile(mem)
-            if raw_mem is None:
-                _fail('missing_archive_member', mem.name)
-            bounded_mem = io.BufferedReader(_BoundedBinaryReader(raw_mem, 2 * 1024 * 1024 * 1024, mem.name))
-            fh = io.TextIOWrapper(bounded_mem, encoding='utf-8', errors='replace')
-            old_csv_lim = csv.field_size_limit(2 * 1024 * 1024)
-            try:
-                reader = csv.DictReader(fh)
-                for rno, row in enumerate(reader, 1):
+    def _iter_member_utf8_lines(tf_obj, member_info):
+        raw_stream = tf_obj.extractfile(member_info)
+        if raw_stream is None:
+            _fail('missing_archive_member', member_info.name)
+        for _lno, raw_ln in iter_bounded_lines(
+            raw_stream,
+            max_bytes=2 * 1024 * 1024 * 1024,
+            max_line_bytes=256 * 1024 * 1024,
+            field=member_info.name,
+        ):
+            yield raw_ln.decode('utf-8', 'replace')
+
+    old_csv_lim = csv.field_size_limit(2 * 1024 * 1024)
+    try:
+        # Pass 1: stream Computer hostnames only so every host alias exists before inline field sanitization.
+        with tarfile.open(tp, 'r:gz') as tf_hosts:
+            for mem in tf_hosts:
+                if not mem.isfile() or not mem.name.endswith('-labeled.csv') or 'sysmon' not in mem.name:
+                    continue
+                if run_substr and run_substr not in mem.name:
+                    continue
+                validate_archive_member_name(mem.name, tp.name)
+                if mem.size > 2 * 1024 * 1024 * 1024:
+                    _fail('member_too_large', mem.name)
+                chosen_member_name = mem.name
+                for row in csv.DictReader(_iter_member_utf8_lines(tf_hosts, mem)):
                     comp_raw = str(row.get('Computer') or '').strip()
-                    if not comp_raw:
-                        continue
-                    computers_seen.add(comp_raw)
-                    asset_id = pseudo.pseudonymize('host', comp_raw)
+                    if comp_raw:
+                        computers_seen.add(comp_raw)
+                break
 
-                    ts_ms = str(row.get('timestamp') or '').strip()
-                    if not ts_ms:
+        for comp_name in sorted(computers_seen):
+            pseudo.pseudonymize('host', comp_name)
+
+        # Pass 2: stream chosen CSV member and sanitize retained rows inline (bounded to 8 KiB/field).
+        if chosen_member_name is not None:
+            with tarfile.open(tp, 'r:gz') as tf:
+                for mem in tf:
+                    if not mem.isfile() or mem.name != chosen_member_name:
                         continue
-                    if ts_ms.isdigit():
-                        stamp = dt.datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=dt.timezone.utc)
-                        ts_orig = ts_ms
-                    else:
-                        try:
-                            val_f = float(ts_ms)
-                            if val_f > 1e11:
-                                stamp = dt.datetime.fromtimestamp(val_f / 1000.0, tz=dt.timezone.utc)
-                            else:
-                                stamp = dt.datetime.fromtimestamp(val_f, tz=dt.timezone.utc)
+                    reader = csv.DictReader(_iter_member_utf8_lines(tf, mem))
+                    for rno, row in enumerate(reader, 1):
+                        comp_raw = str(row.get('Computer') or '').strip()
+                        if not comp_raw:
+                            continue
+                        asset_id = pseudo.pseudonymize('host', comp_raw)
+
+                        ts_ms = str(row.get('timestamp') or '').strip()
+                        if not ts_ms:
+                            continue
+                        if ts_ms.isdigit():
+                            stamp = dt.datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=dt.timezone.utc)
                             ts_orig = ts_ms
-                        except (ValueError, OSError, OverflowError):
+                        else:
                             try:
-                                stamp = parse_utc(ts_ms, 'fullapt.timestamp')
+                                val_f = float(ts_ms)
+                                if val_f > 1e11:
+                                    stamp = dt.datetime.fromtimestamp(val_f / 1000.0, tz=dt.timezone.utc)
+                                else:
+                                    stamp = dt.datetime.fromtimestamp(val_f, tz=dt.timezone.utc)
                                 ts_orig = ts_ms
-                            except BenchmarkError:
-                                continue
+                            except (ValueError, OSError, OverflowError):
+                                try:
+                                    stamp = parse_utc(ts_ms, 'fullapt.timestamp')
+                                    ts_orig = ts_ms
+                                except BenchmarkError:
+                                    continue
 
-                    tech_raw = str(row.get('Technique') or '').strip()
-                    label_raw = str(row.get('Label') or '').strip()
-                    is_mal = bool(
-                        tech_raw and tech_raw.lower() not in ('benign', 'normal', 'none', '0')
-                    ) or (label_raw.lower() not in ('', 'benign', 'normal', '0'))
+                        tech_raw = str(row.get('Technique') or '').strip()
+                        label_raw = str(row.get('Label') or '').strip()
+                        is_mal = bool(
+                            tech_raw and tech_raw.lower() not in ('benign', 'normal', 'none', '0')
+                        ) or (label_raw.lower() not in ('', 'benign', 'normal', '0'))
 
-                    if not is_mal and len(bg_rows) >= max_events and (rno % 19 != 0):
-                        subsampled = True
-                        continue
+                        if not is_mal and len(bg_rows) >= max_events and (rno % 19 != 0):
+                            subsampled = True
+                            continue
 
-                    eid_num = str(row.get('EventID') or '1').strip()
-                    tag = 'row-{}'.format(rno)
+                        eid_num = str(row.get('EventID') or '1').strip()
+                        tag = 'row-{}'.format(rno)
 
-                    ct = canonical_valid_technique(tech_raw) if is_mal else None
-                    is_key_step = ct in _FULLAPT_KEY_TECHNIQUES
+                        ct = canonical_valid_technique(tech_raw) if is_mal else None
+                        is_key_step = ct in _FULLAPT_KEY_TECHNIQUES
 
-                    if is_mal and not is_key_step and (rno % 4 != 0):
-                        subsampled = True
-                        continue
-                    if not is_mal and int(eid_num or '0') in (10, 7) and (rno % 9 != 0):
-                        subsampled = True
-                        continue
+                        if is_mal and not is_key_step and (rno % 4 != 0):
+                            subsampled = True
+                            continue
+                        if not is_mal and int(eid_num or '0') in (10, 7) and (rno % 9 != 0):
+                            subsampled = True
+                            continue
 
-                    # Strip ALL label columns (Tactic, Technique, Label, Seed_Event)!
-                    raw_fields = {
-                        'timestamp_original': ts_orig,
-                        'event_code': int(eid_num) if eid_num.isdigit() else eid_num,
-                        'image': row.get('Image') or row.get('SourceImage'),
-                        'command_line': row.get('CommandLine'),
-                        'parent_image': row.get('ParentImage'),
-                        'parent_command_line': row.get('ParentCommandLine'),
-                        'user': pseudo.pseudonymize('user', row.get('User') or row.get('SourceUser') or row.get('TargetUser') or ''),
-                        'hashes': row.get('Hashes') or row.get('Hash'),
-                        'src_ip': pseudo.pseudonymize('ip', row.get('SourceIp') or ''),
-                        'dest_ip': pseudo.pseudonymize('ip', row.get('DestinationIp') or ''),
-                        'dest_port': row.get('DestinationPort'),
-                        'target_filename': row.get('TargetFilename'),
-                        'target_object': row.get('TargetObject'),
-                        'pipe_name': row.get('PipeName'),
-                    }
-                    ev_item = {
-                        'tag': tag,
-                        'timestamp_utc': format_utc(stamp),
-                        'stamp': stamp,
-                        'source_id': 'win-sysmon-domain',
-                        'asset_id': asset_id,
-                        'event_type': 'sysmon_{}'.format(eid_num),
-                        'raw_fields': raw_fields,
-                        'ts_orig': ts_orig,
-                        'record_id': 'win-sysmon-domain:{}'.format(rno),
-                        'file_sha256': archive_sha,
-                    }
-                    if is_mal:
-                        mal_rows.append(ev_item)
-                        if is_key_step:
-                            bnd_id, phase = _FULLAPT_KEY_TECHNIQUES[ct]
-                            gkey = (asset_id, ct)
-                            st = step_groups.setdefault(gkey, {
-                                'step_id': 'step-{}-{}'.format(asset_id[-6:], ct.lower().replace('.', '-')),
-                                'technique_id': ct,
-                                'asset_id': asset_id,
-                                'boundary_id': bnd_id,
-                                'phase': phase,
-                                'support_tags': [],
-                                'first_stamp': stamp,
-                            })
-                            if len(st['support_tags']) < 48:
-                                st['support_tags'].append(tag)
-                            if stamp < st['first_stamp']:
-                                st['first_stamp'] = stamp
-                    else:
-                        bg_rows.append(ev_item)
-            finally:
-                csv.field_size_limit(old_csv_lim)
-            break
+                        # Strip ALL label columns (Tactic, Technique, Label, Seed_Event) and sanitize inline!
+                        fields = pseudo.clean_fields({
+                            'timestamp_original': ts_orig,
+                            'event_code': int(eid_num) if eid_num.isdigit() else eid_num,
+                            'image': row.get('Image') or row.get('SourceImage'),
+                            'command_line': row.get('CommandLine'),
+                            'parent_image': row.get('ParentImage'),
+                            'parent_command_line': row.get('ParentCommandLine'),
+                            'user': pseudo.pseudonymize('user', row.get('User') or row.get('SourceUser') or row.get('TargetUser') or ''),
+                            'hashes': row.get('Hashes') or row.get('Hash'),
+                            'src_ip': pseudo.pseudonymize('ip', row.get('SourceIp') or ''),
+                            'dest_ip': pseudo.pseudonymize('ip', row.get('DestinationIp') or ''),
+                            'dest_port': row.get('DestinationPort'),
+                            'target_filename': row.get('TargetFilename'),
+                            'target_object': row.get('TargetObject'),
+                            'pipe_name': row.get('PipeName'),
+                        })
+                        fields['timestamp_original'] = ts_orig
+                        ev_item = {
+                            'tag': tag,
+                            'timestamp_utc': format_utc(stamp),
+                            'stamp': stamp,
+                            'source_id': 'win-sysmon-domain',
+                            'asset_id': asset_id,
+                            'event_type': 'sysmon_{}'.format(eid_num),
+                            'fields': fields,
+                            'record_id': 'win-sysmon-domain:{}'.format(rno),
+                            'file_sha256': archive_sha,
+                        }
+                        if is_mal:
+                            mal_rows.append(ev_item)
+                            if is_key_step:
+                                bnd_id, phase = _FULLAPT_KEY_TECHNIQUES[ct]
+                                gkey = (asset_id, ct)
+                                st = step_groups.setdefault(gkey, {
+                                    'step_id': 'step-{}-{}'.format(asset_id[-6:], ct.lower().replace('.', '-')),
+                                    'technique_id': ct,
+                                    'asset_id': asset_id,
+                                    'boundary_id': bnd_id,
+                                    'phase': phase,
+                                    'support_tags': [],
+                                    'first_stamp': stamp,
+                                })
+                                if len(st['support_tags']) < 48:
+                                    st['support_tags'].append(tag)
+                                if stamp < st['first_stamp']:
+                                    st['first_stamp'] = stamp
+                        else:
+                            bg_rows.append(ev_item)
+                    break
+    finally:
+        csv.field_size_limit(old_csv_lim)
 
     if chosen_member_name is None or not step_groups:
         _fail('empty_events', tp.name)
@@ -1039,11 +1036,6 @@ def import_fullapt_query_case(
         'vendor': 'Microsoft',
     } for idx, c in enumerate(sorted_comps)]
     all_asset_ids = [a['asset_id'] for a in assets]
-
-    for ev in selected:
-        cleaned_fields = pseudo.clean_fields(ev.pop('raw_fields'))
-        cleaned_fields['timestamp_original'] = ev.pop('ts_orig')
-        ev['fields'] = cleaned_fields
 
     sources = [{
         'source_id': 'win-sysmon-domain',

@@ -108,13 +108,14 @@ class QueryAptImporterTests(unittest.TestCase):
             self.assertGreaterEqual(len(lin_fsets), 3)
             self.assertEqual(len(set(lin_fsets)), 1)
 
-            # 2. FullAPT-2025 fixture (row 1 references waterfalls.boombox.local via UNC before row 3 registers it)
+            # 2. FullAPT-2025 fixture (row 1 references waterfalls.corp.example via UNC before row 3 registers it, with >8KB command_line truncated inline)
             tgz = root / 'apt-1-labeled-datasets.tar.gz'
+            long_pad = 'A' * 12000
             csv_text = (
                 'Tactic,Technique,Label,EventID,Computer,Image,CommandLine,ParentImage,ParentCommandLine,User,Hashes,SourceIp,DestinationIp,DestinationPort,TargetFilename,TargetObject,PipeName,timestamp\n'
-                'credential-access,T1003.001,Malicious,1,theblock.boombox.local,C:\\Temp\\dumper.exe,dumper.exe \\\\waterfalls.boombox.local\\C$\\lsass.dmp,cmd.exe,cmd.exe /c,BOOMBOX\\alice,SHA256=1111111111111111111111111111111111111111111111111111111111111111,,,,, ,,1746364801000\n'
-                'lateral-movement,T1021.001,Malicious,3,endofroad.boombox.local,C:\\Windows\\System32\\mstsc.exe,mstsc.exe /v:10.0.0.5,explorer.exe,explorer.exe,BOOMBOX\\alice,,10.0.0.4,10.0.0.5,3389,,,,1746364815000\n'
-                'Benign,Benign,Benign,1,waterfalls.boombox.local,C:\\Windows\\System32\\svchost.exe,svchost.exe,services.exe,services.exe,NT AUTHORITY\\SYSTEM,,,,,,,,1746364820000\n'
+                'credential-access,T1003.001,Malicious,1,theblock.corp.example,C:\\Temp\\dumper.exe,dumper.exe \\\\waterfalls.corp.example\\C$\\lsass.dmp ' + long_pad + ',cmd.exe,cmd.exe /c,CORP\\alice,SHA256=1111111111111111111111111111111111111111111111111111111111111111,,,,, ,,1746364801000\n'
+                'lateral-movement,T1021.001,Malicious,3,endofroad.corp.example,C:\\Windows\\System32\\mstsc.exe,mstsc.exe /v:10.0.0.5,explorer.exe,explorer.exe,CORP\\alice,,10.0.0.4,10.0.0.5,3389,,,,1746364815000\n'
+                'Benign,Benign,Benign,1,waterfalls.corp.example,C:\\Windows\\System32\\svchost.exe,svchost.exe,services.exe,services.exe,NT AUTHORITY\\SYSTEM,,,,,,,,1746364820000\n'
             )
             with tarfile.open(tgz, 'w:gz') as tf:
                 raw_csv = csv_text.encode('utf-8')
