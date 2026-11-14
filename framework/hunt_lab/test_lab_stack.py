@@ -341,6 +341,31 @@ class StackTests(unittest.TestCase):
         self.assertFalse(ports & {19340, 19341, 19342}, ports)
         self.assertTrue(all(19343 <= port <= 19369 for port in ports), ports)
 
+    def test_a_warm_switch_whose_compose_up_fails_later_reports_it_and_stop_removes_the_shared_project(self):
+        # Once `compose up` is spawned the previous case is retired (one state.json per port set); a later compose
+        # failure belongs to the incoming case, and stopping it tears down the project no other case holds.
+        self.invoke('start')
+        self.running()
+        second_ev = self.evidence()
+        case_two = json.loads((second_ev / 'case.json').read_text(encoding='utf-8'))
+        case_two['case_id'] = 'team-med-902'
+        (second_ev / 'case.json').write_text(json.dumps(case_two), encoding='utf-8')
+        self.assertEqual(self.invoke('start', evidence_dir=str(second_ev))['reason'], 'loading_case')
+        self.assertFalse((self.root / 'dns-lab-001').exists())
+
+        self.up_running = False
+        (self.root / 'team-med-902' / 'compose.log').write_text(
+            ' Container hunt-lab-dns-lab-001-lab-1  Starting\nError response from daemon: ports are not available\n',
+            encoding='utf-8')
+        failed = self.invoke('status', case_id='team-med-902')
+        self.assertEqual((failed['state'], failed['reason']), ('error', 'compose_up_failed'))
+
+        stopped = self.invoke('stop', case_id='team-med-902')
+        self.assertEqual((stopped['state'], stopped['reason']), ('stopped', 'stopped'))
+        self.assertIn(['compose', '-p', 'hunt-lab-dns-lab-001', 'down', '-v', '--remove-orphans', '--timeout', '10'],
+                      self.docker.calls)
+        self.assertEqual([p.name for p in self.root.iterdir() if p.is_dir()], [])
+
     def test_warm_start_reuses_running_synthetic_stack_until_cold_or_real_data_origin(self):
         first_ev = self.evidence()
         # A read-only source file: the hard link staged from it must never be what makes it writable again.
