@@ -552,6 +552,18 @@ describe('variant-bundled plugins', () => {
           port: 54323,
           url: 'http://127.0.0.1:54323/',
           workflowId: 'wf-attached'
+        },
+        {
+          address: '127.0.0.1:59444',
+          caseId: 'exfil-004',
+          childWorkflowId: 'wf-second-round-001',
+          liveEnabled: true,
+          liveProfiles: ['framework-network-analyst'],
+          managed: false,
+          mode: 'tool_driven',
+          port: 54324,
+          url: 'http://127.0.0.1:54324/',
+          workflowId: 'wf-second'
         }
       ],
       ok: true
@@ -566,11 +578,18 @@ describe('variant-bundled plugins', () => {
       expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59333')
     })
 
+    fireEvent.change(screen.getByLabelText('Active loopback boards'), {
+      target: { value: 'http://127.0.0.1:54324/' }
+    })
+    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-second')
+    expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59444')
+
     fireEvent.change(screen.getAllByLabelText('Workflow ID')[0], { target: { value: 'wf-unattached' } })
     fireEvent.change(screen.getByLabelText('Temporal address'), { target: { value: '127.0.0.1:59999' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
     fireEvent.click(screen.getAllByRole('button', { name: 'Human gates' })[0])
-    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-attached')
-    expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59333')
+    expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-second')
+    expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59444')
   })
 
   it('guards HumanGatesPanel against target edits, stale gateStatus responses, and unrecorded or failed refreshes', async () => {

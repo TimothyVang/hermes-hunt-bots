@@ -499,10 +499,10 @@ function publishWorkflowHandoff(workflowId, address) {
 
 function openHumanGatesForBoard() {
   const current = board.get();
-  const useAttached = current.shown && Boolean(current.attachedWorkflowId || current.attachedAddress);
+  const useAttached = Boolean(current.attachedWorkflowId || current.attachedAddress);
   publishWorkflowHandoff(
-    useAttached ? (current.attachedWorkflowId || current.workflowId) : current.workflowId,
-    useAttached ? (current.attachedAddress || current.address) : current.address
+    useAttached ? current.attachedWorkflowId : current.workflowId,
+    useAttached ? (current.attachedAddress || '127.0.0.1:7233') : current.address
   );
   host.navigate('/cybersecurity-workspace');
 }
@@ -659,9 +659,10 @@ function HuntBoard() {
       const payload = event?.data;
       if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
       const latest = board.get();
+      const hasAttached = Boolean(latest.attachedWorkflowId || latest.attachedAddress);
       publishWorkflowHandoff(
-        payload.workflowId || latest.attachedWorkflowId || latest.workflowId,
-        latest.attachedAddress || latest.address
+        payload.workflowId || (hasAttached ? latest.attachedWorkflowId : latest.workflowId),
+        hasAttached ? (latest.attachedAddress || '127.0.0.1:7233') : latest.address
       );
       host.navigate('/cybersecurity-workspace');
     };
@@ -708,8 +709,8 @@ function HuntBoard() {
           const next = loopbackUrl(event.target.value);
           if (!next) return;
           const match = current.boards.find(item => loopbackUrl(item.url) === next);
-          const nextAddr = validLoopbackAddress(match?.address) || board.get().address;
-          const nextWid = match?.workflowId || board.get().workflowId;
+          const nextAddr = validLoopbackAddress(match?.address) || '127.0.0.1:7233';
+          const nextWid = typeof match?.workflowId === 'string' ? match.workflowId : '';
           publishWorkflowHandoff(nextWid, nextAddr);
           board.set({
             ...board.get(),
@@ -717,6 +718,8 @@ function HuntBoard() {
             managed: Boolean(match?.managed),
             workflowId: nextWid,
             address: nextAddr,
+            attachedWorkflowId: nextWid,
+            attachedAddress: nextAddr,
             port: match?.port ? String(match.port) : board.get().port,
             shown: true,
             nonce: board.get().nonce + 1
