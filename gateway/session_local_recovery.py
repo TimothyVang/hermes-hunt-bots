@@ -10,7 +10,7 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_state_runtime import RuntimeStoreError, _epoch, _json, list_session_admissions
 
 
 def local_adapter_map(authority):
@@ -150,11 +150,204 @@ def _stray_route_target(authority, receipt, session_id):
     return True
 
 
+def _resolve_heal_model(authority, sid, receipt):
+    """Resolve ``(model, follow_adopted)`` for a legacy null-model receipt, or ``(None, False)``."""
+    from gateway.session_authorities import owner_scope
+    from gateway.session_local import default_local_model, load_profile_config
+    from hermes_cli.anon_auth import GUEST_MODEL
+    entry_sid = (receipt.get('entry') or {}).get('session_id') or sid
+    for candidate_id in dict.fromkeys((entry_sid, sid)):
+        row = authority.db.get_session(candidate_id)
+        stored_model = row.get('model') if isinstance(row, dict) else None
+        if isinstance(stored_model, str) and stored_model.strip():
+            return stored_model.strip(), False
+    with owner_scope(authority):
+        frozen_model = default_local_model(json.loads(receipt['policy']['config_json']))
+        if frozen_model:
+            return frozen_model, frozen_model == GUEST_MODEL
+        live_model = default_local_model(load_profile_config())
+        if live_model:
+            return live_model, True
+    return None, False
+
+
+_SQL_WS = "' ' || char(9, 10, 11, 12, 13)"
+
+
+def _load_null_model_target(conn, authority, sid):
+    from hermes_state_local_lineage import validate_local_lineage
+    raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()
+    if raw is None:
+        return None
+    try:
+        stored = json.loads(raw[0])
+        if (not isinstance(stored, dict) or stored.get('profile_id') != authority.profile_id
+                or stored.get('session_id') != sid or not isinstance(stored.get('policy'), dict)):
+            return None
+        validate_local_lineage(conn, stored)
+        target_ids = {sid, stored['entry']['session_id'], *stored.get('lineage', ())}
+    except (KeyError, TypeError, ValueError, AttributeError, RuntimeStoreError):
+        return None
+    return stored, target_ids
+
+
+def _receipt_has_model(db, sid):
+    with db._read_ctx() as conn:
+        raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()
+    if raw is None:
+        return False
+    try:
+        model = json.loads(raw[0])['policy'].get('model')
+    except (KeyError, TypeError, ValueError):
+        return False
+    return isinstance(model, str) and bool(model.strip())
+
+
+def _normalize_null_model_receipt(authority, sid, healed_model, follow_adopted):
+    """Persist *healed_model* across ``state_meta``, ``sessions``, and ``gateway_routing``."""
+    from datetime import datetime
+    from gateway.session_policy import FOLLOW_ADOPTED
+
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        loaded = _load_null_model_target(conn, authority, sid)
+        if loaded is None:
+            return False
+        stored, target_ids = loaded
+        current_model = stored['policy'].get('model')
+        if isinstance(current_model, str) and current_model.strip():
+            return False
+        stored['policy']['model'] = healed_model
+        if follow_adopted and not stored['policy'].get('ignore_user_config'):
+            cfg = json.loads(stored['policy']['config_json'])
+            cfg[FOLLOW_ADOPTED] = True
+            stored['policy']['config_json'] = json.dumps(cfg)
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (POLICY_PREFIX + sid, _json(stored)))
+        entry = stored['entry']
+        for tid in target_ids:
+            conn.execute(
+                f"UPDATE sessions SET model=? WHERE id=? AND (model IS NULL OR TRIM(model, {_SQL_WS})='')",
+                (healed_model, tid),
+            )
+            conn.execute("UPDATE sessions SET ended_at=NULL, end_reason=NULL WHERE id=? AND end_reason='quarantined_null_model'",
+                         (tid,))
+        route = stored['route']
+        if conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone() is None:
+            started = datetime.fromisoformat(entry['created_at']).timestamp()
+            conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
+                         (route, _json(entry), started))
+        return True
+
+    if authority.db._execute_write(write):
+        logging.getLogger(__name__).info('Normalized legacy null-model local session %s to model %s', sid, healed_model)
+
+
+def _quarantine_null_model_receipt(authority, sid):
+    """Quarantine an unhealable ``model: None`` receipt; keep ``POLICY_PREFIX`` when transcript exists
+    so ``delete_session`` retires its policy secrets and ``stored_picker_sessions`` still lists it."""
+    import time
+
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        loaded = _load_null_model_target(conn, authority, sid)
+        if loaded is None:
+            return 'unused', None, ()
+        stored, target_ids = loaded
+        current_model = stored['policy'].get('model')
+        if isinstance(current_model, str) and current_model.strip():
+            return 'already_healed', None, ()
+        route = stored['route']
+        is_unused = all(unused_session(conn, tid) for tid in target_ids)
+        conn.execute("DELETE FROM gateway_routing WHERE scope='' AND session_key=?", (route,))
+        if is_unused:
+            conn.execute('DELETE FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,))
+            for tid in target_ids:
+                conn.execute('DELETE FROM sessions WHERE id=?', (tid,))
+        else:
+            now_ts = time.time()
+            for tid in target_ids:
+                conn.execute(
+                    "UPDATE sessions SET ended_at=COALESCE(ended_at,?), "
+                    "end_reason=COALESCE(end_reason,'quarantined_null_model') WHERE id=?",
+                    (now_ts, tid),
+                )
+        return ('unused' if is_unused else 'preserved'), route, tuple(target_ids)
+
+    outcome, route, target_ids = authority.db._execute_write(write)
+    if outcome == 'already_healed':
+        return outcome
+    store = authority.runner.session_store
+    with store._lock:
+        if _receipt_has_model(authority.db, sid):
+            return 'already_healed'
+        if outcome == 'unused':
+            for tid in target_ids:
+                store._session_owner_hints.pop(tid, None)
+        current = store._entries.get(route) if route is not None else None
+        if current is not None and current.session_id in target_ids:
+            del store._entries[route]
+    routing_db = store._routing_db
+    if (target_ids and routing_db is not None and routing_db.db_path != authority.db.db_path
+            and not _receipt_has_model(authority.db, sid)):
+        routing_db._delete_routing_entries_for_sessions(set(target_ids))
+    logging.getLogger(__name__).warning(
+        'Quarantined legacy null-model local session %s (%s)',
+        sid, 'removed unused rows' if outcome == 'unused' else 'preserved transcript',
+    )
+    return outcome
+
+
+def heal_legacy_null_model_session(authority, sid, *, raise_on_quarantine=True):
+    """Normalize or quarantine a legacy ``model: None`` receipt before ``restore_policy`` runs."""
+    from gateway.session_policy import restore_policy
+    from hermes_state_local_lineage import validate_local_lineage
+    with authority.db._read_ctx() as conn:
+        raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()
+    if raw is None:
+        return True
+    try:
+        receipt = json.loads(raw[0])
+    except ValueError:
+        return True
+    if (not isinstance(receipt, dict) or receipt.get('profile_id') != authority.profile_id
+            or receipt.get('session_id') != sid or not isinstance(receipt.get('policy'), dict)):
+        return True
+    policy_data = receipt['policy']
+    raw_model = policy_data.get('model')
+    if isinstance(raw_model, str) and raw_model.strip():
+        return True
+    try:
+        expected_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
+                       local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+        if expected_id != sid:
+            return True
+        source = local_source(authority, sid, receipt['principal_id'])
+        route = authority.runner.session_store._generate_session_key(source)
+        _checked_entry(authority, receipt, source, route)
+        with authority.db._read_ctx() as conn:
+            validate_local_lineage(conn, receipt)
+        restore_policy({**policy_data, 'model': '__probe__'})
+    except (KeyError, TypeError, ValueError, AttributeError, RuntimeStoreError):
+        return True
+    healed_model, follow_adopted = _resolve_heal_model(authority, sid, receipt)
+    if healed_model:
+        _normalize_null_model_receipt(authority, sid, healed_model, follow_adopted)
+        return True
+    outcome = _quarantine_null_model_receipt(authority, sid)
+    if outcome == 'already_healed':
+        return True
+    if raise_on_quarantine or outcome != 'unused':
+        raise _ReceiptRefused('invalid_params', field='model',
+                              detail='no model requested and no default model is configured')
+    return False
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
     try:
+        heal_legacy_null_model_session(authority, sid, raise_on_quarantine=True)
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
         receipt, source, route, entry = owned_receipt(authority, sid)
         chat_id, store = source.chat_id, authority.runner.session_store
@@ -445,6 +638,22 @@ def release_handed_off_receipts(db, *, epoch):
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)
 
 
+_NULL_MODEL_RECEIPTS_SQL = (
+    "SELECT key FROM state_meta WHERE key GLOB ? AND json_valid(value) "
+    f"AND COALESCE(TRIM(json_extract(value, '$.policy.model'), {_SQL_WS}), '') = ''"
+)
+
+
+def _heal_null_model_receipts_at_boot(authority):
+    """Heal or quarantine ended null/blank-model receipts without mounting ended sessions."""
+    with authority.db._read_ctx() as conn:
+        sids = [row[0][len(POLICY_PREFIX):] for row in conn.execute(
+            _NULL_MODEL_RECEIPTS_SQL, (POLICY_PREFIX + '*',))]
+    for sid in sids:
+        with contextlib.suppress(RuntimeStoreError):
+            heal_legacy_null_model_session(authority, sid, raise_on_quarantine=False)
+
+
 def local_receipt_ids(authority):
     from gateway.session_viewer_close import CLOSE_PREFIX
     start = len(POLICY_PREFIX) + 1
@@ -454,6 +663,7 @@ def local_receipt_ids(authority):
 
 
 def recover_local_sessions(authority, *, schedule=False):
+    _heal_null_model_receipts_at_boot(authority)
     orphans = []
     for sid in local_receipt_ids(authority):
         try:
