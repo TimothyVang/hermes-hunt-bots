@@ -15,10 +15,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRAMEWORK_DIR = REPO_ROOT / "framework"
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _load_endpoints():
@@ -26,6 +28,56 @@ def _load_endpoints():
     if fw not in sys.path:
         sys.path.insert(0, fw)
     return importlib.import_module("hunt_lab.endpoints")
+
+
+def _load_hermes_constants():
+    repo = str(REPO_ROOT)
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    return importlib.import_module("hermes_constants")
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def _default_hermes_homes(user_home: Path) -> tuple[Path, ...]:
+    constants = _load_hermes_constants()
+    dot_hermes = (user_home / ".hermes").resolve()  # health: allow HX001 -- reject literal ~/.hermes alongside account_default_hermes_home()
+    return (constants.account_default_hermes_home().resolve(), dot_hermes)
+
+
+def _validate_isolated_hermes_home(
+    raw: str,
+    *,
+    forbid_git_worktree: bool = True,
+    label: str = "HERMES_HOME",
+) -> tuple[Path | None, str | None]:
+    text = str(raw or "").strip()
+    if not text or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None, f"{label} must be a valid local path."
+    expanded = os.path.expanduser(os.path.expandvars(text))
+    cand = Path(os.path.abspath(expanded)).resolve()
+    user_home = Path.home().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if cand in (cand.parent, user_home, temp_root):
+        return None, f"{label} ({cand}) must be a dedicated isolated directory, not root, HOME, or the shared temp root."
+    for default_home in _default_hermes_homes(user_home):
+        if _paths_overlap(cand, default_home):
+            return None, f"{label} ({cand}) must not touch default user Hermes state ({default_home})."
+    operator_only = (REPO_ROOT.parent / "runtime" / "operator-only").resolve()
+    if (
+        _paths_overlap(cand, operator_only)
+        or any(part.lower() == "operator-only" for part in cand.parts)
+        or (cand / "operator-only").exists()
+    ):
+        return None, f"{label} ({cand}) must never touch operator-only directories."
+    in_git = _paths_overlap(cand, REPO_ROOT.resolve()) or any(
+        (parent / ".git").exists() for parent in (cand, *cand.parents)
+    )
+    if in_git and (forbid_git_worktree or ".scratch" not in cand.parts):
+        return None, f"{label} ({cand}) must be outside the repository/git worktree."
+    return cand, None
 
 
 def _emit(payload: dict, exit_code: int = 0) -> int:
@@ -68,6 +120,7 @@ def _run_py(python_exe: Path, argv: list[str], env_extra: dict[str, str] | None 
         errors="replace",
         timeout=120,
         check=False,
+        creationflags=_NO_WINDOW,
     )
 
 
@@ -95,24 +148,36 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             errors="replace",
             timeout=10,
             check=False,
+            creationflags=_NO_WINDOW,
         )
         docker_ready = probe.returncode == 0
     fixture_case = FRAMEWORK_DIR / "hunt_lab" / "fixtures" / "dns-lab-001" / "case.json"
-    hermes_home = Path(args.hermes_home).resolve() if args.hermes_home else None
+    hermes_home: Path | None = None
+    home_err: str | None = None
+    if args.hermes_home is not None:
+        hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
     analyst_vm = hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-vm" if hermes_home else None
     checks = {
         "lock_python_found": lock_py is not None,
         "lock_python_ready": lock_ready,
         "lock_python": str(lock_py) if lock_py else None,
+        "hermes_home_isolated": home_err is None,
         "docker_cli_found": docker_bin is not None,
         "docker_daemon_ready": docker_ready,
         "fixture_case_exists": fixture_case.is_file(),
         "hermes_home": str(hermes_home) if hermes_home else None,
         "analyst_vm_dir_exists": bool(analyst_vm and analyst_vm.is_dir()),
     }
-    ok = checks["lock_python_found"] and checks["lock_python_ready"] and checks["fixture_case_exists"]
+    ok = (
+        checks["lock_python_found"]
+        and checks["lock_python_ready"]
+        and checks["hermes_home_isolated"]
+        and checks["fixture_case_exists"]
+    )
     remediation = None
-    if not checks["lock_python_found"]:
+    if home_err:
+        remediation = home_err
+    elif not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a Python with framework/requirements-hunt.lock installed."
     elif not checks["lock_python_ready"]:
         remediation = "Selected --python cannot import temporalio/websockets; install framework/requirements-hunt.lock."
@@ -122,10 +187,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    hermes_home = Path(args.hermes_home).resolve()
     argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "status", "--home", str(hermes_home)]
     if args.hermes:
         argv.extend(["--hermes", args.hermes])
@@ -147,10 +214,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    hermes_home = Path(args.hermes_home).resolve()
     env_extra: dict[str, str] | None = None
     if args.case:
         case_dir = str(Path(args.case).resolve())
@@ -178,6 +247,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             errors="replace",
             timeout=120,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     else:
         res = _run_py(lock_py, argv, env_extra=env_extra)
@@ -192,9 +262,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
 def _resolve_query_target(args: argparse.Namespace, endpoints):
     state_dir = None
     if getattr(args, "state_dir", None):
-        state_dir = Path(args.state_dir).resolve()
+        checked_state, state_err = _validate_isolated_hermes_home(args.state_dir, label="state_dir")
+        if state_err or checked_state is None:
+            raise endpoints.QueryFailure("invalid_state_dir", state_err or "Invalid state_dir")
+        state_dir = checked_state
     elif getattr(args, "hermes_home", None):
-        state_dir = Path(args.hermes_home).resolve() / "profiles" / endpoints.LAB_OWNER / "hunt-lab-vm"
+        checked_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+        if home_err or checked_home is None:
+            raise endpoints.QueryFailure("invalid_hermes_home", home_err or "Invalid HERMES_HOME")
+        state_dir = checked_home / "profiles" / endpoints.LAB_OWNER / "hunt-lab-vm"
 
     if state_dir is not None:
         served = endpoints.resolve(state_dir, getattr(args, "case_id", None), profile=args.profile)
@@ -213,6 +289,11 @@ def _resolve_query_target(args: argparse.Namespace, endpoints):
 
 
 def cmd_query(args: argparse.Namespace) -> int:
+    target: Path | None = None
+    if args.out:
+        target, out_err = _validate_isolated_hermes_home(args.out, forbid_git_worktree=False, label="out")
+        if out_err or target is None:
+            return _emit({"ok": False, "error": out_err or "Invalid --out path."}, 1)
     endpoints = _load_endpoints()
     try:
         base_url, origin, instance, secret = _resolve_query_target(args, endpoints)
@@ -234,8 +315,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         return _emit({"ok": False, "error": str(exc), "detail": exc.detail}, 1)
 
     result = {"ok": True, "lab_url": base_url, "origin": origin, "data": payload}
-    if args.out:
-        target = Path(args.out).resolve()
+    if target is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         result["saved_to"] = str(target)
@@ -243,11 +323,15 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def cmd_lab_input(args: argparse.Namespace) -> int:
+    state_dir, state_err = _validate_isolated_hermes_home(args.state_dir, label="state_dir")
+    if state_err or state_dir is None:
+        return _emit({"ok": False, "error": state_err or "Invalid --state-dir."}, 1)
+    out_file, out_err = _validate_isolated_hermes_home(args.out, forbid_git_worktree=False, label="out")
+    if out_err or out_file is None:
+        return _emit({"ok": False, "error": out_err or "Invalid --out."}, 1)
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    state_dir = Path(args.state_dir).resolve()
-    out_file = Path(args.out).resolve()
     argv = [str(lock_py), "-m", "hermes_temporal.cli", "lab-input", "--state-dir", str(state_dir), "--output", str(out_file)]
     if args.tool_driven:
         argv.append("--tool-driven")
@@ -288,7 +372,9 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    hermes_home = Path(args.hermes_home).resolve()
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
     browser_root = hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-browser"
     audits = []
     if browser_root.is_dir():
@@ -299,10 +385,12 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    hermes_home = Path(args.hermes_home).resolve()
     argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "stop", "--home", str(hermes_home)]
     if args.hermes:
         argv.extend(["--hermes", args.hermes])

@@ -448,7 +448,7 @@ function HuntingLab() {
 const BOARD = '/hunt-board';
 const BOARD_URL = 'http://127.0.0.1:8790/';
 const BOARD_COMMAND = 'python -m hermes_temporal.board --workflow-id <practice id> --input <lab input JSON> --lab-state-dir <hermes-home>/profiles/framework-network-analyst/hunt-lab-vm --hermes-home <hermes-home> --port 8790';
-const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const SAFE_LOOPBACK_ADDR = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
 const INITIAL_BOARD_STATE = Object.freeze({
   shown: false,
@@ -482,15 +482,20 @@ function validLoopbackAddress(raw) {
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? `127.0.0.1:${port}` : '';
 }
 
-function publishWorkflowHandoff(workflowId, address) {
+function publishWorkflowHandoff(workflowId, address, { clearOnEmpty = false } = {}) {
   if (typeof globalThis === 'undefined') return;
   const cleanWid = typeof workflowId === 'string' && SAFE_WORKFLOW_ID.test(workflowId.trim()) ? workflowId.trim() : '';
   const cleanAddr = validLoopbackAddress(address) || '127.0.0.1:7233';
-  if (!cleanWid && cleanAddr === '127.0.0.1:7233') return;
+  if (!clearOnEmpty && !cleanWid && cleanAddr === '127.0.0.1:7233') return;
   const nextSeq = (Number(globalThis.__HUNT_COMMAND_HANDOFF__?.seq) || 0) + 1;
-  const handoff = { seq: nextSeq, workflowId: cleanWid, address: cleanAddr };
+  const handoff = {
+    seq: nextSeq,
+    workflowId: cleanWid,
+    address: cleanAddr,
+    clearTarget: Boolean(clearOnEmpty && !cleanWid)
+  };
   globalThis.__HUNT_COMMAND_HANDOFF__ = handoff;
-  if (cleanWid) globalThis.__HUNT_COMMAND_WORKFLOW_ID__ = cleanWid;
+  globalThis.__HUNT_COMMAND_WORKFLOW_ID__ = cleanWid;
   globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ = cleanAddr;
   if (typeof globalThis.__HUNT_COMMAND_ON_HANDOFF__ === 'function') {
     globalThis.__HUNT_COMMAND_ON_HANDOFF__(handoff);
@@ -499,10 +504,11 @@ function publishWorkflowHandoff(workflowId, address) {
 
 function openHumanGatesForBoard() {
   const current = board.get();
-  const useAttached = Boolean(current.attachedWorkflowId || current.attachedAddress);
+  const useAttached = Boolean(current.attachedWorkflowId || current.attachedAddress || current.managed);
   publishWorkflowHandoff(
     useAttached ? current.attachedWorkflowId : current.workflowId,
-    useAttached ? (current.attachedAddress || '127.0.0.1:7233') : current.address
+    useAttached ? (current.attachedAddress || '127.0.0.1:7233') : current.address,
+    { clearOnEmpty: useAttached }
   );
   host.navigate('/cybersecurity-workspace');
 }
@@ -548,21 +554,24 @@ async function attachActiveBoard({ reveal = true } = {}) {
       || found[0];
     const validUrl = loopbackUrl(picked.url) || BOARD_URL;
     const nextAddress = validLoopbackAddress(picked.address) || board.get().address;
-    const attachedWorkflowId = picked.workflowId || wanted || '';
-    publishWorkflowHandoff(attachedWorkflowId, nextAddress);
+    const rawPickedWid = picked.workflowId || picked.childWorkflowId || '';
+    const attachedWorkflowId = typeof rawPickedWid === 'string' && SAFE_WORKFLOW_ID.test(rawPickedWid.trim())
+      ? rawPickedWid.trim()
+      : '';
+    publishWorkflowHandoff(attachedWorkflowId, nextAddress, { clearOnEmpty: true });
     board.set({
       ...board.get(),
       busy: false,
       boards: found,
       url: validUrl,
       managed: Boolean(picked.managed),
-      workflowId: picked.workflowId || board.get().workflowId || '',
+      workflowId: attachedWorkflowId,
       address: nextAddress,
       attachedWorkflowId,
       attachedAddress: nextAddress,
       shown: reveal ? true : board.get().shown,
-      nonce: reveal ? board.get().nonce + 1 : board.get().nonce + 1,
-      message: `Attached Hunt Board at ${validUrl.slice(0, -1)}${picked.workflowId ? ` (${picked.workflowId})` : ''}${picked.liveEnabled ? ' · live browser stream ready' : ''}.`
+      nonce: board.get().nonce + 1,
+      message: `Attached Hunt Board at ${validUrl.slice(0, -1)}${attachedWorkflowId ? ` (${attachedWorkflowId})` : ''}${picked.liveEnabled ? ' · live browser stream ready' : ''}.`
     });
   } catch {
     board.set({ ...board.get(), busy: false, message: 'Loopback Hunt Board discovery failed.' });
@@ -658,10 +667,12 @@ function HuntBoard() {
       const payload = event?.data;
       if (!payload || typeof payload !== 'object' || payload.type !== 'hunt-board:open-human-gates') return;
       const latest = board.get();
-      const hasAttached = Boolean(latest.attachedWorkflowId || latest.attachedAddress);
+      const hasAttached = Boolean(latest.attachedWorkflowId || latest.attachedAddress || latest.managed);
+      const msgWid = typeof payload.workflowId === 'string' ? payload.workflowId.trim() : '';
       publishWorkflowHandoff(
-        payload.workflowId || (hasAttached ? latest.attachedWorkflowId : latest.workflowId),
-        hasAttached ? (latest.attachedAddress || '127.0.0.1:7233') : latest.address
+        msgWid || (hasAttached ? latest.attachedWorkflowId : latest.workflowId),
+        hasAttached ? (latest.attachedAddress || '127.0.0.1:7233') : latest.address,
+        { clearOnEmpty: Boolean(msgWid) || hasAttached }
       );
       host.navigate('/cybersecurity-workspace');
     };
@@ -709,8 +720,9 @@ function HuntBoard() {
           if (!next) return;
           const match = current.boards.find(item => loopbackUrl(item.url) === next);
           const nextAddr = validLoopbackAddress(match?.address) || '127.0.0.1:7233';
-          const nextWid = typeof match?.workflowId === 'string' ? match.workflowId : '';
-          publishWorkflowHandoff(nextWid, nextAddr);
+          const rawWid = match?.workflowId || match?.childWorkflowId || '';
+          const nextWid = typeof rawWid === 'string' && SAFE_WORKFLOW_ID.test(rawWid.trim()) ? rawWid.trim() : '';
+          publishWorkflowHandoff(nextWid, nextAddr, { clearOnEmpty: true });
           board.set({
             ...board.get(),
             url: next,

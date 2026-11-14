@@ -287,9 +287,9 @@ let gateRequestSeq = 0;
 function exactLoopback(raw) {
   return typeof raw === 'string' && raw.trim() ? validLoopback(raw) : null;
 }
-function applyHandoffTarget(nextWorkflowId, nextAddress) {
+function applyHandoffTarget(nextWorkflowId, nextAddress, clearTarget = false) {
   const latest = gateState.get();
-  const workflowId = nextWorkflowId || latest.workflowId;
+  const workflowId = clearTarget ? nextWorkflowId : (nextWorkflowId || latest.workflowId);
   const address = nextAddress || latest.address || '127.0.0.1:7233';
   if (workflowId === latest.workflowId && address === latest.address) return;
   gateRequestSeq += 1;
@@ -314,7 +314,8 @@ function syncWorkflowHandoff() {
       consumedHandoffSeq = raw.seq;
       const wf = typeof raw.workflowId === 'string' && SAFE_WORKFLOW.test(raw.workflowId.trim()) ? raw.workflowId.trim() : '';
       const addr = validLoopback(raw.address) || '127.0.0.1:7233';
-      applyHandoffTarget(wf, addr);
+      const clearTarget = Boolean(raw.clearTarget) || (typeof raw.workflowId === 'string' && Boolean(raw.workflowId.trim()) && !wf);
+      applyHandoffTarget(wf, addr, clearTarget);
     }
     return;
   }

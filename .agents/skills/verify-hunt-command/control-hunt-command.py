@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +30,11 @@ DESKTOP_DIR = REPO_ROOT / "apps" / "desktop"
 FRAMEWORK_DIR = REPO_ROOT / "framework"
 DEFAULT_BOARD_PORT = 8790
 DEFAULT_TEMPORAL_ADDR = "127.0.0.1:7233"
+MAX_STATE_BYTES = 524288
+MAX_EVIDENCE_NOTE_BYTES = 4096
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_SAFE_WORKFLOW_ID = re.compile(r"[A-Za-z0-9._:-]{1,160}\Z")
+_SAFE_DECISION_ID = re.compile(r"[\x21-\x7e]{1,128}\Z")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -42,11 +48,65 @@ _LOOPBACK_OPENER = urllib.request.build_opener(
 )
 
 
-def _strict_loopback_address(raw: str) -> str | None:
+def _load_contracts():
     fw = str(FRAMEWORK_DIR)
     if fw not in sys.path:
         sys.path.insert(0, fw)
-    contracts = importlib.import_module("hermes_temporal.contracts")
+    return importlib.import_module("hermes_temporal.contracts")
+
+
+def _load_hermes_constants():
+    repo = str(REPO_ROOT)
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    return importlib.import_module("hermes_constants")
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def _default_hermes_homes(user_home: Path) -> tuple[Path, ...]:
+    constants = _load_hermes_constants()
+    dot_hermes = (user_home / ".hermes").resolve()  # health: allow HX001 -- reject literal ~/.hermes alongside account_default_hermes_home()
+    return (constants.account_default_hermes_home().resolve(), dot_hermes)
+
+
+def _validate_isolated_hermes_home(
+    raw: str,
+    *,
+    forbid_git_worktree: bool = True,
+    label: str = "HERMES_HOME",
+) -> tuple[Path | None, str | None]:
+    text = str(raw or "").strip()
+    if not text or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None, f"{label} must be a valid local path."
+    expanded = os.path.expanduser(os.path.expandvars(text))
+    cand = Path(os.path.abspath(expanded)).resolve()
+    user_home = Path.home().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if cand in (cand.parent, user_home, temp_root):
+        return None, f"{label} ({cand}) must be a dedicated isolated directory, not root, HOME, or the shared temp root."
+    for default_home in _default_hermes_homes(user_home):
+        if _paths_overlap(cand, default_home):
+            return None, f"{label} ({cand}) must not touch default user Hermes state ({default_home})."
+    operator_only = (REPO_ROOT.parent / "runtime" / "operator-only").resolve()
+    if (
+        _paths_overlap(cand, operator_only)
+        or any(part.lower() == "operator-only" for part in cand.parts)
+        or (cand / "operator-only").exists()
+    ):
+        return None, f"{label} ({cand}) must never touch operator-only directories."
+    in_git = _paths_overlap(cand, REPO_ROOT.resolve()) or any(
+        (parent / ".git").exists() for parent in (cand, *cand.parents)
+    )
+    if in_git and (forbid_git_worktree or ".scratch" not in cand.parts):
+        return None, f"{label} ({cand}) must be outside the repository/git worktree."
+    return cand, None
+
+
+def _strict_loopback_address(raw: str) -> str | None:
+    contracts = _load_contracts()
     try:
         checked = contracts.validate_loopback_address(str(raw or "").strip())
     except ValueError:
@@ -91,7 +151,7 @@ def _packed_binary() -> Path:
     return DESKTOP_DIR / "release" / "linux-unpacked" / "hunt-command"
 
 
-def _probe_board(port: int) -> dict | None:
+def _fetch_board(port: int) -> tuple[dict, dict] | None:
     if port < 1 or port > 65535:
         return None
     req = urllib.request.Request(
@@ -104,7 +164,12 @@ def _probe_board(port: int) -> dict | None:
             server_hdr = resp.headers.get("Server", "")
             if resp.status != 200 or not server_hdr.startswith("HuntBoard"):
                 return None
-            body = json.loads(resp.read(524288).decode("utf-8"))
+            raw_bytes = resp.read(MAX_STATE_BYTES + 1)
+            if len(raw_bytes) > MAX_STATE_BYTES:
+                return None
+            body = json.loads(raw_bytes.decode("utf-8"))
+            if not isinstance(body, dict):
+                return None
             run = body.get("run") or {}
             parent = run.get("parent") if isinstance(run.get("parent"), dict) else {}
             child = run.get("child") if isinstance(run.get("child"), dict) else {}
@@ -115,7 +180,7 @@ def _probe_board(port: int) -> dict | None:
                 if isinstance(owners, list)
                 else []
             )
-            return {
+            summary = {
                 "port": port,
                 "url": f"http://127.0.0.1:{port}/",
                 "workflow_id": parent.get("workflow_id") or child.get("workflow_id") or "",
@@ -127,8 +192,14 @@ def _probe_board(port: int) -> dict | None:
                 "live_enabled": live is not None,
                 "live_profiles": live_profiles,
             }
+            return summary, body
     except (OSError, ValueError, urllib.error.URLError):
         return None
+
+
+def _probe_board(port: int) -> dict | None:
+    fetched = _fetch_board(port)
+    return fetched[0] if fetched is not None else None
 
 
 def _check_lock_python_ready(lock_py: Path | None) -> bool:
@@ -145,6 +216,7 @@ def _check_lock_python_ready(lock_py: Path | None) -> bool:
             errors="replace",
             timeout=15,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except OSError:
         return False
@@ -165,9 +237,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         errors="replace",
         timeout=15,
         check=False,
+        creationflags=_NO_WINDOW,
     ).stdout.strip()
 
-    hermes_home = Path(args.hermes_home).resolve() if args.hermes_home else None
+    hermes_home: Path | None = None
+    home_err: str | None = None
+    if args.hermes_home is not None:
+        hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
     discovered_boards: list[dict] = []
     seen_ports: set[int] = {DEFAULT_BOARD_PORT}
     if args.board_port:
@@ -189,6 +265,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "lock_python_found": lock_py is not None,
         "lock_python_ready": lock_ready,
         "lock_python": str(lock_py) if lock_py else None,
+        "hermes_home_isolated": home_err is None,
         "workspace_plugin_exists": plugin_workspace.is_file(),
         "hunt_lab_plugin_exists": plugin_lab.is_file(),
         "packed_binary_exists": binary.is_file(),
@@ -199,13 +276,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ok = (
         checks["lock_python_found"]
         and checks["lock_python_ready"]
+        and checks["hermes_home_isolated"]
         and checks["workspace_plugin_exists"]
         and checks["hunt_lab_plugin_exists"]
         and checks["desktop_assets_clean"]
         and (bool(getattr(args, "skip_packed_check", False)) or checks["packed_binary_exists"])
     )
     remediation = None
-    if not checks["lock_python_found"]:
+    if home_err:
+        remediation = home_err
+    elif not checks["lock_python_found"]:
         remediation = "Pass --python pointing to a venv with framework/requirements-hunt.lock installed."
     elif not checks["lock_python_ready"]:
         remediation = "Selected --python cannot import temporalio/websockets; install framework/requirements-hunt.lock."
@@ -348,6 +428,7 @@ def _posix_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
         errors="replace",
         timeout=5,
         check=False,
+        creationflags=_NO_WINDOW,
     )
     ps_comm = subprocess.run(
         ["ps", "-p", str(pid), "-o", "comm="],
@@ -357,6 +438,7 @@ def _posix_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
         errors="replace",
         timeout=5,
         check=False,
+        creationflags=_NO_WINDOW,
     )
     lstart = ps_time.stdout.strip()
     comm = ps_comm.stdout.strip()
@@ -395,9 +477,17 @@ def _pid_matches_recorded(ident: dict[str, str] | None, expected_binary: str, ex
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
+    evidence_dir, ev_err = _validate_isolated_hermes_home(
+        args.evidence_dir, forbid_git_worktree=False, label="evidence_dir"
+    )
+    if ev_err or evidence_dir is None:
+        return _emit({"ok": False, "error": ev_err or "Invalid --evidence-dir."}, 1)
+    if args.cdp_port and not (1 <= args.cdp_port <= 65535):
+        return _emit({"ok": False, "error": "CDP port must be 1..65535 (Rule 2)."}, 1)
     binary = _packed_binary()
-    hermes_home = Path(args.hermes_home).resolve()
-    evidence_dir = Path(args.evidence_dir).resolve()
     cmd = [str(binary)]
     if args.cdp_port:
         cmd.append(f"--remote-debugging-port={args.cdp_port}")
@@ -439,7 +529,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     hermes_home.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "HERMES_HOME": str(hermes_home)}
-    proc = subprocess.Popen(cmd, cwd=str(DESKTOP_DIR), env=env)
+    proc = subprocess.Popen(cmd, cwd=str(DESKTOP_DIR), env=env, creationflags=_NO_WINDOW)
     _state, ident = _process_identity(proc.pid)
     if _state != "alive" or not ident or not ident.get("create_time"):
         proc.terminate()
@@ -540,6 +630,63 @@ def _valid_phase_choice(phase: str, choice: str) -> bool:
     return phase in ("execute", "review") and choice in ("approve", "deny")
 
 
+def _normalize_operator_name(raw: str, contracts) -> str | None:
+    trimmed = str(raw or "").strip()
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in trimmed):
+        return None
+    normalized = " ".join(trimmed.split())
+    if not normalized or not contracts.valid_decider(normalized, "cli", ""):
+        return None
+    return normalized
+
+
+def _normalize_check_note(raw: str) -> str | None:
+    normalized = str(raw or "").strip().replace("\r\n", "\n")
+    if not normalized or len(normalized) > 1000:
+        return None
+    for ch in normalized:
+        code = ord(ch)
+        if (code < 0x20 and ch not in ("\t", "\n")) or code == 0x7F:
+            return None
+        if ch not in ("\t", "\n") and not ch.isprintable():
+            return None
+    return normalized
+
+
+def _validate_gate_inputs(
+    args: argparse.Namespace,
+) -> tuple[tuple[str, str, str, str, str, str] | None, str | None]:
+    address = _strict_loopback_address(args.address)
+    if not address:
+        return None, "Temporal address must use 127.0.0.1:<1..65535> (Rule 2)."
+    if not _valid_phase_choice(args.phase, args.choice):
+        return None, (
+            f"Invalid choice {args.choice!r} for {args.phase} gate "
+            "(review/execute: approve|deny; reconcile: accept|abort)."
+        )
+    contracts = _load_contracts()
+    workflow_id = str(args.workflow_id or "").strip()
+    if _SAFE_WORKFLOW_ID.fullmatch(workflow_id) is None:
+        return None, "Workflow ID must be 1..160 safe ASCII characters ([A-Za-z0-9._:-])."
+    step_id = str(args.step_id or "").strip()
+    if contracts.SAFE_STEP_ID.fullmatch(step_id) is None:
+        return None, "Step ID must be a valid 1..64 character gate/step identifier."
+    decision_id = str(args.decision_id or "").strip()
+    if _SAFE_DECISION_ID.fullmatch(decision_id) is None:
+        return None, "Decision ID must be 1..128 printable non-space ASCII characters."
+    operator = _normalize_operator_name(args.operator, contracts)
+    if not operator:
+        return None, "Operator name must be 1..200 printable characters without control characters (Rule 3)."
+    note = _normalize_check_note(args.note)
+    if not note:
+        return None, "Check note ('What did you check?') must be 1..1000 printable characters (Rule 3)."
+    utc_iso = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    evidence_note = f"Decided by {operator} via Hunt Command Desktop at {utc_iso}. Checked: {note}"
+    if len(evidence_note.encode("utf-8")) > MAX_EVIDENCE_NOTE_BYTES:
+        return None, f"Formatted evidence note exceeds {MAX_EVIDENCE_NOTE_BYTES} UTF-8 bytes."
+    return (address, workflow_id, step_id, decision_id, operator, evidence_note), None
+
+
 def _verify_recorded_decision(lock_py: Path, address: str, workflow_id: str, decision_id: str) -> tuple[bool, str | None]:
     status_argv = [str(lock_py), "-m", "hermes_temporal.cli", "--address", address, "status", workflow_id]
     last_err: str | None = None
@@ -554,6 +701,7 @@ def _verify_recorded_decision(lock_py: Path, address: str, workflow_id: str, dec
             errors="replace",
             timeout=15,
             check=False,
+            creationflags=_NO_WINDOW,
         )
         if res.returncode == 0:
             try:
@@ -576,30 +724,18 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    address = _strict_loopback_address(args.address)
-    if not address:
-        return _emit({"ok": False, "error": "Temporal address must use 127.0.0.1:<1..65535> (Rule 2)."}, 1)
-    if not _valid_phase_choice(args.phase, args.choice):
-        return _emit({
-            "ok": False,
-            "error": f"Invalid choice {args.choice!r} for {args.phase} gate (review/execute: approve|deny; reconcile: accept|abort).",
-        }, 1)
-    operator = args.operator.strip()
-    note = args.note.strip()
-    if not operator or len(operator) > 200:
-        return _emit({"ok": False, "error": "Operator name is required (1..200 chars, Rule 3)."}, 1)
-    if not note or len(note) > 1000:
-        return _emit({"ok": False, "error": "Check note ('What did you check?') is required (1..1000 chars, Rule 3)."}, 1)
-    utc_iso = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-    evidence_note = f"Decided by {operator} via Hunt Command Desktop at {utc_iso}. Checked: {note}"
+    checked, err = _validate_gate_inputs(args)
+    if err or checked is None:
+        return _emit({"ok": False, "error": err or "Invalid gate decision arguments."}, 1)
+    address, workflow_id, step_id, decision_id, operator, evidence_note = checked
     argv = [
         str(lock_py), "-m", "hermes_temporal.cli",
         "--address", address,
-        "decision", args.workflow_id,
-        "--step-id", args.step_id,
+        "decision", workflow_id,
+        "--step-id", step_id,
         "--phase", args.phase,
         "--choice", args.choice,
-        "--decision-id", args.decision_id,
+        "--decision-id", decision_id,
         "--decided-by", operator,
         "--via", "cli",
         "--evidence-note", evidence_note,
@@ -616,6 +752,7 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
         errors="replace",
         timeout=30,
         check=False,
+        creationflags=_NO_WINDOW,
     )
     if res.returncode != 0:
         return _emit({
@@ -624,14 +761,14 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
             "stdout": res.stdout.strip(),
             "stderr": res.stderr.strip(),
         }, 1)
-    recorded, status_err = _verify_recorded_decision(lock_py, address, args.workflow_id, args.decision_id)
+    recorded, status_err = _verify_recorded_decision(lock_py, address, workflow_id, decision_id)
     if not recorded:
         return _emit({
             "ok": False,
             "exit_code": 0,
             "decision_recorded": False,
             "stdout": res.stdout.strip(),
-            "error": status_err or f"Decision signal sent, but workflow {args.workflow_id} did not record {args.decision_id}.",
+            "error": status_err or f"Decision signal sent, but workflow {workflow_id} did not record {decision_id}.",
         }, 1)
     return _emit({
         "ok": True,
@@ -645,18 +782,32 @@ def cmd_gate_decide(args: argparse.Namespace) -> int:
 def cmd_snapshot(args: argparse.Namespace) -> int:
     if args.port < 1 or args.port > 65535:
         return _emit({"ok": False, "error": "Board port must be 1..65535 (Rule 2)."}, 1)
-    state = _probe_board(args.port)
-    out = {"ok": state is not None, "board": state}
-    if args.out and state is not None:
-        target = Path(args.out).resolve()
+    target: Path | None = None
+    if args.out:
+        target, out_err = _validate_isolated_hermes_home(args.out, forbid_git_worktree=False, label="out")
+        if out_err or target is None:
+            return _emit({"ok": False, "error": out_err or "Invalid --out path."}, 1)
+    fetched = _fetch_board(args.port)
+    if fetched is None:
+        return _emit({
+            "ok": False,
+            "board": None,
+            "state": None,
+            "error": f"No active HuntBoard at http://127.0.0.1:{args.port}/.",
+        }, 1)
+    summary, raw_state = fetched
+    out: dict[str, object] = {"ok": True, "board": summary, "state": raw_state}
+    if target is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         out["saved_to"] = str(target)
-    return _emit(out, 0 if state is not None else 1)
+    return _emit(out, 0)
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    hermes_home = Path(args.hermes_home).resolve()
+    hermes_home, home_err = _validate_isolated_hermes_home(args.hermes_home)
+    if home_err or hermes_home is None:
+        return _emit({"ok": False, "error": home_err or "Invalid HERMES_HOME."}, 1)
     log_dir = hermes_home / "logs"
     if not log_dir.is_dir():
         return _emit({"ok": True, "logs": [], "note": f"No logs directory at {log_dir}"})

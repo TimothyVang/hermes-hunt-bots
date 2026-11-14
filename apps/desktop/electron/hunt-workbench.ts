@@ -168,7 +168,7 @@ export interface HuntWorkbenchDeps {
 
 const DEFAULT_TEMPORAL_ADDRESS = '127.0.0.1:7233'
 const DEFAULT_BOARD_PORT = 8790
-const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const SAFE_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,160}$/
 const SAFE_ROUND_WORKFLOW_ID = /^[A-Za-z0-9._:-]{1,160}$/
 const SAFE_STEP_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const SAFE_CASE_ID = /^[a-z0-9-]{3,64}$/

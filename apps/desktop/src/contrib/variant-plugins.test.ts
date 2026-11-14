@@ -590,6 +590,55 @@ describe('variant-bundled plugins', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Human gates' })[0])
     expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('wf-second')
     expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:59444')
+
+    const longRoundId = `practice-${'a'.repeat(112)}:round:001`
+    expect(longRoundId.length).toBe(131)
+    vi.spyOn(host.huntWorkbench, 'discoverBoards').mockResolvedValueOnce({
+      boards: [
+        {
+          address: '127.0.0.1:7233',
+          caseId: 'long-round-case',
+          childWorkflowId: longRoundId,
+          liveEnabled: true,
+          liveProfiles: ['framework-network-analyst'],
+          managed: false,
+          mode: 'tool_driven',
+          port: 54325,
+          url: 'http://127.0.0.1:54325/',
+          workflowId: longRoundId
+        }
+      ],
+      ok: true
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Attach active board' }))
+    await waitFor(() => {
+      expect((screen.getAllByLabelText('Workflow ID')[0] as HTMLInputElement).value).toBe(longRoundId)
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe(longRoundId)
+      expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:7233')
+    })
+
+    vi.spyOn(host.huntWorkbench, 'discoverBoards').mockResolvedValueOnce({
+      boards: [
+        {
+          address: '127.0.0.1:7233',
+          caseId: 'invalid-wid-case',
+          childWorkflowId: '',
+          liveEnabled: false,
+          liveProfiles: [],
+          managed: false,
+          mode: 'inline',
+          port: 54326,
+          url: 'http://127.0.0.1:54326/',
+          workflowId: 'x'.repeat(165)
+        }
+      ],
+      ok: true
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Attach active board' }))
+    await waitFor(() => {
+      expect((screen.getAllByLabelText('Workflow ID')[0] as HTMLInputElement).value).toBe('')
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('')
+    })
   })
 
   it('guards HumanGatesPanel against target edits, stale gateStatus responses, and unrecorded or failed refreshes', async () => {
