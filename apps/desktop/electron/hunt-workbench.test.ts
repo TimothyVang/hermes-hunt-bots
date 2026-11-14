@@ -478,4 +478,49 @@ describe('hunt-workbench', () => {
     expect(spawnedChildren[2].killed).toBe(true)
     expect(fs.existsSync(exportedTempFiles[2])).toBe(false)
   })
+
+  it('keeps the running board when a replacement start fails during input preparation', async () => {
+    const home = makeTempDir()
+    tempDirs.push(home)
+    const inlineFile = path.join(home, 'inline.json')
+    fs.writeFileSync(inlineFile, JSON.stringify({ scope: 'synthetic', synthetic_only: true }))
+    const spawned: Array<ReturnType<typeof fakeChildProcess>> = []
+    let runtimeAvailable = true
+
+    const wb = createHuntWorkbench({
+      hermesHome: () => home,
+      huntEnabled: true,
+      probeBoardPort: async () => null,
+      resolvePython: async () =>
+        runtimeAvailable ? { frameworkRoot: '/repo/framework', pythonExe: '/repo/framework/.venv-temporal/bin/python' } : null,
+      spawnBoardProcess: (_rt, args) => {
+        const child = fakeChildProcess(`http://127.0.0.1:${args[args.indexOf('--port') + 1]}/`)
+        spawned.push(child)
+
+        return child
+      }
+    })
+
+    const started = await wb.startBoard({ inputPath: inlineFile, port: 8895, workflowId: 'wf-live' })
+    expect(started.ok).toBe(true)
+
+    const missingInput = await wb.startBoard({
+      inputPath: path.join(home, 'does-not-exist.json'),
+      port: 8896,
+      workflowId: 'wf-replacement'
+    })
+
+    expect(missingInput.ok).toBe(false)
+    expect(missingInput.error).toMatch(/does not exist/)
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].killed).toBe(false)
+
+    runtimeAvailable = false
+    const noRuntime = await wb.startBoard({ inputPath: inlineFile, port: 8897, workflowId: 'wf-replacement' })
+    expect(noRuntime.ok).toBe(false)
+    expect(spawned[0].killed).toBe(false)
+
+    expect(await wb.stopBoard()).toEqual({ ok: true, stopped: true })
+    expect(spawned[0].killed).toBe(true)
+  })
 })

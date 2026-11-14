@@ -132,6 +132,15 @@ export interface ResolvedHuntPython {
   pythonExe: string
 }
 
+interface PreparedBoardStart {
+  home: string
+  inputPath: string
+  isToolDriven: boolean
+  labStateDir: string
+  runtime: ResolvedHuntPython
+  tempInputPath: null | string
+}
+
 export interface HuntWorkbenchDeps {
   activeHermesRoot?: string
   allocateFreePort?: () => Promise<number>
@@ -908,6 +917,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
   let cachedPython: ResolvedHuntPython | null = null
   let boardLifecycleEpoch = 0
+  let boardStartSeq = 0
 
   let inflightBoard: {
     child: ChildProcess | null
@@ -1413,6 +1423,92 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     }
   }
 
+  const waitForChildExit = (child: ChildProcess, timeoutMs: number): Promise<void> =>
+    new Promise(resolve => {
+      if (typeof child.exitCode === 'number' || typeof child.signalCode === 'string') {
+        resolve()
+
+        return
+      }
+
+      const finish = () => {
+        clearTimeout(timer)
+        child.off('exit', finish)
+        child.off('close', finish)
+        resolve()
+      }
+
+      const timer = setTimeout(finish, timeoutMs)
+      child.once('exit', finish)
+      child.once('close', finish)
+    })
+
+  const prepareBoardStart = async (
+    request: HuntBoardStartRequest | undefined,
+    validated: { caseId: string; rawOrigin: string },
+    myStart: number
+  ): Promise<{ error: string } | PreparedBoardStart> => {
+    let tempInputPath: null | string = null
+
+    const fail = (error: string) => {
+      unlinkQuietly(tempInputPath)
+
+      return { error }
+    }
+
+    try {
+      const runtime = await resolveRuntime()
+
+      if (boardStartSeq !== myStart) {
+        return fail('Board startup cancelled.')
+      }
+
+      if (!runtime) {
+        return fail('Temporal Python environment not found (expected framework/.venv-temporal with temporalio and websockets).')
+      }
+
+      const home = deps.hermesHome()
+      const labStateDir = home ? path.join(home, 'profiles', 'framework-network-analyst', 'hunt-lab-vm') : ''
+
+      const resolvedInput = await resolveBoardInputFile(
+        runtime,
+        home,
+        labStateDir,
+        String(request?.inputPath || '').trim(),
+        validated.rawOrigin,
+        validated.caseId,
+        tempPath => {
+          tempInputPath = tempPath
+        }
+      )
+
+      tempInputPath = resolvedInput.tempInputPath
+
+      if (boardStartSeq !== myStart) {
+        return fail('Board startup cancelled.')
+      }
+
+      if (!resolvedInput.inputPath) {
+        return fail(resolvedInput.error ?? 'Failed to prepare input file.')
+      }
+
+      if (resolvedInput.isToolDriven && !labStateDir) {
+        return fail('Tool-driven board requires HERMES_HOME with analyst lab state.')
+      }
+
+      return {
+        home,
+        inputPath: resolvedInput.inputPath,
+        isToolDriven: Boolean(resolvedInput.isToolDriven),
+        labStateDir,
+        runtime,
+        tempInputPath
+      }
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : 'Failed to prepare Hunt Board input.')
+    }
+  }
+
   const startBoard: HuntWorkbenchApi['startBoard'] = async request => {
     if (!deps.huntEnabled) {
       return { error: 'hunt_variant_only', ok: false }
@@ -1424,9 +1520,23 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
       return { error: validated.error, ok: false }
     }
 
+    boardStartSeq += 1
+    const prepared = await prepareBoardStart(request, validated, boardStartSeq)
+
+    if ('error' in prepared) {
+      return { error: prepared.error, ok: false }
+    }
+
+    const superseded = [managedBoard?.child, inflightBoard?.child].filter((item): item is ChildProcess => Boolean(item))
+    const supersededExited = Promise.all(superseded.map(item => waitForChildExit(item, 3000)))
     cleanupManagedBoard()
-    const myEpoch = boardLifecycleEpoch
-    const tracker = { child: null as ChildProcess | null, epoch: myEpoch, tempInputPath: null as string | null }
+
+    const tracker = {
+      child: null as ChildProcess | null,
+      epoch: boardLifecycleEpoch,
+      tempInputPath: prepared.tempInputPath
+    }
+
     inflightBoard = tracker
 
     const abortTracker = (error: string): HuntBoardStartResult => {
@@ -1441,50 +1551,15 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     }
 
     try {
-      const runtime = await resolveRuntime()
+      await supersededExited
 
-      if (boardLifecycleEpoch !== myEpoch) {
+      if (boardLifecycleEpoch !== tracker.epoch) {
         return abortTracker('Board startup cancelled.')
-      }
-
-      if (!runtime) {
-        return abortTracker(
-          'Temporal Python environment not found (expected framework/.venv-temporal with temporalio and websockets).'
-        )
-      }
-
-      const home = deps.hermesHome()
-      const labStateDir = home ? path.join(home, 'profiles', 'framework-network-analyst', 'hunt-lab-vm') : ''
-
-      const resolvedInput = await resolveBoardInputFile(
-        runtime,
-        home,
-        labStateDir,
-        String(request?.inputPath || '').trim(),
-        validated.rawOrigin,
-        validated.caseId,
-        tempPath => {
-          tracker.tempInputPath = tempPath
-        }
-      )
-
-      tracker.tempInputPath = resolvedInput.tempInputPath
-
-      if (boardLifecycleEpoch !== myEpoch) {
-        return abortTracker('Board startup cancelled.')
-      }
-
-      if (!resolvedInput.inputPath) {
-        return abortTracker(resolvedInput.error ?? 'Failed to prepare input file.')
-      }
-
-      if (resolvedInput.isToolDriven && !labStateDir) {
-        return abortTracker('Tool-driven board requires HERMES_HOME with analyst lab state.')
       }
 
       const portChoice = await pickTargetBoardPort(request?.port)
 
-      if (boardLifecycleEpoch !== myEpoch) {
+      if (boardLifecycleEpoch !== tracker.epoch) {
         return abortTracker('Board startup cancelled.')
       }
 
@@ -1494,21 +1569,21 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
 
       const boardArgs = buildBoardArgs(
         validated.workflowId,
-        resolvedInput.inputPath,
+        prepared.inputPath,
         validated.address,
         portChoice.port,
-        Boolean(resolvedInput.isToolDriven),
-        labStateDir,
-        home
+        prepared.isToolDriven,
+        prepared.labStateDir,
+        prepared.home
       )
 
       return await spawnAndActivateBoard(
         tracker,
-        runtime,
+        prepared.runtime,
         boardArgs,
         validated,
-        home,
-        Boolean(resolvedInput.isToolDriven)
+        prepared.home,
+        prepared.isToolDriven
       )
     } catch (err) {
       return abortTracker(err instanceof Error ? err.message : 'Failed to start Hunt Board.')
@@ -1519,6 +1594,8 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     if (!deps.huntEnabled) {
       return { ok: false, stopped: false }
     }
+
+    boardStartSeq += 1
 
     return { ok: true, stopped: cleanupManagedBoard() }
   }
@@ -1700,6 +1777,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     decideGate,
     discoverBoards,
     dispose: () => {
+      boardStartSeq += 1
       cleanupManagedBoard()
     },
     gateStatus,

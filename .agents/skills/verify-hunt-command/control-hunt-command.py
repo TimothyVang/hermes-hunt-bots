@@ -192,7 +192,11 @@ class _WinFileTime(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
 
 
-def _windows_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _win_kernel32():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
     kernel32.OpenProcess.restype = ctypes.c_void_p
@@ -215,32 +219,66 @@ def _windows_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
         ctypes.POINTER(ctypes.c_uint32),
     ]
     kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.TerminateProcess.restype = ctypes.c_int
+    return kernel32
 
-    handle = kernel32.OpenProcess(0x1000, 0, pid)
+
+def _win_open(kernel32, pid: int, access: int):
+    handle = kernel32.OpenProcess(access, 0, pid)
+    if handle:
+        return handle, "alive"
+    return None, "inaccessible" if ctypes.get_last_error() == 5 else "dead"
+
+
+def _win_identity_from_handle(kernel32, handle) -> tuple[str, dict[str, str] | None]:
+    exit_code = ctypes.c_uint32(0)
+    if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
+        return ("dead", None)
+    creation = _WinFileTime()
+    exit_ft = _WinFileTime()
+    kernel_ft = _WinFileTime()
+    user_ft = _WinFileTime()
+    if not kernel32.GetProcessTimes(
+        handle,
+        ctypes.byref(creation),
+        ctypes.byref(exit_ft),
+        ctypes.byref(kernel_ft),
+        ctypes.byref(user_ft),
+    ):
+        return ("inaccessible", None)
+    buf_len = ctypes.c_uint32(4096)
+    buf = ctypes.create_unicode_buffer(buf_len.value)
+    if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_len)):
+        return ("inaccessible", None)
+    ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    return ("alive", {"binary": str(Path(buf.value).resolve()), "create_time": str(ticks)})
+
+
+def _windows_process_identity(pid: int) -> tuple[str, dict[str, str] | None]:
+    kernel32 = _win_kernel32()
+    handle, state = _win_open(kernel32, pid, _PROCESS_QUERY_LIMITED_INFORMATION)
     if not handle:
-        return ("inaccessible", None) if ctypes.get_last_error() == 5 else ("dead", None)
+        return (state, None)
     try:
-        exit_code = ctypes.c_uint32(0)
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
-            return ("dead", None)
-        creation = _WinFileTime()
-        exit_ft = _WinFileTime()
-        kernel_ft = _WinFileTime()
-        user_ft = _WinFileTime()
-        if not kernel32.GetProcessTimes(
-            handle,
-            ctypes.byref(creation),
-            ctypes.byref(exit_ft),
-            ctypes.byref(kernel_ft),
-            ctypes.byref(user_ft),
-        ):
-            return ("inaccessible", None)
-        buf_len = ctypes.c_uint32(4096)
-        buf = ctypes.create_unicode_buffer(buf_len.value)
-        if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_len)):
-            return ("inaccessible", None)
-        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
-        return ("alive", {"binary": str(Path(buf.value).resolve()), "create_time": str(ticks)})
+        return _win_identity_from_handle(kernel32, handle)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _windows_terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
+    # Verify and terminate through one handle so the PID cannot be recycled in between.
+    kernel32 = _win_kernel32()
+    handle, state = _win_open(kernel32, pid, _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION)
+    if not handle:
+        return "dead" if state == "dead" else "mismatch"
+    try:
+        alive, ident = _win_identity_from_handle(kernel32, handle)
+        if alive == "dead":
+            return "dead"
+        if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
+            return "mismatch"
+        return "stopped" if kernel32.TerminateProcess(handle, 1) else "failed"
     finally:
         kernel32.CloseHandle(handle)
 
@@ -484,16 +522,26 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         return _emit({"ok": False, "stopped": False, "pid": pid, "reason": "pid_identity_mismatch"}, 1)
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "would_stop_pid": pid, "pid_file": str(pid_file)})
-    stopped = False
+    outcome = _terminate_verified(pid, expected_binary, expected_create)
+    if outcome == "mismatch":
+        return _emit({"ok": False, "stopped": False, "pid": pid, "reason": "pid_identity_mismatch"}, 1)
+    if outcome.startswith("error:"):
+        return _emit({"ok": False, "stopped": False, "pid": pid, "error": outcome[6:]}, 1)
+    pid_file.unlink(missing_ok=True)
+    return _emit({"ok": True, "stopped": outcome == "stopped", "pid": pid, "evidence_preserved": True})
+
+
+def _terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
+    if os.name == "nt":
+        outcome = _windows_terminate_verified(pid, expected_binary, expected_create)
+        return "error:TerminateProcess failed" if outcome == "failed" else outcome
     try:
         os.kill(pid, signal.SIGTERM)
-        stopped = True
     except ProcessLookupError:
-        stopped = False
+        return "dead"
     except OSError as exc:
-        return _emit({"ok": False, "stopped": False, "pid": pid, "error": str(exc)}, 1)
-    pid_file.unlink(missing_ok=True)
-    return _emit({"ok": True, "stopped": stopped, "pid": pid, "evidence_preserved": True})
+        return f"error:{exc}"
+    return "stopped"
 
 
 def build_parser() -> argparse.ArgumentParser:

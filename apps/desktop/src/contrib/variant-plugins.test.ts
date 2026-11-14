@@ -264,7 +264,7 @@ describe('variant-bundled plugins', () => {
           workflowId: 'practice-dns-001'
         }
       })
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         ok: true,
         status: {
           address: '127.0.0.1:7233',
@@ -620,6 +620,10 @@ describe('variant-bundled plugins', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
+        status: { ...makeOpenStatus('wf-3-round-001', '127.0.0.1:27233', 'active-case-3'), childWorkflowId: 'wf-3-round-001' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
         status: {
           ...makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3'),
           decisions: [],
@@ -636,6 +640,45 @@ describe('variant-bundled plugins', () => {
         error: 'Temporal unavailable',
         ok: false
       })
+      .mockResolvedValueOnce({
+        error: 'Temporal unavailable',
+        ok: false
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3')
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: {
+          ...makeOpenStatus('wf-3-round-001', '127.0.0.1:27233', 'active-case-3'),
+          childWorkflowId: 'wf-3-round-001',
+          decisions: [
+            {
+              decidedBy: 'Alice Analyst',
+              decision: 'approve',
+              decisionId: 'dec-next-round-3',
+              phase: 'review',
+              slackUser: '',
+              stepId: 'wave-1',
+              via: 'cli'
+            }
+          ],
+          openGate: null,
+          stage: 'completed'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: {
+          ...makeOpenStatus('wf-3', '127.0.0.1:27233', 'active-case-3'),
+          childWorkflowId: 'wf-3-round-002',
+          currentRound: 2,
+          decisions: [],
+          openGate: null,
+          stage: 'running'
+        }
+      })
 
     const decideGateSpy = vi
       .spyOn(host.huntWorkbench, 'decideGate')
@@ -651,6 +694,14 @@ describe('variant-bundled plugins', () => {
         decidedAtUtc: '2026-11-14T06:01:00Z',
         decidedBy: 'Alice Analyst',
         decisionId: 'dec-refresh-fail-2',
+        ok: true,
+        via: 'cli',
+        workflowId: 'wf-3-round-001'
+      })
+      .mockResolvedValueOnce({
+        decidedAtUtc: '2026-11-14T06:02:00Z',
+        decidedBy: 'Alice Analyst',
+        decisionId: 'dec-next-round-3',
         ok: true,
         via: 'cli',
         workflowId: 'wf-3-round-001'
@@ -750,5 +801,22 @@ describe('variant-bundled plugins', () => {
 
     expect(screen.queryByRole('button', { name: 'Approve gate' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Load gate status' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load gate status' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve gate' })).toBeTruthy()
+    })
+
+    fireEvent.change(screen.getByLabelText('What did you check?'), { target: { value: 'Verified incident evidence' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve gate' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Recorded approve by Alice Analyst via cli (dec-next-round-3).')).toBeTruthy()
+      expect(screen.getByText('wf-3 → wf-3-round-002')).toBeTruthy()
+    })
+
+    expect(gateStatusSpy).toHaveBeenNthCalledWith(10, { address: '127.0.0.1:27233', workflowId: 'wf-3-round-001' })
+    expect(gateStatusSpy).toHaveBeenNthCalledWith(11, { address: '127.0.0.1:27233', workflowId: 'wf-3' })
   })
 })

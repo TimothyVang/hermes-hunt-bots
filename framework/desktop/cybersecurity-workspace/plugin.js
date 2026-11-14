@@ -451,35 +451,45 @@ function HumanGatesPanel() {
       gateState.set({...gateState.get(),busy:false,message:reply?.error || 'Human gate decision failed.'});
       return;
     }
-    let refreshed = null;
-    try {
-      refreshed = await host.huntWorkbench.gateStatus({ address: status.address, workflowId: status.workflowId });
-    } catch {
-      refreshed = null;
-    }
+    const safeGateStatus = async workflowId => {
+      try {
+        return await host.huntWorkbench.gateStatus({ address: status.address, workflowId });
+      } catch {
+        return null;
+      }
+    };
+    // A PracticeWorkflow parent re-resolves its *current* round, which may already be N+1;
+    // only the child that received the signal can confirm the decision was recorded.
+    const confirmed = await safeGateStatus(status.childWorkflowId);
     if (reqSeq !== gateRequestSeq) return;
+    const recorded = Boolean(
+      reply.decisionId
+      && confirmed?.ok
+      && Array.isArray(confirmed.status?.decisions)
+      && confirmed.status.decisions.some(item => item && item.decisionId === reply.decisionId)
+    );
+    const refreshed = status.childWorkflowId === status.workflowId ? confirmed : await safeGateStatus(status.workflowId);
+    if (reqSeq !== gateRequestSeq) return;
+    const recordedMessage = `Recorded ${choice} by ${reply.decidedBy || operatorName} via cli (${reply.decisionId})`;
     if (!refreshed?.ok || !refreshed.status) {
       gateState.set({
         ...gateState.get(),
         busy: false,
         checkNote: '',
         status: null,
-        message: 'Decision signal sent, but workflow refresh failed. Click Load gate status before deciding again.'
+        message: recorded
+          ? `${recordedMessage}, but workflow refresh failed. Click Load gate status before deciding again.`
+          : 'Decision signal sent, but workflow refresh failed. Click Load gate status before deciding again.'
       });
       return;
     }
-    const recorded = Boolean(
-      reply.decisionId
-      && Array.isArray(refreshed.status.decisions)
-      && refreshed.status.decisions.some(item => item && item.decisionId === reply.decisionId)
-    );
     gateState.set({
       ...gateState.get(),
       busy: false,
       checkNote: recorded ? '' : gateState.get().checkNote,
       status: refreshed.status,
       message: recorded
-        ? `Recorded ${choice} by ${reply.decidedBy || operatorName} via cli (${reply.decisionId}).`
+        ? `${recordedMessage}.`
         : `Decision signal sent (${reply.decisionId || 'unconfirmed'}), but ${reply.decisionId || 'decision'} was not recorded in workflow state.`
     });
   };
