@@ -366,6 +366,7 @@ def collect_tool_input(state_dir, *, data_origin: str | None = None, case_id: st
     label = f"Untrusted {origin_text(declared)} lab case" if declared else "Untrusted synthetic lab case"
     raw = {
         "mode": "tool_driven",
+        "parallel": True,
         "scope": tool_driven_scope(case_id, declared),
         "evidence": [{
             "source_id": case_source,

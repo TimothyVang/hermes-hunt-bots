@@ -383,6 +383,54 @@ def _q(path):
     return "'" + str(Path(path).resolve()).replace('\\', '/').replace(':', '\\:') + "'"
 
 
+def _ass_time(seconds):
+    cs = max(0, round(float(seconds) * 100))
+    h, rem = divmod(cs, 360_000)
+    m, rem = divmod(rem, 6_000)
+    s, c = divmod(rem, 100)
+    return f'{h}:{m:02d}:{s:02d}.{c:02d}'
+
+
+def _ass_escape(value):
+    text = str(value).replace('\r', '').replace('\n', ' ').replace('{', r'\{').replace('}', r'\}')
+    for ch in ('N', 'n', 'h'):
+        text = text.replace('\\' + ch, '\\\u200b' + ch)
+    return text
+
+
+def write_ass(path, total, label_text, speed, captions):
+    """Write one ASS subtitle file carrying the full-duration speed label and timed action captions."""
+    font = 'Segoe UI' if Path(TOOLCAM_FONT).name.lower().startswith('segoe') else 'Sans'
+    label_color = '&H000B9EF5' if speed != 1 else '&H005EC522'
+    y_label, y_caption = SIZE[1] - BAR + 16, SIZE[1] - BAR + 18
+    events = [f'Dialogue: 0,0:00:00.00,{_ass_time(total + 1.0)},Label,,0,0,0,,{{\\pos(24,{y_label})}}{_ass_escape(label_text)}']
+    for text, start, end in captions:
+        if end > start:
+            events.append(
+                f'Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{{\\pos(620,{y_caption})}}{_ass_escape(text)}')
+    content = '\n'.join([
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        f'PlayResX: {SIZE[0]}',
+        f'PlayResY: {SIZE[1]}',
+        'WrapStyle: 2',
+        'ScaledBorderAndShadow: yes',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, '
+        'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, '
+        'Alignment, MarginL, MarginR, MarginV, Encoding',
+        f'Style: Label,{font},30,{label_color},&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1',
+        f'Style: Caption,{font},26,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1',
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        *events,
+        '',
+    ])
+    Path(path).write_text(content, encoding='utf-8')
+
+
 class Renderer:
     def __init__(self, work):
         self.work = Path(work)
@@ -406,7 +454,7 @@ class Renderer:
                         '-pix_fmt', 'yuvj420p', '-q:v', '2', str(out)], check=True)
 
     def video(self, entries, speed, bar, out):
-        """Play the still list at 30 fps under the bar: its label always, captions when on."""
+        """Play the still list at 30 fps under the bar via a single ASS subtitle filter."""
         text, captions = bar
         concat = out.with_suffix('.ffconcat')
         lines = ['ffconcat version 1.0']
@@ -416,12 +464,13 @@ class Renderer:
         lines.append(f"file '{Path(entries[-1][0]).resolve().as_posix()}'")
         concat.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         total = sum(seconds for _, seconds in entries)
-        draws = [f'drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=black@0.78:t=fill',
-                 self.text(text, 24, f'h-{BAR}+16', 30, '0xf59e0b' if speed != 1 else '0x22c55e')]
-        draws += [self.text(c, 620, f'h-{BAR}+18', 26, 'white', (a, b)) for c, a, b in captions]
+        ass_path = out.with_suffix('.ass')
+        write_ass(ass_path, total, text, speed, captions)
         graph = (f'[0:v]scale={SIZE[0]}:{SIZE[1]}:force_original_aspect_ratio=decrease,'
                  f'pad={SIZE[0]}:{SIZE[1]}:(ow-iw)/2:(oh-ih)/2:color={BACKGROUND},setsar=1,'
-                 f'fps=30,trim=duration={total:.6f},' + ','.join(draws) + '[v]')
+                 f'fps=30,trim=duration={total:.6f},'
+                 f'drawbox=x=0:y=ih-{BAR}:w=iw:h={BAR}:color=black@0.78:t=fill,'
+                 f'ass=filename={_q(ass_path)}[v]')
         script = out.with_suffix('.filter.txt')
         script.write_text(graph, encoding='utf-8')
         subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat),
@@ -464,10 +513,10 @@ def render(r, name, items, frames, intro, outro, speed, out):
     return segs
 
 
-def cut(d, rec, actions, knobs, cov, out_dir=None):
-    """Render video-full.mp4 (Option A, 1x) and video.mp4 (Option B, knobs.speed) from film.json's board capture
-    in d; returns (and writes) edit.json. Outputs go to out_dir (default d), so a capture can be re-cut without
-    touching an earlier cut."""
+def cut(d, rec, actions, knobs, cov, out_dir=None, *, include_full=True):
+    """Render video.mp4 (Option B, knobs.speed) and optionally video-full.mp4 (Option A, 1x) from film.json's board
+    capture in d; returns (and writes) edit.json. Outputs go to out_dir (default d), so a capture can be re-cut
+    without touching an earlier cut."""
     d = Path(d)
     out_dir = Path(out_dir or d)
     frames = screencast.read_index(d, rec['board_index']).get(BOARD, [])
@@ -481,14 +530,22 @@ def cut(d, rec, actions, knobs, cov, out_dir=None):
     intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'], samples[-1][1] if samples else ())
     r = Renderer(out_dir / 'edit-work')
     cuts = {}
-    for name, speed, video in (('full', 1.0, 'video-full.mp4'), ('reviewed', knobs.speed, 'video.mp4')):
-        items = plan(duration, start, stages, actions, knobs, speed, total)
-        cuts[name] = {'video': video, 'speed': speed, 'label': label(speed),
-                      'segments': render(r, name, items, rel, intro, outro, speed, out_dir / video)}
-        cuts[name]['out_seconds'] = cuts[name]['segments'][-1]['out_end']
+    reviewed_items = plan(duration, start, stages, actions, knobs, knobs.speed, total)
+    cuts['reviewed'] = {'video': 'video.mp4', 'speed': knobs.speed, 'label': label(knobs.speed),
+                        'segments': render(r, 'reviewed', reviewed_items, rel, intro, outro, knobs.speed, out_dir / 'video.mp4')}
+    cuts['reviewed']['out_seconds'] = cuts['reviewed']['segments'][-1]['out_end']
+    full_items = plan(duration, start, stages, actions, knobs, 1.0, total)
+    if include_full:
+        full_segs = render(r, 'full', full_items, rel, intro, outro, 1.0, out_dir / 'video-full.mp4')
+        video_full = 'video-full.mp4'
+    else:
+        full_segs = timeline(full_items)
+        video_full = None
+    cuts['full'] = {'video': video_full, 'speed': 1.0, 'label': label(1.0), 'segments': full_segs,
+                    'out_seconds': full_segs[-1]['out_end']}
     browsers = shown_frames(screencast.read_index(d / rec['screencast']))
     times = [t for t, _ in frames]
-    edit = {'video': 'video.mp4', 'video_full': 'video-full.mp4', 'knobs': asdict(knobs), 'speed': knobs.speed,
+    edit = {'video': 'video.mp4', 'video_full': video_full, 'knobs': asdict(knobs), 'speed': knobs.speed,
             'label': label(knobs.speed), 't0': rec['t0'], 'round_start': start, 'round_end': end,
             'round_seconds': duration, 'out_seconds': cuts['reviewed']['out_seconds'], 'intro': intro, 'outro': outro,
             'segments': cuts['reviewed']['segments'], 'full': cuts['full'],
@@ -500,3 +557,37 @@ def cut(d, rec, actions, knobs, cov, out_dir=None):
             'browser_any_active_seconds': active_seconds([t for v in browsers.values() for t, _ in v], start, end)}
     (out_dir / 'edit.json').write_text(json.dumps(edit, indent=1), encoding='utf-8')
     return edit
+
+
+def ensure_full_cut(d, rec, actions, cov, out_dir=None):
+    """Render video-full.mp4 (Option A, 1x) when deferred during in-loop evaluation, updating edit.json."""
+    d = Path(d)
+    out_dir = Path(out_dir or d)
+    full_path = out_dir / 'video-full.mp4'
+    edit_path = out_dir / 'edit.json'
+    saved = json.loads(edit_path.read_text(encoding='utf-8')) if edit_path.exists() else None
+    knobs = Knobs(**{k: v for k, v in (saved.get('knobs') if saved else {}).items() if k in KNOB_RULES})
+    if not full_path.exists():
+        frames = screencast.read_index(d, rec['board_index']).get(BOARD, [])
+        if not frames:
+            raise ValueError(f'{d}: no board frames to cut')
+        start, end = max(rec['round_start'], frames[0][0]), rec['round_end']
+        duration = round(end - start, 3)
+        samples = read_states(d / rec['board_state'])
+        stages, total = stage_timings(samples, start, end), wave_count(samples)
+        rel = [(t - start, p) for t, p in frames]
+        intro, outro = card_lines(rec['result'], cov, knobs, rec['case_id'], samples[-1][1] if samples else ())
+        r = Renderer(out_dir / 'edit-work')
+        items = plan(duration, start, stages, actions, knobs, 1.0, total)
+        segs = render(r, 'full', items, rel, intro, outro, 1.0, full_path)
+    else:
+        segs = (saved or {}).get('full', {}).get('segments')
+    if saved is not None:
+        saved['video_full'] = 'video-full.mp4'
+        if isinstance(saved.get('full'), dict):
+            saved['full']['video'] = 'video-full.mp4'
+            if segs:
+                saved['full']['segments'] = segs
+                saved['full']['out_seconds'] = segs[-1]['out_end']
+        edit_path.write_text(json.dumps(saved, indent=1), encoding='utf-8')
+    return 'video-full.mp4'

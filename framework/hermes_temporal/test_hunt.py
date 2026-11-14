@@ -36,13 +36,19 @@ def tool_input(case_id: str = "lab-med-001", **overrides) -> dict:
 
 
 class ToolDrivenHuntTests(unittest.TestCase):
-    def assert_tool_step(self, step) -> None:
+    def assert_tool_step(self, step, *, filmed: bool = False) -> None:
         named = {tool for tool in LAB_TOOLS if tool in step.prompt}
-        if step.profile == "framework-coordinator":
+        if step.step_id == "scope":
+            self.assertEqual(named, set(), step.step_id)
+            self.assertEqual(step.toolsets, ("no_mcp",))
+        elif step.profile == "framework-coordinator":
             self.assertIn("delegate_task", named, step.step_id)
             self.assertTrue(all(profile in step.prompt for profile in OWNED_TOOLS), step.step_id)
+            self.assertIsNone(step.toolsets)
         else:
-            self.assertEqual(named, OWNED_TOOLS[step.profile], step.step_id)
+            expected = OWNED_TOOLS[step.profile] if filmed else (OWNED_TOOLS[step.profile] - {"lab_browser"})
+            self.assertEqual(named, expected, step.step_id)
+            self.assertIsNone(step.toolsets)
         self.assertEqual(step.hunt_context["evidence_ids"], ["lab-case-1"])
         self.assertIn('"case_id":"lab-med-001"', step.prompt)
         self.assertIn("Which synthetic hosts beacon?", step.prompt)
@@ -54,8 +60,8 @@ class ToolDrivenHuntTests(unittest.TestCase):
         by_id = {step.step_id: step for step in request.steps}
         inline = supplied_evidence_hunt({
             "scope": "x", "evidence": [{"source_id": "s", "locator": "dns-lab-001:summary/case", "content": "c"}]})
-        self.assertEqual([(s.step_id, s.profile, s.depends_on) for s in request.steps],
-                         [(s.step_id, s.profile, s.depends_on) for s in inline.steps])
+        self.assertEqual([(s.step_id, s.profile, s.depends_on, s.toolsets) for s in request.steps],
+                         [(s.step_id, s.profile, s.depends_on, s.toolsets) for s in inline.steps])
         for step in request.steps:
             self.assert_tool_step(step)
             self.assertGreater(step.timeout_seconds, inline.steps[0].timeout_seconds)
@@ -76,6 +82,10 @@ class ToolDrivenHuntTests(unittest.TestCase):
         raw["stage_guidance"] = {"network": "Profile beacon intervals per host before pivoting."}
         by_id = {step.step_id: step for step in supplied_evidence_hunt(raw).steps}
         self.assertIn("Profile beacon intervals per host", by_id["network"].prompt)
+        self.assertTrue(
+            by_id["network"].prompt.endswith(" Stage guidance: Profile beacon intervals per host before pivoting."),
+            "Stage guidance must sit at the prompt tail so the shared prefix stays cacheable",
+        )
         self.assertNotIn("Profile beacon intervals per host", by_id["evidence"].prompt)
         for bad in ({"unknown-stage": "x"}, {"network": "x" * 601}, {"network": ""}, ["network"]):
             with self.subTest(guidance=bad):
@@ -84,6 +94,40 @@ class ToolDrivenHuntTests(unittest.TestCase):
         inline = {key: value for key, value in tool_input().items() if key != "mode"}
         with self.assertRaises(ValueError):
             supplied_evidence_hunt(dict(inline, stage_guidance={"network": "x"}))
+
+    def test_filmed_flag_max_total_tokens_and_patch_fallbacks_preserve_legacy_prompts(self) -> None:
+        from unittest import mock
+        from . import hunt as hunt_module
+
+        filmed_req = supplied_evidence_hunt(tool_input(filmed=True, max_total_tokens=250000))
+        self.assertEqual(filmed_req.max_total_tokens, 250000)
+        for step in filmed_req.steps:
+            self.assert_tool_step(step, filmed=True)
+        for bad in (
+            tool_input(filmed="yes"),
+            {key: value for key, value in tool_input(filmed=True).items() if key != "mode"},
+            tool_input(max_total_tokens=0),
+            tool_input(max_total_tokens=-5),
+            tool_input(max_total_tokens=True),
+            tool_input(max_total_tokens="100"),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                supplied_evidence_hunt(bad)
+
+        guided = tool_input(stage_guidance={"network": "TAIL-COACHING"})
+        with mock.patch.object(hunt_module, "_patched", return_value=False):
+            legacy = {step.step_id: step for step in supplied_evidence_hunt(guided).steps}
+        self.assertIn("delegate_task", legacy["scope"].prompt)
+        self.assertIsNone(legacy["scope"].toolsets)
+        self.assertTrue(all(step.toolsets is None for step in legacy.values()))
+        self.assertIn("lab_browser", legacy["evidence"].prompt)
+        self.assertIn("lab_browser", legacy["network"].prompt)
+        self.assertFalse(legacy["network"].prompt.endswith(" Stage guidance: TAIL-COACHING"))
+        self.assertLess(legacy["network"].prompt.index("Stage guidance: TAIL-COACHING"),
+                        legacy["network"].prompt.index("Selected ontology snapshot and evidence IDs:"))
+        for bad_toolsets in ((), ["no_mcp"], ("no_mcp", "no_mcp"), ("bad/name",), ("",)):
+            with self.subTest(bad_toolsets=bad_toolsets), self.assertRaises(ValueError):
+                HermesStep("scope", "prompt", toolsets=bad_toolsets)  # type: ignore[arg-type]
 
     def test_parallel_hunt_marks_only_the_independent_stages_droppable(self) -> None:
         serial = supplied_evidence_hunt(tool_input())

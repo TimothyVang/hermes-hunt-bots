@@ -58,6 +58,15 @@ def validate_loopback_address(address: str) -> str:
     return address
 
 
+def _validate_toolsets(toolsets: object) -> None:
+    if toolsets is None:
+        return
+    if (not isinstance(toolsets, tuple) or not toolsets
+            or any(not isinstance(item, str) or SAFE_STEP_ID.fullmatch(item) is None for item in toolsets)
+            or len(toolsets) != len(set(toolsets))):
+        raise ValueError("toolsets must be a nonempty tuple of unique safe identifiers")
+
+
 @dataclass(frozen=True)
 class HermesStep:
     step_id: str
@@ -73,6 +82,9 @@ class HermesStep:
     # the predecessor's reviewed handoff instead of the predecessor's whole output, and is dropped
     # when the predecessor has no such claim. The predecessor must be in depends_on and carry a hunt_context.
     focus: tuple[str, int] | None = None
+    # Explicit toolset overrides (e.g. ("no_mcp",) on patched scope). Defaults to None so earlier
+    # histories and standalone steps deserialize unchanged and keep the profile's default toolsets.
+    toolsets: tuple[str, ...] | None = None
     def __post_init__(self) -> None:
         if not isinstance(self.step_id, str) or SAFE_STEP_ID.fullmatch(self.step_id) is None:
             raise ValueError("step_id must be a safe 1-64 character identifier")
@@ -115,6 +127,7 @@ class HermesStep:
                 or type(self.focus[1]) is not int or not 0 <= self.focus[1] < MAX_FOCUS_CLAIMS
                 or self.focus[0] not in self.depends_on or self.hunt_context is None):
             raise ValueError("focus must be (a typed step's depends_on entry, a claim index from 0 through 15)")
+        _validate_toolsets(self.toolsets)
 
 
 @dataclass(frozen=True)
@@ -131,6 +144,8 @@ class WorkflowRequest:
     # Only an explicitly authorized tool-driven hunt over a DATA_ORIGINS case sets this;
     # synthetic_only must then be False. Defaults to synthetic so earlier histories deserialize unchanged.
     data_origin: str = SYNTHETIC
+    # Optional cumulative token budget across all executed steps (including retried/timed-out attempts).
+    max_total_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.data_origin not in (SYNTHETIC, *DATA_ORIGINS):
@@ -139,6 +154,8 @@ class WorkflowRequest:
             raise ValueError("this integration accepts synthetic-only workflows")
         if self.data_origin != SYNTHETIC and (self.synthetic_only is not False or self.tool_driven is not True):
             raise ValueError(f"a {self.data_origin} workflow must be tool_driven and not synthetic_only")
+        if self.max_total_tokens is not None and (type(self.max_total_tokens) is not int or self.max_total_tokens < 1):
+            raise ValueError("max_total_tokens must be a positive integer")
         limit = MAX_TEAM_STEPS if self.parallel is True else MAX_STEPS
         if not isinstance(self.steps, list) or not 1 <= len(self.steps) <= limit:
             raise ValueError(f"steps must contain 1 through {limit} Hermes steps")
@@ -184,11 +201,14 @@ def _validate_execution_id(value: str) -> None:
 class ExecutionRequest:
     execution_id: str
     step: HermesStep
+    record_usage: bool = False
 
     def __post_init__(self) -> None:
         _validate_execution_id(self.execution_id)
         if not isinstance(self.step, HermesStep):
             raise ValueError("step must be a HermesStep")
+        if type(self.record_usage) is not bool:
+            raise ValueError("record_usage must be a boolean")
 
 
 @dataclass(frozen=True)

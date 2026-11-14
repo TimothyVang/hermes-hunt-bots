@@ -145,17 +145,21 @@ class LabStub:
     state.json beside the analyst's state dir its callers read that secret from."""
 
     def __init__(self, case_id=CASE):
-        case = {'case_id': case_id, 'question': 'synthetic', 'time_range_utc': WINDOW}
+        self.case = {'case_id': case_id, 'question': 'synthetic', 'time_range_utc': WINDOW}
         self.case_id = case_id
+        self.secret = LAB_SECRET
         self.state_dir = Path(tempfile.mkdtemp()) / 'hunt-lab-vm'
+        stub = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
 
             def do_GET(self):
-                allowed = self.headers.get(endpoints.SECRET_HEADER) == LAB_SECRET
-                data = json.dumps(case if allowed else {'error': 'caller_not_authorized'}).encode()
+                profile = self.headers.get('X-Hermes-Profile')
+                expected = endpoints.caller_secret(stub.secret, profile)
+                allowed = expected is not None and self.headers.get(endpoints.SECRET_HEADER) == expected
+                data = json.dumps(stub.case if allowed else {'error': 'caller_not_authorized'}).encode()
                 self.send_response(200 if allowed else 401)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
@@ -894,6 +898,167 @@ class DemoModeTests(unittest.TestCase):
         self.assertGreater(len(traffic[0]), 12)
         self.assertEqual(traffic[0], traffic[1])
         self.assertEqual(traffic[0], traffic[2])
+
+
+class ParallelStepIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.lab = LabStub()
+        self.addCleanup(self.lab.close)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.browser_dir = Path(temp.name) / 'hunt-lab-browser'
+        self.profile_root = self.browser_dir / 'framework-researcher'
+        self.addCleanup(lab_browser.shutdown)
+
+    def test_parallel_run_and_step_env_vars_scope_session_and_mirror_audit(self):
+        self.browser_dir.mkdir(parents=True)
+        (self.browser_dir / 'demo.json').write_text('{"headed": false}', encoding='utf-8')
+        env_a = {'HUNT_RUN_ID': 'wf-1:round:001', 'HUNT_STEP_ID': 'followup-1'}
+        env_b = {'HUNT_RUN_ID': 'wf-1:round:001', 'HUNT_STEP_ID': 'followup-2'}
+        root_a, run_a, step_a = lab_browser.session_root(self.profile_root, env_a)
+        root_b, run_b, step_b = lab_browser.session_root(self.profile_root, env_b)
+        self.assertEqual((run_a, step_a), ('wf-1:round:001', 'followup-1'))
+        self.assertEqual((run_b, step_b), ('wf-1:round:001', 'followup-2'))
+        self.assertNotEqual(root_a, root_b)
+        self.assertNotIn(':', root_a.name)
+        self.assertEqual(lab_browser.session_root(self.profile_root, {}), (self.profile_root, None, None))
+        self.assertEqual(lab_browser._demo_path(root_a), self.browser_dir / 'demo.json')
+        self.assertEqual(lab_browser.read_demo(lab_browser._demo_path(root_a)).marker, 'on')
+
+        fake_a, fake_b = FakeBrowser(), FakeBrowser()
+        with patch.dict(os.environ, env_a, clear=False), \
+                patch.object(lab_browser, '_launch', side_effect=lambda r, _s, d: session(fake_a, self.lab.url, r, demo=d)):
+            res_a = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws01'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+        with patch.dict(os.environ, env_b, clear=False), \
+                patch.object(lab_browser, '_launch', side_effect=lambda r, _s, d: session(fake_b, self.lab.url, r, demo=d)):
+            res_b = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws02'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+        self.assertTrue(res_a['ok'], res_a)
+        self.assertTrue(res_b['ok'], res_b)
+        self.assertTrue((root_a / 'session.json').is_file())
+        self.assertTrue((root_b / 'session.json').is_file())
+        self.assertFalse((self.profile_root / 'session.json').exists())
+        mirrored = [json.loads(line) for line in (self.profile_root / 'audit.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(entry['run_id'], entry['step_id'], entry['query'], entry['demo']) for entry in mirrored],
+                         [('wf-1:round:001', 'followup-1', 'host.name:ws01', 'on'),
+                          ('wf-1:round:001', 'followup-2', 'host.name:ws02', 'on')])
+
+    def test_session_root_bounds_max_path_length_is_injective_and_close_cleans_port_file(self):
+        long_env = {'HUNT_RUN_ID': 'r' * 60 + ':' + 'w' * 67, 'HUNT_STEP_ID': 'followup-network-analyst-' + 's' * 103}
+        long_root, _, _ = lab_browser.session_root(self.profile_root, long_env)
+        self.assertLessEqual(len(long_root.name), 37)
+        self.assertLess(len(str(long_root / 'user-data' / 'DevToolsActivePort')), 240)
+        # Distinct (run_id, step_id) pairs that share naive '--' or '_3a_' joins never collide.
+        r1, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a--b', 'HUNT_STEP_ID': 'c'})
+        r2, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a', 'HUNT_STEP_ID': 'b--c'})
+        r3, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a:b', 'HUNT_STEP_ID': 'c'})
+        r4, _, _ = lab_browser.session_root(self.profile_root, {'HUNT_RUN_ID': 'a_3a_b', 'HUNT_STEP_ID': 'c'})
+        self.assertEqual(len({r1, r2, r3, r4}), 4)
+        # BrowserSession.close() removes leftover Chromium DevToolsActivePort files.
+        (long_root / 'user-data').mkdir(parents=True)
+        port_file = long_root / 'user-data' / 'DevToolsActivePort'
+        port_file.write_text('9222\n/devtools/browser/x\n', encoding='ascii')
+        fake = FakeBrowser()
+        sess = session(fake, self.lab.url, long_root)
+        sess.close()
+        self.assertFalse(port_file.exists())
+        # Gateway bound_client_env() scopes session_root even when daemon os.environ has no HUNT_* keys.
+        import sys
+        repo_root = str(Path(lab_browser.__file__).resolve().parents[2])
+        added = repo_root not in sys.path
+        if added:
+            sys.path.insert(0, repo_root)
+            self.addCleanup(lambda: sys.path.remove(repo_root) if repo_root in sys.path else None)
+        from agent.session_client_env import client_env_scope
+        clean_env = {k: v for k, v in os.environ.items() if k not in ('HUNT_RUN_ID', 'HUNT_STEP_ID')}
+        with patch.dict(os.environ, clean_env, clear=True), \
+                client_env_scope({'HUNT_RUN_ID': 'wf-gw:round:001', 'HUNT_STEP_ID': 'followup-1'}, local=True):
+            gw_root, gw_run, gw_step = lab_browser.session_root(self.profile_root)
+        self.assertEqual((gw_run, gw_step), ('wf-gw:round:001', 'followup-1'))
+        self.assertEqual(gw_root.parent, self.profile_root / 'runs')
+
+    def test_warm_switch_same_ports_different_case_never_reuses_previous_case_dom_or_state(self):
+        fake_case_a = FakeBrowser(text='case-a confidential telemetry')
+        fake_case_b = FakeBrowser(text='about:blank clean browser')
+        launched = []
+        browsers = iter([fake_case_a, fake_case_b, FakeBrowser(text='reattached clean browser'),
+                         FakeBrowser(text='rotated secret clean browser')])
+
+        def launch_stub(root, sc, demo):
+            launched.append(sc.case_id)
+            return lab_browser.BrowserSession(root, sc, next(browsers), ws_url='ws://127.0.0.1:1/devtools/browser/x',
+                                              pid=1, rng=random.Random(7), sleep=lambda _s: None, demo=demo)
+
+        with patch.object(lab_browser, '_launch', side_effect=launch_stub), \
+                patch.object(lab_browser, '_WebSocket', side_effect=lambda _u: FakeBrowser()), \
+                patch.object(lab_browser, '_owned', return_value=True):
+            res_a = lab_browser.call({'case_id': CASE, 'action': 'open', 'page': 'kibana_discover', 'q': 'host.name:ws01'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+            self.assertTrue(res_a['ok'], res_a)
+            self.assertEqual(json.loads((self.profile_root / 'session.json').read_text(encoding='utf-8'))['case_id'], CASE)
+
+            # Simulate warm switch on identical ports to case-two-002 with a new secret.
+            self.lab.case = {'case_id': 'case-two-002', 'question': 'Synthetic second case.',
+                             'time_range_utc': {'start_inclusive': '2025-10-14T04:30:00Z',
+                                                'end_exclusive': '2025-10-14T06:30:00Z'}}
+            new_secret = 'cd' * 32
+            self.lab.secret = new_secret
+            state_path = self.lab.state_dir.parent / endpoints.CONTAINER_STATE / 'case-two-002' / 'state.json'
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            old_state = json.loads(
+                (self.lab.state_dir.parent / endpoints.CONTAINER_STATE / CASE / 'state.json').read_text(encoding='utf-8'))
+            old_state.update(case_id='case-two-002', project='hunt-lab-case-two-002', secret=new_secret)
+            state_path.write_text(json.dumps(old_state), encoding='utf-8')
+
+            # 1. In-memory _SESSIONS cache must close case-a's browser and launch a fresh one for case-two-002.
+            res_b = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                     state_dir=self.lab.state_dir, profile='framework-researcher',
+                                     browser_root=self.profile_root)
+            self.assertTrue(res_b['ok'], res_b)
+            self.assertEqual(launched, [CASE, 'case-two-002'])
+            self.assertNotIn('case-a confidential telemetry', res_b['result']['text'])
+
+            # 2. On-disk session.json reattach (_start) must also reject a state file written for a different case_id.
+            stale_disk = json.loads((self.profile_root / 'session.json').read_text(encoding='utf-8'))
+            stale_disk['case_id'] = CASE
+            (self.profile_root / 'session.json').write_text(json.dumps(stale_disk), encoding='utf-8')
+            lab_browser._SESSIONS.clear()
+            res_b2 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b2['ok'], res_b2)
+            self.assertEqual(launched, [CASE, 'case-two-002', 'case-two-002'])
+
+            # 3. After a host restart the same case and secret reattach; a same-case restart under a new secret never does.
+            lab_browser._SESSIONS.clear()
+            res_b3 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b3['ok'], res_b3)
+            self.assertEqual(len(launched), 3)
+            self.assertNotIn(new_secret, (self.profile_root / 'session.json').read_text(encoding='utf-8'))
+            rotated = 'ef' * 32
+            self.lab.secret = rotated
+            old_state['secret'] = rotated
+            state_path.write_text(json.dumps(old_state), encoding='utf-8')
+            lab_browser._SESSIONS.clear()
+            res_b4 = lab_browser.call({'case_id': 'case-two-002', 'action': 'snapshot'},
+                                      state_dir=self.lab.state_dir, profile='framework-researcher',
+                                      browser_root=self.profile_root)
+            self.assertTrue(res_b4['ok'], res_b4)
+            self.assertEqual(launched, [CASE, 'case-two-002', 'case-two-002', 'case-two-002'])
+
+    def test_non_owner_profiles_are_refused_before_any_browser_starts(self):
+        for profile in ('framework-reviewer', 'framework-builder', 'framework-librarian', 'framework-coordinator', None):
+            with self.subTest(profile=profile), \
+                    patch.object(lab_browser, '_start', side_effect=AssertionError('must not start browser')):
+                result = lab_browser.call({'case_id': CASE, 'action': 'snapshot'},
+                                          state_dir=self.lab.state_dir, profile=profile, browser_root=self.profile_root)
+                self.assertEqual((result['ok'], result['error']), (False, 'tool_not_owned'))
 
 
 if __name__ == '__main__':

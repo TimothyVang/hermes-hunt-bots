@@ -33,8 +33,8 @@ def _parser() -> argparse.ArgumentParser:
                         help='show dispatched native chats in Hermes session lists (default: hidden tool sessions)')
     parser.add_argument('--record-usage', action='store_true',
                         help="record token counts and wall time per step by reading Hermes's stream-json output")
-    parser.add_argument('--activity-threads', type=int, default=4, metavar='N',
-                        help='how many steps may run at the same time, 1 through 32 (default: 4)')
+    parser.add_argument('--activity-threads', type=int, default=12, metavar='N',
+                        help='how many steps may run at the same time, 1 through 32 (default: 12)')
     return parser
 
 

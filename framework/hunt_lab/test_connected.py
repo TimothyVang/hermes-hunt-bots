@@ -169,9 +169,9 @@ class ConnectedCase(unittest.TestCase):
         self.secret = server.secret
         return server, source, state, environ
 
-    def tool(self, tool_name, **arguments):
+    def tool(self, tool_name, *, profile='framework-researcher', **arguments):
         return query_adapter.run_tool(tool_name, {'case_id': CASE_ID, **arguments},
-                                      state_dir=self.home / 'hunt-lab-vm', profile='framework-researcher')
+                                      state_dir=self.home / 'hunt-lab-vm', profile=profile)
 
     def open(self, path, headers):
         opener = request.build_opener(request.ProxyHandler({}))
@@ -478,24 +478,25 @@ class ServiceTests(ConnectedCase):
         self.assertEqual([hit['event.id'] for hit in self.tool('elastic_search', q=cited[0])['result']['hits']], [cited[0]])
         records = self.tool('elastic_aggregate', field='host.name')['result']['buckets']
         self.assertEqual(records[0]['sample_event_id'], cited[0])
-        detect = self.tool('detection_test', q='process.name:cmd.exe', name='cmd')['result']
+        detect = self.tool('detection_test', profile='framework-builder', q='process.name:cmd.exe', name='cmd')['result']
         self.assertEqual(detect['sample'][0]['event.id'], cited[0])
+        self.assertEqual(self.tool('detection_test', q='process.name:cmd.exe', name='cmd')['error'], 'tool_not_owned')
         lines = (self.home / connected.CONNECTED_STATE / CASE_ID / 'citations.jsonl').read_text(encoding='utf-8').splitlines()
         self.assertIn({'evt': cited[0], '_id': 'AbC0x_-'}, [json.loads(line) for line in lines])
 
     def test_refusals_reach_the_bot_as_fixed_codes(self):
         self.start()
-        for name, arguments, code in (
-                ('elastic_search', {'q': 'event.id:evt-0000000000000001'}, 'unknown_citation'),
-                ('elastic_search', {'q': 'evt-000123'}, 'unknown_citation'),
-                ('elastic_search', {'q': 'process.name:/cm.*/'}, 'regex_not_supported'),
-                ('elastic_search', {'q': '_exists_:event.id'}, 'invalid_query'),
-                ('elastic_aggregate', {'field': 'user.name'}, 'field_unavailable'),
-                ('intel_lookup', {'values': '203.0.113.7'}, 'no_intel_source'),
-                ('arkime_sessions', {}, 'no_network_capture'),
-                ('packet_fields', {}, 'no_network_capture')):
+        for name, profile, arguments, code in (
+                ('elastic_search', 'framework-researcher', {'q': 'event.id:evt-0000000000000001'}, 'unknown_citation'),
+                ('elastic_search', 'framework-researcher', {'q': 'evt-000123'}, 'unknown_citation'),
+                ('elastic_search', 'framework-researcher', {'q': 'process.name:/cm.*/'}, 'regex_not_supported'),
+                ('elastic_search', 'framework-researcher', {'q': '_exists_:event.id'}, 'invalid_query'),
+                ('elastic_aggregate', 'framework-researcher', {'field': 'user.name'}, 'field_unavailable'),
+                ('intel_lookup', 'framework-librarian', {'values': '203.0.113.7'}, 'no_intel_source'),
+                ('arkime_sessions', 'framework-network-analyst', {}, 'no_network_capture'),
+                ('packet_fields', 'framework-researcher', {}, 'no_network_capture')):
             with self.subTest(tool=name, arguments=arguments):
-                result = self.tool(name, **arguments)
+                result = self.tool(name, profile=profile, **arguments)
                 self.assertEqual((result['ok'], result.get('detail')), (False, code), result)
         self.assertEqual(self.tool('elastic_search', q='url.path:"/a/b" AND x\\/y')['ok'], True)
         self.elastic.fail_search = (400, b'{"error":{"type":"query_shard_exception"}}')
