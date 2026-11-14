@@ -63,7 +63,8 @@ class CamLdsImporterTests(unittest.TestCase):
             zf.writestr(
                 'scenario_3_ssh_apt/reposerver/logs/log/auth.log',
                 'Dec 12 10:20:05 puppet cron[101]: session opened for user root\n'
-                'Dec 12 10:28:44 puppet sshd[202]: Accepted password for admin from 10.12.0.223 port 44112 ssh2\n',
+                'Dec 12 10:28:44 puppet sshd[202]: Accepted password for admin from 10.12.0.223 port 44112 ssh2\n'
+                'Dec 12 10:29:52 puppet sshd[209]: Accepted password for backup from 10.12.0.99 port 51200 ssh2\n',
             )
             sudo_unrelated_hex = binascii.hexlify(b'sudo\x00/usr/bin/id').decode('ascii').upper()
             zf.writestr(

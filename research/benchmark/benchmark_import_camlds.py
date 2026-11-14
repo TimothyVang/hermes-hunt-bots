@@ -513,8 +513,9 @@ def import_camlds_case(
                 if len(tok) >= 4 and tok.lower() not in ('bash', 'echo', 'export', 'sudo')
             ]
             cmd_lower = cmd_str.strip().lower()
+            has_sudo_token = bool(re.search(r'\bsudo\b', cmd_lower))
             is_sudo_root_shell = bool(
-                re.search(r'\bsudo\s+(?:-i|-s|su\b|(?:/usr)?/bin/(?:ba)?sh)\b', cmd_lower)
+                re.search(r'\bsudo\s+(?:-[a-z0-9]+\s+)*(?:-i|-s|su\b|(?:/usr)?/bin/(?:ba)?sh)\b', cmd_lower)
             )
             action_type = str(am.get('type') or '').lower()
 
@@ -529,13 +530,13 @@ def import_camlds_case(
                 if cmd_tokens and any(tok in txt_l for tok in cmd_tokens):
                     matched.append((0, ev))
                 elif (not cmd_tokens and is_sudo_root_shell and (
-                    re.search(r'\bsudo\s+(?:-i|-s|su\b|(?:/usr)?/bin/(?:ba)?sh)\b', txt_l)
+                    re.search(r'\bsudo\s+(?:-[a-z0-9]+\s+)*(?:-i|-s|su\b|(?:/usr)?/bin/(?:ba)?sh)\b', txt_l)
                     or ('sudo' in txt_l and 'user=root' in txt_l and any(
                         sh in txt_l for sh in ('command=/bin/bash', 'command=/bin/sh', 'command=/usr/bin/su', 'command=/bin/su')
                     ))
                 )):
                     matched.append((0, ev))
-                elif (not cmd_tokens and primary_tech.startswith('T1078')
+                elif (not cmd_tokens and not has_sudo_token and primary_tech.startswith('T1078')
                       and action_type in ('ssh', 'vnc')
                       and ('accepted ' in txt_l or ('sshd' in txt_l and 'session opened' in txt_l))):
                     matched.append((1, ev))

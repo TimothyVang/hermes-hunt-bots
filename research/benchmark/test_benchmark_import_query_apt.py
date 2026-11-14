@@ -108,11 +108,11 @@ class QueryAptImporterTests(unittest.TestCase):
             self.assertGreaterEqual(len(lin_fsets), 3)
             self.assertEqual(len(set(lin_fsets)), 1)
 
-            # 2. FullAPT-2025 fixture
+            # 2. FullAPT-2025 fixture (row 1 references waterfalls.boombox.local via UNC before row 3 registers it)
             tgz = root / 'apt-1-labeled-datasets.tar.gz'
             csv_text = (
                 'Tactic,Technique,Label,EventID,Computer,Image,CommandLine,ParentImage,ParentCommandLine,User,Hashes,SourceIp,DestinationIp,DestinationPort,TargetFilename,TargetObject,PipeName,timestamp\n'
-                'credential-access,T1003.001,Malicious,1,theblock.boombox.local,C:\\Temp\\dumper.exe,dumper.exe lsass,cmd.exe,cmd.exe /c,BOOMBOX\\alice,SHA256=1111111111111111111111111111111111111111111111111111111111111111,,,,, ,,1746364801000\n'
+                'credential-access,T1003.001,Malicious,1,theblock.boombox.local,C:\\Temp\\dumper.exe,dumper.exe \\\\waterfalls.boombox.local\\C$\\lsass.dmp,cmd.exe,cmd.exe /c,BOOMBOX\\alice,SHA256=1111111111111111111111111111111111111111111111111111111111111111,,,,, ,,1746364801000\n'
                 'lateral-movement,T1021.001,Malicious,3,endofroad.boombox.local,C:\\Windows\\System32\\mstsc.exe,mstsc.exe /v:10.0.0.5,explorer.exe,explorer.exe,BOOMBOX\\alice,,10.0.0.4,10.0.0.5,3389,,,,1746364815000\n'
                 'Benign,Benign,Benign,1,waterfalls.boombox.local,C:\\Windows\\System32\\svchost.exe,svchost.exe,services.exe,services.exe,NT AUTHORITY\\SYSTEM,,,,,,,,1746364820000\n'
             )
@@ -126,6 +126,14 @@ class QueryAptImporterTests(unittest.TestCase):
             self.assertEqual(rep_f['sophistication_band'], 'S4')
             self.assertEqual(rep_f['steps'], 2)
             self.assertGreaterEqual(rep_f['ioc_feed']['active_truth_matches'], 1)
+            fconn = sqlite3.connect(str(Path(rep_f['case_dir']) / 'public' / 'events.sqlite3'))
+            try:
+                wf_asset = fconn.execute("SELECT asset_id FROM events WHERE record_id = 'win-sysmon-domain:3'").fetchone()[0]
+                row1_fjson = fconn.execute("SELECT fields_json FROM events WHERE record_id = 'win-sysmon-domain:1'").fetchone()[0]
+            finally:
+                fconn.close()
+            self.assertIn(wf_asset, row1_fjson)
+            self.assertNotIn('dns-', row1_fjson)
 
             cov = validate_coverage(load_json(DEFAULT_COVERAGE))
             for rep in (rep_d, rep_f):

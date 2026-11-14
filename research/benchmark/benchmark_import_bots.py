@@ -810,16 +810,17 @@ def _clean_text(value):
     return value, False
 
 
-MAX_CSV_PHYSICAL_LINE_BYTES = MAX_RECORD_BYTES + 65536
+MAX_CSV_PHYSICAL_LINE_BYTES = len(CSV_HEADER) * 4 * MAX_RECORD_BYTES + 65536
 
 
-def _bounded_csv_lines(binary_handle, field_name):
+def _bounded_csv_lines(binary_handle, field_name, *, max_line_bytes=None):
     """Yield UTF-8 CSV lines with a hard per-line decompressed byte ceiling before allocation."""
+    cap = MAX_CSV_PHYSICAL_LINE_BYTES if max_line_bytes is None else int(max_line_bytes)
     while True:
-        chunk = binary_handle.readline(MAX_CSV_PHYSICAL_LINE_BYTES + 1)
+        chunk = binary_handle.readline(cap + 1)
         if not chunk:
             break
-        if len(chunk) > MAX_CSV_PHYSICAL_LINE_BYTES:
+        if len(chunk) > cap:
             _fail('invalid_csv', field_name)
         yield chunk.decode('utf-8', errors='surrogateescape')
 

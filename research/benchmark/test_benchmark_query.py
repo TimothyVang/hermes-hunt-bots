@@ -290,6 +290,26 @@ class BenchmarkQueryTests(unittest.TestCase):
             self.assertEqual(r_off['row_count'], 0)
             self.assertLessEqual(len(canonical_bytes(r_off)), 320)
 
+        small_events = [{
+            'event_id': 'e000001',
+            'timestamp_utc': '2026-02-01T00:00:01Z',
+            'source_id': 'sysmon',
+            'asset_id': 'ws01',
+            'event_type': 'sysmon_1',
+            'fields': {'timestamp_original': '2026-02-01T00:00:01Z', 'CommandLine': 'whoami.exe'},
+            'locator': {'file_sha256': 'a' * 64, 'record_id': 1},
+        }]
+        fit_db = self.root / 'fit.sqlite3'
+        fit_spec = build_query_store(fit_db, small_events, (), prefix='e', width=6)
+        with QueryExecutor(fit_db, fit_spec['sha256'], max_rows=1, max_bytes=4096) as probe:
+            baseline = probe.execute('get_events', {'event_ids': ['e000001']})
+        exact_budget = len(canonical_bytes(baseline))
+        with QueryExecutor(fit_db, fit_spec['sha256'], max_rows=1, max_bytes=exact_budget) as exact_exec:
+            exact_resp = exact_exec.execute('get_events', {'event_ids': ['e000001']})
+            self.assertEqual(exact_resp['row_count'], 1)
+            self.assertFalse(exact_resp['truncated'])
+            self.assertEqual(len(canonical_bytes(exact_resp)), exact_budget)
+
 
 if __name__ == '__main__':
     unittest.main()

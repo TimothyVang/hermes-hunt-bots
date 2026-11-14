@@ -955,7 +955,7 @@ def import_fullapt_query_case(
                         continue
 
                     # Strip ALL label columns (Tactic, Technique, Label, Seed_Event)!
-                    fields = pseudo.clean_fields({
+                    raw_fields = {
                         'timestamp_original': ts_orig,
                         'event_code': int(eid_num) if eid_num.isdigit() else eid_num,
                         'image': row.get('Image') or row.get('SourceImage'),
@@ -970,8 +970,7 @@ def import_fullapt_query_case(
                         'target_filename': row.get('TargetFilename'),
                         'target_object': row.get('TargetObject'),
                         'pipe_name': row.get('PipeName'),
-                    })
-                    fields['timestamp_original'] = ts_orig
+                    }
                     ev_item = {
                         'tag': tag,
                         'timestamp_utc': format_utc(stamp),
@@ -979,7 +978,8 @@ def import_fullapt_query_case(
                         'source_id': 'win-sysmon-domain',
                         'asset_id': asset_id,
                         'event_type': 'sysmon_{}'.format(eid_num),
-                        'fields': fields,
+                        'raw_fields': raw_fields,
+                        'ts_orig': ts_orig,
                         'record_id': 'win-sysmon-domain:{}'.format(rno),
                         'file_sha256': archive_sha,
                     }
@@ -1039,6 +1039,11 @@ def import_fullapt_query_case(
         'vendor': 'Microsoft',
     } for idx, c in enumerate(sorted_comps)]
     all_asset_ids = [a['asset_id'] for a in assets]
+
+    for ev in selected:
+        cleaned_fields = pseudo.clean_fields(ev.pop('raw_fields'))
+        cleaned_fields['timestamp_original'] = ev.pop('ts_orig')
+        ev['fields'] = cleaned_fields
 
     sources = [{
         'source_id': 'win-sysmon-domain',

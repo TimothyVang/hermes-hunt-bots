@@ -178,6 +178,19 @@ class BenchmarkIocTests(unittest.TestCase):
         cleaned = pseudo.clean_content(r'Session from \\UTICA\C$ to \\UTICA.dmevals.local\ADMIN$')
         self.assertEqual(cleaned.count(tok_fqdn), 2)
 
+        # DNS-first FQDN lookup under registered domain or followed by host registration converges to host token
+        pseudo_dns_first = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        pseudo_dns_first.register_alias('domain', 'dmevals.local')
+        early_unc = pseudo_dns_first.clean_content(r'copy payload \\NASHUA.dmevals.local\C$\Temp\a.exe')
+        nashua_host = pseudo_dns_first.pseudonymize('host', 'NASHUA.dmevals.local')
+        self.assertIn(nashua_host, early_unc)
+        self.assertEqual(pseudo_dns_first.pseudonymize('dns', 'NASHUA.dmevals.local'), nashua_host)
+
+        pseudo_overwrite = CasePseudonymizer(salt='0123456789abcdef0123456789abcdef')
+        _ = pseudo_overwrite.pseudonymize('dns', 'FILESRV.corp.example')
+        filesrv_host = pseudo_overwrite.pseudonymize('host', 'FILESRV.corp.example')
+        self.assertEqual(pseudo_overwrite.pseudonymize('dns', 'FILESRV.corp.example'), filesrv_host)
+
         # URL command-line extraction emits valid url_path + ipv4/domain, and known_ioc_pivot filters downstream catalog matches
         url_ev = {
             'case_id': 'case-cafe1234',

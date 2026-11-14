@@ -417,6 +417,7 @@ class CliTest(BotsTestBase):
 
     def test_v1_json_records_and_csv_records_bound_single_readline_allocation(self):
         import gzip
+        from unittest import mock
         gz_path = self.root / 'oversized.json.gz'
         with gzip.open(gz_path, 'wb') as handle:
             handle.write(b'{' + (b'a' * (bots.MAX_RECORD_BYTES + 128)))
@@ -426,13 +427,28 @@ class CliTest(BotsTestBase):
             list(bots._json_records(item, 1, win, {}))
         self.assertEqual(ctx.exception.code, 'line_too_large')
 
+        quoted_csv_path = self.root / 'quoted.csv.gz'
+        raw_quotes = '"' * 3500
+        encoded_quotes = '"' + ('""' * 3500) + '"'
+        in_win_epoch = str(int(win[0].timestamp()))
+        with gzip.open(quoted_csv_path, 'wb') as handle:
+            handle.write(b','.join(s.encode('ascii') for s in bots.CSV_HEADER) + b'\n')
+            handle.write((in_win_epoch + ',src,host::h,sourcetype::c,' + encoded_quotes + ',m\n').encode('utf-8'))
+        quoted_item = {'path': quoted_csv_path, 'name': 'quoted.csv.gz', 'earliest': 0, 'latest': 2000000000}
+        with mock.patch.object(bots, 'MAX_RECORD_BYTES', 4096), \
+                mock.patch.object(bots, 'MAX_CSV_PHYSICAL_LINE_BYTES', len(bots.CSV_HEADER) * 4 * 4096 + 512):
+            rows = list(bots._csv_records(quoted_item, 1, win))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][4], raw_quotes)
+
         csv_gz_path = self.root / 'oversized.csv.gz'
         with gzip.open(csv_gz_path, 'wb') as handle:
             handle.write(b','.join(s.encode('ascii') for s in bots.CSV_HEADER) + b'\n')
-            handle.write(b'1534785720,h,s,c,' + (b'x' * (bots.MAX_CSV_PHYSICAL_LINE_BYTES + 128)))
+            handle.write(b'1534785720,h,s,c,' + (b'x' * (65536 + 128)))
         csv_item = {'path': csv_gz_path, 'name': 'oversized.csv.gz', 'earliest': 0, 'latest': 2000000000}
-        with self.assertRaises(bots.BenchmarkError) as csv_ctx:
-            list(bots._csv_records(csv_item, 1, win))
+        with mock.patch.object(bots, 'MAX_CSV_PHYSICAL_LINE_BYTES', 65536):
+            with self.assertRaises(bots.BenchmarkError) as csv_ctx:
+                list(bots._csv_records(csv_item, 1, win))
         self.assertEqual(csv_ctx.exception.code, 'invalid_csv')
 
 

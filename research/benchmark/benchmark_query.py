@@ -494,7 +494,7 @@ class QueryExecutor:
             note_str = note_str.encode('utf-8')[:max(32, self._max_bytes // 4)].decode('utf-8', 'ignore')
         envelope_bytes = len(canonical_bytes({
             'ok': True, 'tool': tool, 'rows': [], 'row_count': effective_cap,
-            'truncated': True, 'note': note_str, 'calls_remaining': self.calls_remaining,
+            'truncated': False, 'note': note_str, 'calls_remaining': self.calls_remaining,
         }))
         row_budget = max(0, self._max_bytes - envelope_bytes)
         capped, truncated = [], False

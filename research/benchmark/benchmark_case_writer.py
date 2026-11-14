@@ -307,27 +307,33 @@ class CasePseudonymizer:
                 if len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
                     token = self._forward.get(('host', short)) or self._token('host', short)
                     self._record('host', short, token)
-                    self._record('host', raw, token)
-                    self._record('dns', raw, token)
+                    self._record('host', raw, token, overwrite=True)
+                    self._record('dns', raw, token, overwrite=True)
                     return token
             if kind == 'dns' and '.' in norm and not re.fullmatch(r'[0-9.]+', norm):
-                short = norm.split('.', 1)[0]
+                short, rest = norm.split('.', 1)
+                if len(short) >= 2 and ('domain', rest) in self._forward:
+                    return self.pseudonymize('host', raw)
                 host_token = self._forward.get(('host', short))
                 if host_token is not None and len(short) >= 2 and self._short_host_fqdn.setdefault(short, norm) == norm:
-                    self._record('host', raw, host_token)
-                    self._record('dns', raw, host_token)
+                    self._record('host', raw, host_token, overwrite=True)
+                    self._record('dns', raw, host_token, overwrite=True)
                     return host_token
 
         token = self._token(prefix, norm)
         self._record(kind, raw, token)
         return token
 
-    def _record(self, kind, raw, token):
+    def _record(self, kind, raw, token, *, overwrite=False):
         folded = raw.casefold()
         key = (kind, folded)
-        if key not in self._forward:
+        if key not in self._forward or overwrite:
+            old = self._forward.get(key)
             self._forward[key] = token
-            self._reverse[token] = {'kind': kind, 'original': raw}
+            if old is not None and old != token and old not in self._forward.values():
+                self._reverse.pop(old, None)
+            if token not in self._reverse or kind == 'host':
+                self._reverse[token] = {'kind': kind, 'original': raw}
             self._by_kind.setdefault(kind, set()).add(raw)
             self._known_dirty = True
 
@@ -786,6 +792,8 @@ def _populate_curated_case(
         if 'window_utc' in spec and spec['window_utc'] is not None:
             swin = dict(spec['window_utc'])
         else:
+            if not step_stamps:
+                _fail('missing_step_window', spec['step_id'])
             s0 = max(outer_start, min(step_stamps) - dt.timedelta(seconds=2))
             s1 = min(outer_end, max(step_stamps) + dt.timedelta(seconds=2))
             if s1 <= s0:
