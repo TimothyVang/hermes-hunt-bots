@@ -1,5 +1,11 @@
+import { getApiRequestConnection } from '@/api/client'
+import { mutateSessionFenced } from '@/api/sessions'
+import { hermesApi } from '@/hermes'
 import { requestGatewayForAgent, requestGatewayForProfile, type SpawnPriority } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
+import type { PaginatedSessions } from '@/types/hermes'
+
+import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
 /** Plugin-facing profile routing for `host.requestProfile` and friends. */
 
@@ -103,4 +109,72 @@ export async function pluginRouteStillRegistered(route: PluginProfileRoute): Pro
   } catch {
     return false
   }
+}
+
+export async function listPersistedSessions(
+  route: PluginProfileRoute | null,
+  options: { limit?: number; profile: string }
+): Promise<PaginatedSessions> {
+  if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+    throw new Error('Profile route must include connectionId, profile, and targetProfile')
+  }
+
+  const profile = options.profile.trim()
+
+  if (!profile) {
+    throw new Error('Persisted session reads require a profile')
+  }
+
+  const limit = Math.min(500, Math.max(0, options.limit ?? 200))
+
+  const query = new URLSearchParams({
+    archived: 'exclude',
+    limit: String(limit),
+    min_messages: '0',
+    offset: '0',
+    order: 'created',
+    profile
+  })
+
+  return hermesApi<PaginatedSessions>({
+    ...(route ? { connectionId: route.connectionId } : {}),
+    path: `/api/profiles/sessions?${query.toString()}`,
+    timeoutMs: 60_000
+  })
+}
+
+export async function setPersistedSessionHidden(
+  route: PluginProfileRoute | null,
+  options: { hidden: boolean; profile: string; sessionId: string }
+): Promise<{ hidden: boolean; ok: boolean }> {
+  if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+    throw new Error('Profile route must include connectionId, profile, and targetProfile')
+  }
+
+  const profile = options.profile.trim()
+
+  if (!profile || !options.sessionId.trim()) {
+    throw new Error('Persisted session updates require a profile and session id')
+  }
+
+  // Null keeps the window's v1 route (a remote primary stays remote).
+  const scope = { connectionId: route?.connectionId || getApiRequestConnection() }
+  const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+  const payload = { hidden: options.hidden, profile }
+
+  return mutateSessionFenced(
+    JSON.stringify([scope, options.sessionId, payload]),
+    () =>
+      hermesApi<SessionMutationSnapshot>({
+        ...scope,
+        path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
+      }),
+    identity =>
+      hermesApi<{ hidden: boolean; ok: boolean }>({
+        ...scope,
+        body: { ...payload, ...identity },
+        method: 'PATCH',
+        path
+      })
+  )
 }

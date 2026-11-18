@@ -64,8 +64,25 @@ const CSS = `
 .hw-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .hw-status{flex:1 1 160px;min-width:0;margin:0;font-size:12px;line-height:16px;color:var(--hw-ink3)}
 .hw-btn{display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 12px;border:0;border-radius:999px;background:transparent;box-shadow:inset 0 0 0 .5px var(--hw-line1);color:var(--hw-ink1);font-family:inherit;font-size:13px;font-weight:500;line-height:1;white-space:nowrap;cursor:pointer}
+.hw-btn.primary{background:var(--hw-ink1);color:var(--ui-bg-editor);box-shadow:none}
+.hw-btn.danger{color:#f0565b;box-shadow:inset 0 0 0 .5px color-mix(in srgb,#f0565b 48%,transparent)}
 .hw-btn.sm{height:24px;padding:0 10px;font-size:12px}
-.hw-btn:hover{background:var(--hw-fill2)}
+.hw-btn:disabled{opacity:.45;cursor:default}
+.hw-btn:hover:not(:disabled){background:var(--hw-fill2)}
+.hw-btn.primary:hover:not(:disabled){opacity:.88}
+.hw-gate{padding:16px;display:flex;flex-direction:column;gap:12px;margin-top:12px}
+.hw-gate-fields{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.hw-input{height:30px;padding:0 10px;border:0;border-radius:8px;background:var(--ui-bg-editor);box-shadow:inset 0 0 0 .5px var(--hw-line1);color:var(--hw-ink1);font-family:var(--hw-mono);font-size:12px;min-width:0}
+.hw-textarea{width:100%;min-height:64px;padding:8px 10px;border:0;border-radius:8px;background:var(--ui-bg-editor);box-shadow:inset 0 0 0 .5px var(--hw-line1);color:var(--hw-ink1);font-family:inherit;font-size:12px;line-height:16px;resize:vertical}
+.hw-input:focus-visible,.hw-textarea:focus-visible{outline:1px solid var(--hw-accent);outline-offset:1px}
+.hw-facts{display:grid;grid-template-columns:136px minmax(0,1fr);row-gap:6px;column-gap:12px;margin:0;font-size:12px;line-height:16px}
+.hw-facts dt{color:var(--hw-ink3)}
+.hw-facts dd{margin:0;min-width:0;color:var(--hw-ink1);overflow-wrap:anywhere}
+.hw-unverified{padding:10px 12px;border-radius:8px;background:var(--hw-fill2);box-shadow:inset 0 0 0 .5px var(--hw-line1);display:flex;flex-direction:column;gap:6px}
+.hw-unverified b{font-size:12px;color:#e5a83b}
+.hw-unverified pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--hw-mono);font-size:11px;line-height:15px;color:var(--hw-ink2)}
+.hw-gate-open{padding:12px;border-radius:8px;background:var(--hw-fill1);box-shadow:inset 0 0 0 .5px var(--hw-line1);display:flex;flex-direction:column;gap:10px}
+.hw-decisions{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12px;line-height:16px;color:var(--hw-ink2)}
 .hw-link{display:flex;align-items:center;gap:12px;width:100%;min-height:32px;padding:8px 16px;border:0;border-top:.5px solid var(--hw-line3);background:transparent;color:var(--hw-ink1);font:inherit;text-align:left;cursor:pointer}
 .hw-list>li:first-child .hw-link{border-top:0;border-radius:10px 10px 0 0}
 .hw-list>li:last-child .hw-link{border-radius:0 0 10px 10px}
@@ -125,6 +142,16 @@ const heading = (title, aside) => jsx('div', {className:'hw-h', children:[title,
 const SCREEN_PROFILE_IDS = new Set(ROLES.map(([, id]) => id));
 const screenState = atom({ routes: [], selected: '', message: '' });
 const routeKey = route => JSON.stringify([route.connectionId, route.mode, route.profile, route.targetProfile]);
+// display.status reports DesktopStatus (tools/bot_desktop/runtime.py): running/supported/installed/blocker, no `state`.
+const screenStatusWord = snapshot => {
+  if (!snapshot || typeof snapshot !== 'object') return 'status unknown';
+  if (snapshot.supported === false) return 'unsupported on this host';
+  if (snapshot.installed === false) return 'not installed';
+  if (snapshot.running === true) return 'running';
+  if (typeof snapshot.blocker === 'string' && snapshot.blocker) return `stopped (cannot start: ${snapshot.blocker})`;
+  if (snapshot.running === false) return 'stopped';
+  return 'status unknown';
+};
 function ScreenSelector() {
   const state = useValue(screenState);
   const discover = async () => {
@@ -132,13 +159,42 @@ function ScreenSelector() {
       screenState.set({...screenState.get(),routes:[],selected:'',message:'Connection-scoped profile discovery is unavailable in this Desktop build.'});
       return;
     }
+    let autoRoute = null;
     try {
       const routes = (await host.profileRoutes()).filter(route =>
         SCREEN_PROFILE_IDS.has(route.targetProfile)
       );
-      screenState.set({routes,selected:'',message:routes.length ? 'Choose one exact registered connection/profile route.' : 'No registered framework profile routes were found.'});
+      const localMatches = routes.filter(route => route && route.mode === 'local'
+        && typeof route.connectionId === 'string' && route.connectionId.trim()
+        && typeof route.profile === 'string' && route.profile.trim());
+      const uniqueLocal = route => localMatches.filter(other => other.targetProfile === route.targetProfile).length === 1;
+      autoRoute = localMatches.length === 1
+        ? localMatches[0]
+        : (localMatches.find(route => route.targetProfile === 'framework-coordinator' && uniqueLocal(route)) || null);
+      const autoSelected = autoRoute ? routeKey(autoRoute) : '';
+      screenState.set({
+        routes,
+        selected:autoSelected,
+        message:autoRoute
+          ? `Selected ${autoRoute.targetProfile}; reading screen status…`
+          : routes.length ? 'Choose one exact registered connection/profile route.' : 'No registered framework profile routes were found.'
+      });
     } catch {
       screenState.set({...screenState.get(),routes:[],selected:'',message:'Registered connection/profile routes could not be read. No fallback was attempted.'});
+      return;
+    }
+    if (autoRoute && typeof host.requestProfile === 'function') {
+      try {
+        const snapshot = await host.requestProfile(autoRoute, 'display.status', {}, 15000, { spawnPriority: 'foreground' });
+        const statusWord = screenStatusWord(snapshot);
+        if (screenState.get().selected === routeKey(autoRoute)) {
+          screenState.set({...screenState.get(),message:`Selected ${autoRoute.targetProfile} · screen ${statusWord}.`});
+        }
+      } catch {
+        if (screenState.get().selected === routeKey(autoRoute)) {
+          screenState.set({...screenState.get(),message:`Selected ${autoRoute.targetProfile} · status unavailable; click Open screen to inspect.`});
+        }
+      }
     }
   };
   const open = async () => {
@@ -193,6 +249,344 @@ function ScreenSelector() {
     ]})
   ]});
 }
+const SAFE_LOOPBACK = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
+const SAFE_WORKFLOW = /^[A-Za-z0-9._:-]{1,160}$/;
+function validLoopback(raw) {
+  const value = String(raw || '127.0.0.1:7233').trim();
+  const match = SAFE_LOOPBACK.exec(value);
+  if (!match) return null;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? `127.0.0.1:${port}` : null;
+}
+function validOperator(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 200) return null;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const code = trimmed.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return trimmed.replace(/ +/g, ' ');
+}
+function validNote(raw) {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().replace(/\r\n/g, '\n');
+  if (!normalized || normalized.length > 1000) return null;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const code = normalized.charCodeAt(index);
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f) return null;
+  }
+  return normalized;
+}
+const INITIAL_GATE_MESSAGE = 'Enter a Temporal workflow ID and click Load gate status to review or decide open human gates.';
+const INITIAL_GATE_STATE = Object.freeze({
+  address: '127.0.0.1:7233',
+  workflowId: '',
+  operatorName: '',
+  checkNote: '',
+  busy: false,
+  status: null,
+  message: INITIAL_GATE_MESSAGE
+});
+const gateState = atom({ ...INITIAL_GATE_STATE });
+// Track monotonic handoff sequence numbers via nanostores rather than importing react hooks,
+// because framework/desktop/test-plugin.mjs links only @hermes/plugin-sdk and react/jsx-runtime.
+let consumedHandoffSeq = 0;
+let consumedLegacyKey = '';
+let gateRequestSeq = 0;
+function exactLoopback(raw) {
+  return typeof raw === 'string' && raw.trim() ? validLoopback(raw) : null;
+}
+function applyHandoffTarget(nextWorkflowId, nextAddress, clearTarget = false) {
+  const latest = gateState.get();
+  const workflowId = clearTarget ? nextWorkflowId : (nextWorkflowId || latest.workflowId);
+  const address = nextAddress || latest.address || '127.0.0.1:7233';
+  if (workflowId === latest.workflowId && address === latest.address) return;
+  gateRequestSeq += 1;
+  gateState.set({
+    ...latest,
+    workflowId,
+    address,
+    checkNote: '',
+    busy: false,
+    status: null,
+    message: workflowId
+      ? `Ready to inspect ${workflowId} on ${address}. Click Load gate status.`
+      : INITIAL_GATE_MESSAGE
+  });
+}
+function syncWorkflowHandoff() {
+  if (typeof globalThis === 'undefined') return;
+  const raw = globalThis.__HUNT_COMMAND_HANDOFF__;
+  if (!raw) consumedHandoffSeq = 0;
+  if (raw && typeof raw === 'object' && Number.isInteger(raw.seq) && raw.seq > 0) {
+    if (raw.seq !== consumedHandoffSeq) {
+      consumedHandoffSeq = raw.seq;
+      const wf = typeof raw.workflowId === 'string' && SAFE_WORKFLOW.test(raw.workflowId.trim()) ? raw.workflowId.trim() : '';
+      const addr = validLoopback(raw.address) || '127.0.0.1:7233';
+      const clearTarget = Boolean(raw.clearTarget) || (typeof raw.workflowId === 'string' && Boolean(raw.workflowId.trim()) && !wf);
+      applyHandoffTarget(wf, addr, clearTarget);
+    }
+    return;
+  }
+  const legacyWf = typeof globalThis.__HUNT_COMMAND_WORKFLOW_ID__ === 'string'
+    && SAFE_WORKFLOW.test(globalThis.__HUNT_COMMAND_WORKFLOW_ID__.trim())
+    ? globalThis.__HUNT_COMMAND_WORKFLOW_ID__.trim()
+    : '';
+  const legacyAddr = typeof globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__ === 'string'
+    ? (validLoopback(globalThis.__HUNT_COMMAND_TEMPORAL_ADDRESS__) || '')
+    : '';
+  if (!legacyWf && !legacyAddr) {
+    consumedLegacyKey = '';
+    return;
+  }
+  const legacyKey = `${legacyWf}@${legacyAddr}`;
+  if (legacyKey !== consumedLegacyKey) {
+    consumedLegacyKey = legacyKey;
+    applyHandoffTarget(legacyWf, legacyAddr || '127.0.0.1:7233');
+  }
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.__HUNT_COMMAND_ON_HANDOFF__ = () => syncWorkflowHandoff();
+}
+function factRows(items) {
+  return jsx('dl', {className:'hw-facts', children:items.flatMap(([term, value]) => [
+    jsx('dt', {children:term}, `${term}-dt`),
+    jsx('dd', {children:value}, `${term}-dd`)
+  ])}, 'facts');
+}
+function HumanGatesPanel() {
+  syncWorkflowHandoff();
+  const current = useValue(gateState);
+  const updateTargetFields = patch => {
+    const latest = gateState.get();
+    const nextAddress = Object.prototype.hasOwnProperty.call(patch, 'address') ? patch.address : latest.address;
+    const nextWorkflowId = Object.prototype.hasOwnProperty.call(patch, 'workflowId') ? patch.workflowId : latest.workflowId;
+    const targetChanged = nextAddress !== latest.address || nextWorkflowId !== latest.workflowId;
+    const matchesLoaded = Boolean(
+      latest.status
+      && exactLoopback(nextAddress) === latest.status.address
+      && String(nextWorkflowId || '').trim() === latest.status.workflowId
+    );
+    gateRequestSeq += 1;
+    gateState.set({
+      ...latest,
+      address: nextAddress,
+      workflowId: nextWorkflowId,
+      checkNote: matchesLoaded || !targetChanged ? latest.checkNote : '',
+      busy: false,
+      status: matchesLoaded ? latest.status : null,
+      message: matchesLoaded ? latest.message : INITIAL_GATE_MESSAGE
+    });
+  };
+  const loadStatus = async () => {
+    syncWorkflowHandoff();
+    const latest = gateState.get();
+    if (latest.busy) return;
+    if (!host.huntWorkbench || typeof host.huntWorkbench.gateStatus !== 'function') {
+      gateState.set({...latest,message:'Local Temporal gate workbench is unavailable in this Desktop build.'});
+      return;
+    }
+    const workflowId = latest.workflowId.trim();
+    const address = validLoopback(latest.address);
+    if (!address) {
+      gateState.set({...latest,message:'Temporal address must stay on 127.0.0.1:<port>.'});
+      return;
+    }
+    if (!SAFE_WORKFLOW.test(workflowId)) {
+      gateState.set({...latest,address,workflowId,message:'Enter a valid workflow ID (for example practice-dns-001) first.'});
+      return;
+    }
+    const reqSeq = ++gateRequestSeq;
+    gateState.set({...latest,address,workflowId,busy:true,message:`Querying Temporal workflow ${workflowId} on ${address}…`});
+    try {
+      const reply = await host.huntWorkbench.gateStatus({ address, workflowId });
+      if (reqSeq !== gateRequestSeq) return;
+      if (!reply?.ok || !reply.status) {
+        gateState.set({...gateState.get(),busy:false,status:null,message:reply?.error || 'Could not query Temporal workflow status.'});
+        return;
+      }
+      const openLabel = reply.status.openGate ? reply.status.openGate.label : `No open human gate (${reply.status.stage || 'idle'})`;
+      gateState.set({...gateState.get(),busy:false,status:reply.status,message:`Loaded ${workflowId}: ${openLabel}.`});
+    } catch {
+      if (reqSeq !== gateRequestSeq) return;
+      gateState.set({...gateState.get(),busy:false,status:null,message:'Temporal gate status query failed.'});
+    }
+  };
+  const submitDecision = async choice => {
+    const latest = gateState.get();
+    const status = latest.status;
+    const openGate = status?.openGate;
+    if (latest.busy || !status || !openGate) return;
+    if (!host.huntWorkbench || typeof host.huntWorkbench.decideGate !== 'function') {
+      gateState.set({...latest,message:'Local Temporal gate decision runner is unavailable in this Desktop build.'});
+      return;
+    }
+    const editedAddress = exactLoopback(latest.address);
+    if (!editedAddress || editedAddress !== status.address || latest.workflowId.trim() !== status.workflowId) {
+      gateState.set({...latest,status:null,message:'Target workflow or loopback address changed. Click Load gate status before deciding.'});
+      return;
+    }
+    const operatorName = validOperator(latest.operatorName);
+    if (!operatorName) {
+      gateState.set({...latest,message:'Enter your operator name (1-200 printable characters) before approving or rejecting.'});
+      return;
+    }
+    const checkNote = validNote(latest.checkNote);
+    if (!checkNote) {
+      gateState.set({...latest,message:'Complete "What did you check?" (1-1000 characters) before recording a human gate decision.'});
+      return;
+    }
+    if (!status.childWorkflowId) {
+      gateState.set({...latest,message:'No active round workflow ID is attached to receive this decision.'});
+      return;
+    }
+    const reqSeq = ++gateRequestSeq;
+    gateState.set({...latest,busy:true,message:`Recording ${choice} decision on ${openGate.stepId} (${openGate.phase})…`});
+    let reply;
+    try {
+      reply = await host.huntWorkbench.decideGate({
+        address: status.address,
+        childWorkflowId: status.childWorkflowId,
+        stepId: openGate.stepId,
+        phase: openGate.phase,
+        choice,
+        operatorName,
+        checkNote
+      });
+    } catch {
+      if (reqSeq === gateRequestSeq) {
+        gateState.set({...gateState.get(),busy:false,message:'Human gate decision failed.'});
+      }
+      return;
+    }
+    if (reqSeq !== gateRequestSeq) return;
+    if (!reply?.ok) {
+      gateState.set({...gateState.get(),busy:false,message:reply?.error || 'Human gate decision failed.'});
+      return;
+    }
+    const safeGateStatus = async workflowId => {
+      try {
+        return await host.huntWorkbench.gateStatus({ address: status.address, workflowId });
+      } catch {
+        return null;
+      }
+    };
+    // A PracticeWorkflow parent re-resolves its *current* round, which may already be N+1;
+    // only the child that received the signal can confirm the decision was recorded.
+    const confirmed = await safeGateStatus(status.childWorkflowId);
+    if (reqSeq !== gateRequestSeq) return;
+    const recorded = Boolean(
+      reply.decisionId
+      && confirmed?.ok
+      && Array.isArray(confirmed.status?.decisions)
+      && confirmed.status.decisions.some(item => item && item.decisionId === reply.decisionId)
+    );
+    const refreshed = status.childWorkflowId === status.workflowId ? confirmed : await safeGateStatus(status.workflowId);
+    if (reqSeq !== gateRequestSeq) return;
+    const recordedMessage = `Recorded ${choice} by ${reply.decidedBy || operatorName} via cli (${reply.decisionId})`;
+    if (!refreshed?.ok || !refreshed.status) {
+      gateState.set({
+        ...gateState.get(),
+        busy: false,
+        checkNote: '',
+        status: null,
+        message: recorded
+          ? `${recordedMessage}, but workflow refresh failed. Click Load gate status before deciding again.`
+          : 'Decision signal sent, but workflow refresh failed. Click Load gate status before deciding again.'
+      });
+      return;
+    }
+    gateState.set({
+      ...gateState.get(),
+      busy: false,
+      checkNote: recorded ? '' : gateState.get().checkNote,
+      status: refreshed.status,
+      message: recorded
+        ? `${recordedMessage}.`
+        : `Decision signal sent (${reply.decisionId || 'unconfirmed'}), but ${reply.decisionId || 'decision'} was not recorded in workflow state.`
+    });
+  };
+  const status = current.status;
+  const openGate = status?.openGate || null;
+  const syntheticAllowed = Boolean(status && status.syntheticOnly === true && status.dataOrigin === 'synthetic');
+  const targetMatchesStatus = Boolean(
+    status
+    && exactLoopback(current.address) === status.address
+    && current.workflowId.trim() === status.workflowId
+  );
+  const readyToDecide = !current.busy && targetMatchesStatus && Boolean(openGate && validOperator(current.operatorName) && validNote(current.checkNote));
+  const choices = Array.isArray(openGate?.choices) ? openGate.choices : [];
+  const approveChoice = choices.includes('accept') ? 'accept' : 'approve';
+  const rejectChoice = choices.includes('abort') ? 'abort' : 'deny';
+  const approveLabel = approveChoice === 'accept' ? 'Accept reconciliation' : 'Approve gate';
+  const rejectLabel = rejectChoice === 'abort' ? 'Abort round' : 'Reject gate';
+  return jsx('div', {className:'hw-box hw-gate', 'aria-label':'Live human gate controls', children:[
+    jsx('div', {className:'hw-gate-fields', children:[
+      jsx('input', {
+        type:'text', className:'hw-input', 'aria-label':'Temporal loopback address', placeholder:'127.0.0.1:7233',
+        style:{width:'148px'}, value:current.address, disabled:current.busy,
+        onChange:event=>updateTargetFields({address:event.target.value})
+      }, 'addr'),
+      jsx('input', {
+        type:'text', className:'hw-input', 'aria-label':'Workflow ID', placeholder:'Workflow ID (e.g. practice-dns-001)',
+        style:{flex:'1 1 220px'}, value:current.workflowId, disabled:current.busy,
+        onChange:event=>updateTargetFields({workflowId:event.target.value})
+      }, 'wid'),
+      jsx('button', {
+        type:'button', className:'hw-btn sm primary', onClick:loadStatus, disabled:current.busy,
+        'data-cyber-action':'load-gate-status', children:status ? 'Refresh gate status' : 'Load gate status'
+      }, 'load')
+    ]}, 'query'),
+    jsx('p', {className:'hw-status', role:'status', 'aria-live':'polite', children:current.message}, 'msg'),
+    status ? factRows([
+      ['Workflow', jsx('span', {className:'hw-mono', children:`${status.workflowId}${status.childWorkflowId && status.childWorkflowId !== status.workflowId ? ` → ${status.childWorkflowId}` : ''}`})],
+      ['Case / origin', jsx('span', {className:'hw-mono', children:`${status.caseId || 'not reported'} · origin=${status.dataOrigin}`})],
+      ['Stage', jsx('span', {className:'hw-mono', children:`${status.stage || 'unknown'}${status.temporalStatus ? ` (${status.temporalStatus})` : ''}`})],
+      ['Visibility rule', syntheticAllowed
+        ? 'Synthetic case verified: unverified bot handoff summary may be previewed below.'
+        : 'ID-and-status view only: bot-written summaries are withheld for non-synthetic data origins (public-dataset, work-export, work-connected).']
+    ]) : null,
+    syntheticAllowed && status?.unverifiedBotSummary ? jsx('div', {className:'hw-unverified', children:[
+      jsx('b', {children:'Bot-written, unverified:'}, 'label'),
+      jsx('pre', {children:status.unverifiedBotSummary}, 'body')
+    ]}, 'summary') : null,
+    openGate ? jsx('div', {className:'hw-gate-open', children:[
+      jsx('b', {children:`${openGate.label} · step=${openGate.stepId} (${openGate.phase})`}, 'gtitle'),
+      jsx('div', {className:'hw-label', children:'Human gates (scope and incident) are never auto-approved. Enter your operator identity and what you verified against primary lab evidence.'}, 'gnote'),
+      jsx('input', {
+        type:'text', className:'hw-input', 'aria-label':'Operator name', placeholder:'Operator name (required, 1-200 chars)',
+        value:current.operatorName, disabled:current.busy,
+        onChange:event=>gateState.set({...gateState.get(),operatorName:event.target.value})
+      }, 'op'),
+      jsx('textarea', {
+        className:'hw-textarea', 'aria-label':'What did you check?',
+        placeholder:'What did you check? Cite concrete event IDs, scope boundaries, or evidence verified (required, 1-1000 chars)',
+        value:current.checkNote, disabled:current.busy,
+        onChange:event=>gateState.set({...gateState.get(),checkNote:event.target.value})
+      }, 'note'),
+      jsx('div', {className:'hw-row', children:[
+        jsx('button', {
+          type:'button', className:'hw-btn primary', disabled:!readyToDecide,
+          'data-cyber-action':'approve-gate', onClick:()=>submitDecision(approveChoice),
+          children:approveLabel
+        }, 'approve'),
+        jsx('button', {
+          type:'button', className:'hw-btn danger', disabled:!readyToDecide,
+          'data-cyber-action':'reject-gate', onClick:()=>submitDecision(rejectChoice),
+          children:rejectLabel
+        }, 'reject')
+      ]}, 'btns')
+    ]}, 'open') : null,
+    status && Array.isArray(status.decisions) && status.decisions.length ? jsx('div', {children:[
+      jsx('div', {className:'hw-label', children:'Recorded gate decisions'}, 'dlabel'),
+      jsx('ul', {className:'hw-decisions', children:status.decisions.map((item, idx) => jsx('li', {
+        className:'hw-mono',
+        children:`${item.stepId} (${item.phase}): ${item.decision} · decided_by=${item.decidedBy || 'unknown'} · via=${item.via || 'unknown'}`
+      }, item.decisionId || `${item.stepId}-${idx}`))}, 'dlist')
+    ]}, 'decisions') : null
+  ]});
+}
 const quickLink = (glyph, label, onClick, extra = {}) => jsx('li', {children:jsx('button', {type:'button', className:'hw-link', onClick, ...extra,
   children:[icon(glyph), jsx('span', {children:label}, 'label'), icon('chevronRight')]})}, label);
 const notes = (title, items) => jsx('div', {children:[
@@ -210,15 +604,16 @@ function workspace(ctx) {
   return jsx('div', {className:'hw', 'data-cyber-workspace':'v1', children:[sheet(),
     jsx('header', {className:'hw-bar', children:[
       jsx('h1', {className:'hw-title', children:'Cybersecurity workspace'}, 'title'),
-      jsx('span', {className:'hw-sub', children:'Supplied-evidence workbench. Gates here are instructions, not an approval record.'}, 'sub')
+      jsx('span', {className:'hw-sub', children:'Supplied-evidence workbench. Human gates record explicit loopback Temporal CLI decisions.'}, 'sub')
     ]}),
     jsx('div', {className:'hw-body', children:jsx('div', {className:'hw-page', children:[
       jsx('section', {'aria-label':'Human-controlled gates', children:[
-        heading('Human-controlled gates', 'advisory guide, not a live ledger'),
+        heading('Human-controlled gates', 'governed scope & incident review — never auto-approved'),
         jsx('ol', {className:'hw-box hw-steps', 'aria-label':'Gate order', children:GATES.map(([name,detail],index)=>jsx('li', {className:'hw-step', children:[
           jsx('b', {children:[jsx('span', {children:String(index+1)}, 'n'), name]}, 'name'),
           jsx('p', {children:detail}, 'detail')
-        ]}, name))})
+        ]}, name))}, 'order'),
+        jsx(HumanGatesPanel, {}, 'live-gates')
       ]}, 'gates'),
       jsx('div', {className:'hw-grid', children:[
         jsx('section', {'aria-label':'Team', children:[
@@ -280,7 +675,7 @@ function workspace(ctx) {
             'OMP is development-only, never a product runtime dependency.',
             'This companion performs no collection, telemetry, scanning, capture, Arkime connection, adversary emulation, remediation, trading, external messaging or schedules.',
             'Navigating to Hunting Lab does not start the lab; human lifecycle controls there are distinct from these advisory gates.',
-            'This plugin makes no model calls, reads no conversations or memory, saves no decisions and changes no specialist safeguards.',
+            'This plugin makes no model calls, reads no conversations or memory, changes no specialist safeguards, and records human gate decisions only on explicit operator approval or rejection over loopback Temporal.',
             'It cannot enforce other tools or plugins; profiles and role instructions are not sandboxes.'
           ])
         ]}, 'notes')
@@ -291,6 +686,15 @@ function workspace(ctx) {
 export default {
   id:'cybersecurity-workspace', name:'Cybersecurity workspace', defaultEnabled:true,
   register(ctx) {
+    consumedHandoffSeq = 0;
+    consumedLegacyKey = '';
+    gateRequestSeq += 1;
+    screenState.set({ routes: [], selected: '', message: '' });
+    gateState.set({ ...INITIAL_GATE_STATE });
+    if (typeof globalThis !== 'undefined') {
+      globalThis.__HUNT_COMMAND_ON_HANDOFF__ = () => syncWorkflowHandoff();
+    }
+    syncWorkflowHandoff();
     ctx.register({id:'workspace',area:ROUTES_AREA,data:{path:'/cybersecurity-workspace'},render:()=>workspace(ctx)});
     ctx.register({id:'nav',area:SIDEBAR_NAV_AREA,data:{path:'/cybersecurity-workspace',label:'Cybersecurity workspace',codicon:'shield'}});
     ctx.register({id:'open',area:PALETTE_AREA,data:{id:'cybersecurity-workspace.open',label:'Open cybersecurity workspace',run:()=>host.navigate('/cybersecurity-workspace')}});

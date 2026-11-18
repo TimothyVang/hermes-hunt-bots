@@ -13,6 +13,7 @@ import tempfile
 import threading
 import types
 import unittest
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -22,7 +23,9 @@ if importlib.util.find_spec("temporalio") is None:
     raise unittest.SkipTest("Install hermes_temporal/requirements.txt to run hunt board tests.")
 
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
-                    activity_spans, browser_root, build_state, main, make_server, newest_browser_action, parse_handoff)
+                    activity_spans, board_registry_dir, browser_root, build_state, main, make_server,
+                    newest_browser_action, parse_handoff)
+from .contracts import GateDecision
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import LAB_SECRET, FakeLab, write_connected_state, write_container_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
@@ -310,9 +313,9 @@ class BoardDerivationTests(unittest.TestCase):
         # The gate card above the waves names the waiting step's flag too.
         self.assertIn("waits for human review.", case["text"])
         self.assertEqual(case["text"].count("handoff not parsed"), 3, case["text"])
-        # On a phone the Needs you card names it between its text and "Decide in Hermes".
+        # On a phone the Needs you card names it between its text and "Decide in Hunt Command".
         inbox = _render_page(state, "", phone=True)["main"]
-        self.assertIn("handoff not parsedDecide in Hermes", inbox["text"])
+        self.assertIn("handoff not parsedDecide in Hunt Command", inbox["text"])
 
     def test_fenced_output_with_leading_prose_parses(self) -> None:
         body = self.child["results"][0]["output"]
@@ -550,7 +553,7 @@ class BoardServerTests(unittest.TestCase):
             return _load("parent-status.json"), _load("child-status.json")
 
         self.now = 100.0
-        self.board = Board(self.raw, observe, clock=lambda: self.now)
+        self.board = Board(self.raw, observe, clock=lambda: self.now, temporal_address="127.0.0.1:7244")
         self.server = make_server(self.board, 0)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -583,6 +586,7 @@ class BoardServerTests(unittest.TestCase):
         state = json.loads(body)
         self.assertEqual(len(state["steps"]), 9)
         self.assertTrue(state["temporal"]["reachable"])
+        self.assertEqual(state["temporal"]["address"], "127.0.0.1:7244")
         self.assertIsNone(state["live"])
         self.assertEqual(self.request("GET", f"/live/framework-researcher.jpg?token={self.server.token}")[0], 404)
 
@@ -1364,6 +1368,93 @@ class ParallelBoardTests(unittest.TestCase):
         spans(_wave_child({"scope": "done", "evidence": ("dropped", "timeout"), "hypotheses": "working"},
                           [self.result(0)]))
         self.assertEqual(history.reads, 3)
+
+    def test_run_summary_surfaces_recorded_gate_decisions_and_hunt_command_label(self) -> None:
+        raw_decisions = [asdict(GateDecision(
+            gate="wave-1", phase="review", decision="approve", decision_id="d-1",
+            decided_by="Alice Operator", via="cli", slack_user="",
+        ))]
+        expected = [{"step_id": "wave-1", "phase": "review", "decision": "approve", "decision_id": "d-1",
+                     "decided_by": "Alice Operator", "via": "cli", "slack_user": ""}]
+        child = _wave_child({"scope": "awaiting_review"}, [self.result(0)], workflow_id=ROUND, decisions=raw_decisions)
+        state = build_state(self.raw, self.parent, child)
+        self.assertEqual(state["run"]["child"]["workflow_id"], ROUND)
+        self.assertEqual(state["run"]["child"]["decisions"], expected)
+        case = _render_page(state, "case")["main"]
+        self.assertIn("Decide in Hunt Command \u2192 Human gates", case["text"])
+        self.assertNotIn("Decide in Hermes", case["text"])
+
+    def test_board_registry_entry_records_loopback_port_without_page_token_and_cleans_up(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            analyst_state = Path(home) / "profiles" / "framework-network-analyst" / "hunt-lab-vm"
+            self.assertEqual(board_registry_dir(home, None), Path(home) / "hunt-board")
+            self.assertEqual(board_registry_dir(None, analyst_state), Path(home) / "hunt-board")
+            self.assertIsNone(board_registry_dir(None, Path(home) / "elsewhere"))
+            captured: list[dict] = []
+
+            class OneShotLive(LiveBrowsers):
+                def start(self) -> None:
+                    pass
+
+            def stop_after_entry(server_obj):
+                entry = Path(home) / "hunt-board" / f"board-{server_obj.server_address[1]}.json"
+                raw_entry = entry.read_text(encoding="utf-8-sig")
+                self.assertNotIn(server_obj.token, raw_entry)
+                captured.append(json.loads(raw_entry))
+
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                free_port = sock.getsockname()[1]
+
+            with mock.patch("hermes_temporal.board.LiveBrowsers", OneShotLive), \
+                    mock.patch("hermes_temporal.board.TemporalObserver", return_value=lambda: ({}, None)), \
+                    mock.patch.object(http.server.ThreadingHTTPServer, "serve_forever", stop_after_entry), \
+                    mock.patch("sys.stdout"):
+                code = main(["--workflow-id", "practice-1", "--input", str(FIXTURES / "lab-input.json"),
+                             "--hermes-home", home, "--port", str(free_port)])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["workflow_id"], "practice-1")
+            self.assertEqual(captured[0]["case_id"], "dns-lab-001")
+            self.assertTrue(captured[0]["live"])
+            self.assertTrue(captured[0]["url"].startswith("http://127.0.0.1:"))
+            self.assertEqual(list((Path(home) / "hunt-board").glob("board-*.json")), [])
+
+    def test_temporal_observer_supports_standalone_hermes_workflow(self) -> None:
+        with mock.patch("threading.Thread"):
+            observer = TemporalObserver("127.0.0.1:7233", "hunt-solo-1")
+        self.addCleanup(observer._loop.close)
+
+        class _SoloHandle:
+            async def describe(self):
+                return types.SimpleNamespace(
+                    workflow_type="HermesWorkflow",
+                    status=types.SimpleNamespace(name="RUNNING"),
+                    start_time=None,
+                    close_time=None,
+                )
+
+            async def query(self, _query):
+                return types.SimpleNamespace(
+                    stage="awaiting_review",
+                    step_id="wave-1",
+                    execution_id=None,
+                    results=[],
+                    handoff_rejections=[],
+                    steps=[],
+                    decisions=[],
+                )
+
+            async def fetch_history(self):
+                return types.SimpleNamespace(events=[])
+
+        observer._client = types.SimpleNamespace(get_workflow_handle=lambda _wid: _SoloHandle())
+        parent, child = asyncio.run(observer._observe())
+        self.assertEqual(parent["workflow_id"], "hunt-solo-1")
+        self.assertEqual(parent["child_workflow_id"], "hunt-solo-1")
+        self.assertEqual(child["workflow_id"], "hunt-solo-1")
+        self.assertEqual(child["stage"], "awaiting_review")
 
 
 if __name__ == "__main__":

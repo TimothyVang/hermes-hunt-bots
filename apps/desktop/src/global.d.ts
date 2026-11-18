@@ -5,6 +5,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
+import type { HuntWorkbenchApi } from '../electron/hunt-workbench'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { KeepAwakeMode } from '../electron/power-save'
@@ -565,6 +566,7 @@ declare global {
         /** A grant was added or revoked in any window; returns an unsubscribe. */
         onChanged?: (callback: (change: { pluginId: string }) => void) => () => void
       }
+      huntWorkbench?: HuntWorkbenchApi
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
