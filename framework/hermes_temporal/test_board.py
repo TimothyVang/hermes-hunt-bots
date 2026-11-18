@@ -25,7 +25,7 @@ if importlib.util.find_spec("temporalio") is None:
 from .board import (LIVE_STREAMS_MAX, Board, LabObserver, LiveBrowsers, ObservationError, TemporalObserver,  # noqa: E402
                     activity_spans, board_registry_dir, browser_root, build_state, main, make_server,
                     newest_browser_action, parse_handoff)
-from .contracts import GateDecision  # noqa: E402
+from .contracts import GateDecision
 from .test_hunt import tool_input  # noqa: E402
 from .test_lab_input import LAB_SECRET, FakeLab, write_connected_state, write_container_state  # noqa: E402
 from .workflows import _unwrap_single_fence  # noqa: E402
