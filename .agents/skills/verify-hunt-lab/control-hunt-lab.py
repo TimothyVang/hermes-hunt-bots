@@ -86,8 +86,6 @@ def _validate_isolated_hermes_home(
 
 
 _COMPOSE_PROJECT = re.compile(r"hunt-lab-[a-z0-9-]{3,64}")
-# lab_stack bind-mounts these per-start files from the home's container-state folder into the lab service.
-_HOME_OWNED_MOUNTS = ("/run/lab/lab-secret", "/var/lib/cloud/data/instance-id")
 _DOCKER_DESKTOP_HOST = re.compile(r"^/(?:run/desktop/mnt/host|host_mnt|mnt/host)/([a-zA-Z])/(.*)$")
 
 
@@ -148,10 +146,12 @@ def _docker_lines(docker_bin: str, argv: list[str]) -> tuple[list[str] | None, s
 
 
 def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> str | None:
-    """Refuse unless the target compose project is absent or its lab containers mount this home's per-start files.
+    """Refuse unless the target compose project is absent or every lab-state bind in it comes from this home.
 
-    Stopped containers keep their mounts, and a reused port proves nothing, so ownership is read from the bind
-    sources of the lab secret and instance-id files, which live under this home's container-state folder.
+    Stopped containers keep their mounts, and a reused port proves nothing. lab_stack bind-mounts the case's
+    evidence, lab secret and instance-id from `<state>/hunt-lab-container/<case>/` into the lab, ingest, arkime and
+    kibana-setup containers, so those bind sources name the home that started the project even when the lab
+    container itself is gone (a failed warm switch).
     """
     target = _home_lab_target(hermes_home, fixture_fallback=fixture_fallback)
     if target is None:
@@ -183,12 +183,13 @@ def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> st
         except ValueError:
             return refusal
         sources.extend(
-            str(entry.get("Source") or "")
+            _host_path_key(str(entry.get("Source") or ""))
             for entry in entries or ()
-            if isinstance(entry, dict) and entry.get("Type") == "bind" and entry.get("Destination") in _HOME_OWNED_MOUNTS
+            if isinstance(entry, dict) and entry.get("Type") == "bind"
         )
+    lab_state = [source for source in sources if f"/{root.name.lower()}/" in source.lower()]
     root_key = _host_path_key(str(root.resolve()))
-    if sources and all(_host_path_key(source).startswith(root_key + "/") for source in sources):
+    if lab_state and all(source.startswith(root_key + "/") for source in lab_state):
         return None
     return refusal
 

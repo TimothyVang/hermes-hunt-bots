@@ -1127,10 +1127,8 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
             descriptor.workflowId = managedBoard.workflowId
           }
 
-          if (reg?.address) {
-            // A board on localhost/[::1] Temporal must not inherit the 127.0.0.1:7233 probe default.
-            descriptor.address = validateLoopbackAddress(reg.address) ?? ''
-          } else if (managedBoard?.port === port) {
+          // The live board's /state.json address is authoritative; a registry entry can outlive its board.
+          if (!descriptor.address && managedBoard?.port === port) {
             descriptor.address = managedBoard.address
           }
         }

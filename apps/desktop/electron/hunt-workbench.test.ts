@@ -126,7 +126,8 @@ describe('hunt-workbench', () => {
         child: { workflow_id: 'practice-1:round:001' },
         parent: { child_workflow_id: 'practice-1:round:001', workflow_id: 'practice-1' }
       },
-      steps: [{ step_id: 'scope' }]
+      steps: [{ step_id: 'scope' }],
+      temporal: { address: '127.0.0.1:7233' }
     }
 
     const liveServer = http.createServer((req, res) => {
@@ -188,7 +189,7 @@ describe('hunt-workbench', () => {
     expect(fs.existsSync(busyOtherFile)).toBe(true)
   })
 
-  it('takes a board\'s Temporal address from its registry or /state.json and never substitutes 127.0.0.1:7233', async () => {
+  it('takes a board\'s Temporal address from its live /state.json, never a stale registry entry or the 7233 default', async () => {
     const home = makeTempDir()
     tempDirs.push(home)
 
@@ -207,15 +208,15 @@ describe('hunt-workbench', () => {
       return (server.address() as { port: number }).port
     }
 
-    const registeredLocalhost = await startFakeBoard({ address: '127.0.0.1:7255' })
+    const staleRegistry = await startFakeBoard({ address: '127.0.0.1:7255' })
     const reportsOwnAddress = await startFakeBoard({ address: '127.0.0.1:7255' })
     const reportsIpv6 = await startFakeBoard({ address: '[::1]:7233' })
     const reportsNothing = await startFakeBoard({ reachable: true })
     const regDir = path.join(home, 'hunt-board')
     fs.mkdirSync(regDir, { recursive: true })
     fs.writeFileSync(
-      path.join(regDir, `board-${registeredLocalhost}.json`),
-      JSON.stringify({ address: 'localhost:7244', port: registeredLocalhost, workflow_id: 'practice-2' })
+      path.join(regDir, `board-${staleRegistry}.json`),
+      JSON.stringify({ address: '127.0.0.1:7233', port: staleRegistry, workflow_id: 'practice-2' })
     )
 
     const wb = createHuntWorkbench({ hermesHome: () => home, huntEnabled: true, probeBoardPort: defaultProbeBoardPort })
@@ -223,7 +224,7 @@ describe('hunt-workbench', () => {
     const addressOf = async (port: number) =>
       (await wb.discoverBoards({ port })).boards.find(b => b.port === port)?.address
 
-    expect(await addressOf(registeredLocalhost)).toBe('')
+    expect(await addressOf(staleRegistry)).toBe('127.0.0.1:7255')
     expect(await addressOf(reportsOwnAddress)).toBe('127.0.0.1:7255')
     expect(await addressOf(reportsIpv6)).toBe('')
     expect(await addressOf(reportsNothing)).toBe('')
