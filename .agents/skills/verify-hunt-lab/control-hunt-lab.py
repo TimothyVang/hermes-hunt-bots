@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -84,20 +85,74 @@ def _validate_isolated_hermes_home(
     return cand, None
 
 
-def _validate_case_dir(raw: str) -> tuple[Path | None, str | None]:
-    """Synthetic case folders may live in the repo (committed fixtures), but never in operator-only or default user state."""
-    text = str(raw or "").strip()
-    if not text or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
-        return None, "case must be a valid local path."
-    cand = Path(os.path.abspath(os.path.expanduser(os.path.expandvars(text)))).resolve()
-    if _touches_operator_only(cand):
-        return None, f"case ({cand}) must never touch operator-only directories."
-    for default_home in _default_hermes_homes(Path.home().resolve()):
-        if _paths_overlap(cand, default_home):
-            return None, f"case ({cand}) must not touch default user Hermes state ({default_home})."
-    if not cand.is_dir():
-        return None, f"case ({cand}) must be an existing synthetic case directory."
-    return cand, None
+_COMPOSE_PROJECT = re.compile(r"hunt-lab-[a-z0-9-]{3,64}")
+_PUBLISHED_PORT = re.compile(r":(\d{1,5})->")
+
+
+def _read_json_dict(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _home_lab_target(hermes_home: Path, *, fixture_fallback: bool) -> tuple[str, int | None, bool] | None:
+    """(compose project, recorded lab port, state recorded) for the case `bot.py lab start|stop` acts on.
+
+    Docker Compose project names are engine-wide (hunt-lab-<case_id>), so an isolated HERMES_HOME does not isolate
+    the stack: another home (the operator's) can run the same project.
+    """
+    endpoints = _load_endpoints()
+    root = hermes_home / "profiles" / "framework-network-analyst" / endpoints.CONTAINER_STATE
+    case_id = (_read_json_dict(root / "last.json") or {}).get("case_id")
+    if case_id is None and fixture_fallback:
+        case_id = (_read_json_dict(FRAMEWORK_DIR / "hunt_lab" / "fixtures" / "dns-lab-001" / "case.json") or {}).get("case_id")
+    if not isinstance(case_id, str) or not endpoints.CASE_ID.fullmatch(case_id):
+        return None
+    case_dir = root / case_id
+    state = _read_json_dict(case_dir / "state.json")
+    project = endpoints.CONTAINER_PROJECT_PREFIX + case_id
+    try:
+        override = (case_dir / "compose-project").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        override = ""
+    if _COMPOSE_PROJECT.fullmatch(override):
+        project = override
+    lab_port = state.get("lab_port") if state else None
+    return project, lab_port if isinstance(lab_port, int) else None, state is not None
+
+
+def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> str | None:
+    """Refuse when the target compose project has containers this home did not start (matched by published lab port)."""
+    target = _home_lab_target(hermes_home, fixture_fallback=fixture_fallback)
+    if target is None:
+        return None if not fixture_fallback else "Could not determine the lab case for this HERMES_HOME."
+    project, lab_port, recorded = target
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
+        return "Docker CLI not found; cannot verify compose project ownership."
+    listed = subprocess.run(
+        [docker_bin, "ps", "-a", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Ports}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+        creationflags=_NO_WINDOW,
+    )
+    if listed.returncode != 0:
+        return f"docker ps failed ({listed.stderr.strip()[:200]}); cannot verify compose project ownership."
+    if not listed.stdout.strip("\n"):
+        return None
+    published = {int(port) for port in _PUBLISHED_PORT.findall(listed.stdout)}
+    if recorded and lab_port is not None and lab_port in published:
+        return None
+    return (
+        f"compose_project_in_use: Docker project {project} has containers this HERMES_HOME did not start "
+        "(another Hermes home or the operator's lab); refusing to start or stop it."
+    )
 
 
 def _emit(payload: dict, exit_code: int = 0) -> int:
@@ -126,10 +181,8 @@ def _resolve_lock_python(explicit: str | None) -> Path | None:
     return None
 
 
-def _run_py(python_exe: Path, argv: list[str], env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def _run_py(python_exe: Path, argv: list[str]) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR)}
-    if env_extra:
-        env.update(env_extra)
     return subprocess.run(
         argv if Path(argv[0]).is_file() else [str(python_exe), *argv],
         cwd=str(FRAMEWORK_DIR),
@@ -240,40 +293,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
     lock_py = _resolve_lock_python(args.python)
     if not lock_py:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
-    env_extra: dict[str, str] | None = None
-    if args.case:
-        case_path, case_err = _validate_case_dir(args.case)
-        if case_err or case_path is None:
-            return _emit({"ok": False, "error": case_err or "Invalid case."}, 1)
-        case_dir = str(case_path)
-        state_dir = str(hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-vm")
-        if args.hermes:
-            hermes_bin = shutil.which(args.hermes) or args.hermes
-            argv = [hermes_bin, "-p", "framework-network-analyst", "hunt-lab", "start", "--evidence-dir", case_dir]
-            env_extra = {"HERMES_HOME": str(hermes_home)}
-        else:
-            argv = [str(lock_py), "-m", "hunt_lab.lab_stack", "start", "--state-dir", state_dir, "--evidence-dir", case_dir]
-    else:
-        argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "start", "--home", str(hermes_home)]
-        if args.hermes:
-            argv.extend(["--hermes", args.hermes])
+    argv = [str(lock_py), str(FRAMEWORK_DIR / "bot.py"), "lab", "start", "--home", str(hermes_home)]
+    if args.hermes:
+        argv.extend(["--hermes", args.hermes])
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "argv": argv})
-    if args.case and args.hermes:
-        res = subprocess.run(
-            argv,
-            cwd=str(FRAMEWORK_DIR),
-            env={**os.environ, "PYTHONPATH": str(FRAMEWORK_DIR), **(env_extra or {})},
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            check=False,
-            creationflags=_NO_WINDOW,
-        )
-    else:
-        res = _run_py(lock_py, argv, env_extra=env_extra)
+    owner_err = _check_project_ownership(hermes_home, fixture_fallback=True)
+    if owner_err:
+        return _emit({"ok": False, "error": owner_err}, 1)
+    res = _run_py(lock_py, argv)
     return _emit({
         "ok": res.returncode == 0,
         "exit_code": res.returncode,
@@ -419,6 +447,9 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         argv.extend(["--hermes", args.hermes])
     if args.dry_run:
         return _emit({"ok": True, "dry_run": True, "argv": argv, "evidence_preserved": True})
+    owner_err = _check_project_ownership(hermes_home, fixture_fallback=False)
+    if owner_err:
+        return _emit({"ok": False, "error": owner_err, "evidence_preserved": True}, 1)
     res = _run_py(lock_py, argv)
     return _emit({
         "ok": res.returncode == 0,
@@ -447,7 +478,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_launch = sub.add_parser("launch", help="Start the local 127.0.0.1 Docker lab stack for an isolated HERMES_HOME.")
     p_launch.add_argument("--python", help="Lock venv Python interpreter path.")
     p_launch.add_argument("--hermes-home", required=True)
-    p_launch.add_argument("--case", help="Optional path to synthetic case folder.")
     p_launch.add_argument("--hermes", help="Optional Hermes CLI executable.")
     p_launch.add_argument("--dry-run", action="store_true")
     p_launch.set_defaults(func=cmd_launch)

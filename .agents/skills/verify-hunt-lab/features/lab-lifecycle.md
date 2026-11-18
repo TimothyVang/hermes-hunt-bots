@@ -5,7 +5,7 @@ The local Hunting Lab manages a warm reusable Docker Compose stack across synthe
 ## Sub-features
 
 - Read-only `status` on an unstarted or missing home never creates runtime state or ledgers.
-- `launch` starts the synthetic fixture (or explicit `--case`) and reports `"state": "running"` once `/health` is ready.
+- `launch` starts the case `bot.py lab start` picks for the isolated home (the bundled synthetic fixture on a fresh home) and reports `"state": "running"` once `/health` is ready.
 - `cleanup` tears down the compose project for the isolated home while keeping captured proof artifacts intact.
 
 ## How to get to it (user POV)
@@ -29,4 +29,4 @@ Preconditions: `doctor` reports `"ok": true` and `"docker_daemon_ready": true`; 
 ## Gotchas
 
 - An active `.hermes-update-in-progress` marker blocks every lab command by design; never delete a live update marker.
-- An explicit `launch --case` must be an existing synthetic case directory (committed fixtures are fine); paths under `operator-only` or default user Hermes state are rejected before anything runs.
+- Docker Compose project names are engine-wide (`hunt-lab-<case_id>`), so an isolated home does not isolate the stack. `launch` and `cleanup` refuse with `compose_project_in_use` when that project has containers this home did not start (its recorded lab port is not among their published ports), so they never reconfigure or `down -v` the operator's lab.

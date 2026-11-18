@@ -148,7 +148,8 @@ def _packed_binary() -> Path:
         return DESKTOP_DIR / "release" / "win-unpacked" / "Hunt Command.exe"
     if sys.platform == "darwin":
         return DESKTOP_DIR / "release" / "mac" / "Hunt Command.app" / "Contents" / "MacOS" / "Hunt Command"
-    return DESKTOP_DIR / "release" / "linux-unpacked" / "hunt-command"
+    # electron-builder.config.cjs sets executableName to the display name; Linux keeps it verbatim.
+    return DESKTOP_DIR / "release" / "linux-unpacked" / "Hunt Command"
 
 
 def _fetch_board(port: int) -> tuple[dict, dict] | None:
@@ -491,12 +492,20 @@ def cmd_launch(args: argparse.Namespace) -> int:
     cmd = [str(binary)]
     if args.cdp_port:
         cmd.append(f"--remote-debugging-port={args.cdp_port}")
+    # Isolate Electron userData (connections, single-instance lock) and keep the user's hermes:// handler intact.
+    env_overrides = {
+        "HERMES_HOME": str(hermes_home),
+        "HERMES_DESKTOP_USER_DATA_DIR": str(hermes_home / "desktop-user-data"),
+        "HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION": "1",
+    }
+    log_file = evidence_dir / "hunt-command.log"
     if args.dry_run:
         return _emit({
             "ok": True,
             "dry_run": True,
             "command": cmd,
-            "env_overrides": {"HERMES_HOME": str(hermes_home)},
+            "env_overrides": env_overrides,
+            "log_file": str(log_file),
             "pid_file": str(evidence_dir / "hunt-command.pid"),
         })
     if not binary.is_file():
@@ -528,8 +537,18 @@ def cmd_launch(args: argparse.Namespace) -> int:
             }, 1)
     hermes_home.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "HERMES_HOME": str(hermes_home)}
-    proc = subprocess.Popen(cmd, cwd=str(DESKTOP_DIR), env=env, creationflags=_NO_WINDOW)
+    env = {**os.environ, **env_overrides}
+    # The app must not inherit the helper's stdout: a caller capturing the JSON result would never see EOF.
+    with log_file.open("ab") as log:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(DESKTOP_DIR),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=_NO_WINDOW,
+        )
     _state, ident = _process_identity(proc.pid)
     if _state != "alive" or not ident or not ident.get("create_time"):
         proc.terminate()
@@ -550,7 +569,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
         }),
         encoding="utf-8",
     )
-    return _emit({"ok": True, "pid": proc.pid, "pid_file": str(pid_file), "hermes_home": str(hermes_home)})
+    return _emit({
+        "ok": True,
+        "pid": proc.pid,
+        "pid_file": str(pid_file),
+        "log_file": str(log_file),
+        "hermes_home": str(hermes_home),
+    })
 
 
 def _probe_mjpeg_stream(port: int, profile: str) -> dict:

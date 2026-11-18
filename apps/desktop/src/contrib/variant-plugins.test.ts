@@ -102,7 +102,7 @@ describe('variant-bundled plugins', () => {
         } as never
       }
 
-      return { state: 'stopped' } as never
+      return { blocker: null, installed: true, running: false, supported: true } as never
     })
 
     const { registry } = await discover(huntModules)
@@ -615,6 +615,30 @@ describe('variant-bundled plugins', () => {
       expect((screen.getAllByLabelText('Workflow ID')[0] as HTMLInputElement).value).toBe(longRoundId)
       expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe(longRoundId)
       expect((screen.getByLabelText('Temporal loopback address') as HTMLInputElement).value).toBe('127.0.0.1:7233')
+    })
+
+    vi.spyOn(host.huntWorkbench, 'discoverBoards').mockResolvedValueOnce({
+      boards: [
+        {
+          address: '',
+          caseId: 'ipv6-temporal-case',
+          childWorkflowId: '',
+          liveEnabled: false,
+          liveProfiles: [],
+          managed: false,
+          mode: 'inline',
+          port: 54327,
+          url: 'http://127.0.0.1:54327/',
+          workflowId: 'wf-ipv6-temporal'
+        }
+      ],
+      ok: true
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Attach active board' }))
+    await waitFor(() => {
+      expect((screen.getAllByLabelText('Workflow ID')[0] as HTMLInputElement).value).toBe('wf-ipv6-temporal')
+      expect((screen.getAllByLabelText('Workflow ID')[1] as HTMLInputElement).value).toBe('')
+      expect(screen.getByText(/Human Gates was cleared/)).toBeTruthy()
     })
 
     vi.spyOn(host.huntWorkbench, 'discoverBoards').mockResolvedValueOnce({

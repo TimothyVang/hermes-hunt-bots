@@ -142,6 +142,16 @@ const heading = (title, aside) => jsx('div', {className:'hw-h', children:[title,
 const SCREEN_PROFILE_IDS = new Set(ROLES.map(([, id]) => id));
 const screenState = atom({ routes: [], selected: '', message: '' });
 const routeKey = route => JSON.stringify([route.connectionId, route.mode, route.profile, route.targetProfile]);
+// display.status reports DesktopStatus (tools/bot_desktop/runtime.py): running/supported/installed/blocker, no `state`.
+const screenStatusWord = snapshot => {
+  if (!snapshot || typeof snapshot !== 'object') return 'status unknown';
+  if (snapshot.supported === false) return 'unsupported on this host';
+  if (snapshot.installed === false) return 'not installed';
+  if (snapshot.running === true) return 'running';
+  if (typeof snapshot.blocker === 'string' && snapshot.blocker) return `stopped (cannot start: ${snapshot.blocker})`;
+  if (snapshot.running === false) return 'stopped';
+  return 'status unknown';
+};
 function ScreenSelector() {
   const state = useValue(screenState);
   const discover = async () => {
@@ -176,7 +186,7 @@ function ScreenSelector() {
     if (autoRoute && typeof host.requestProfile === 'function') {
       try {
         const snapshot = await host.requestProfile(autoRoute, 'display.status', {}, 15000, { spawnPriority: 'foreground' });
-        const statusWord = typeof snapshot?.state === 'string' && snapshot.state ? snapshot.state : 'ready';
+        const statusWord = screenStatusWord(snapshot);
         if (screenState.get().selected === routeKey(autoRoute)) {
           screenState.set({...screenState.get(),message:`Selected ${autoRoute.targetProfile} · screen ${statusWord}.`});
         }

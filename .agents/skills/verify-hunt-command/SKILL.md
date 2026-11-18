@@ -31,6 +31,7 @@ Executable verification harness and feature map for the **Hunt Command** Electro
    ```powershell
    python .agents/skills/verify-hunt-command/control-hunt-command.py launch --hermes-home <isolated-hermes-home> --evidence-dir <evidence-dir> --cdp-port 9333
    ```
+   `launch` also isolates Electron's user data under `<isolated-hermes-home>/desktop-user-data` (`HERMES_DESKTOP_USER_DATA_DIR`), skips `hermes://` protocol registration (`HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1`), and writes the app's output to `<evidence-dir>/hunt-command.log`.
 
 ## Doctor
 

@@ -1121,8 +1121,9 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
             descriptor.workflowId = managedBoard.workflowId
           }
 
-          if (reg?.address && validateLoopbackAddress(reg.address)) {
-            descriptor.address = reg.address
+          if (reg?.address) {
+            // A board on localhost/[::1] Temporal must not inherit the 127.0.0.1:7233 probe default.
+            descriptor.address = validateLoopbackAddress(reg.address) ?? ''
           } else if (managedBoard?.port === port) {
             descriptor.address = managedBoard.address
           }
@@ -1143,7 +1144,7 @@ export function createHuntWorkbench(deps: HuntWorkbenchDeps): HuntWorkbenchApi &
     const workflowId = String(request?.workflowId || '').trim()
 
     if (!SAFE_WORKFLOW_ID.test(workflowId)) {
-      return { error: 'Enter a valid workflow ID (1-128 letters, digits, ., _, :, -).' }
+      return { error: 'Enter a valid workflow ID (1-160 letters, digits, ., _, :, -).' }
     }
 
     const address = validateLoopbackAddress(request?.address)
