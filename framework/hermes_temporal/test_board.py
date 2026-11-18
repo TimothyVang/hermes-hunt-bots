@@ -553,7 +553,7 @@ class BoardServerTests(unittest.TestCase):
             return _load("parent-status.json"), _load("child-status.json")
 
         self.now = 100.0
-        self.board = Board(self.raw, observe, clock=lambda: self.now)
+        self.board = Board(self.raw, observe, clock=lambda: self.now, temporal_address="127.0.0.1:7244")
         self.server = make_server(self.board, 0)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -586,6 +586,7 @@ class BoardServerTests(unittest.TestCase):
         state = json.loads(body)
         self.assertEqual(len(state["steps"]), 9)
         self.assertTrue(state["temporal"]["reachable"])
+        self.assertEqual(state["temporal"]["address"], "127.0.0.1:7244")
         self.assertIsNone(state["live"])
         self.assertEqual(self.request("GET", f"/live/framework-researcher.jpg?token={self.server.token}")[0], 404)
 

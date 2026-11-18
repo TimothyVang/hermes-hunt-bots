@@ -86,7 +86,9 @@ def _validate_isolated_hermes_home(
 
 
 _COMPOSE_PROJECT = re.compile(r"hunt-lab-[a-z0-9-]{3,64}")
-_PUBLISHED_PORT = re.compile(r":(\d{1,5})->")
+# lab_stack bind-mounts these per-start files from the home's container-state folder into the lab service.
+_HOME_OWNED_MOUNTS = ("/run/lab/lab-secret", "/var/lib/cloud/data/instance-id")
+_DOCKER_DESKTOP_HOST = re.compile(r"^/(?:run/desktop/mnt/host|host_mnt|mnt/host)/([a-zA-Z])/(.*)$")
 
 
 def _read_json_dict(path: Path) -> dict | None:
@@ -97,8 +99,17 @@ def _read_json_dict(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _home_lab_target(hermes_home: Path, *, fixture_fallback: bool) -> tuple[str, int | None, bool] | None:
-    """(compose project, recorded lab port, state recorded) for the case `bot.py lab start|stop` acts on.
+def _host_path_key(raw: str) -> str:
+    """Comparable form of a host path as Docker reports it (C:\\x, /run/desktop/mnt/host/c/x, or /x)."""
+    text = raw.replace("\\", "/").rstrip("/")
+    desktop = _DOCKER_DESKTOP_HOST.match(text)
+    if desktop:
+        text = f"{desktop.group(1)}:/{desktop.group(2)}"
+    return text.lower() if os.name == "nt" or re.match(r"^[a-zA-Z]:/", text) else text
+
+
+def _home_lab_target(hermes_home: Path, *, fixture_fallback: bool) -> tuple[str, Path] | None:
+    """(compose project, container-state root) for the case `bot.py lab start|stop` acts on.
 
     Docker Compose project names are engine-wide (hunt-lab-<case_id>), so an isolated HERMES_HOME does not isolate
     the stack: another home (the operator's) can run the same project.
@@ -110,30 +121,19 @@ def _home_lab_target(hermes_home: Path, *, fixture_fallback: bool) -> tuple[str,
         case_id = (_read_json_dict(FRAMEWORK_DIR / "hunt_lab" / "fixtures" / "dns-lab-001" / "case.json") or {}).get("case_id")
     if not isinstance(case_id, str) or not endpoints.CASE_ID.fullmatch(case_id):
         return None
-    case_dir = root / case_id
-    state = _read_json_dict(case_dir / "state.json")
     project = endpoints.CONTAINER_PROJECT_PREFIX + case_id
     try:
-        override = (case_dir / "compose-project").read_text(encoding="ascii").strip()
+        override = (root / case_id / "compose-project").read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError):
         override = ""
     if _COMPOSE_PROJECT.fullmatch(override):
         project = override
-    lab_port = state.get("lab_port") if state else None
-    return project, lab_port if isinstance(lab_port, int) else None, state is not None
+    return project, root
 
 
-def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> str | None:
-    """Refuse when the target compose project has containers this home did not start (matched by published lab port)."""
-    target = _home_lab_target(hermes_home, fixture_fallback=fixture_fallback)
-    if target is None:
-        return None if not fixture_fallback else "Could not determine the lab case for this HERMES_HOME."
-    project, lab_port, recorded = target
-    docker_bin = shutil.which("docker")
-    if not docker_bin:
-        return "Docker CLI not found; cannot verify compose project ownership."
-    listed = subprocess.run(
-        [docker_bin, "ps", "-a", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Ports}}"],
+def _docker_lines(docker_bin: str, argv: list[str]) -> tuple[list[str] | None, str | None]:
+    res = subprocess.run(
+        [docker_bin, *argv],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -142,17 +142,55 @@ def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> st
         check=False,
         creationflags=_NO_WINDOW,
     )
-    if listed.returncode != 0:
-        return f"docker ps failed ({listed.stderr.strip()[:200]}); cannot verify compose project ownership."
-    if not listed.stdout.strip("\n"):
-        return None
-    published = {int(port) for port in _PUBLISHED_PORT.findall(listed.stdout)}
-    if recorded and lab_port is not None and lab_port in published:
-        return None
-    return (
-        f"compose_project_in_use: Docker project {project} has containers this HERMES_HOME did not start "
-        "(another Hermes home or the operator's lab); refusing to start or stop it."
+    if res.returncode != 0:
+        return None, f"docker {argv[0]} failed ({res.stderr.strip()[:200]}); cannot verify compose project ownership."
+    return [line for line in res.stdout.splitlines() if line.strip()], None
+
+
+def _check_project_ownership(hermes_home: Path, *, fixture_fallback: bool) -> str | None:
+    """Refuse unless the target compose project is absent or its lab containers mount this home's per-start files.
+
+    Stopped containers keep their mounts, and a reused port proves nothing, so ownership is read from the bind
+    sources of the lab secret and instance-id files, which live under this home's container-state folder.
+    """
+    target = _home_lab_target(hermes_home, fixture_fallback=fixture_fallback)
+    if target is None:
+        return None if not fixture_fallback else "Could not determine the lab case for this HERMES_HOME."
+    project, root = target
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
+        return "Docker CLI not found; cannot verify compose project ownership."
+    label = f"label=com.docker.compose.project={project}"
+    ids, err = _docker_lines(docker_bin, ["ps", "-a", "-q", "--no-trunc", "--filter", label])
+    if err or ids is None:
+        return err
+    refusal = (
+        f"compose_project_in_use: Docker project {project} has containers or volumes this HERMES_HOME did not "
+        "start (another Hermes home, the operator's lab, or leftovers); refusing to start or stop it."
     )
+    if not ids:
+        volumes, err = _docker_lines(docker_bin, ["volume", "ls", "-q", "--filter", label])
+        if err or volumes is None:
+            return err
+        return refusal if volumes else None
+    mounts, err = _docker_lines(docker_bin, ["inspect", "--format", "{{json .Mounts}}", *ids])
+    if err or mounts is None:
+        return err
+    sources = []
+    for line in mounts:
+        try:
+            entries = json.loads(line)
+        except ValueError:
+            return refusal
+        sources.extend(
+            str(entry.get("Source") or "")
+            for entry in entries or ()
+            if isinstance(entry, dict) and entry.get("Type") == "bind" and entry.get("Destination") in _HOME_OWNED_MOUNTS
+        )
+    root_key = _host_path_key(str(root.resolve()))
+    if sources and all(_host_path_key(source).startswith(root_key + "/") for source in sources):
+        return None
+    return refusal
 
 
 def _emit(payload: dict, exit_code: int = 0) -> int:

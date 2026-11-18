@@ -188,31 +188,45 @@ describe('hunt-workbench', () => {
     expect(fs.existsSync(busyOtherFile)).toBe(true)
   })
 
-  it('never substitutes the default Temporal server for a board registered on localhost or [::1]', async () => {
+  it('takes a board\'s Temporal address from its registry or /state.json and never substitutes 127.0.0.1:7233', async () => {
     const home = makeTempDir()
     tempDirs.push(home)
 
-    const liveServer = http.createServer((req, res) => {
-      res.writeHead(req.url === '/state.json' ? 200 : 404, {
-        'Content-Type': 'application/json',
-        Server: 'HuntBoard Python/3.13'
+    const startFakeBoard = async (temporal: Record<string, unknown>) => {
+      const server = http.createServer((req, res) => {
+        res.writeHead(req.url === '/state.json' ? 200 : 404, {
+          'Content-Type': 'application/json',
+          Server: 'HuntBoard Python/3.13'
+        })
+        res.end(req.url === '/state.json' ? JSON.stringify({ case: { case_id: 'dns-lab-001' }, mode: 'inline', run: {}, steps: [], temporal }) : '')
       })
-      res.end(req.url === '/state.json' ? JSON.stringify({ case: { case_id: 'dns-lab-001' }, mode: 'inline', run: { workflow_id: 'practice-2' }, steps: [] }) : '')
-    })
 
-    servers.push(liveServer)
-    await new Promise<void>(resolve => liveServer.listen(0, '127.0.0.1', () => resolve()))
-    const livePort = (liveServer.address() as { port: number }).port
+      servers.push(server)
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+
+      return (server.address() as { port: number }).port
+    }
+
+    const registeredLocalhost = await startFakeBoard({ address: '127.0.0.1:7255' })
+    const reportsOwnAddress = await startFakeBoard({ address: '127.0.0.1:7255' })
+    const reportsIpv6 = await startFakeBoard({ address: '[::1]:7233' })
+    const reportsNothing = await startFakeBoard({ reachable: true })
     const regDir = path.join(home, 'hunt-board')
     fs.mkdirSync(regDir, { recursive: true })
     fs.writeFileSync(
-      path.join(regDir, `board-${livePort}.json`),
-      JSON.stringify({ address: 'localhost:7244', port: livePort, workflow_id: 'practice-2' })
+      path.join(regDir, `board-${registeredLocalhost}.json`),
+      JSON.stringify({ address: 'localhost:7244', port: registeredLocalhost, workflow_id: 'practice-2' })
     )
 
     const wb = createHuntWorkbench({ hermesHome: () => home, huntEnabled: true, probeBoardPort: defaultProbeBoardPort })
-    const found = (await wb.discoverBoards({ port: livePort })).boards.find(b => b.port === livePort)
-    expect(found).toMatchObject({ address: '', port: livePort, workflowId: 'practice-2' })
+
+    const addressOf = async (port: number) =>
+      (await wb.discoverBoards({ port })).boards.find(b => b.port === port)?.address
+
+    expect(await addressOf(registeredLocalhost)).toBe('')
+    expect(await addressOf(reportsOwnAddress)).toBe('127.0.0.1:7255')
+    expect(await addressOf(reportsIpv6)).toBe('')
+    expect(await addressOf(reportsNothing)).toBe('')
   })
 
   it('starts Hunt Board with --lab-state-dir and --hermes-home for tool-driven inputs and omits --lab-state-dir for inline', async () => {

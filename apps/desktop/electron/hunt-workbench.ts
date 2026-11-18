@@ -878,8 +878,14 @@ export function defaultProbeBoardPort(port: number, managedPort: null | number):
                 ? Object.keys(liveOwners as Record<string, unknown>)
                 : []
 
+            // Unknown (older board, or a host Desktop cannot target) stays '', never the 7233 default.
+            const reportedAddress: unknown = parsed?.temporal?.address
+
             finish({
-              address: DEFAULT_TEMPORAL_ADDRESS,
+              address:
+                typeof reportedAddress === 'string' && reportedAddress
+                  ? (validateLoopbackAddress(reportedAddress) ?? '')
+                  : '',
               caseId,
               childWorkflowId: childWid,
               liveEnabled: Boolean(parsed?.live),

@@ -1203,7 +1203,8 @@ class Board:
 
     def __init__(self, raw_input: dict, observe: Callable[[], tuple[dict, dict | None]],
                  interval: float = POLL_INTERVAL_SECONDS, clock: Callable[[], float] = time.monotonic,
-                 lab: LabObserver | None = None, live: LiveBrowsers | None = None) -> None:
+                 lab: LabObserver | None = None, live: LiveBrowsers | None = None,
+                 temporal_address: str | None = None) -> None:
         self._raw = raw_input
         self._observe = observe
         self._interval = interval
@@ -1214,7 +1215,9 @@ class Board:
         self._polled_at: float | None = None
         self._parent: dict | None = None
         self._child: dict | None = None
-        self._temporal = {"reachable": None, "error": None, "observed_at": None, "last_success_at": None}
+        # The address lets Desktop hand Human Gates the board's own Temporal server, not a default.
+        self._temporal = {"address": temporal_address, "reachable": None, "error": None, "observed_at": None,
+                          "last_success_at": None}
         self._state: dict | None = None
         self._case_id = _lab_evidence(raw_input if isinstance(raw_input, dict) else {})[0]["case_id"]
 
@@ -1593,7 +1596,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         live = LiveBrowsers(browser_root(args.hermes_home))
     lab = _lab_observer(args, initial["case"]["case_id"]) if has_lab else None
-    board = Board(raw, TemporalObserver(args.address, args.workflow_id), lab=lab, live=live)
+    board = Board(raw, TemporalObserver(args.address, args.workflow_id), lab=lab, live=live,
+                  temporal_address=args.address)
     try:
         server = make_server(board, args.port)
     except OSError as exc:

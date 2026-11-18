@@ -29,4 +29,4 @@ Preconditions: `doctor` reports `"ok": true` and `"docker_daemon_ready": true`; 
 ## Gotchas
 
 - An active `.hermes-update-in-progress` marker blocks every lab command by design; never delete a live update marker.
-- Docker Compose project names are engine-wide (`hunt-lab-<case_id>`), so an isolated home does not isolate the stack. `launch` and `cleanup` refuse with `compose_project_in_use` when that project has containers this home did not start (its recorded lab port is not among their published ports), so they never reconfigure or `down -v` the operator's lab.
+- Docker Compose project names are engine-wide (`hunt-lab-<case_id>`), so an isolated home does not isolate the stack. `launch` and `cleanup` refuse with `compose_project_in_use` unless that project is absent or its containers (running or stopped) bind-mount the lab secret and instance-id files from this home's `hunt-lab-container/` folder; leftover project volumes with no containers also refuse. They never reconfigure or `down -v` another home's or the operator's lab; clean such leftovers by hand.
