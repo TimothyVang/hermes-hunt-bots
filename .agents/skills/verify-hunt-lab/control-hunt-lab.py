@@ -47,6 +47,15 @@ def _default_hermes_homes(user_home: Path) -> tuple[Path, ...]:
     return (constants.account_default_hermes_home().resolve(), dot_hermes)
 
 
+def _touches_operator_only(cand: Path) -> bool:
+    operator_only = (REPO_ROOT.parent / "runtime" / "operator-only").resolve()
+    return (
+        _paths_overlap(cand, operator_only)
+        or any(part.lower() == "operator-only" for part in cand.parts)
+        or (cand / "operator-only").exists()
+    )
+
+
 def _validate_isolated_hermes_home(
     raw: str,
     *,
@@ -65,18 +74,29 @@ def _validate_isolated_hermes_home(
     for default_home in _default_hermes_homes(user_home):
         if _paths_overlap(cand, default_home):
             return None, f"{label} ({cand}) must not touch default user Hermes state ({default_home})."
-    operator_only = (REPO_ROOT.parent / "runtime" / "operator-only").resolve()
-    if (
-        _paths_overlap(cand, operator_only)
-        or any(part.lower() == "operator-only" for part in cand.parts)
-        or (cand / "operator-only").exists()
-    ):
+    if _touches_operator_only(cand):
         return None, f"{label} ({cand}) must never touch operator-only directories."
     in_git = _paths_overlap(cand, REPO_ROOT.resolve()) or any(
         (parent / ".git").exists() for parent in (cand, *cand.parents)
     )
     if in_git and (forbid_git_worktree or ".scratch" not in cand.parts):
         return None, f"{label} ({cand}) must be outside the repository/git worktree."
+    return cand, None
+
+
+def _validate_case_dir(raw: str) -> tuple[Path | None, str | None]:
+    """Synthetic case folders may live in the repo (committed fixtures), but never in operator-only or default user state."""
+    text = str(raw or "").strip()
+    if not text or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None, "case must be a valid local path."
+    cand = Path(os.path.abspath(os.path.expanduser(os.path.expandvars(text)))).resolve()
+    if _touches_operator_only(cand):
+        return None, f"case ({cand}) must never touch operator-only directories."
+    for default_home in _default_hermes_homes(Path.home().resolve()):
+        if _paths_overlap(cand, default_home):
+            return None, f"case ({cand}) must not touch default user Hermes state ({default_home})."
+    if not cand.is_dir():
+        return None, f"case ({cand}) must be an existing synthetic case directory."
     return cand, None
 
 
@@ -222,7 +242,10 @@ def cmd_launch(args: argparse.Namespace) -> int:
         return _emit({"ok": False, "error": "Lock Python not found; pass --python."}, 1)
     env_extra: dict[str, str] | None = None
     if args.case:
-        case_dir = str(Path(args.case).resolve())
+        case_path, case_err = _validate_case_dir(args.case)
+        if case_err or case_path is None:
+            return _emit({"ok": False, "error": case_err or "Invalid case."}, 1)
+        case_dir = str(case_path)
         state_dir = str(hermes_home / "profiles" / "framework-network-analyst" / "hunt-lab-vm")
         if args.hermes:
             hermes_bin = shutil.which(args.hermes) or args.hermes

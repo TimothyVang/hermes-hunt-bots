@@ -29,3 +29,4 @@ Preconditions: `doctor` reports `"ok": true` and `"docker_daemon_ready": true`; 
 ## Gotchas
 
 - An active `.hermes-update-in-progress` marker blocks every lab command by design; never delete a live update marker.
+- An explicit `launch --case` must be an existing synthetic case directory (committed fixtures are fine); paths under `operator-only` or default user Hermes state are rejected before anything runs.

@@ -65,7 +65,7 @@ python .agents/skills/verify-hunt-command/control-hunt-command.py snapshot --por
 
 ## Cleanup
 
-Stop only the PID recorded by `launch`—never kill processes by name, and never delete `<evidence-dir>`:
+Stop only the PID recorded by `launch`—never kill processes by name, and never delete `<evidence-dir>`. `cleanup` accepts only the `hunt-command.pid` inside an isolated evidence directory. It signals through a process handle (Windows) or pidfd (Linux 5.3+); where neither exists (for example macOS) it refuses with an error rather than risk signalling a reused PID, so stop that process manually after checking it:
 
 ```powershell
 python .agents/skills/verify-hunt-command/control-hunt-command.py cleanup --pid-file <evidence-dir>/hunt-command.pid

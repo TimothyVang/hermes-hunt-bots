@@ -819,7 +819,14 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
-    pid_file = Path(args.pid_file).resolve()
+    pid_dir, pid_err = _validate_isolated_hermes_home(
+        str(Path(args.pid_file).parent), forbid_git_worktree=False, label="pid_file directory"
+    )
+    if pid_err or pid_dir is None:
+        return _emit({"ok": False, "stopped": False, "error": pid_err or "Invalid pid_file."}, 1)
+    if Path(args.pid_file).name != "hunt-command.pid":
+        return _emit({"ok": False, "stopped": False, "error": "pid_file must be the hunt-command.pid written by launch."}, 1)
+    pid_file = pid_dir / "hunt-command.pid"
     if not pid_file.is_file():
         return _emit({"ok": True, "stopped": False, "reason": f"No PID file at {pid_file}; evidence preserved."})
     data = json.loads(pid_file.read_text(encoding="utf-8-sig"))
@@ -846,44 +853,33 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
 
 
 def _posix_terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
+    # Signalling a bare PID after an identity check races PID reuse; only a pidfd ties the signal to the verified process.
     pidfd_open = getattr(os, "pidfd_open", None)
     pidfd_send = getattr(signal, "pidfd_send_signal", None)
-    if callable(pidfd_open) and callable(pidfd_send):
-        try:
-            pidfd = pidfd_open(pid, 0)
-        except ProcessLookupError:
-            return "dead"
-        except PermissionError:
-            return "mismatch"
-        except OSError:
-            pidfd = None
-        if pidfd is not None:
-            try:
-                alive, ident = _posix_process_identity(pid)
-                if alive == "dead":
-                    return "dead"
-                if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
-                    return "mismatch"
-                pidfd_send(pidfd, signal.SIGTERM)
-                return "stopped"
-            except ProcessLookupError:
-                return "dead"
-            except OSError as exc:
-                return f"error:{exc}"
-            finally:
-                os.close(pidfd)
-    alive, ident = _posix_process_identity(pid)
-    if alive == "dead":
-        return "dead"
-    if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
-        return "mismatch"
+    if not (callable(pidfd_open) and callable(pidfd_send)):
+        return f"error:race-free termination needs pidfd (Linux 5.3+); stop PID {pid} manually after checking it"
     try:
-        os.kill(pid, signal.SIGTERM)
+        pidfd = pidfd_open(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        return "mismatch"
+    except OSError as exc:
+        return f"error:pidfd_open failed ({exc}); stop PID {pid} manually after checking it"
+    try:
+        alive, ident = _posix_process_identity(pid)
+        if alive == "dead":
+            return "dead"
+        if alive != "alive" or not _pid_matches_recorded(ident, expected_binary, expected_create):
+            return "mismatch"
+        pidfd_send(pidfd, signal.SIGTERM)
+        return "stopped"
     except ProcessLookupError:
         return "dead"
     except OSError as exc:
         return f"error:{exc}"
-    return "stopped"
+    finally:
+        os.close(pidfd)
 
 
 def _terminate_verified(pid: int, expected_binary: str, expected_create: str) -> str:
